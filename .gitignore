@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 敏感配置(包含 API key)
+.env
+
+# 运行时产物
+output/
+doing/
+
+# 根目录散落的 MIDI/中间文件(保留 input/ 与 samples/ 下的样本)
+/*.mid
+/*.mid.txt

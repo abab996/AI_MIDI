@@ -1,2 +1,3 @@
+maliang>=3.0
 mido>=1.3
 openai>=1.0

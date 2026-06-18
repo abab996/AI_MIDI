@@ -48,11 +48,19 @@ DEEPSEEK_API_KEY=sk-你的key
 
 ## 使用
 
+**图形界面(推荐,Win11 风格):**
+
+```bash
+python gui.py
+```
+
+基于 maliang 的 GUI,自动跟随系统深浅色主题,支持后台线程调用(不冻结界面)。
+
+**命令行:**
+
 ```bash
 python main.py
 ```
-
-把待处理的 MIDI 放到 `input/in.mid`,然后按提示输入 BPM、拍号、歌词、要求等。
 
 - 生成的 MIDI 写到项目根目录 `output.mid`。
 - 文本结果(翻译歌词等)写到 `output/` 目录。

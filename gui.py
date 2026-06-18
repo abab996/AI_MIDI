@@ -173,10 +173,11 @@ class App:
         Text(self.canvas, (PAD, y + _s(6)), text="功能", fontsize=_s(11))
         self.func_selector = SegmentedButton(
             self.canvas, (PAD + _s(60), y),
+            sizes=((_s(90), _s(38)),) * 4,
             text=("配和弦", "翻译歌词", "设计转音", "其他要求"),
             fontsize=_s(10), default=FUNC_ADD_CHORD,
             command=self._on_func_change)
-        y += _s(48)
+        y += _s(58)
 
         # —— 公共参数: BPM + 拍号(始终可见) ——
         Text(self.canvas, (PAD, y + _s(8)), text="BPM", fontsize=_s(11))
@@ -264,10 +265,12 @@ class App:
 
     def _make_text(self, x: int, y: int, w: int, h: int) -> tk.Text:
         """创建一个跟随主题的多行 tkinter.Text。"""
+        # 使用负的像素字号,与 maliang 的 fontsize 行为一致,
+        # 避免 tk 的点数字号在高 DPI 下被系统再次放大。
         t = tk.Text(self.canvas, width=1, height=1, wrap="word",
                     relief="flat", bd=0, padx=_s(8), pady=_s(6),
                     highlightthickness=1, highlightbackground="#CCCCCC",
-                    font=("Microsoft YaHei UI", _s(10)))
+                    font=("Microsoft YaHei UI", -_s(10)))
         t.place(x=x, y=y, width=w, height=h)
         self._tk_texts.append((t, (x, y, w, h)))
         self._sync_text_theme()

@@ -8,7 +8,10 @@
 用法:
     python gui.py
 """
+import ctypes
+import ctypes.wintypes
 import os
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -24,12 +27,64 @@ import get
 import out
 import ai_api
 
-# ===== 布局常量 =====
-PAD = 20                         # 外边距
-WIN_W, WIN_H = 740, 780          # 窗口尺寸
-ROW_H = 34                       # 单行高度(输入框 / 按钮)
-GAP = 10                         # 行间距
-MULTI_H = 72                     # 多行文本框高度
+
+def _setup_safe_scale() -> float:
+    """启用 Windows DPI 感知并返回适合当前屏幕的缩放比例。"""
+    if sys.platform != "win32":
+        return 1.0
+    try:
+        # Windows 8.1+: 每个显示器独立 DPI 感知
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            # Windows Vista/7/8 回退
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+    raw_scale = 1.0
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        raw_scale = dpi / 96.0
+    except Exception:
+        pass
+
+    # 根据主显示器工作区限制最大缩放,避免窗口超出屏幕
+    try:
+        user32 = ctypes.windll.user32
+        rect = ctypes.wintypes.RECT()
+        if user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0):
+            work_w = rect.right - rect.left
+            work_h = rect.bottom - rect.top
+            # 预留 10% 边距,基于原始设计尺寸 740x780
+            max_scale = min(
+                (work_w * 0.9) / 740,
+                (work_h * 0.9) / 780,
+            )
+            # 允许在小屏幕上适当缩小,但不宜过小影响可读性
+            return min(raw_scale, max(0.75, max_scale))
+    except Exception:
+        pass
+
+    return raw_scale
+
+
+_SCALE = _setup_safe_scale()
+
+
+def _s(value: int) -> int:
+    """按 DPI 缩放比例缩放整数值。"""
+    return int(round(value * _SCALE))
+
+
+# ===== 布局常量(已按系统 DPI 自动缩放) =====
+PAD = _s(20)                     # 外边距
+WIN_W, WIN_H = _s(740), _s(780)  # 窗口尺寸
+ROW_H = _s(34)                   # 单行高度(输入框 / 按钮)
+GAP = _s(10)                     # 行间距
+MULTI_H = _s(72)                 # 多行文本框高度
 
 # 功能标识(与 SegmentedButton 索引对应)
 FUNC_ADD_CHORD = 0
@@ -78,120 +133,120 @@ class App:
         y = PAD
 
         # —— 标题 ——
-        Text(self.canvas, (PAD, y), text="AI_MIDI", fontsize=22, weight="bold")
-        y += 36
+        Text(self.canvas, (PAD, y), text="AI_MIDI", fontsize=_s(22), weight="bold")
+        y += _s(36)
         Text(self.canvas, (PAD, y),
              text="解析 MIDI → 选择任务 → DeepSeek AI 处理 → 输出结果",
-             fontsize=10)
-        y += 30
+             fontsize=_s(10))
+        y += _s(30)
 
         # —— 分隔线(用 Label 模拟) ——
         Label(self.canvas, (PAD, y), (WIN_W - PAD * 2, 1))
-        y += 8
+        y += _s(8)
 
         # —— MIDI 文件选择 ——
-        Text(self.canvas, (PAD, y + 8), text="输入 MIDI", fontsize=11)
+        Text(self.canvas, (PAD, y + _s(8)), text="输入 MIDI", fontsize=_s(11))
         self.midi_path_input = InputBox(
-            self.canvas, (PAD + 82, y),
-            (WIN_W - 82 - 120 - PAD * 2, ROW_H),
-            placeholder="选择 .mid 文件…", fontsize=10)
+            self.canvas, (PAD + _s(82), y),
+            (WIN_W - _s(82) - _s(120) - PAD * 2, ROW_H),
+            placeholder="选择 .mid 文件…", fontsize=_s(10))
         self.midi_path_input.set(self.midi_path)
 
-        self.pick_btn = Button(self.canvas, (WIN_W - 120 - PAD, y),
-                               (120, ROW_H), text="浏览…", fontsize=10,
+        self.pick_btn = Button(self.canvas, (WIN_W - _s(120) - PAD, y),
+                               (_s(120), ROW_H), text="浏览…", fontsize=_s(10),
                                command=self._pick_midi)
         y += ROW_H + GAP
 
         # —— 解析按钮 + 状态 ——
-        self.parse_btn = Button(self.canvas, (PAD, y), (120, ROW_H),
-                                text="解析 MIDI", fontsize=10,
+        self.parse_btn = Button(self.canvas, (PAD, y), (_s(120), ROW_H),
+                                text="解析 MIDI", fontsize=_s(10),
                                 command=self._parse_midi)
-        self.parse_status = Text(self.canvas, (PAD + 132, y + 8),
-                                 text="尚未解析", fontsize=10)
-        y += ROW_H + GAP + 6
+        self.parse_status = Text(self.canvas, (PAD + _s(132), y + _s(8)),
+                                 text="尚未解析", fontsize=_s(10))
+        y += ROW_H + GAP + _s(6)
 
         # —— 分隔线 ——
         Label(self.canvas, (PAD, y), (WIN_W - PAD * 2, 1))
-        y += 8
+        y += _s(8)
 
         # —— 功能选择 ——
-        Text(self.canvas, (PAD, y + 6), text="功能", fontsize=11)
+        Text(self.canvas, (PAD, y + _s(6)), text="功能", fontsize=_s(11))
         self.func_selector = SegmentedButton(
-            self.canvas, (PAD + 60, y),
+            self.canvas, (PAD + _s(60), y),
             text=("配和弦", "翻译歌词", "设计转音", "其他要求"),
-            fontsize=10, default=FUNC_ADD_CHORD,
+            fontsize=_s(10), default=FUNC_ADD_CHORD,
             command=self._on_func_change)
-        y += 48
+        y += _s(48)
 
         # —— 公共参数: BPM + 拍号(始终可见) ——
-        Text(self.canvas, (PAD, y + 8), text="BPM", fontsize=11)
+        Text(self.canvas, (PAD, y + _s(8)), text="BPM", fontsize=_s(11))
         self.bpm_input = InputBox(
-            self.canvas, (PAD + 60, y), (100, ROW_H),
-            placeholder="120", fontsize=10)
+            self.canvas, (PAD + _s(60), y), (_s(100), ROW_H),
+            placeholder="120", fontsize=_s(10))
         self.bpm_input.set(str(config.DEFAULT_BPM))
 
-        Text(self.canvas, (PAD + 185, y + 8), text="拍号", fontsize=11)
+        Text(self.canvas, (PAD + _s(185), y + _s(8)), text="拍号", fontsize=_s(11))
         self.timesig_input = InputBox(
-            self.canvas, (PAD + 230, y), (100, ROW_H),
-            placeholder="4/4", fontsize=10)
+            self.canvas, (PAD + _s(230), y), (_s(100), ROW_H),
+            placeholder="4/4", fontsize=_s(10))
         self.timesig_input.set(config.DEFAULT_TIME_SIGNATURE)
         y += ROW_H + GAP
 
         # —— 歌词(多行) ——
-        self.lyrics_label = Text(self.canvas, (PAD, y), text="歌词", fontsize=11)
-        y += 20
+        self.lyrics_label = Text(self.canvas, (PAD, y), text="歌词", fontsize=_s(11))
+        y += _s(20)
         geo_lyrics = (PAD, y, WIN_W - PAD * 2, MULTI_H)
         self.lyrics_box = self._make_text(*geo_lyrics)
         self._lyrics_geo = geo_lyrics
         y += MULTI_H + GAP
 
         # —— 原语言 / 目标语言(仅翻译歌词) ——
-        self.orig_lang_label = Text(self.canvas, (PAD, y + 8),
-                                    text="原语言", fontsize=11)
+        self.orig_lang_label = Text(self.canvas, (PAD, y + _s(8)),
+                                    text="原语言", fontsize=_s(11))
         self.orig_lang_input = InputBox(
-            self.canvas, (PAD + 80, y), (180, ROW_H),
-            placeholder="如:日语", fontsize=10)
+            self.canvas, (PAD + _s(80), y), (_s(180), ROW_H),
+            placeholder="如:日语", fontsize=_s(10))
 
-        self.target_lang_label = Text(self.canvas, (PAD + 280, y + 8),
-                                      text="目标语言", fontsize=11)
+        self.target_lang_label = Text(self.canvas, (PAD + _s(280), y + _s(8)),
+                                      text="目标语言", fontsize=_s(11))
         self.target_lang_input = InputBox(
-            self.canvas, (PAD + 356, y), (180, ROW_H),
-            placeholder="如:中文", fontsize=10)
+            self.canvas, (PAD + _s(356), y), (_s(180), ROW_H),
+            placeholder="如:中文", fontsize=_s(10))
         y += ROW_H + GAP
 
         # —— 输出音符开关(仅其他要求) ——
-        self.note_sw_label = Text(self.canvas, (PAD, y + 6),
-                                  text="输出音符数据 (MIDI)", fontsize=11)
-        self.note_sw = Switch(self.canvas, (PAD + 210, y), length=48, default=False)
+        self.note_sw_label = Text(self.canvas, (PAD, y + _s(6)),
+                                  text="输出音符数据 (MIDI)", fontsize=_s(11))
+        self.note_sw = Switch(self.canvas, (PAD + _s(210), y), length=_s(48), default=False)
         y += ROW_H + GAP
 
         # —— 具体要求(多行) ——
-        self.req_label = Text(self.canvas, (PAD, y), text="具体要求", fontsize=11)
-        y += 20
+        self.req_label = Text(self.canvas, (PAD, y), text="具体要求", fontsize=_s(11))
+        y += _s(20)
         geo_req = (PAD, y, WIN_W - PAD * 2, MULTI_H)
         self.req_box = self._make_text(*geo_req)
         self._req_geo = geo_req
-        y += MULTI_H + GAP + 4
+        y += MULTI_H + GAP + _s(4)
 
         # —— 分隔线 ——
         Label(self.canvas, (PAD, y), (WIN_W - PAD * 2, 1))
-        y += 8
+        y += _s(8)
 
         # —— 开始按钮 + 加载动画 + 状态 ——
-        self.start_btn = Button(self.canvas, (PAD, y), (150, 38),
-                                text="▶  开始", fontsize=12, weight="bold",
+        self.start_btn = Button(self.canvas, (PAD, y), (_s(150), _s(38)),
+                                text="▶  开始", fontsize=_s(12), weight="bold",
                                 command=self._start_task)
-        self.spinner = Spinner(self.canvas, (PAD + 168, y + 3), (32, 32),
+        self.spinner = Spinner(self.canvas, (PAD + _s(168), y + _s(3)), (_s(32), _s(32)),
                                mode="indeterminate")
         self.spinner.forget()
-        self.status_text = Text(self.canvas, (PAD + 218, y + 10),
-                                text="", fontsize=10)
-        y += 52
+        self.status_text = Text(self.canvas, (PAD + _s(218), y + _s(10)),
+                                text="", fontsize=_s(10))
+        y += _s(52)
 
         # —— 结果 ——
-        Text(self.canvas, (PAD, y), text="结果", fontsize=11, weight="bold")
-        y += 20
-        result_h = WIN_H - y - PAD - 8
+        Text(self.canvas, (PAD, y), text="结果", fontsize=_s(11), weight="bold")
+        y += _s(20)
+        result_h = WIN_H - y - PAD - _s(8)
         geo_result = (PAD, y, WIN_W - PAD * 2, result_h)
         self.result_box = self._make_text(*geo_result)
         self.result_box.insert("1.0", "(结果将显示在此处)")
@@ -199,8 +254,8 @@ class App:
 
         # —— 保存按钮(右下) ——
         self.save_btn = Button(
-            self.canvas, (WIN_W - 130 - PAD, WIN_H - 36),
-            (130, 28), text="另存为…", fontsize=10,
+            self.canvas, (WIN_W - _s(130) - PAD, WIN_H - _s(36)),
+            (_s(130), _s(28)), text="另存为…", fontsize=_s(10),
             command=self._save_result)
         self.save_btn.disable()
 
@@ -210,9 +265,9 @@ class App:
     def _make_text(self, x: int, y: int, w: int, h: int) -> tk.Text:
         """创建一个跟随主题的多行 tkinter.Text。"""
         t = tk.Text(self.canvas, width=1, height=1, wrap="word",
-                    relief="flat", bd=0, padx=8, pady=6,
+                    relief="flat", bd=0, padx=_s(8), pady=_s(6),
                     highlightthickness=1, highlightbackground="#CCCCCC",
-                    font=("Microsoft YaHei UI", 10))
+                    font=("Microsoft YaHei UI", _s(10)))
         t.place(x=x, y=y, width=w, height=h)
         self._tk_texts.append((t, (x, y, w, h)))
         self._sync_text_theme()
@@ -231,6 +286,18 @@ class App:
 
         def _vis(widget, show: bool):
             widget.forget(not show)
+            # maliang 的 forget 偶尔无法隐藏 placeholder 等 canvas item,
+            # 强制设置 item state 确保彻底显隐
+            state = "normal" if show else "hidden"
+            master = getattr(widget, "master", None)
+            if master is None:
+                return
+            for element in getattr(widget, "elements", ()):
+                for item in getattr(element, "items", ()):
+                    try:
+                        master.itemconfigure(item, state=state)
+                    except Exception:  # noqa: BLE001
+                        pass
 
         def _vis_tk(idx: int, show: bool):
             """idx: 0=lyrics, 1=req, 2=result"""

@@ -47,6 +47,18 @@ def note_name_to_midi_number(note_name: str) -> int:
 
     octave = int(note_name[len(pitch):])
 
+    # 规范化等价音名,避免 B#、Cb 等特殊写法导致 KeyError。
+    if pitch == 'B#':
+        pitch = 'C'
+        octave += 1
+    elif pitch == 'Cb':
+        pitch = 'B'
+        octave -= 1
+    elif pitch == 'E#':
+        pitch = 'F'
+    elif pitch == 'Fb':
+        pitch = 'E'
+
     return (octave + 1) * 12 + NOTES_MAP[pitch]
 
 

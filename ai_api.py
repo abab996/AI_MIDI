@@ -11,12 +11,6 @@ import openai
 
 import config
 
-# ===== 客户端 =====
-client = OpenAI(
-    api_key=config.require_api_key(),
-    base_url=config.BASE_URL,
-)
-
 # ===== 共享 system prompt =====
 # 把模型设定为乐理专家,并定义 note_table 文本格式。
 SYSTEM_PROMPT: str = (
@@ -37,24 +31,68 @@ NOTE_TABLE_ONLY_SUFFIX: str = (
 )
 
 
-def _chat(user_content: str) -> str:
+def get_client(api_key: str | None = None, base_url: str | None = None) -> OpenAI:
+    """创建并返回 OpenAI 客户端。
+
+    参数为空时使用 config 中的默认值,便于在 Web UI 等场景下动态切换。
+    """
+    return OpenAI(
+        api_key=api_key or config.require_api_key(),
+        base_url=base_url or config.BASE_URL,
+    )
+
+
+def _chat(
+    user_content: str,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    max_completion_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+    thinking_enabled: bool = True,
+) -> str:
     """统一调用 DeepSeek。
 
     所有公开功能函数都通过本函数与模型通信,
     在此集中处理 reasoning/thinking 参数与异常。
     失败时打印友好中文错误并返回空字符串,而非让程序崩溃。
+
+    参数说明:
+    - api_key / base_url: 为空时使用 config 默认值
+    - model: 为空时使用 config.MODEL
+    - max_tokens: 对应 API 的 max_tokens(上下文总长度)
+    - max_completion_tokens: 对应 API 的 max_completion_tokens(最大输出长度)
+    - reasoning_effort: "low" / "medium" / "max"
+    - thinking_enabled: 是否启用 thinking 模式
     """
+    client = get_client(api_key, base_url)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+    extra_body: dict | None = None
+    if thinking_enabled:
+        extra_body = {"thinking": {"type": "enabled"}}
+
+    kwargs: dict = {
+        "model": model or config.MODEL,
+        "messages": messages,
+        "stream": False,
+    }
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if max_completion_tokens is not None:
+        kwargs["max_completion_tokens"] = max_completion_tokens
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
+
     try:
-        response = client.chat.completions.create(
-            model=config.MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            stream=False,
-            reasoning_effort="max",
-            extra_body={"thinking": {"type": "enabled"}},
-        )
+        response = client.chat.completions.create(**kwargs)
     except openai.APIError as e:
         print(f"调用 AI API 时发生错误(APIError):{e}")
         return ""
@@ -67,7 +105,13 @@ def _chat(user_content: str) -> str:
     return result
 
 
-def add_chord(note_table, bpm, time_signature, requirements) -> str:
+def add_chord(
+    note_table,
+    bpm,
+    time_signature,
+    requirements,
+    **kwargs,
+) -> str:
     """配和弦:给一段旋律配上和弦,返回 note_table 格式字符串。"""
     print("正在调用AI API进行配和弦...")
     user_content = (
@@ -76,11 +120,18 @@ def add_chord(note_table, bpm, time_signature, requirements) -> str:
         f"注意最终回答内只能包含\"note_table\"格式数据，禁止出现任何额外内容或不符合格式的内容"
         f"{NOTE_TABLE_ONLY_SUFFIX}。有如下要求：{requirements}"
     )
-    return _chat(user_content)
+    return _chat(user_content, **kwargs)
 
 
-def translate_lyrics(note_table, lyrics, bpm, time_signature,
-                     original_language, target_language) -> str:
+def translate_lyrics(
+    note_table,
+    lyrics,
+    bpm,
+    time_signature,
+    original_language,
+    target_language,
+    **kwargs,
+) -> str:
     """翻译歌词:把原语言歌词翻译成目标语言并贴合人声旋律。"""
     print("正在翻译歌词...")
     user_content = (
@@ -92,10 +143,17 @@ def translate_lyrics(note_table, lyrics, bpm, time_signature,
         f"（如果翻译的目标语言是日语，请在给出的翻译歌词后面列出其对应的平假名）。"
         f"有如下要求："
     )
-    return _chat(user_content)
+    return _chat(user_content, **kwargs)
 
 
-def design_melisma(note_table, lyrics, bpm, time_signature, requirements) -> str:
+def design_melisma(
+    note_table,
+    lyrics,
+    bpm,
+    time_signature,
+    requirements,
+    **kwargs,
+) -> str:
     """设计转音:为旋律生成装饰性的转音/花腔,返回 note_table 格式字符串。"""
     print("正在调用AI API设计转音...")
     user_content = (
@@ -103,11 +161,18 @@ def design_melisma(note_table, lyrics, bpm, time_signature, requirements) -> str
         f"你现在需要帮我设计转音"
         f"{NOTE_TABLE_ONLY_SUFFIX}。有如下要求：{requirements}"
     )
-    return _chat(user_content)
+    return _chat(user_content, **kwargs)
 
 
-def other_requirements(note_table, lyrics, bpm, time_signature,
-                       requirements, note_output) -> str:
+def other_requirements(
+    note_table,
+    lyrics,
+    bpm,
+    time_signature,
+    requirements,
+    note_output,
+    **kwargs,
+) -> str:
     """其他要求:自由任务。note_output 决定输出 note_table(MIDI)还是纯文本回答。"""
     print("AI正在调用中，请稍候...")
     base = (
@@ -118,10 +183,10 @@ def other_requirements(note_table, lyrics, bpm, time_signature,
         user_content = (
             f"{base}但是你现在需要输出音符文件，请根据以下要求完成任务：{requirements}。"
             f"请在最终回复中严格按照\"note_table\"格式输出音符数据"
-            f"{NOTE_TABLE_SUFFIX}。"
+            f"{NOTE_TABLE_ONLY_SUFFIX}。"
         )
     else:
         user_content = (
             f"{base}但是你现在不用输出音符文件，请根据以下要求完成任务：{requirements}，并给出回答"
         )
-    return _chat(user_content)
+    return _chat(user_content, **kwargs)

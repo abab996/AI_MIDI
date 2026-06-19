@@ -7,7 +7,15 @@ __pycache__/
 .venv/
 venv/
 
-# 敏感配置(包含 API key)
+.venv_build/
+venv_build/
+
+# PyInstaller 打包产物
+build/
+dist/
+*.spec
+
+## 敏感配置(包含 API key)
 .env
 
 # 运行时产物

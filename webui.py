@@ -309,7 +309,10 @@ def _ensure_icon_file(image_path: Path, icon_path: Path | None = None) -> Path:
 def _set_native_window_icon(window_title: str, image_path: Path, timeout: float = 5.0) -> None:
     """给 Windows 下的 pywebview 主窗口设置图标。"""
     _set_current_process_app_id()
-    icon_path = _ensure_icon_file(image_path, APP_ICON_FILE)
+    # 窗口图标单独生成到 window_icon.ico,避免覆盖 APP_ICON_FILE,
+    # 也避免启动图修改影响任务栏/标题栏图标。
+    window_icon_path = config.PROJECT_ROOT / "window_icon.ico"
+    icon_path = _ensure_icon_file(image_path, window_icon_path)
     deadline = time.time() + timeout
 
     # WinForms 的 Form.Icon 会同步影响标题栏和任务栏图标。

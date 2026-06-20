@@ -24,9 +24,14 @@ if sys.platform == "win32":
         if _stream is not None and hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8")
 
+from PIL import Image, ImageTk
 import webview
 
 import webui
+
+
+# 启动图单独使用 Go.png,不影响 pywebview 窗口图标(仍用 webui.SPLASH_IMAGE / app_icon.ico)
+SPLASH_IMAGE = Path(__file__).with_name("Go.png")
 
 
 GWL_EXSTYLE = -20
@@ -132,9 +137,11 @@ def _show_splash(image_path: Path) -> tuple[tk.Tk, tk.Toplevel]:
     if not image_path.exists():
         raise FileNotFoundError(f"找不到启动图: {image_path}")
 
-    _get_dpi_scale()
+    dpi_scale = _get_dpi_scale()
     work_w, work_h = _get_work_area()
-    target_max = max(96, min(work_w, work_h) // 3)
+    # 启动图最大边占屏幕短边的 3/4,按 DPI 缩放换算为物理像素。
+    logical_min = min(work_w, work_h) / dpi_scale
+    target_max = max(96, int(logical_min * 3 / 4 * dpi_scale))
 
     root = tk.Tk()
     root.withdraw()
@@ -143,19 +150,29 @@ def _show_splash(image_path: Path) -> tuple[tk.Tk, tk.Toplevel]:
     splash.overrideredirect(True)
     splash.attributes("-topmost", True)
     splash.attributes("-alpha", 0.0)
-    splash.configure(bg="black")
+    # 用洋红色作为透明色,让 PNG 透明区域直接看到桌面。
+    transparent_color = "magenta"
+    splash.configure(bg=transparent_color)
+    splash.attributes("-transparentcolor", transparent_color)
 
-    photo = tk.PhotoImage(file=str(image_path))
-    shrink = max(
-        1,
-        (max(photo.width(), target_max) + target_max - 1) // target_max,
-        (max(photo.height(), target_max) + target_max - 1) // target_max,
-    )
-    if shrink > 1:
-        photo = photo.subsample(shrink, shrink)
+    # 使用 PIL 做任意比例缩放,比 tkinter 的整数 subsample 更精确。
+    # 显式转成 RGBA,防止 PNG 透明通道在缩放后变成白色。
+    pil_image = Image.open(image_path).convert("RGBA")
+    orig_w, orig_h = pil_image.size
+    scale = min(target_max / orig_w, target_max / orig_h, 1.0)
+    new_w = max(1, int(orig_w * scale))
+    new_h = max(1, int(orig_h * scale))
+    pil_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
+    photo = ImageTk.PhotoImage(pil_image)
     splash._photo = photo  # type: ignore[attr-defined]
 
-    label = tk.Label(splash, image=photo, borderwidth=0, highlightthickness=0)
+    label = tk.Label(
+        splash,
+        image=photo,
+        borderwidth=0,
+        highlightthickness=0,
+        bg=transparent_color,
+    )
     label.pack()
 
     splash.update_idletasks()
@@ -252,7 +269,7 @@ def main() -> None:
     app = webui.build_ui()
     state = LaunchState()
 
-    root, splash = _show_splash(webui.SPLASH_IMAGE)
+    root, splash = _show_splash(SPLASH_IMAGE)
 
     worker = threading.Thread(target=_launch_backend, args=(app, state), daemon=True)
     worker.start()

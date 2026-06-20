@@ -1,8 +1,8 @@
 # AI_MIDI
 
-基于 **Gradio + pywebview** 的桌面应用，把 **MIDI 文件**和 **LLM（DeepSeek）**连接起来，用于 AI 辅助的乐理与编曲任务。
+基于 **Gradio + pywebview** 的桌面应用，把 **MIDI 文件**和 **兼容 OpenAI API 的 LLM**连接起来，用于 AI 辅助的乐理与编曲任务。
 
-核心流程：`MIDI` → 解析成自定义的 `note_table` 文本格式 → 发送给 DeepSeek（扮演乐理专家）→ 将 AI 回复的文本转回 `MIDI`（或纯文本结果）。
+核心流程：`MIDI` → 解析成自定义的 `note_table` 文本格式 → 发送给 LLM（扮演乐理专家）→ 将 AI 回复的文本转回 `MIDI`（或纯文本结果）。
 
 ## 功能
 
@@ -52,9 +52,9 @@ python webui.py --browser
 
 **不要把 key 写进代码。** 首次运行时，在程序的“设置”标签页填写：
 
-- **Base URL**：默认 `https://api.deepseek.com`
-- **使用模型**：默认 `deepseek-v4-pro`
-- **API Key**：你的 DeepSeek key
+- **Base URL**：默认 `https://api.deepseek.com`，可替换为其他兼容 OpenAI API 的服务地址
+- **使用模型**：默认 `deepseek-v4-pro`，可替换为其他模型名称
+- **API Key**：你的 API key
 - **思考长度 / 上下文长度 / 最大输出长度**：按需调整
 
 填写后点击“保存配置”即可生效，下次启动自动读取。
@@ -64,6 +64,8 @@ python webui.py --browser
 > set DEEPSEEK_API_KEY=sk-你的key        # Windows cmd
 > # export DEEPSEEK_API_KEY=sk-你的key   # macOS / Linux
 > ```
+> 
+> 环境变量名保持为 `DEEPSEEK_API_KEY` 以兼容历史配置，但它实际上可对应任意兼容 OpenAI API 的服务。
 
 ## 打包成可执行文件
 
@@ -123,7 +125,7 @@ AI_MIDI/
 配置好 key 后，可先验证导入链是否正常：
 
 ```bash
-python -c "import config, get, out, ai_api, webui, run; print('OK')"
+python -c "import config, get, out, ai_api, webui; print('OK')"
 ```
 
 （该命令只导入模块，不触发 API 调用。）

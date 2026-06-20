@@ -498,7 +498,7 @@ def _run_task(
     except Exception as e:  # noqa: BLE001
         return result, None, _elapsed(f"✓ AI 返回结果,但保存失败: {e}")
 
-    return result, download_path, _elapsed(status_msg)
+    return result, [download_path] if download_path else None, _elapsed(status_msg)
 
 
 def build_ui() -> gr.Blocks:
@@ -759,13 +759,19 @@ def main() -> None:
     _set_current_process_app_id()
     app = build_ui()
 
+    # 允许 Gradio 的 /file= 路由访问输出目录,以便自定义下载链接可用。
+    allowed_paths = [str(config.OUTPUT_DIR), str(config.PROJECT_ROOT)]
+
     if args.browser:
-        app.launch(share=False, inbrowser=True)
+        app.launch(share=False, inbrowser=True, allowed_paths=allowed_paths)
         return
 
     # 原生窗口模式:后台启动 Gradio,再用 pywebview 承载页面
-    app.launch(prevent_thread_lock=True)
+    app.launch(prevent_thread_lock=True, allowed_paths=allowed_paths)
     import webview
+
+    # 允许 pywebview 内触发文件下载(如 Gradio 的 File 组件)。
+    webview.settings["ALLOW_DOWNLOADS"] = True
 
     work_w, work_h, dpi_scale = _get_logical_work_area()
 

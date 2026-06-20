@@ -27,6 +27,7 @@ if sys.platform == "win32":
 from PIL import Image
 import webview
 
+import config
 import webui
 
 
@@ -346,6 +347,7 @@ def _launch_backend(app, state: LaunchState) -> None:
             inbrowser=False,
             prevent_thread_lock=True,
             server_name="127.0.0.1",
+            allowed_paths=[str(config.OUTPUT_DIR), str(config.PROJECT_ROOT)],
         )
         if not _wait_for_local_url(local_url):
             raise RuntimeError(f"本地服务未在预期时间内就绪: {local_url}")
@@ -359,6 +361,9 @@ def _launch_backend(app, state: LaunchState) -> None:
 
 def _open_native_window(local_url: str, scale: float) -> None:
     """打开 pywebview 原生主窗口。"""
+    # 允许 pywebview 内触发文件下载(如 Gradio 的 File 组件)。
+    webview.settings["ALLOW_DOWNLOADS"] = True
+
     work_w, work_h, dpi_scale = webui._get_logical_work_area()
 
     ratio = max(0.1, min(1.0, scale))

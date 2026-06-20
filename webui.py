@@ -5,6 +5,7 @@
 用法:
     python webui.py
 """
+import json
 import os
 import shutil
 import struct
@@ -47,6 +48,48 @@ _FUNC_FIELDS = {
     FUNC_MELISMA: {"lyrics": True, "lang": False, "note_sw": False, "req": True},
     FUNC_OTHER: {"lyrics": True, "lang": False, "note_sw": True, "req": True},
 }
+
+# ===== 用户设置持久化 =====
+SETTINGS_FILE: Path = config.PROJECT_ROOT / "settings.json"
+
+
+def _load_settings() -> dict:
+    """从本地 JSON 文件加载用户设置，失败时返回空字典。"""
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_settings(
+    api_key: str,
+    base_url: str,
+    model: str,
+    max_tokens: int | float | None,
+    max_completion_tokens: int | float | None,
+    reasoning_effort: str,
+    thinking_enabled: bool,
+) -> str:
+    """保存用户设置到本地 JSON 文件。"""
+    settings = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+        "max_tokens": int(max_tokens) if max_tokens else None,
+        "max_completion_tokens": int(max_completion_tokens) if max_completion_tokens else None,
+        "reasoning_effort": reasoning_effort,
+        "thinking_enabled": thinking_enabled,
+    }
+    try:
+        SETTINGS_FILE.write_text(
+            json.dumps(settings, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return "✓ 配置已保存"
+    except Exception as e:  # noqa: BLE001
+        return f"✗ 保存失败: {e}"
 
 
 def _note_to_text(note_table: list[str]) -> str:
@@ -386,9 +429,9 @@ def _run_task(
         api_kwargs["base_url"] = base_url.strip()
     if model.strip():
         api_kwargs["model"] = model.strip()
-    if max_tokens is not None:
+    if max_tokens:
         api_kwargs["max_tokens"] = int(max_tokens)
-    if max_completion_tokens is not None:
+    if max_completion_tokens:
         api_kwargs["max_completion_tokens"] = int(max_completion_tokens)
     if reasoning_effort.strip():
         api_kwargs["reasoning_effort"] = reasoning_effort.strip()
@@ -457,6 +500,9 @@ def _run_task(
 
 def build_ui() -> gr.Blocks:
     """构建并返回 Gradio 应用。"""
+    settings = _load_settings()
+    saved_model = settings.get("model", config.MODEL)
+
     with gr.Blocks(title="AI_MIDI · AI 编曲助手") as app:
         gr.Markdown("# AI_MIDI · AI 编曲助手")
         gr.Markdown("上传 MIDI → 解析 → 选择任务 → AI 处理 → 下载结果")
@@ -554,7 +600,7 @@ def build_ui() -> gr.Blocks:
                         label="API Key",
                         type="password",
                         placeholder="sk-...",
-                        value=os.environ.get("DEEPSEEK_API_KEY", ""),
+                        value=settings.get("api_key", os.environ.get("DEEPSEEK_API_KEY", "")),
                         scale=4,
                     )
                     show_key_sw = gr.Checkbox(
@@ -565,15 +611,15 @@ def build_ui() -> gr.Blocks:
 
                 base_url_input = gr.Textbox(
                     label="Base URL",
-                    value=config.BASE_URL,
+                    value=settings.get("base_url", config.BASE_URL),
                 )
 
                 # 模型:下拉选择 + 允许手动输入 + 刷新按钮
                 with gr.Row():
                     model_input = gr.Dropdown(
                         label="模型",
-                        choices=[config.MODEL],
-                        value=config.MODEL,
+                        choices=[saved_model],
+                        value=saved_model,
                         allow_custom_value=True,
                         scale=4,
                     )
@@ -588,24 +634,31 @@ def build_ui() -> gr.Blocks:
                 with gr.Row():
                     max_tokens_input = gr.Number(
                         label="最大上下文 (max_tokens)",
-                        value=None,
+                        value=settings.get("max_tokens"),
                         precision=0,
                         info="留空则使用 API 默认值",
                     )
                     max_completion_tokens_input = gr.Number(
                         label="最大输出长度 (max_completion_tokens)",
-                        value=None,
+                        value=settings.get("max_completion_tokens"),
                         precision=0,
                         info="留空则使用 API 默认值",
                     )
                 reasoning_effort_input = gr.Radio(
                     label="推理努力程度 (reasoning_effort)",
                     choices=["low", "medium", "max"],
-                    value="max",
+                    value=settings.get("reasoning_effort", "max"),
                 )
                 thinking_enabled_input = gr.Checkbox(
                     label="启用 thinking 模式",
-                    value=True,
+                    value=settings.get("thinking_enabled", True),
+                )
+
+                save_cfg_btn = gr.Button("💾 保存配置", variant="primary")
+                save_cfg_status = gr.Textbox(
+                    label="保存状态",
+                    interactive=False,
+                    value="",
                 )
 
         # 事件绑定
@@ -640,6 +693,20 @@ def build_ui() -> gr.Blocks:
             fn=_refresh_models,
             inputs=[api_key_input, base_url_input],
             outputs=[model_input, model_status],
+        )
+
+        save_cfg_btn.click(
+            fn=_save_settings,
+            inputs=[
+                api_key_input,
+                base_url_input,
+                model_input,
+                max_tokens_input,
+                max_completion_tokens_input,
+                reasoning_effort_input,
+                thinking_enabled_input,
+            ],
+            outputs=save_cfg_status,
         )
 
         start_btn.click(

@@ -17,6 +17,7 @@ dist/
 
 ## 敏感配置(包含 API key)
 .env
+settings.json
 
 # 运行时产物
 output/

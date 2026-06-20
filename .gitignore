@@ -19,6 +19,9 @@ dist/
 .env
 settings.json
 
+# 程序运行时自动生成的窗口图标
+window_icon.ico
+
 # 运行时产物
 output/
 doing/

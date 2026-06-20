@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.wintypes
+import sys
 import threading
 import time
 import tkinter as tk
@@ -16,6 +17,12 @@ import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox
+
+# Windows 打包后标准输出可能使用 GBK,提前设为 UTF-8 避免 emoji/中文打印崩溃。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        if _stream is not None and hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8")
 
 import webview
 

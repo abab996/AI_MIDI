@@ -162,7 +162,7 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
 
     # 保存文件。
     mid.save(str(output_midi_path))
-    print(f"✅ 成功生成 MIDI 文件：{output_midi_path}")
+    print(f"成功生成 MIDI 文件：{output_midi_path}")
 
 
 def out_note(note_table, bpm, output_path=None):

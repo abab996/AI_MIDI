@@ -24,7 +24,7 @@ if sys.platform == "win32":
         if _stream is not None and hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8")
 
-from PIL import Image, ImageTk
+from PIL import Image
 import webview
 
 import webui
@@ -36,11 +36,120 @@ SPLASH_IMAGE = Path(__file__).with_name("Go.png")
 
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_LAYERED = 0x00080000
 WS_EX_APPWINDOW = 0x00040000
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_FRAMECHANGED = 0x0020
+
+ULW_ALPHA = 0x00000002
+AC_SRC_OVER = 0x00
+AC_SRC_ALPHA = 0x01
+DIB_RGB_COLORS = 0
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", ctypes.wintypes.DWORD),
+        ("biWidth", ctypes.wintypes.LONG),
+        ("biHeight", ctypes.wintypes.LONG),
+        ("biPlanes", ctypes.wintypes.WORD),
+        ("biBitCount", ctypes.wintypes.WORD),
+        ("biCompression", ctypes.wintypes.DWORD),
+        ("biSizeImage", ctypes.wintypes.DWORD),
+        ("biXPelsPerMeter", ctypes.wintypes.LONG),
+        ("biYPelsPerMeter", ctypes.wintypes.LONG),
+        ("biClrUsed", ctypes.wintypes.DWORD),
+        ("biClrImportant", ctypes.wintypes.DWORD),
+    ]
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", _BITMAPINFOHEADER)]
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.wintypes.LONG), ("y", ctypes.wintypes.LONG)]
+
+
+class _BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [
+        ("BlendOp", ctypes.wintypes.BYTE),
+        ("BlendFlags", ctypes.wintypes.BYTE),
+        ("SourceConstantAlpha", ctypes.wintypes.BYTE),
+        ("AlphaFormat", ctypes.wintypes.BYTE),
+    ]
+
+
+_user32 = ctypes.windll.user32
+_gdi32 = ctypes.windll.gdi32
+
+GetWindowLongW = _user32.GetWindowLongW
+GetWindowLongW.restype = ctypes.wintypes.LONG
+SetWindowLongW = _user32.SetWindowLongW
+SetWindowLongW.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.INT, ctypes.wintypes.LONG]
+SetWindowLongW.restype = ctypes.wintypes.LONG
+SetWindowPos = _user32.SetWindowPos
+SetWindowPos.argtypes = [
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.INT,
+    ctypes.wintypes.UINT,
+]
+SetWindowPos.restype = ctypes.wintypes.BOOL
+
+UpdateLayeredWindow = _user32.UpdateLayeredWindow
+UpdateLayeredWindow.argtypes = [
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.HDC,
+    ctypes.POINTER(_POINT),
+    ctypes.POINTER(_POINT),
+    ctypes.wintypes.HDC,
+    ctypes.POINTER(_POINT),
+    ctypes.wintypes.COLORREF,
+    ctypes.POINTER(_BLENDFUNCTION),
+    ctypes.wintypes.DWORD,
+]
+UpdateLayeredWindow.restype = ctypes.wintypes.BOOL
+
+GetDC = _user32.GetDC
+GetDC.argtypes = [ctypes.wintypes.HWND]
+GetDC.restype = ctypes.wintypes.HDC
+ReleaseDC = _user32.ReleaseDC
+ReleaseDC.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.HDC]
+ReleaseDC.restype = ctypes.wintypes.INT
+
+CreateCompatibleDC = _gdi32.CreateCompatibleDC
+CreateCompatibleDC.argtypes = [ctypes.wintypes.HDC]
+CreateCompatibleDC.restype = ctypes.wintypes.HDC
+DeleteDC = _gdi32.DeleteDC
+DeleteDC.argtypes = [ctypes.wintypes.HDC]
+DeleteDC.restype = ctypes.wintypes.BOOL
+
+CreateDIBSection = _gdi32.CreateDIBSection
+CreateDIBSection.argtypes = [
+    ctypes.wintypes.HDC,
+    ctypes.POINTER(_BITMAPINFO),
+    ctypes.wintypes.UINT,
+    ctypes.POINTER(ctypes.c_void_p),
+    ctypes.wintypes.HANDLE,
+    ctypes.wintypes.DWORD,
+]
+CreateDIBSection.restype = ctypes.wintypes.HBITMAP
+
+SelectObject = _gdi32.SelectObject
+SelectObject.argtypes = [ctypes.wintypes.HDC, ctypes.wintypes.HGDIOBJ]
+SelectObject.restype = ctypes.wintypes.HGDIOBJ
+DeleteObject = _gdi32.DeleteObject
+DeleteObject.argtypes = [ctypes.wintypes.HGDIOBJ]
+DeleteObject.restype = ctypes.wintypes.BOOL
+_memmove = ctypes.memmove
+_memmove.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+_memmove.restype = ctypes.c_void_p
 
 
 @dataclass
@@ -89,11 +198,11 @@ def _wait_for_local_url(url: str, timeout: float = 20.0) -> bool:
 
 
 def _set_toolwindow(hwnd: int) -> None:
-    """将窗口设为 toolwindow,避免出现在任务栏。"""
-    style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    style = (style | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
-    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
-    ctypes.windll.user32.SetWindowPos(
+    """将窗口设为 toolwindow 并启用分层窗口,避免出现在任务栏。"""
+    style = GetWindowLongW(hwnd, GWL_EXSTYLE)
+    style = (style | WS_EX_TOOLWINDOW | WS_EX_LAYERED) & ~WS_EX_APPWINDOW
+    SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+    SetWindowPos(
         hwnd,
         0,
         0,
@@ -102,6 +211,53 @@ def _set_toolwindow(hwnd: int) -> None:
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
     )
+
+
+def _apply_layered_bitmap(hwnd: int, pil_image: Image.Image, opacity: int) -> None:
+    """使用 UpdateLayeredWindow 将 RGBA 图片绘制到分层窗口,支持 per-pixel alpha。"""
+    width, height = pil_image.size
+
+    # Windows DIB 需要 BGRA 格式且自底向上排列。
+    r, g, b, a = pil_image.split()
+    bgra = Image.merge("RGBA", (b, g, r, a))
+    flipped = bgra.transpose(Image.FLIP_TOP_BOTTOM)
+    img_bytes = flipped.tobytes()
+
+    hdc_screen = GetDC(None)
+    hdc_mem = CreateCompatibleDC(hdc_screen)
+
+    bmi = _BITMAPINFO()
+    bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+    bmi.bmiHeader.biWidth = width
+    bmi.bmiHeader.biHeight = height
+    bmi.bmiHeader.biPlanes = 1
+    bmi.bmiHeader.biBitCount = 32
+    bmi.bmiHeader.biCompression = 0
+    bmi.bmiHeader.biSizeImage = width * height * 4
+
+    bits = ctypes.c_void_p()
+    hbmp = CreateDIBSection(hdc_mem, ctypes.byref(bmi), DIB_RGB_COLORS, ctypes.byref(bits), None, 0)
+    _memmove(bits, img_bytes, len(img_bytes))
+    old_bmp = SelectObject(hdc_mem, hbmp)
+
+    pt_src = _POINT(0, 0)
+    pt_dst = _POINT(0, 0)
+    size = _POINT(width, height)
+    blend = _BLENDFUNCTION()
+    blend.BlendOp = AC_SRC_OVER
+    blend.BlendFlags = 0
+    blend.SourceConstantAlpha = max(0, min(255, opacity))
+    blend.AlphaFormat = AC_SRC_ALPHA
+
+    UpdateLayeredWindow(
+        hwnd, hdc_screen, ctypes.byref(pt_dst), ctypes.byref(size),
+        hdc_mem, ctypes.byref(pt_src), 0, ctypes.byref(blend), ULW_ALPHA,
+    )
+
+    SelectObject(hdc_mem, old_bmp)
+    DeleteObject(hbmp)
+    DeleteDC(hdc_mem)
+    ReleaseDC(None, hdc_screen)
 
 
 def _center_window(window: tk.Toplevel, width: int, height: int) -> None:
@@ -113,27 +269,8 @@ def _center_window(window: tk.Toplevel, width: int, height: int) -> None:
     window.geometry(f"{width}x{height}+{x}+{y}")
 
 
-def _fade(window: tk.Toplevel, start: float, end: float, step: float, delay_ms: int) -> None:
-    """对启动图窗口执行淡入或淡出。"""
-    alpha = start
-    direction = 1 if end >= start else -1
-    while (direction > 0 and alpha <= end) or (direction < 0 and alpha >= end):
-        try:
-            window.attributes("-alpha", max(0.0, min(1.0, alpha)))
-            window.update_idletasks()
-            window.update()
-        except tk.TclError:
-            return
-        alpha += step * direction
-        time.sleep(delay_ms / 1000)
-    try:
-        window.attributes("-alpha", end)
-    except tk.TclError:
-        pass
-
-
-def _show_splash(image_path: Path) -> tuple[tk.Tk, tk.Toplevel]:
-    """创建只显示图片的无边框启动图。"""
+def _show_splash(image_path: Path) -> tuple[tk.Tk, tk.Toplevel, Image.Image]:
+    """创建只显示图片的无边框启动图,支持 per-pixel alpha 透明。"""
     if not image_path.exists():
         raise FileNotFoundError(f"找不到启动图: {image_path}")
 
@@ -146,41 +283,59 @@ def _show_splash(image_path: Path) -> tuple[tk.Tk, tk.Toplevel]:
     root = tk.Tk()
     root.withdraw()
 
+    # 创建窗口并立即 withdraw() 隐藏,防止 1x1 白窗口闪烁。
     splash = tk.Toplevel(root)
     splash.overrideredirect(True)
+    splash.geometry("1x1")
     splash.attributes("-topmost", True)
-    splash.attributes("-alpha", 0.0)
-    # 用洋红色作为透明色,让 PNG 透明区域直接看到桌面。
-    transparent_color = "magenta"
-    splash.configure(bg=transparent_color)
-    splash.attributes("-transparentcolor", transparent_color)
+    splash.withdraw()  # 隐藏,避免 1x1 白窗口闪烁
+    splash.update_idletasks()
 
-    # 使用 PIL 做任意比例缩放,比 tkinter 的整数 subsample 更精确。
-    # 显式转成 RGBA,防止 PNG 透明通道在缩放后变成白色。
+    # 使用 PIL 缩放到目标尺寸,保持 RGBA 以便 per-pixel alpha。
     pil_image = Image.open(image_path).convert("RGBA")
     orig_w, orig_h = pil_image.size
     scale = min(target_max / orig_w, target_max / orig_h, 1.0)
-    new_w = max(1, int(orig_w * scale))
-    new_h = max(1, int(orig_h * scale))
-    pil_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
-    photo = ImageTk.PhotoImage(pil_image)
-    splash._photo = photo  # type: ignore[attr-defined]
-
-    label = tk.Label(
-        splash,
-        image=photo,
-        borderwidth=0,
-        highlightthickness=0,
-        bg=transparent_color,
+    pil_image = pil_image.resize(
+        (max(1, int(orig_w * scale)), max(1, int(orig_h * scale))),
+        Image.LANCZOS,
     )
-    label.pack()
 
-    splash.update_idletasks()
-    _center_window(splash, photo.width(), photo.height())
+    # 设为正确尺寸,建立分层窗口。
+    _center_window(splash, pil_image.width, pil_image.height)
     splash.update_idletasks()
     _set_toolwindow(splash.winfo_id())
+    # 初始化分层窗口内容为全透明,deiconify 时窗口完全不可见。
+    _apply_layered_bitmap(splash.winfo_id(), pil_image, 0)
 
-    return root, splash
+    return root, splash, pil_image
+
+
+def _fade_layered(
+    window: tk.Toplevel,
+    pil_image: Image.Image,
+    start: int,
+    end: int,
+    step: int,
+    delay_ms: int,
+) -> None:
+    """对分层启动图窗口执行淡入或淡出（0-255）。"""
+    # 首次调用时 deiconify,确保窗口真正出现后才开始绘制,避免闪烁。
+    window.deiconify()
+    alpha = start
+    direction = 1 if end >= start else -1
+    while (direction > 0 and alpha <= end) or (direction < 0 and alpha >= end):
+        try:
+            _apply_layered_bitmap(window.winfo_id(), pil_image, alpha)
+            window.update_idletasks()
+            window.update()
+        except tk.TclError:
+            return
+        alpha += step * direction
+        time.sleep(delay_ms / 1000)
+    try:
+        _apply_layered_bitmap(window.winfo_id(), pil_image, end)
+    except tk.TclError:
+        pass
 
 
 def _launch_backend(app, state: LaunchState) -> None:
@@ -230,22 +385,24 @@ def _open_native_window(local_url: str, scale: float) -> None:
     )
 
 
-def _wait_with_splash(state: LaunchState, splash: tk.Toplevel, root: tk.Tk) -> None:
+def _wait_with_splash(
+    state: LaunchState, splash: tk.Toplevel, root: tk.Tk, pil_image: Image.Image
+) -> None:
     """等待后台启动完成。"""
     def poll() -> None:
         if state.ready:
-            _fade(splash, start=1.0, end=0.0, step=0.08, delay_ms=16)
+            _fade_layered(splash, pil_image, start=255, end=0, step=20, delay_ms=16)
             root.quit()
             return
 
         if state.failed:
-            _fade(splash, start=1.0, end=0.0, step=0.08, delay_ms=16)
+            _fade_layered(splash, pil_image, start=255, end=0, step=20, delay_ms=16)
             root.quit()
             return
 
         root.after(120, poll)
 
-    _fade(splash, start=0.0, end=1.0, step=0.08, delay_ms=16)
+    _fade_layered(splash, pil_image, start=0, end=255, step=20, delay_ms=16)
     root.after(120, poll)
     root.mainloop()
 
@@ -269,13 +426,13 @@ def main() -> None:
     app = webui.build_ui()
     state = LaunchState()
 
-    root, splash = _show_splash(SPLASH_IMAGE)
+    root, splash, pil_image = _show_splash(SPLASH_IMAGE)
 
     worker = threading.Thread(target=_launch_backend, args=(app, state), daemon=True)
     worker.start()
 
     try:
-        _wait_with_splash(state, splash, root)
+        _wait_with_splash(state, splash, root, pil_image)
     finally:
         try:
             splash.destroy()

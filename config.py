@@ -3,9 +3,8 @@
 所有可配置项(API key、模型、路径、默认参数)统一在此定义,
 其他模块通过 `from config import ...` 引用,避免硬编码散落各处。
 """
+import json
 import logging
-import os
-import sys
 from pathlib import Path
 
 # ===== 路径 =====
@@ -38,18 +37,36 @@ logger = logging.getLogger("ai_midi")
 BASE_URL: str = "https://api.deepseek.com"
 MODEL: str = "deepseek-v4-pro"
 
-DEEPSEEK_API_KEY: str | None = os.environ.get("DEEPSEEK_API_KEY")
+# 用户设置持久化文件(API key、模型、生成参数等统一存此)。
+SETTINGS_FILE: Path = PROJECT_ROOT / "settings.json"
 
 
-def require_api_key() -> str:
-    """返回 API key;若环境变量未配置,打印明确错误并退出。"""
-    if not DEEPSEEK_API_KEY:
-        print("错误:未检测到环境变量 DEEPSEEK_API_KEY。")
-        print("请先设置该环境变量,或在本项目根目录创建 .env 文件:")
-        print("    DEEPSEEK_API_KEY=sk-你的key")
-        print("(可参考 .env.example)")
-        sys.exit(1)
-    return DEEPSEEK_API_KEY
+def load_settings() -> dict:
+    """从 settings.json 加载用户设置;文件不存在或损坏时返回空字典。"""
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        logger.exception("读取设置文件失败")
+        return {}
+
+
+def save_settings(settings: dict) -> None:
+    """把设置写入 settings.json(目录不存在时自动创建)。"""
+    try:
+        SETTINGS_FILE.write_text(
+            json.dumps(settings, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("写入设置文件失败")
+        raise
+
+
+def get_api_key() -> str:
+    """返回 settings.json 中保存的 API key;不存在则返回空字符串。"""
+    return (load_settings().get("api_key") or "").strip()
 
 
 # ===== MIDI 默认参数 =====

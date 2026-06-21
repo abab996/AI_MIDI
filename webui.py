@@ -86,18 +86,10 @@ def _validate_base_url(base_url: str) -> str:
     )
 
 
-# ===== 用户设置持久化 =====
-SETTINGS_FILE: Path = config.PROJECT_ROOT / "settings.json"
-
-
+# ===== 用户设置持久化(委托给 config 统一管理) =====
 def _load_settings() -> dict:
-    """从本地 JSON 文件加载用户设置，失败时返回空字典。"""
-    if not SETTINGS_FILE.exists():
-        return {}
-    try:
-        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return {}
+    """从 settings.json 加载用户设置,失败时返回空字典。"""
+    return config.load_settings()
 
 
 def _save_settings(
@@ -111,6 +103,7 @@ def _save_settings(
 ) -> str:
     """保存用户设置到本地 JSON 文件。"""
     settings = {
+        "api_key": api_key.strip(),
         "base_url": base_url,
         "model": model,
         "max_tokens": int(max_tokens) if max_tokens else None,
@@ -119,10 +112,7 @@ def _save_settings(
         "thinking_enabled": thinking_enabled,
     }
     try:
-        SETTINGS_FILE.write_text(
-            json.dumps(settings, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        config.save_settings(settings)
         return "✓ 配置已保存"
     except Exception:  # noqa: BLE001
         logger.exception("保存设置失败")
@@ -136,11 +126,11 @@ def _note_to_text(note_table: list[str]) -> str:
 
 def _fetch_models(api_key: str, base_url: str) -> tuple[list[str], str]:
     """从 API 服务拉取模型列表,返回 (模型 id 列表, 状态信息)。"""
-    key = api_key.strip() or os.environ.get("DEEPSEEK_API_KEY", "")
+    key = api_key.strip() or config.get_api_key()
     url = base_url.strip() or config.BASE_URL
 
     if not key:
-        return [], "⚠ 请先填写 API Key 或设置环境变量 DEEPSEEK_API_KEY"
+        return [], "⚠ 请先填写并保存 API Key"
 
     try:
         url = _validate_base_url(url)
@@ -465,14 +455,19 @@ def _run_task(
     if func != FUNC_OTHER and not note_table:
         return "", None, _elapsed("⚠ 请先解析 MIDI 文件。")
 
+    # API key:输入框优先,为空时回退到 settings.json 中保存的值
+    effective_api_key = api_key.strip() or config.get_api_key()
+    if not effective_api_key:
+        return "", None, _elapsed("⚠ 请先在设置页填写并保存 API Key。")
+
     bpm = bpm.strip() or str(config.DEFAULT_BPM)
     time_signature = time_signature.strip() or config.DEFAULT_TIME_SIGNATURE
     note_text = _note_to_text(note_table) if note_table else ""
 
     # 组装公共 API 参数,空值不传入,让 ai_api 使用默认值
     api_kwargs: dict = {}
-    if api_key.strip():
-        api_kwargs["api_key"] = api_key.strip()
+    if effective_api_key:
+        api_kwargs["api_key"] = effective_api_key
     if base_url.strip():
         try:
             api_kwargs["base_url"] = _validate_base_url(base_url.strip())
@@ -654,7 +649,7 @@ def build_ui() -> gr.Blocks:
                         label="API Key",
                         type="password",
                         placeholder="sk-...",
-                        value=os.environ.get("DEEPSEEK_API_KEY", ""),
+                        value=settings.get("api_key", ""),
                         scale=4,
                     )
                     show_key_sw = gr.Checkbox(

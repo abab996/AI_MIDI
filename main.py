@@ -30,6 +30,11 @@ def _save_text(filename: str, content: str) -> None:
 
 
 def main() -> None:
+    if not config.get_api_key():
+        print("错误:尚未配置 API Key。")
+        print("请先运行 WebUI (python webui.py) 或 (python run.py),在设置页填写并保存 API Key。")
+        return
+
     # 1. 从 MIDI 文件解析音符数据。
     print("正在解析 MIDI 文件...")
     note_table = get.get_note()

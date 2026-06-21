@@ -38,10 +38,10 @@ NOTE_TABLE_ONLY_SUFFIX: str = (
 def get_client(api_key: str | None = None, base_url: str | None = None) -> OpenAI:
     """创建并返回 OpenAI 客户端。
 
-    参数为空时使用 config 中的默认值,便于在 Web UI 等场景下动态切换。
+    参数为空时从 settings.json 读取,便于在 Web UI 等场景下动态切换。
     """
     return OpenAI(
-        api_key=api_key or config.require_api_key(),
+        api_key=api_key or config.get_api_key(),
         base_url=base_url or config.BASE_URL,
     )
 

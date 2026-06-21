@@ -6,6 +6,7 @@
     python webui.py
 """
 import json
+import logging
 import os
 import shutil
 import struct
@@ -18,6 +19,8 @@ import ai_api
 import config
 import get
 import out
+
+logger = logging.getLogger("ai_midi")
 
 
 WINDOW_TITLE = "AI_MIDI · AI 编曲助手"
@@ -49,6 +52,40 @@ _FUNC_FIELDS = {
     FUNC_OTHER: {"lyrics": True, "lang": False, "note_sw": True, "req": True},
 }
 
+# ===== base_url 安全验证 =====
+# 仅允许向已知可信的 API 服务商发送请求,防止密钥被中间人窃取。
+_ALLOWED_BASE_URL_DOMAINS = {
+    "api.deepseek.com",
+    "api.openai.com",
+    "openai.azure.com",
+    "api.anthropic.com",
+    "api.moonshot.cn",
+    "api.stepfun.com",
+    "api.zhipuai.cn",
+    "qianwen.aliyuncs.com",
+    "dashscope.aliyuncs.com",
+}
+
+
+def _validate_base_url(base_url: str) -> str:
+    """验证 base_url 仅指向允许的域名,返回规范化后的 URL;不安全时抛出 ValueError。"""
+    from urllib.parse import urlparse
+
+    url = base_url.strip()
+    if not url:
+        return config.BASE_URL
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"base_url 协议必须为 http 或 https: {parsed.scheme}")
+    host = parsed.hostname or ""
+    if host in _ALLOWED_BASE_URL_DOMAINS:
+        return f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
+    raise ValueError(
+        f"base_url 域名不在允许列表中: {host}。"
+        f"如需使用其他服务商,请修改 _ALLOWED_BASE_URL_DOMAINS。"
+    )
+
+
 # ===== 用户设置持久化 =====
 SETTINGS_FILE: Path = config.PROJECT_ROOT / "settings.json"
 
@@ -74,7 +111,6 @@ def _save_settings(
 ) -> str:
     """保存用户设置到本地 JSON 文件。"""
     settings = {
-        "api_key": api_key,
         "base_url": base_url,
         "model": model,
         "max_tokens": int(max_tokens) if max_tokens else None,
@@ -88,8 +124,9 @@ def _save_settings(
             encoding="utf-8",
         )
         return "✓ 配置已保存"
-    except Exception as e:  # noqa: BLE001
-        return f"✗ 保存失败: {e}"
+    except Exception:  # noqa: BLE001
+        logger.exception("保存设置失败")
+        return "保存失败,请稍后重试。"
 
 
 def _note_to_text(note_table: list[str]) -> str:
@@ -106,14 +143,21 @@ def _fetch_models(api_key: str, base_url: str) -> tuple[list[str], str]:
         return [], "⚠ 请先填写 API Key 或设置环境变量 DEEPSEEK_API_KEY"
 
     try:
+        url = _validate_base_url(url)
+    except ValueError:
+        logger.exception("base_url 验证失败")
+        return [], "✗ 配置错误,请检查 base_url。"
+
+    try:
         client = ai_api.get_client(api_key=key, base_url=url)
         models = client.models.list()
         ids = sorted([m.id for m in models.data])
         if not ids:
             return [], "⚠ 未获取到任何模型"
         return ids, f"✓ 已获取 {len(ids)} 个模型"
-    except Exception as e:  # noqa: BLE001
-        return [], f"✗ 获取模型失败: {e}"
+    except Exception:  # noqa: BLE001
+        logger.exception("获取模型列表失败")
+        return [], "✗ 获取模型失败,请检查网络或 API Key。"
 
 
 def _parse_midi(file_path: str | None) -> tuple[str, list[str]]:
@@ -131,8 +175,9 @@ def _parse_midi(file_path: str | None) -> tuple[str, list[str]]:
 
     try:
         note_table = get.get_note(str(config.INPUT_MIDI), save_to_file=False)
-    except Exception as e:  # noqa: BLE001
-        return f"解析失败: {e}", []
+    except Exception:  # noqa: BLE001
+        logger.exception("MIDI 解析失败")
+        return "解析失败,请检查 MIDI 文件后重试。", []
 
     if not note_table:
         return "未解析出音符,请检查 MIDI 文件是否有效。", []
@@ -429,7 +474,11 @@ def _run_task(
     if api_key.strip():
         api_kwargs["api_key"] = api_key.strip()
     if base_url.strip():
-        api_kwargs["base_url"] = base_url.strip()
+        try:
+            api_kwargs["base_url"] = _validate_base_url(base_url.strip())
+        except ValueError:
+            logger.exception("base_url 验证失败")
+            return "", None, _elapsed("✗ 配置错误,请检查 base_url。")
     if model.strip():
         api_kwargs["model"] = model.strip()
     if max_tokens:
@@ -466,8 +515,9 @@ def _run_task(
                 note_text, lyrics, bpm, time_signature,
                 requirements, note_output, **api_kwargs
             )
-    except Exception as e:  # noqa: BLE001
-        return "", None, _elapsed(f"✗ 调用失败: {e}")
+    except Exception:  # noqa: BLE001
+        logger.exception("AI API 调用失败")
+        return "", None, _elapsed("✗ 调用失败,请稍后重试。")
 
     if not result:
         return "", None, _elapsed("✗ AI 未返回内容或调用失败。")
@@ -495,8 +545,9 @@ def _run_task(
             download_path = str(config.OUTPUT_MIDI)
             status_msg = f"✓ MIDI 已生成: {config.OUTPUT_MIDI.name}"
 
-    except Exception as e:  # noqa: BLE001
-        return result, None, _elapsed(f"✓ AI 返回结果,但保存失败: {e}")
+    except Exception:  # noqa: BLE001
+        logger.exception("保存结果失败")
+        return result, None, _elapsed("✓ AI 返回结果,但保存失败,请重试。")
 
     return result, [download_path] if download_path else None, _elapsed(status_msg)
 
@@ -603,7 +654,7 @@ def build_ui() -> gr.Blocks:
                         label="API Key",
                         type="password",
                         placeholder="sk-...",
-                        value=settings.get("api_key", os.environ.get("DEEPSEEK_API_KEY", "")),
+                        value=os.environ.get("DEEPSEEK_API_KEY", ""),
                         scale=4,
                     )
                     show_key_sw = gr.Checkbox(
@@ -760,7 +811,7 @@ def main() -> None:
     app = build_ui()
 
     # 允许 Gradio 的 /file= 路由访问输出目录,以便自定义下载链接可用。
-    allowed_paths = [str(config.OUTPUT_DIR), str(config.PROJECT_ROOT)]
+    allowed_paths = [str(config.OUTPUT_DIR)]
 
     if args.browser:
         app.launch(share=False, inbrowser=True, allowed_paths=allowed_paths)

@@ -191,7 +191,7 @@ def _wait_for_local_url(url: str, timeout: float = 20.0) -> bool:
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=1.5) as response:
-                if response.status < 500:
+                if response.status == 200:
                     return True
         except Exception:  # noqa: BLE001
             time.sleep(0.2)
@@ -347,7 +347,7 @@ def _launch_backend(app, state: LaunchState) -> None:
             inbrowser=False,
             prevent_thread_lock=True,
             server_name="127.0.0.1",
-            allowed_paths=[str(config.OUTPUT_DIR), str(config.PROJECT_ROOT)],
+            allowed_paths=[str(config.OUTPUT_DIR)],
         )
         if not _wait_for_local_url(local_url):
             raise RuntimeError(f"本地服务未在预期时间内就绪: {local_url}")

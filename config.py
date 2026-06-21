@@ -3,6 +3,7 @@
 所有可配置项(API key、模型、路径、默认参数)统一在此定义,
 其他模块通过 `from config import ...` 引用,避免硬编码散落各处。
 """
+import logging
 import os
 import sys
 from pathlib import Path
@@ -17,6 +18,21 @@ OUTPUT_DIR: Path = PROJECT_ROOT / "output"             # 文本/结果输出目�
 OUTPUT_MIDI: Path = PROJECT_ROOT / "output.mid"        # 生成的 MIDI 输出
 DOING_DIR: Path = PROJECT_ROOT / "doing"               # 中间产物目录
 DOING_OUTPUT_TXT: Path = DOING_DIR / "midi_output.txt" # 解析后的 note_table 文本
+
+# ===== 日志系统 =====
+_LOG_DIR = OUTPUT_DIR
+_LOG_DIR.mkdir(exist_ok=True)
+_LOG_FILE = _LOG_DIR / "ai_midi.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.FileHandler(_LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("ai_midi")
 
 # ===== DeepSeek API =====
 BASE_URL: str = "https://api.deepseek.com"

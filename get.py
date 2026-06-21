@@ -3,6 +3,7 @@
 读取 MIDI 文件,把其中的音符事件转换成自定义的 note_table 文本格式:
     [note: "C4", velocity: "80", start: "1", end: "2"]
 """
+import logging
 import os
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import mido
 from mido import MidiFile
 
 import config
+
+logger = logging.getLogger("ai_midi")
 
 # note_table 每个音符的输出格式模板。
 _NOTE_FORMAT = '[note: "{note}", velocity: "{velocity}", start: "{start}", end: "{end}"]'
@@ -35,7 +38,7 @@ def parse_midi_to_custom_format(file_path) -> list[str]:
     try:
         mid = MidiFile(str(file_path))
     except Exception as e:
-        print(f"无法读取MIDI文件: {e}")
+        logger.error("无法读取 MIDI 文件: %s", e)
         return []
 
     tpb = mid.ticks_per_beat
@@ -85,21 +88,17 @@ def get_note(file_path=None, save_to_file: bool = True) -> list[str]:
     if file_path is None:
         file_path = config.INPUT_MIDI
 
-    print(f"正在解析MIDI文件: {file_path} ...")
+    logger.info("正在解析 MIDI 文件: %s", file_path)
     output_list = parse_midi_to_custom_format(file_path)
 
-    print("\n--- 解析结果 ---")
-    for item in output_list:
-        print(item)
-
-    print(f"\n总共解析出 {len(output_list)} 个音符。")
+    logger.info("解析完成，共 %d 个音符", len(output_list))
 
     if save_to_file and output_list:
         os.makedirs(config.DOING_DIR, exist_ok=True)
         with open(config.DOING_OUTPUT_TXT, "w", encoding="utf-8") as f:
             for item in output_list:
                 f.write(item + "\n")
-        print(f"\n结果已保存到 {config.DOING_OUTPUT_TXT}。")
+        logger.info("结果已保存到 %s", config.DOING_OUTPUT_TXT)
 
     return output_list
 

@@ -24,8 +24,11 @@ from maliang.theme import manager as theme_manager
 
 import config
 import get
+import logging
 import out
 import ai_api
+
+logger = logging.getLogger("ai_midi")
 
 
 def _setup_safe_scale() -> float:
@@ -365,8 +368,9 @@ class App:
             return
         try:
             self.note_table = get.get_note(path, save_to_file=False)
-        except Exception as e:  # noqa: BLE001
-            messagebox.showerror("解析失败", f"读取 MIDI 时出错:\n{e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("MIDI 解析失败")
+            messagebox.showerror("解析失败", "读取 MIDI 时出错,请检查文件后重试。")
             self.note_table = []
         if self.note_table:
             self.parse_status.set(f"✓ 已解析 {len(self.note_table)} 个音符")
@@ -460,8 +464,9 @@ class App:
                 out.out_note(result, bpm)
                 self._set_status(f"✓ MIDI 已生成: {config.OUTPUT_MIDI.name}")
             self.save_btn.enable()
-        except Exception as e:  # noqa: BLE001
-            self._set_status(f"保存失败: {e}")
+        except Exception:  # noqa: BLE001
+            logger.exception("保存结果失败")
+            self._set_status("保存失败,请稍后重试。")
 
     def _on_error(self, err: str) -> None:
         self._set_running(False)

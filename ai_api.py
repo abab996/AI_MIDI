@@ -6,10 +6,14 @@
 所有函数共享同一个 system prompt 与调用通道(_chat),
 各自只负责拼装对应的 user content。
 """
+import logging
+
 from openai import OpenAI
 import openai
 
 import config
+
+logger = logging.getLogger("ai_midi")
 
 # ===== 共享 system prompt =====
 # 把模型设定为乐理专家,并定义 note_table 文本格式。
@@ -94,10 +98,10 @@ def _chat(
     try:
         response = client.chat.completions.create(**kwargs)
     except openai.APIError as e:
-        print(f"调用 AI API 时发生错误(APIError):{e}")
+        logger.error("调用 AI API 时发生 APIError: %s", e)
         return ""
     except openai.OpenAIError as e:
-        print(f"调用 AI API 时发生错误:{e}")
+        logger.error("调用 AI API 时发生错误: %s", e)
         return ""
 
     result: str = response.choices[0].message.content
@@ -113,7 +117,7 @@ def add_chord(
     **kwargs,
 ) -> str:
     """配和弦:给一段旋律配上和弦,返回 note_table 格式字符串。"""
-    print("正在调用AI API进行配和弦...")
+    logger.info("调用 AI API 进行配和弦")
     user_content = (
         f"音符数据：{note_table}，BPM：{bpm}，拍号：{time_signature}，"
         f"现在你需要给这段旋律配上适合的和弦。"
@@ -133,7 +137,7 @@ def translate_lyrics(
     **kwargs,
 ) -> str:
     """翻译歌词:把原语言歌词翻译成目标语言并贴合人声旋律。"""
-    print("正在翻译歌词...")
+    logger.info("翻译歌词: %s -> %s", original_language, target_language)
     user_content = (
         f"音符数据：{note_table}，歌词数据：{lyrics}，BPM：{bpm}，拍号：{time_signature}，"
         f"现在你得到的是人声的旋律和一段{original_language}歌词。"
@@ -155,7 +159,7 @@ def design_melisma(
     **kwargs,
 ) -> str:
     """设计转音:为旋律生成装饰性的转音/花腔,返回 note_table 格式字符串。"""
-    print("正在调用AI API设计转音...")
+    logger.info("调用 AI API 设计转音")
     user_content = (
         f"音符数据：{note_table}，歌词数据：{lyrics}，BPM：{bpm}，拍号：{time_signature}，"
         f"你现在需要帮我设计转音"
@@ -174,7 +178,7 @@ def other_requirements(
     **kwargs,
 ) -> str:
     """其他要求:自由任务。note_output 决定输出 note_table(MIDI)还是纯文本回答。"""
-    print("AI正在调用中，请稍候...")
+    logger.info("AI 其他要求任务, note_output=%s", note_output)
     base = (
         f"音符数据：{note_table}，歌词数据：{lyrics}，BPM：{bpm}，拍号：{time_signature}，"
         f"现在你可能没有得到有效的音符或歌词数据（也有可能得到了有效数据），"

@@ -4,6 +4,7 @@
 支持宽容解析:用一个较宽松的正则从每行提取音符字段,
 以应对 LLM 输出偶尔不规整的情况。
 """
+import logging
 import re
 import os
 import io
@@ -12,6 +13,8 @@ import mido
 from mido import MidiFile, MidiTrack, Message, MetaMessage
 
 import config
+
+logger = logging.getLogger("ai_midi")
 
 # 音名 → 半音数(支持 # 与 b 升降记号)
 NOTES_MAP = {
@@ -33,6 +36,30 @@ _PATTERN = re.compile(
     r'\s*end:\s*[^\d]*([\d.]+)',
     re.IGNORECASE
 )
+
+
+def _clamp_velocity(vel) -> int:
+    """将力度值限制在 MIDI 合法范围 0-127。"""
+    v = int(float(vel))
+    if not (0 <= v <= 127):
+        logger.warning("velocity %s 超出范围,已钳制到 0-127", vel)
+    return max(0, min(127, v))
+
+
+def _clamp_bpm(bpm) -> int:
+    """将 BPM 限制在合理范围 1-600。"""
+    b = int(float(bpm))
+    if not (1 <= b <= 600):
+        logger.warning("BPM %s 超出合理范围,已钳制到 1-600", bpm)
+    return max(1, min(600, b))
+
+
+def _clamp_midi_number(note_num) -> int:
+    """将 MIDI 音高编号限制在合法范围 0-127。"""
+    n = int(note_num)
+    if not (0 <= n <= 127):
+        logger.warning("MIDI 音高 %s 超出范围,已钳制到 0-127", note_num)
+    return max(0, min(127, n))
 
 
 def note_name_to_midi_number(note_name: str) -> int:
@@ -59,7 +86,7 @@ def note_name_to_midi_number(note_name: str) -> int:
     elif pitch == 'Fb':
         pitch = 'E'
 
-    return (octave + 1) * 12 + NOTES_MAP[pitch]
+    return _clamp_midi_number((octave + 1) * 12 + NOTES_MAP[pitch])
 
 
 def _parse_lines(lines) -> tuple[list[dict], int]:
@@ -81,7 +108,7 @@ def _parse_lines(lines) -> tuple[list[dict], int]:
             note_str, vel_str, start_str, end_str = match.groups()
             notes_info.append({
                 'note': note_str,
-                'velocity': int(vel_str),
+                'velocity': int(float(vel_str)),
                 'start': float(start_str),
                 'end': float(end_str)
             })
@@ -103,37 +130,37 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
     is_file = os.path.isfile(source)
 
     if is_file:
-        print(f"正在读取文件: {source} ...")
+        logger.info("正在读取文件: %s", source)
         try:
             with open(source, 'r', encoding='utf-8') as f:
                 notes_info, line_count = _parse_lines(f)
         except UnicodeDecodeError:
-            print("UTF-8 解码失败，尝试使用 GBK 编码重新读取...")
+            logger.warning("UTF-8 解码失败，尝试使用 GBK 编码重新读取: %s", source)
             try:
                 with open(source, 'r', encoding='gbk') as f:
                     notes_info, line_count = _parse_lines(f)
             except Exception as e:
-                print(f"读取文件失败: {e}")
+                logger.exception("读取文件失败")
                 return
         except FileNotFoundError:
-            print(f"错误：找不到文件 {source}")
+            logger.error("找不到文件: %s", source)
             return
     else:
-        print("检测到输入为音符内容字符串，直接解析...")
+        logger.info("检测到输入为音符内容字符串，直接解析")
         notes_info, line_count = _parse_lines(io.StringIO(source))
 
     if not notes_info:
-        print(f"警告：读取了 {line_count} 行，但未找到任何有效的音符数据，未生成MIDI。")
+        logger.warning("读取了 %d 行，但未找到任何有效的音符数据", line_count)
         return
 
-    print(f"成功解析出 {len(notes_info)} 个音符，开始构建MIDI...")
+    logger.info("成功解析出 %d 个音符，开始构建 MIDI", len(notes_info))
 
     # 创建 MIDI 文件结构。
     mid = MidiFile(ticks_per_beat=config.TICKS_PER_BEAT)
     track = MidiTrack()
     mid.tracks.append(track)
 
-    track.append(MetaMessage('set_tempo', tempo=mido.bpm2tempo(float(bpm)), time=0))
+    track.append(MetaMessage('set_tempo', tempo=mido.bpm2tempo(_clamp_bpm(bpm)), time=0))
 
     # 将音符转换为 MIDI 事件(note_on / note_off 成对),记录绝对 tick。
     events = []
@@ -146,7 +173,7 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
         start_tick = int(info['start'] * tpb)
         end_tick = int(info['end'] * tpb)
 
-        events.append({'type': 'note_on', 'note': note_num, 'velocity': vel, 'abs_tick': start_tick})
+        events.append({'type': 'note_on', 'note': note_num, 'velocity': _clamp_velocity(vel), 'abs_tick': start_tick})
         events.append({'type': 'note_off', 'note': note_num, 'velocity': 0, 'abs_tick': end_tick})
 
     # 同一时刻 note_off 排在 note_on 之前(避免重叠粘连)。
@@ -162,7 +189,7 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
 
     # 保存文件。
     mid.save(str(output_midi_path))
-    print(f"成功生成 MIDI 文件：{output_midi_path}")
+    logger.info("成功生成 MIDI 文件: %s", output_midi_path)
 
 
 def out_note(note_table, bpm, output_path=None):

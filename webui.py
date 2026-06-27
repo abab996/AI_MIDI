@@ -10,7 +10,9 @@ import logging
 import os
 import shutil
 import struct
+import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import gradio as gr
@@ -51,6 +53,83 @@ _FUNC_FIELDS = {
     FUNC_MELISMA: {"lyrics": True, "lang": False, "note_sw": False, "req": True},
     FUNC_OTHER: {"lyrics": True, "lang": False, "note_sw": True, "req": True},
 }
+
+# ===== 多轮对话相关 =====
+CHAT_PORT = 7861
+CHAT_URL = f"http://127.0.0.1:{CHAT_PORT}"
+_chat_thread: threading.Thread | None = None
+_chat_started = False
+_chat_launch_error: str | None = None
+
+
+def _is_chat_running() -> bool:
+    """检查多轮对话服务是否已在运行。"""
+    try:
+        urllib.request.urlopen(CHAT_URL, timeout=0.5)
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_chat_ready(timeout: float = 15.0) -> bool:
+    """轮询等待多轮对话服务就绪。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(CHAT_URL, timeout=0.5)
+            return True
+        except Exception:
+            time.sleep(0.3)
+    return False
+
+
+def _start_chat_server() -> None:
+    """在后台启动多轮对话 Gradio 服务并等待就绪。"""
+    global _chat_launch_error
+    try:
+        from chat_ui import build_chat_ui
+
+        app = build_chat_ui()
+        app.launch(
+            prevent_thread_lock=True,
+            server_name="127.0.0.1",
+            server_port=CHAT_PORT,
+            share=False,
+            inbrowser=False,
+        )
+        if not _wait_for_chat_ready(timeout=10.0):
+            _chat_launch_error = "服务启动超时"
+        else:
+            _chat_launch_error = None
+    except OSError as e:
+        if "Address already in use" in str(e):
+            if _wait_for_chat_ready(timeout=3.0):
+                _chat_launch_error = None
+            else:
+                _chat_launch_error = f"端口 {CHAT_PORT} 被占用且服务不可用"
+        else:
+            _chat_launch_error = str(e)
+    except Exception as e:  # noqa: BLE001
+        _chat_launch_error = str(e)
+        logger.exception("启动多轮对话服务失败")
+
+
+def launch_chat() -> str:
+    """启动多轮对话窗口（供 Gradio 按钮回调使用）。"""
+    global _chat_thread, _chat_started, _chat_launch_error
+
+    _chat_launch_error = None
+
+    if not _chat_started:
+        if _is_chat_running():
+            _chat_started = True
+            return f"多轮对话窗口已就绪：{CHAT_URL}"
+
+        _chat_thread = threading.Thread(target=_start_chat_server, daemon=True)
+        _chat_thread.start()
+        _chat_started = True
+
+    return f"正在启动多轮对话窗口… {CHAT_URL}"
 
 # ===== base_url 安全验证 =====
 # 仅允许向已知可信的 API 服务商发送请求,防止密钥被中间人窃取。
@@ -708,6 +787,46 @@ def build_ui() -> gr.Blocks:
                     label="保存状态",
                     interactive=False,
                     value="",
+                )
+
+            # ==================== 模式标签页 ====================
+            with gr.Tab("模式"):
+                gr.Markdown("## 其他工作模式")
+                launch_chat_btn = gr.Button("🔄 多轮对话", variant="primary", size="lg")
+                chat_status = gr.Textbox(
+                    label="状态",
+                    interactive=False,
+                    value="",
+                )
+
+                launch_chat_btn.click(
+                    fn=launch_chat,
+                    inputs=[],
+                    outputs=[chat_status],
+                ).then(
+                    fn=None,
+                    inputs=[],
+                    outputs=[],
+                    js=f"""
+                    () => {{
+                        const url = '{CHAT_URL}';
+                        let attempts = 0;
+                        const maxAttempts = 30;
+                        const interval = setInterval(async () => {{
+                            try {{
+                                const res = await fetch(url, {{ mode: 'no-cors' }});
+                                clearInterval(interval);
+                                window.open(url, '_blank');
+                            }} catch (e) {{
+                                attempts++;
+                                if (attempts >= maxAttempts) {{
+                                    clearInterval(interval);
+                                    alert('多轮对话窗口启动超时，请稍后重试。\\nURL: ' + url);
+                                }}
+                            }}
+                        }}, 500);
+                    }}
+                    """,
                 )
 
         # 事件绑定

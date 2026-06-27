@@ -29,3 +29,6 @@ doing/
 # 根目录散落的 MIDI/中间文件(保留 input/ 与 samples/ 下的样本)
 /*.mid
 /*.mid.txt
+
+# Claude Code 项目指引文件（本地会话用，不随代码提交）
+CLAUDE.md

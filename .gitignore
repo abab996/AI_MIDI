@@ -32,3 +32,4 @@ doing/
 
 # Claude Code 项目指引文件（本地会话用，不随代码提交）
 CLAUDE.md
+_mcp_wheel/

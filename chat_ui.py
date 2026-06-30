@@ -123,7 +123,6 @@ def _build_system_prompt(files: list[dict]) -> str:
             "19_配器法入门 | 20_曲式结构与段落设计\n\n"
             "当用户询问具体的乐理问题时，使用 read_library_file 工具读取对应文件获取详细信息。\n\n"
         )
-    )
 
     return prompt
 
@@ -510,7 +509,7 @@ def send_message(message, history, midi_files, undo_stack):
             assistant_msg = choice.message
 
             # 构造助手消息
-            msg_content = assistant_msg.content or ""
+            msg_content = assistant_msg.content if assistant_msg.content else None
             msg_tool_calls = getattr(assistant_msg, "tool_calls", None) or []
 
             assistant_message = {
@@ -521,7 +520,7 @@ def send_message(message, history, midi_files, undo_stack):
                 assistant_message["tool_calls"] = [
                     {
                         "id": tc.id,
-                        "type": "function",
+                        "type": tc.type or "function",
                         "function": {
                             "name": tc.function.name,
                             "arguments": tc.function.arguments,
@@ -534,7 +533,7 @@ def send_message(message, history, midi_files, undo_stack):
 
             # 如果没有工具调用，说明 AI 给出了最终回复
             if not msg_tool_calls:
-                result_text = msg_content
+                result_text = msg_content or ""
                 # 追加工具执行日志
                 if tool_log:
                     log_text = "\n\n---\n\n".join(tool_log)

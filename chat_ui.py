@@ -87,39 +87,42 @@ def _build_system_prompt(files: list[dict]) -> str:
     library_knowledge = _load_library_knowledge()
 
     prompt = (
-        "你是一位精通乐理的音乐 AI 助手，可以帮助用户处理 MIDI 音乐文件。"
-        "你可以使用提供的工具来读取、创建、编辑和删除 MIDI 文件。\n\n"
+        "你是一位精通乐理的音乐 AI 助手，帮助用户处理 MIDI 音乐文件。\n\n"
         f"{_NOTE_TABLE_INTRO}\n\n"
-        "## 当前 MIDI 文件列表\n"
-        f"{file_list}\n\n"
+    )
+
+    # 工具使用指南（系统会自动将工具定义注册到 function calling 中）
+    prompt += (
+        "## 工具使用指南\n"
+        "你拥有以下工具，可以直接调用它们来操作 MIDI 文件和查阅知识库：\n\n"
+        "- **list_midi_files**: 列出 output 目录下的所有 MIDI 文件\n"
+        "- **parse_midi**: 解析 MIDI 文件，返回 note_table 格式的音符数据\n"
+        "- **create_midi**: 从 note_table 数据创建新的 MIDI 文件\n"
+        "- **delete_midi**: 删除指定的 MIDI 文件\n"
+        "- **read_library_file**: 读取 Library 知识库中的指定文件\n\n"
+        "## 工具调用规则\n"
+        "1. 系统会自动将上述工具注册到你的 function calling 能力中，你只需在需要时调用\n"
+        "2. 每次可以调用一个或多个工具，等待系统返回结果\n"
+        "3. 工具的执行结果会以新的消息返回给你，你需要根据结果决定下一步\n"
+        "4. 如果需要查阅知识库，直接使用 read_library_file 读取对应文件\n"
+        "5. 工具调用完毕后，用自然语言向用户汇报结果和你的分析\n\n"
     )
 
     if library_knowledge:
         prompt += (
-            "## 乐理知识库\n"
-            "以下是你的专业知识参考。当你遇到不确定的乐理问题时，"
-            "使用 read_library_file 工具读取对应文件获取详细指导。\n"
-            f"{library_knowledge}\n\n"
+            "## 乐理知识库摘要\n"
+            "你的知识库包含 20 份文件，涵盖和弦、音阶、转音、节奏、配器、曲式等主题。"
+            "具体文件列表如下（详细内容已通过 read_library_file 工具提供）：\n"
+            "01_乐理基础 | 02_配和弦指南 | 03_歌词翻译指南 | 04_转音设计指南 | "
+            "05_作曲编曲通用技巧 | 06_和弦进阶与风格化 | 07_音阶与即兴创作模板 | "
+            "08_和弦进行词典 | 09_音域运用与音程写作 | 10_旋律写作与记忆点 | "
+            "11_节奏与律动 | 12_风格化写作与编曲要素 | "
+            "13_调性识别与和弦功能分析 | 14_MIDI真实感与演奏润色 | "
+            "15_歌词创作指南 | 16_织体关系与声部配合 | "
+            "17_调式互换与转调 | 18_对位与多声部写作 | "
+            "19_配器法入门 | 20_曲式结构与段落设计\n\n"
+            "当用户询问具体的乐理问题时，使用 read_library_file 工具读取对应文件获取详细信息。\n\n"
         )
-
-    prompt += (
-        "## 可用工具\n"
-        "以下工具通过 JSON-RPC 调用，每次只能调用一个工具，等待结果返回后再决定下一步。\n\n"
-        "| 工具 | 参数 | 用途 |\n"
-        "|------|------|------|\n"
-        "| list_midi_files | 无 | 列出 output 目录下的所有 MIDI 文件 |\n"
-        "| parse_midi | filename: 文件名 | 解析 MIDI 文件，返回 note_table 格式的音符数据 |\n"
-        "| create_midi | filename, bpm, notes | 从 note_table 数据创建新的 MIDI 文件 |\n"
-        "| delete_midi | filename: 文件名 | 删除指定的 MIDI 文件 |\n"
-        "| read_library_file | filename: 知识库文件名 | 读取 Library 知识库中的指定文件 |\n\n"
-        "## 调用规则\n"
-        "1. 用户要求操作 MIDI 时，先调用 list_midi_files 了解有哪些文件\n"
-        "2. 需要查看文件内容时，调用 parse_midi 获取 note_table\n"
-        "3. 需要创建/修改 MIDI 时，调用 create_midi（传入完整的 note_table 数据）\n"
-        "4. 需要删除文件时，调用 delete_midi\n"
-        "5. 需要查阅乐理知识时，调用 read_library_file\n"
-        "6. 工具返回结果后，继续你的回复，不要再次调用同一工具\n"
-        "7. 可以连续调用多个不同工具完成复杂任务\n"
     )
 
     return prompt

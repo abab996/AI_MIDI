@@ -23,6 +23,42 @@ mcp = FastMCP("ai-midi-tools")
 OUTPUT_DIR: Path = config.OUTPUT_DIR
 
 
+def _normalize_note_data(note_data: str) -> str:
+    """将 AI 输出的各种格式转换为 note_table 文本格式。
+
+    支持：
+    - JSON 数组格式: [{"note": "C4", "velocity": 80, "start": 1, "end": 2}, ...]
+    - JSON 数组字符串: '[{"note": "C4", ...}, ...]'
+    - note_table 文本格式（原样返回）
+    """
+    stripped = note_data.strip()
+
+    # 尝试 JSON 解析
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list) and parsed:
+                # 检查第一个元素是否是 note 对象
+                first = parsed[0]
+                if isinstance(first, dict) and "note" in first:
+                    lines = []
+                    for n in parsed:
+                        note_name = n.get("note", "")
+                        vel = n.get("velocity", 80)
+                        start = n.get("start", 0)
+                        end = n.get("end", 0)
+                        lines.append(
+                            f'[note: "{note_name}", velocity: "{vel}", '
+                            f'start: "{start}", end: "{end}"]'
+                        )
+                    return "\n".join(lines)
+        except json.JSONDecodeError:
+            pass
+
+    # 原样返回（已是 note_table 文本格式）
+    return note_data
+
+
 # ===== Tools =====
 
 @mcp.tool()
@@ -63,12 +99,12 @@ def parse_midi(filename: str) -> str:
 
 
 @mcp.tool()
-def create_midi(filename: str, bpm: int, notes: str) -> str:
+def create_midi(filename: str = "output.mid", bpm: int = 120, notes: str = "", note_table: str = "") -> str:
     """从 note_table 数据创建 MIDI 文件，保存到 output 目录。
 
     参数：
-        filename: 输出文件名（如 melody.mid）
-        bpm: 速度（如 120）
+        filename: 输出文件名（如 melody.mid），默认 output.mid
+        bpm: 速度（如 120），默认 120
         notes: note_table 格式的音符数据，每行一个音符。
                格式示例：
                [note: "C4", velocity: "80", start: "1", end: "2"]
@@ -77,11 +113,19 @@ def create_midi(filename: str, bpm: int, notes: str) -> str:
     返回：
         操作结果说明。
     """
+    # 兼容：AI 可能用 note_table 或 notes 两种参数名
+    note_data = notes or note_table
+    if not note_data:
+        return "错误：缺少 notes 参数，请提供 note_table 格式的音符数据"
+
+    # 兼容：AI 可能传 JSON 数组格式，需要转换为 note_table 文本格式
+    note_data = _normalize_note_data(note_data)
+
     filepath = OUTPUT_DIR / filename
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     try:
-        note_count = len([l for l in notes.strip().split("\n") if l.strip()])
-        out.txt_to_midi(notes, str(filepath), bpm)
+        note_count = len([l for l in note_data.strip().split("\n") if l.strip()])
+        out.txt_to_midi(note_data, str(filepath), bpm)
         size_kb = max(1, filepath.stat().st_size // 1024)
         return f"成功创建 {filename}：{note_count} 个音符，BPM {bpm}，{size_kb} KB"
     except Exception as e:

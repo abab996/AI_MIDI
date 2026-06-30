@@ -5,6 +5,7 @@
 """
 import copy
 import json
+import logging
 import os
 import re
 import subprocess
@@ -21,6 +22,8 @@ import ai_api
 import config
 import get
 import out
+
+logger = logging.getLogger("ai_midi")
 
 
 # ==================== 常量 ====================
@@ -466,6 +469,11 @@ def send_message(message, history, midi_files, undo_stack):
 
     # 获取 MCP 工具定义
     openai_tools = _mcp_list_tools()
+    logger.info("MCP 工具数量: %d", len(openai_tools))
+    if openai_tools:
+        logger.info("MCP 工具列表: %s", [t["function"]["name"] for t in openai_tools])
+    else:
+        logger.warning("MCP 工具列表为空！tools 参数不会传给 API")
 
     # 构建对话消息
     system_prompt = _build_system_prompt(midi_files)
@@ -509,6 +517,11 @@ def send_message(message, history, midi_files, undo_stack):
             response = client.chat.completions.create(**kwargs)
             choice = response.choices[0]
             assistant_msg = choice.message
+
+            logger.info("API 返回: finish_reason=%s, tool_calls=%d, content=%s",
+                       choice.finish_reason,
+                       len(getattr(assistant_msg, "tool_calls", None) or []),
+                       (assistant_msg.content or "")[:100])
 
             # 构造助手消息
             msg_content = assistant_msg.content if assistant_msg.content else None

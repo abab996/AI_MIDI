@@ -50,21 +50,11 @@ _mcp_initialized = False
 
 # ==================== Library 知识加载 ====================
 
-def _load_library_knowledge() -> str:
-    """读取 Library/ 目录下所有 .md 文件，合并为一段知识文本注入 system prompt。"""
+def _list_library_files() -> list[str]:
+    """返回 Library 目录下所有 .md 文件名列表。"""
     if not _LIBRARY_DIR.exists():
-        return ""
-
-    md_files = sorted(_LIBRARY_DIR.glob("*.md"))
-    if not md_files:
-        return ""
-
-    parts = []
-    for path in md_files:
-        content = path.read_text(encoding="utf-8").strip()
-        parts.append(f"## {path.stem}\n{content}")
-
-    return "\n\n---\n\n".join(parts)
+        return []
+    return sorted(p.name for p in _LIBRARY_DIR.glob("*.md"))
 
 
 # ==================== System Prompt 构建 ====================
@@ -87,11 +77,35 @@ def _build_system_prompt(files: list[dict]) -> str:
     else:
         file_list = "（暂无文件）"
 
-    library_knowledge = _load_library_knowledge()
+    library_files = _list_library_files()
 
     prompt = (
         "你是一位精通乐理的音乐 AI 助手，帮助用户处理 MIDI 音乐文件。\n\n"
         f"{_NOTE_TABLE_INTRO}\n\n"
+        "## 乐理知识库\n"
+        "你拥有一个包含 20 份乐理知识文件的库，这些文件包含和弦、音阶、节奏、"
+        "配器、曲式等专业知识。**你必须主动查阅这些文件来指导你的创作。**\n\n"
+    )
+
+    if library_files:
+        prompt += "文件列表：\n"
+        for fname in library_files:
+            prompt += f"- {fname}\n"
+        prompt += "\n"
+
+    prompt += (
+        "### 必须调用 read_library_file 的场景\n"
+        "- 用户要求配和弦 → 先读取 02_配和弦指南.md、08_和弦进行词典.md\n"
+        "- 用户要求设计转音 → 先读取 04_转音设计指南.md\n"
+        "- 用户要求翻译歌词 → 先读取 03_歌词翻译指南.md\n"
+        "- 用户要求写旋律 → 先读取 10_旋律写作与记忆点.md、09_音域运用与音程写作.md\n"
+        "- 用户要求写节奏 → 先读取 11_节奏与律动.md\n"
+        "- 用户要求编曲/配器 → 先读取 19_配器法入门.md、16_织体关系与声部配合.md\n"
+        "- 用户询问调性/调式 → 先读取 13_调性识别与和弦功能分析.md\n"
+        "- 用户要求风格化创作 → 先读取 12_风格化写作与编曲要素.md\n"
+        "- 任何涉及乐理的创作任务 → 根据相关主题读取对应文件\n\n"
+        "**重要：在开始任何音乐创作之前，你必须先读取相关的知识文件，"
+        "然后根据文件中的指导来创作。不要凭记忆创作。**\n\n"
     )
 
     # 工具使用指南（系统会自动将工具定义注册到 function calling 中）
@@ -106,28 +120,13 @@ def _build_system_prompt(files: list[dict]) -> str:
         "- **delete_midi**: 参数 filename（字符串），删除指定的 MIDI 文件\n"
         "- **read_library_file**: 参数 filename（字符串），读取 Library 知识库中的指定文件\n\n"
         "## 工具调用规则\n"
-        "1. 系统会自动将上述工具注册到你的 function calling 能力中，你只需在需要时调用\n"
-        "2. 每次可以调用一个或多个工具，等待系统返回结果\n"
-        "3. 工具的执行结果会以新的消息返回给你，你需要根据结果决定下一步\n"
-        "4. 如果需要查阅知识库，直接使用 read_library_file 读取对应文件\n"
+        "1. **必须主动调用工具**，不要凭记忆回答音乐专业问题\n"
+        "2. 收到创作任务时，先调用 read_library_file 获取相关知识，再调用 create_midi\n"
+        "3. 可以一次调用多个工具（如同时读取多个知识文件）\n"
+        "4. 工具执行结果会返回给你，你需要根据结果决定下一步\n"
+        "5. 工具调用完毕后，用自然语言向用户汇报结果\n"
         "5. 工具调用完毕后，用自然语言向用户汇报结果和你的分析\n\n"
     )
-
-    if library_knowledge:
-        prompt += (
-            "## 乐理知识库摘要\n"
-            "你的知识库包含 20 份文件，涵盖和弦、音阶、转音、节奏、配器、曲式等主题。"
-            "具体文件列表如下（详细内容已通过 read_library_file 工具提供）：\n"
-            "01_乐理基础 | 02_配和弦指南 | 03_歌词翻译指南 | 04_转音设计指南 | "
-            "05_作曲编曲通用技巧 | 06_和弦进阶与风格化 | 07_音阶与即兴创作模板 | "
-            "08_和弦进行词典 | 09_音域运用与音程写作 | 10_旋律写作与记忆点 | "
-            "11_节奏与律动 | 12_风格化写作与编曲要素 | "
-            "13_调性识别与和弦功能分析 | 14_MIDI真实感与演奏润色 | "
-            "15_歌词创作指南 | 16_织体关系与声部配合 | "
-            "17_调式互换与转调 | 18_对位与多声部写作 | "
-            "19_配器法入门 | 20_曲式结构与段落设计\n\n"
-            "当用户询问具体的乐理问题时，使用 read_library_file 工具读取对应文件获取详细信息。\n\n"
-        )
 
     return prompt
 

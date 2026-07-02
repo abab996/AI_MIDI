@@ -158,12 +158,51 @@ def _build_system_prompt(files: list[dict]) -> str:
 
 # ==================== 设置加载 ====================
 
+# 仅允许向已知可信的 API 服务商发送请求,防止密钥被中间人窃取。
+_ALLOWED_BASE_URL_DOMAINS = {
+    "api.deepseek.com",
+    "api.openai.com",
+    "openai.azure.com",
+    "api.anthropic.com",
+    "api.moonshot.cn",
+    "api.stepfun.com",
+    "api.zhipuai.cn",
+    "qianwen.aliyuncs.com",
+    "dashscope.aliyuncs.com",
+}
+
+
+def _validate_base_url(base_url: str) -> str:
+    """验证 base_url 仅指向允许的域名,不安全时抛出 ValueError。"""
+    from urllib.parse import urlparse
+
+    url = base_url.strip()
+    if not url:
+        return config.BASE_URL
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"base_url 协议必须为 http 或 https: {parsed.scheme}")
+    host = parsed.hostname or ""
+    if host in _ALLOWED_BASE_URL_DOMAINS:
+        return f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
+    raise ValueError(
+        f"base_url 域名不在允许列表中: {host}。"
+        f"如需使用其他服务商,请修改 _ALLOWED_BASE_URL_DOMAINS。"
+    )
+
+
 def _load_settings() -> dict:
     """从 config 加载 API 设置。"""
     settings = config.load_settings()
+    raw_base_url = settings.get("base_url", "") or config.BASE_URL
+    try:
+        base_url = _validate_base_url(raw_base_url)
+    except ValueError:
+        logger.warning("base_url 验证失败，使用默认值: %s", config.BASE_URL)
+        base_url = config.BASE_URL
     return {
         "api_key": settings.get("api_key") or config.get_api_key(),
-        "base_url": settings.get("base_url") or config.BASE_URL,
+        "base_url": base_url,
         "model": settings.get("model") or config.MODEL,
         "max_tokens": settings.get("max_tokens"),
         "max_completion_tokens": settings.get("max_completion_tokens"),
@@ -739,12 +778,7 @@ def send_message(message, history, midi_files, undo_stack, full_history):
                 except Exception:
                     logger.exception("流式 API 调用失败")
                     full_response = msg_content or "（流式调用失败）"
-
-                for chunk in response_stream:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        full_response += chunk.choices[0].delta.content
-
-                    # 每收到 chunk 更新 Chatbot
+                    # 兜底：直接用非流式结果作为最终回复
                     current_content = initial_content + full_response
                     yield (
                         base_history + [{"role": "assistant", "content": current_content}],
@@ -755,8 +789,42 @@ def send_message(message, history, midi_files, undo_stack, full_history):
                         download_path,
                         gr.update(choices=_get_choices(updated_files), value=[]),
                     )
+                    logger.info("流式 API 调用失败，使用非流式回退，共 %d 字", len(full_response))
+                    if _current_project_id:
+                        project_manager.save_history(_current_project_id, new_full_history, updated_files)
+                    return
 
-                logger.info("流式 API 返回完成，共 %d 字", len(full_response))
+                try:
+                    for chunk in response_stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            full_response += chunk.choices[0].delta.content
+
+                        # 每收到 chunk 更新 Chatbot
+                        current_content = initial_content + full_response
+                        yield (
+                            base_history + [{"role": "assistant", "content": current_content}],
+                            "",
+                            updated_files,
+                            new_undo_stack,
+                            new_full_history,
+                            download_path,
+                            gr.update(choices=_get_choices(updated_files), value=[]),
+                        )
+                except Exception:
+                    logger.exception("流式传输中途异常")
+                    # 使用已累积的内容作为最终回复
+                    if not full_response:
+                        full_response = msg_content or "（流式传输中断）"
+                    current_content = initial_content + full_response
+                    yield (
+                        base_history + [{"role": "assistant", "content": current_content}],
+                        "",
+                        updated_files,
+                        new_undo_stack,
+                        new_full_history,
+                        download_path,
+                        gr.update(choices=_get_choices(updated_files), value=[]),
+                    )
 
                 # 保存历史
                 if _current_project_id:
@@ -841,7 +909,11 @@ def send_message(message, history, midi_files, undo_stack, full_history):
         if isinstance(e, GeneratorExit):
             raise
         tool_log_html = _format_tool_log(tool_log)
-        error_base = f"⚠ 调用失败: {e}"
+        # 不直接 str(e) 暴露给 UI，避免 API 异常可能包含敏感请求信息
+        error_base = (
+            f"⚠ 调用失败: {type(e).__name__}"
+            + (f" (HTTP {e.status_code})" if hasattr(e, 'status_code') else "")
+        )
         error_msg = (error_base + "\n\n" + tool_log_html).strip() if tool_log_html else error_base
         error_history = history + [
             {"role": "user", "content": message},

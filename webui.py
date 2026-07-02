@@ -181,21 +181,21 @@ def _save_settings(
     thinking_enabled: bool,
 ) -> str:
     """保存用户设置到本地 JSON 文件。"""
+    # 在保存前验证 base_url，防止恶意域名写入 settings.json
+    try:
+        validated_url = _validate_base_url(base_url.strip())
+    except ValueError as e:
+        return f"✗ 保存失败：{e}"
+
     settings = {
         "api_key": api_key.strip(),
-        "base_url": base_url,
+        "base_url": validated_url,
         "model": model,
         "max_tokens": int(max_tokens) if max_tokens else None,
         "max_completion_tokens": int(max_completion_tokens) if max_completion_tokens else None,
         "reasoning_effort": reasoning_effort,
         "thinking_enabled": thinking_enabled,
     }
-    try:
-        config.save_settings(settings)
-        return "✓ 配置已保存"
-    except Exception:  # noqa: BLE001
-        logger.exception("保存设置失败")
-        return "保存失败,请稍后重试。"
 
 
 def _note_to_text(note_table: list[str]) -> str:
@@ -928,11 +928,11 @@ def main() -> None:
     allowed_paths = [str(config.OUTPUT_DIR), str(config.PROJECTS_DIR)]
 
     if args.browser:
-        app.launch(share=False, inbrowser=True, allowed_paths=allowed_paths)
+        app.launch(share=False, inbrowser=True, allowed_paths=allowed_paths, server_name="127.0.0.1")
         return
 
     # 原生窗口模式:后台启动 Gradio,再用 pywebview 承载页面
-    app.launch(prevent_thread_lock=True, allowed_paths=allowed_paths)
+    app.launch(prevent_thread_lock=True, allowed_paths=allowed_paths, server_name="127.0.0.1")
     import webview
 
     # 允许 pywebview 内触发文件下载(如 Gradio 的 File 组件)。

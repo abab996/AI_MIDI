@@ -99,14 +99,22 @@ def _chat(
     try:
         response = client.chat.completions.create(**kwargs)
     except openai.APIError as e:
-        logger.error("调用 AI API 时发生 APIError: %s", e)
+        logger.error(
+            "调用 AI API 时发生 APIError: status=%s, type=%s",
+            getattr(e, 'status_code', '?'),
+            type(e).__name__,
+        )
         return ""
     except openai.OpenAIError as e:
-        logger.error("调用 AI API 时发生错误: %s", e)
+        logger.error(
+            "调用 AI API 时发生错误: status=%s, type=%s",
+            getattr(e, 'status_code', '?'),
+            type(e).__name__,
+        )
         return ""
 
     result: str = response.choices[0].message.content
-    print(result)
+    logger.debug("AI 回复: %s", (result or "")[:500])
     return result
 
 
@@ -149,8 +157,11 @@ def _chat_stream(
     try:
         response = client.chat.completions.create(**kwargs)
     except (openai.APIError, openai.OpenAIError) as e:
-        logger.error("调用 AI API 时发生错误: %s", e)
-        yield ""
+        logger.error(
+            "调用 AI API 时发生错误: status=%s, type=%s",
+            getattr(e, 'status_code', '?'),
+            type(e).__name__,
+        )
         return
 
     for chunk in response:

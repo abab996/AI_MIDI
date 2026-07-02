@@ -63,8 +63,8 @@ def _clamp_midi_number(note_num) -> int:
 
 
 def note_name_to_midi_number(note_name: str) -> int:
-    """将音符名称(如 C4、Eb3)转换为 MIDI 编号(0-127)。无法识别时抛出 ValueError。"""
-    match = re.match(r'^([A-G][#b]?)', note_name, re.IGNORECASE)
+    """将音符名称(如 C4、Eb3、C##4)转换为 MIDI 编号(0-127)。无法识别时抛出 ValueError。"""
+    match = re.match(r'^([A-G][#b]*)', note_name, re.IGNORECASE)
     if not match:
         raise ValueError(f"无法识别的音符名称: {note_name}")
 
@@ -72,21 +72,25 @@ def note_name_to_midi_number(note_name: str) -> int:
     # 将首字母大写,后面的符号(#或b)小写,保证与字典键一致。
     pitch = raw_pitch[0].upper() + raw_pitch[1:].lower()
 
-    octave = int(note_name[len(pitch):])
+    octave_str = note_name[len(raw_pitch):]
+    try:
+        octave = int(octave_str)
+    except ValueError:
+        raise ValueError(
+            f"无法识别的音符名称: {note_name}（八度部分 '{octave_str}' 无效）"
+        )
 
-    # 规范化等价音名,避免 B#、Cb 等特殊写法导致 KeyError。
-    if pitch == 'B#':
-        pitch = 'C'
-        octave += 1
-    elif pitch == 'Cb':
-        pitch = 'B'
-        octave -= 1
-    elif pitch == 'E#':
-        pitch = 'F'
-    elif pitch == 'Fb':
-        pitch = 'E'
+    # ---- 计算升降号偏移量（支持多升降号如 C##、Bbb） ----
+    accidental_offset = raw_pitch[1:].lower().count('#') - raw_pitch[1:].lower().count('b')
 
-    return _clamp_midi_number((octave + 1) * 12 + NOTES_MAP[pitch])
+    # 基础音名（去掉升降号）
+    base_pitch = pitch[0].upper()
+    base_midi = NOTES_MAP[base_pitch]
+
+    # 加上升降号偏移
+    midi_num = (octave + 1) * 12 + base_midi + accidental_offset
+
+    return _clamp_midi_number(midi_num)
 
 
 def _parse_lines(lines) -> tuple[list[dict], int]:
@@ -106,11 +110,24 @@ def _parse_lines(lines) -> tuple[list[dict], int]:
         match = _PATTERN.search(clean_line)
         if match:
             note_str, vel_str, start_str, end_str = match.groups()
+            try:
+                vel_val = float(vel_str)
+                start_val = float(start_str)
+                end_val = float(end_str)
+            except ValueError:
+                logger.warning("第 %d 行数值解析失败，跳过: %s...", line_count, clean_line[:80])
+                continue
+            if end_val <= start_val:
+                logger.warning(
+                    "第 %d 行 end(%s) <= start(%s)，跳过音符 %s",
+                    line_count, end_str, start_str, note_str,
+                )
+                continue
             notes_info.append({
                 'note': note_str,
-                'velocity': int(float(vel_str)),
-                'start': float(start_str),
-                'end': float(end_str)
+                'velocity': int(vel_val),
+                'start': start_val,
+                'end': end_val
             })
 
     return notes_info, line_count
@@ -167,11 +184,15 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
     tpb = mid.ticks_per_beat
 
     for info in notes_info:
-        note_num = note_name_to_midi_number(info['note'])
+        try:
+            note_num = note_name_to_midi_number(info['note'])
+        except ValueError as e:
+            logger.warning("跳过无效音符: %s", e)
+            continue
         vel = info['velocity']
 
-        start_tick = int(info['start'] * tpb)
-        end_tick = int(info['end'] * tpb)
+        start_tick = max(0, round(info['start'] * tpb))
+        end_tick = max(start_tick + 1, round(info['end'] * tpb))
 
         events.append({'type': 'note_on', 'note': note_num, 'velocity': _clamp_velocity(vel), 'abs_tick': start_tick})
         events.append({'type': 'note_off', 'note': note_num, 'velocity': 0, 'abs_tick': end_tick})

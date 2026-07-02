@@ -924,8 +924,8 @@ def main() -> None:
     _set_current_process_app_id()
     app = build_ui()
 
-    # 允许 Gradio 的 /file= 路由访问输出目录,以便自定义下载链接可用。
-    allowed_paths = [str(config.OUTPUT_DIR)]
+    # 允许 Gradio 的 /file= 路由访问输出目录和项目目录,以便自定义下载链接可用。
+    allowed_paths = [str(config.OUTPUT_DIR), str(config.PROJECTS_DIR)]
 
     if args.browser:
         app.launch(share=False, inbrowser=True, allowed_paths=allowed_paths)

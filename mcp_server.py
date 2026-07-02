@@ -19,8 +19,9 @@ import out
 # ===== 初始化 MCP Server =====
 mcp = FastMCP("ai-midi-tools")
 
-# MIDI 文件所在的输出目录
-OUTPUT_DIR: Path = config.OUTPUT_DIR
+# MIDI 文件所在的输出目录（优先从环境变量读取，支持项目级目录）
+_env_output = os.environ.get("AI_MIDI_OUTPUT_DIR", "")
+OUTPUT_DIR: Path = Path(_env_output) if _env_output else config.OUTPUT_DIR
 
 
 def _normalize_note_data(note_data: str) -> str:

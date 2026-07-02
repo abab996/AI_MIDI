@@ -17,6 +17,7 @@ OUTPUT_DIR: Path = PROJECT_ROOT / "output"             # 文本/结果输出目�
 OUTPUT_MIDI: Path = PROJECT_ROOT / "output.mid"        # 生成的 MIDI 输出
 DOING_DIR: Path = PROJECT_ROOT / "doing"               # 中间产物目录
 DOING_OUTPUT_TXT: Path = DOING_DIR / "midi_output.txt" # 解析后的 note_table 文本
+PROJECTS_DIR: Path = PROJECT_ROOT / "projects"         # 多轮对话项目存储目录
 
 # ===== 日志系统 =====
 _LOG_DIR = OUTPUT_DIR

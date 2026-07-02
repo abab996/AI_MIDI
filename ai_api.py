@@ -7,6 +7,7 @@
 各自只负责拼装对应的 user content。
 """
 import logging
+from collections.abc import Iterator
 
 from openai import OpenAI
 import openai
@@ -57,7 +58,7 @@ def _chat(
     reasoning_effort: str | None = None,
     thinking_enabled: bool = True,
 ) -> str:
-    """统一调用 DeepSeek。
+    """统一调用 DeepSeek(非流式)。
 
     所有公开功能函数都通过本函数与模型通信,
     在此集中处理 reasoning/thinking 参数与异常。
@@ -107,6 +108,54 @@ def _chat(
     result: str = response.choices[0].message.content
     print(result)
     return result
+
+
+def _chat_stream(
+    messages: list[dict],
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    max_completion_tokens: int | None = None,
+    reasoning_effort: str | None = None,
+    thinking_enabled: bool = True,
+) -> Iterator[str]:
+    """流式调用 DeepSeek，逐 chunk yield 内容。
+
+    用于最终回复阶段的逐字显示。
+    参数与 _chat 相同，但接受 messages 列表而非 user_content。
+    """
+    client = get_client(api_key, base_url)
+
+    extra_body: dict | None = None
+    if thinking_enabled:
+        extra_body = {"thinking": {"type": "enabled"}}
+
+    kwargs: dict = {
+        "model": model or config.MODEL,
+        "messages": messages,
+        "stream": True,
+    }
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if max_completion_tokens is not None:
+        kwargs["max_completion_tokens"] = max_completion_tokens
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
+
+    try:
+        response = client.chat.completions.create(**kwargs)
+    except (openai.APIError, openai.OpenAIError) as e:
+        logger.error("调用 AI API 时发生错误: %s", e)
+        yield ""
+        return
+
+    for chunk in response:
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
 
 
 def add_chord(

@@ -25,6 +25,7 @@ window_icon.ico
 # 运行时产物
 output/
 doing/
+projects/
 
 # 根目录散落的 MIDI/中间文件(保留 input/ 与 samples/ 下的样本)
 /*.mid

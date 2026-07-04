@@ -24,6 +24,17 @@ _env_output = os.environ.get("AI_MIDI_OUTPUT_DIR", "")
 OUTPUT_DIR: Path = Path(_env_output) if _env_output else config.OUTPUT_DIR
 
 
+def _safe_join(base_dir: Path, filename: str) -> Path:
+    """Resolve filename within base_dir, preventing path traversal.
+
+    Raises ValueError if the resolved path escapes base_dir.
+    """
+    filepath = (base_dir / filename).resolve()
+    if not str(filepath).startswith(str(base_dir.resolve()) + os.sep) and filepath != base_dir.resolve():
+        raise ValueError(f"Path traversal detected: {filename}")
+    return filepath
+
+
 def _normalize_note_data(note_data: str) -> str:
     """将 AI 输出的各种格式转换为 note_table 文本格式。
 
@@ -85,9 +96,12 @@ def parse_midi(filename: str) -> str:
         filename: MIDI 文件名（如 output.mid、song.mid）
 
     返回：
-        每行一个音符的 note_table 文本，或错误信息。
+         每行一个音符的 note_table 文本，或错误信息。
     """
-    filepath = OUTPUT_DIR / filename
+    try:
+        filepath = _safe_join(OUTPUT_DIR, filename)
+    except ValueError as e:
+        return f"错误：{e}"
     if not filepath.exists():
         return f"错误：文件不存在 — {filepath}"
     try:
@@ -122,7 +136,10 @@ def create_midi(filename: str = "output.mid", bpm: int = 120, notes: str = "", n
     # 兼容：AI 可能传 JSON 数组格式，需要转换为 note_table 文本格式
     note_data = _normalize_note_data(note_data)
 
-    filepath = OUTPUT_DIR / filename
+    try:
+        filepath = _safe_join(OUTPUT_DIR, filename)
+    except ValueError as e:
+        return f"错误：{e}"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     try:
         note_count = len([l for l in note_data.strip().split("\n") if l.strip()])
@@ -141,9 +158,12 @@ def delete_midi(filename: str) -> str:
         filename: 要删除的 MIDI 文件名（如 old.mid）
 
     返回：
-        操作结果说明。
+         操作结果说明。
     """
-    filepath = OUTPUT_DIR / filename
+    try:
+        filepath = _safe_join(OUTPUT_DIR, filename)
+    except ValueError as e:
+        return f"错误：{e}"
     if not filepath.exists():
         return f"错误：文件不存在 — {filepath}"
     try:
@@ -161,10 +181,13 @@ def read_library_file(filename: str) -> str:
         filename: 文件名（如 02_配和弦指南.md）
 
     返回：
-        文件内容，或错误信息。
+         文件内容，或错误信息。
     """
     lib_dir = config.PROJECT_ROOT / "Library"
-    filepath = lib_dir / filename
+    try:
+        filepath = _safe_join(lib_dir, filename)
+    except ValueError as e:
+        return f"错误：{e}"
     if not filepath.exists():
         available = sorted(p.name for p in lib_dir.glob("*.md")) if lib_dir.exists() else []
         return (

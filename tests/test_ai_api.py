@@ -37,6 +37,24 @@ class TestApiTimeout:
         assert kwargs.get("timeout") == 30
 
 
+class TestTypeErrorHandling:
+    def test_chat_returns_empty_string_on_type_error(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = TypeError("unexpected keyword argument")
+        
+        with patch.object(ai_api, "get_client", return_value=mock_client):
+            result = ai_api._chat("hello", timeout=30)
+            assert result == ""
+
+    def test_chat_stream_returns_empty_iterator_on_type_error(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = TypeError("unexpected keyword argument")
+        
+        with patch.object(ai_api, "get_client", return_value=mock_client):
+            result = list(ai_api._chat_stream([{"role": "user", "content": "hi"}], timeout=30))
+            assert result == []
+
+
 class TestChatStream:
     def test_stream_returns_empty_iterator_on_api_error(self):
         mock_client = MagicMock()

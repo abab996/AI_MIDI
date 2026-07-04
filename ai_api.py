@@ -102,14 +102,7 @@ def _chat(
 
     try:
         response = client.chat.completions.create(**kwargs)
-    except openai.APIError as e:
-        logger.error(
-            "调用 AI API 时发生 APIError: status=%s, type=%s",
-            getattr(e, 'status_code', '?'),
-            type(e).__name__,
-        )
-        return ""
-    except openai.OpenAIError as e:
+    except (openai.APIError, openai.OpenAIError, TypeError) as e:
         logger.error(
             "调用 AI API 时发生错误: status=%s, type=%s",
             getattr(e, 'status_code', '?'),
@@ -163,7 +156,7 @@ def _chat_stream(
 
     try:
         response = client.chat.completions.create(**kwargs)
-    except (openai.APIError, openai.OpenAIError) as e:
+    except (openai.APIError, openai.OpenAIError, TypeError) as e:
         logger.error(
             "调用 AI API 时发生错误: status=%s, type=%s",
             getattr(e, 'status_code', '?'),

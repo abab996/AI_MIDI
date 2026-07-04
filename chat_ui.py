@@ -64,8 +64,6 @@ def _list_library_files() -> list[str]:
 
 # ==================== System Prompt 构建 ====================
 
-# ==================== System Prompt 构建 ====================
-
 def _build_system_prompt(files: list[dict]) -> str:
     """构建包含 MIDI 文件上下文和 Library 知识库的 system prompt。"""
     if files:
@@ -229,7 +227,7 @@ def _ensure_mcp_process() -> subprocess.Popen | None:
                 [sys.executable, str(_MCP_SCRIPT)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
                 bufsize=0,
@@ -593,15 +591,21 @@ def _execute_tool_call(tool_call, midi_files: list[dict]) -> tuple[str, list[dic
 
 
 def _format_tool_log(tool_log: list[str]) -> str:
-    """将工具调用日志格式化为可折叠的 HTML details 标签。"""
+    """将工具调用日志格式化为可折叠的 HTML details 标签。
+    每个工具调用独立为一个标签，方便用户逐个展开查看。
+    """
     if not tool_log:
         return ""
-    log_text = "\n\n".join(tool_log)
+    return "\n\n".join(tool_log)
+
+
+def _format_single_tool_entry(tc_name: str, args_str: str, result_text: str) -> str:
+    """格式化单个工具调用为可折叠 HTML details 标签。"""
     return (
-        "\n\n<details>\n"
-        f"<summary>🔧 已调用 {len(tool_log)} 个工具</summary>\n\n"
-        f"{log_text}\n\n"
-        "</details>"
+        f"<details>\n"
+        f"<summary>🔧 调用 `{tc_name}({args_str})`</summary>\n\n"
+        f"```\n{result_text}\n```\n"
+        f"</details>"
     )
 
 
@@ -683,6 +687,9 @@ def send_message(message, history, midi_files, undo_stack, full_history):
     download_path = None
     tool_log: list[str] = []
     max_tool_rounds = 10
+    chat_display = list(history)
+    # 预添加本轮用户消息（所有路径共享，避免后续重复添加）
+    chat_display.append({"role": "user", "content": message})
 
     try:
         for round_idx in range(max_tool_rounds):
@@ -699,6 +706,7 @@ def send_message(message, history, midi_files, undo_stack, full_history):
                     messages.append(msg)
                 messages.append({"role": "user", "content": message})
                 kwargs["messages"] = messages
+                _round_start_idx = len(messages)
                 logger.info("压缩完成，full_history 长度: %d", len(full_history))
             # 更新 system prompt 以反映当前文件列表
             kwargs["messages"][0] = {"role": "system", "content": _build_system_prompt(updated_files)}
@@ -737,87 +745,26 @@ def send_message(message, history, midi_files, undo_stack, full_history):
 
             # 如果没有工具调用，说明 AI 给出了最终回复
             if not msg_tool_calls:
-                # 构建完整 API 历史（只包含本轮之前的历史 + 本轮 user，不包含 system）
+                # 构建完整 API 历史
                 new_full_history = full_history + [
                     {"role": "user", "content": message},
                 ]
-                # 只追加本轮新增的 assistant/tool 消息（从 _round_start_idx 开始），排除 system
                 for api_msg in messages[_round_start_idx:]:
                     if api_msg.get("role") in ("assistant", "tool"):
                         new_full_history.append(api_msg)
 
-                # Chatbot 基础历史
-                base_history = history + [
-                    {"role": "user", "content": message},
-                ]
+                # 构建最终显示内容：AI 回复（工具 details 已在 chat_display 中）
+                final_display = msg_content or ""
 
-                # 工具日志前缀
-                tool_log_html = _format_tool_log(tool_log)
-                initial_content = (tool_log_html + "\n\n" if tool_log_html else "")
-
-                # 构建流式调用的 messages（不包含本轮刚 append 的 assistant）
-                stream_messages = messages[:-1]
-
-                # 流式重新调用 API
-                stream_kwargs = {
-                    "model": kwargs["model"],
-                    "messages": stream_messages,
-                    "stream": True,
-                }
-                for k in ("max_tokens", "max_completion_tokens", "reasoning_effort"):
-                    if k in kwargs and kwargs[k] is not None:
-                        stream_kwargs[k] = kwargs[k]
-                if "extra_body" in kwargs:
-                    stream_kwargs["extra_body"] = kwargs["extra_body"]
-
-                full_response = ""
-
-                # 流式显示
-                try:
-                    response_stream = client.chat.completions.create(**stream_kwargs)
-                except Exception:
-                    logger.exception("流式 API 调用失败")
-                    full_response = msg_content or "（流式调用失败）"
-                    # 兜底：直接用非流式结果作为最终回复
-                    current_content = initial_content + full_response
+                # 逐字流式显示
+                displayed = ""
+                # 添加一条空的 assistant 消息作为流式输出的占位
+                chat_display.append({"role": "assistant", "content": ""})
+                for ch in final_display:
+                    displayed += ch
+                    chat_display[-1] = {"role": "assistant", "content": displayed}
                     yield (
-                        base_history + [{"role": "assistant", "content": current_content}],
-                        "",
-                        updated_files,
-                        new_undo_stack,
-                        new_full_history,
-                        download_path,
-                        gr.update(choices=_get_choices(updated_files), value=[]),
-                    )
-                    logger.info("流式 API 调用失败，使用非流式回退，共 %d 字", len(full_response))
-                    if _current_project_id:
-                        project_manager.save_history(_current_project_id, new_full_history, updated_files)
-                    return
-
-                try:
-                    for chunk in response_stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            full_response += chunk.choices[0].delta.content
-
-                        # 每收到 chunk 更新 Chatbot
-                        current_content = initial_content + full_response
-                        yield (
-                            base_history + [{"role": "assistant", "content": current_content}],
-                            "",
-                            updated_files,
-                            new_undo_stack,
-                            new_full_history,
-                            download_path,
-                            gr.update(choices=_get_choices(updated_files), value=[]),
-                        )
-                except Exception:
-                    logger.exception("流式传输中途异常")
-                    # 使用已累积的内容作为最终回复
-                    if not full_response:
-                        full_response = msg_content or "（流式传输中断）"
-                    current_content = initial_content + full_response
-                    yield (
-                        base_history + [{"role": "assistant", "content": current_content}],
+                        list(chat_display),
                         "",
                         updated_files,
                         new_undo_stack,
@@ -832,6 +779,19 @@ def send_message(message, history, midi_files, undo_stack, full_history):
 
                 return
 
+            # 如果 AI 在调用工具前有说明文字，先显示
+            if msg_content and msg_content.strip():
+                chat_display.append({"role": "assistant", "content": msg_content})
+                yield (
+                    list(chat_display),
+                    "",
+                    updated_files,
+                    new_undo_stack,
+                    full_history,
+                    download_path,
+                    gr.update(choices=_get_choices(updated_files), value=[]),
+                )
+
             # 执行工具调用
             for tc in msg_tool_calls:
                 tc_id = tc.id
@@ -839,12 +799,12 @@ def send_message(message, history, midi_files, undo_stack, full_history):
                 tc_args_raw = tc.function.arguments
 
                 # 显示"正在调用工具"状态
-                temp_history = history + [
-                    {"role": "user", "content": message},
-                    {"role": "assistant", "content": f"🤔 正在调用工具 `{tc_name}`..."},
-                ]
+                chat_display.append({
+                    "role": "assistant",
+                    "content": f"🔧 正在调用 `{tc_name}`...",
+                })
                 yield (
-                    temp_history,
+                    list(chat_display),
                     "",
                     updated_files,
                     new_undo_stack,
@@ -863,9 +823,12 @@ def send_message(message, history, midi_files, undo_stack, full_history):
                     updated_files,
                 )
 
-                # 记录工具执行日志
+                # 构建 args_str 和 details 标签
                 args_str = ", ".join(f"{k}={v}" for k, v in tc_args.items())
-                tool_log.append(f"**工具调用** `{tc_name}({args_str})`\n```\n{result_text}\n```")
+                entry = _format_single_tool_entry(tc_name, args_str, result_text)
+
+                # 记录工具执行日志（使用 details 标签格式，与 chat_display 一致）
+                tool_log.append(entry)
 
                 # 如果创建了文件，设置下载路径
                 if tc_name == "create_midi":
@@ -880,29 +843,55 @@ def send_message(message, history, midi_files, undo_stack, full_history):
                 # 将工具结果回传给 API
                 messages.append(_make_tool_result_message(tc_id, result_text))
 
+                # 更新 chat_display：将"正在调用..."替换为包含结果的 details 标签
+                if chat_display and chat_display[-1].get("role") == "assistant":
+                    # 替换最后一条 assistant 消息
+                    chat_display[-1] = {"role": "assistant", "content": entry}
+                else:
+                    chat_display.append({"role": "assistant", "content": entry})
+                yield (
+                    list(chat_display),
+                    "",
+                    updated_files,
+                    new_undo_stack,
+                    full_history,
+                    download_path,
+                    gr.update(choices=_get_choices(updated_files), value=[]),
+                )
+
         # 达到最大轮数，用当前内容作为最终回复
         tool_log_html = _format_tool_log(tool_log)
         final_content = messages[-1].get("content", "（已达到最大工具调用轮数）")
-        full_response = (tool_log_html + "\n\n" if tool_log_html else "") + final_content
-        final_history = history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": full_response},
-        ]
+
+        # 构建完整 API 历史
         new_full_history = full_history + [{"role": "user", "content": message}]
         for api_msg in messages[_round_start_idx:]:
             if api_msg.get("role") in ("assistant", "tool"):
                 new_full_history.append(api_msg)
+
+        # 构建最终显示内容（工具 details 已在 chat_display 中）
+        full_display = final_content
+
+        # 逐字流式显示
+        displayed = ""
+        # 添加一条空的 assistant 消息作为流式输出的占位
+        chat_display.append({"role": "assistant", "content": ""})
+        for ch in full_display:
+            displayed += ch
+            chat_display[-1] = {"role": "assistant", "content": displayed}
+            yield (
+                list(chat_display),
+                "",
+                updated_files,
+                new_undo_stack,
+                new_full_history,
+                download_path,
+                gr.update(choices=_get_choices(updated_files), value=[]),
+            )
+
+        # 保存历史
         if _current_project_id:
             project_manager.save_history(_current_project_id, new_full_history, updated_files)
-        yield (
-            final_history,
-            "",
-            updated_files,
-            new_undo_stack,
-            new_full_history,
-            download_path,
-            gr.update(choices=_get_choices(updated_files), value=[]),
-        )
 
     except Exception as e:
         # 如果是 GeneratorExit，说明用户取消了操作，不修改 history
@@ -915,22 +904,19 @@ def send_message(message, history, midi_files, undo_stack, full_history):
             + (f" (HTTP {e.status_code})" if hasattr(e, 'status_code') else "")
         )
         error_msg = (error_base + "\n\n" + tool_log_html).strip() if tool_log_html else error_base
-        error_history = history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": error_msg},
-        ]
+        chat_display.append({"role": "assistant", "content": error_msg})
+        new_error_history = full_history + [{"role": "user", "content": message}]
+        for api_msg in messages[_round_start_idx:]:
+            if api_msg.get("role") in ("assistant", "tool"):
+                new_error_history.append(api_msg)
         if _current_project_id:
-            new_error_history = full_history + [{"role": "user", "content": message}]
-            for api_msg in messages[_round_start_idx:]:
-                if api_msg.get("role") in ("assistant", "tool"):
-                    new_error_history.append(api_msg)
             project_manager.save_history(_current_project_id, new_error_history, updated_files)
         yield (
-            error_history,
+            list(chat_display),
             "",
             updated_files,
             new_undo_stack,
-            full_history,
+            new_error_history,
             None,
             gr.update(),
         )

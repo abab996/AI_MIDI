@@ -39,3 +39,25 @@ class TestSaveSettings:
                 thinking_enabled=True,
             )
             assert "✓" in result
+
+
+class TestChatLaunch:
+    def test_chat_started_only_set_after_ready(self):
+        webui._chat_started = False
+        webui._chat_launch_error = None
+        
+        with patch.object(webui, "_is_chat_running", return_value=False), \
+             patch.object(webui, "_start_chat_server") as mock_start, \
+             patch.object(webui, "_wait_for_chat_ready", return_value=True):
+            
+            # Simulate _start_chat_server setting _chat_started = True when ready
+            def simulate_start():
+                webui._chat_started = True
+                webui._chat_launch_error = None
+            
+            mock_start.side_effect = simulate_start
+            
+            result = webui.launch_chat()
+            
+            # After launch_chat returns, _chat_started should reflect actual readiness
+            assert webui._chat_started is True

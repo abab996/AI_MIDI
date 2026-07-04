@@ -114,20 +114,58 @@ def _start_chat_server() -> None:
         logger.exception("启动多轮对话服务失败")
 
 
+def _start_chat_server() -> None:
+    """在后台启动多轮对话 Gradio 服务并等待就绪。"""
+    global _chat_launch_error, _chat_started
+    try:
+        from chat_ui import build_chat_ui
+
+        app = build_chat_ui()
+        app.launch(
+            prevent_thread_lock=True,
+            server_name="127.0.0.1",
+            server_port=CHAT_PORT,
+            share=False,
+            inbrowser=False,
+        )
+        if not _wait_for_chat_ready(timeout=10.0):
+            _chat_launch_error = "服务启动超时"
+            _chat_started = False
+        else:
+            _chat_launch_error = None
+            _chat_started = True
+    except OSError as e:
+        if "Address already in use" in str(e):
+            if _wait_for_chat_ready(timeout=3.0):
+                _chat_launch_error = None
+                _chat_started = True
+            else:
+                _chat_launch_error = f"端口 {CHAT_PORT} 被占用且服务不可用"
+                _chat_started = False
+        else:
+            _chat_launch_error = str(e)
+            _chat_started = False
+    except Exception as e:  # noqa: BLE001
+        _chat_launch_error = str(e)
+        _chat_started = False
+        logger.exception("启动多轮对话服务失败")
+
+
 def launch_chat() -> str:
     """启动多轮对话窗口（供 Gradio 按钮回调使用）。"""
     global _chat_thread, _chat_started, _chat_launch_error
 
     _chat_launch_error = None
 
-    if not _chat_started:
-        if _is_chat_running():
-            _chat_started = True
-            return f"多轮对话窗口已就绪：{CHAT_URL}"
-
-        _chat_thread = threading.Thread(target=_start_chat_server, daemon=True)
-        _chat_thread.start()
+    if _is_chat_running():
         _chat_started = True
+        return f"多轮对话窗口已就绪：{CHAT_URL}"
+
+    if _chat_started and _chat_thread and _chat_thread.is_alive():
+        return f"正在启动多轮对话窗口… {CHAT_URL}"
+
+    _chat_thread = threading.Thread(target=_start_chat_server, daemon=True)
+    _chat_thread.start()
 
     return f"正在启动多轮对话窗口… {CHAT_URL}"
 

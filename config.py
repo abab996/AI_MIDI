@@ -21,17 +21,30 @@ PROJECTS_DIR: Path = PROJECT_ROOT / "projects"         # 多轮对话项目存�
 
 # ===== 日志系统 =====
 _LOG_DIR = OUTPUT_DIR
-_LOG_DIR.mkdir(exist_ok=True)
 _LOG_FILE = _LOG_DIR / "ai_midi.log"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=[
-        logging.FileHandler(_LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
+
+def _setup_logging() -> None:
+    """Configure logging with fallback to console-only if file logging fails."""
+    try:
+        _LOG_DIR.mkdir(exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+            handlers=[
+                logging.FileHandler(_LOG_FILE, encoding="utf-8"),
+                logging.StreamHandler(),
+            ],
+        )
+    except Exception:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+            handlers=[logging.StreamHandler()],
+        )
+
+
+_setup_logging()
 logger = logging.getLogger("ai_midi")
 
 # ===== DeepSeek API =====

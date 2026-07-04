@@ -196,6 +196,8 @@ def _save_settings(
         "reasoning_effort": reasoning_effort,
         "thinking_enabled": thinking_enabled,
     }
+    config.save_settings(settings)
+    return "✓ 配置已保存"
 
 
 def _note_to_text(note_table: list[str]) -> str:

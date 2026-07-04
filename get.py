@@ -53,6 +53,17 @@ def parse_midi_to_custom_format(file_path) -> list[str]:
         current_tick += msg.time
 
         if msg.type == 'note_on' and msg.velocity > 0:
+            if msg.note in active_notes:
+                old_info = active_notes.pop(msg.note)
+                start_beat = round(old_info['start_tick'] / tpb, 2)
+                end_beat = round(current_tick / tpb, 2)
+                if end_beat > start_beat:
+                    parsed_notes.append({
+                        'note': midi_number_to_note_name(msg.note),
+                        'velocity': old_info['velocity'],
+                        'start': start_beat,
+                        'end': end_beat
+                    })
             active_notes[msg.note] = {
                 'start_tick': current_tick,
                 'velocity': msg.velocity
@@ -71,6 +82,19 @@ def parse_midi_to_custom_format(file_path) -> list[str]:
                     'start': start_beat,
                     'end': end_beat
                 })
+
+    for note_num, info in list(active_notes.items()):
+        start_beat = round(info['start_tick'] / tpb, 2)
+        end_beat = round(current_tick / tpb, 2)
+        if end_beat <= start_beat:
+            end_beat = round(start_beat + 0.01, 2)
+        if end_beat > start_beat:
+            parsed_notes.append({
+                'note': midi_number_to_note_name(note_num),
+                'velocity': info['velocity'],
+                'start': start_beat,
+                'end': end_beat
+            })
 
     parsed_notes.sort(key=lambda x: x['start'])
 

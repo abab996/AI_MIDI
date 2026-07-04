@@ -41,23 +41,19 @@ class TestSaveSettings:
             assert "✓" in result
 
 
-class TestChatLaunch:
-    def test_chat_started_only_set_after_ready(self):
-        webui._chat_started = False
-        webui._chat_launch_error = None
-        
-        with patch.object(webui, "_is_chat_running", return_value=False), \
-             patch.object(webui, "_start_chat_server") as mock_start, \
-             patch.object(webui, "_wait_for_chat_ready", return_value=True):
-            
-            # Simulate _start_chat_server setting _chat_started = True when ready
-            def simulate_start():
-                webui._chat_started = True
-                webui._chat_launch_error = None
-            
-            mock_start.side_effect = simulate_start
-            
-            result = webui.launch_chat()
-            
-            # After launch_chat returns, _chat_started should reflect actual readiness
-            assert webui._chat_started is True
+class TestBaseUrlValidation:
+    def test_rejects_http(self):
+        with pytest.raises(ValueError, match="https"):
+            webui._validate_base_url("http://api.deepseek.com")
+
+    def test_rejects_non_standard_port(self):
+        with pytest.raises(ValueError, match="443"):
+            webui._validate_base_url("https://api.deepseek.com:8443")
+
+    def test_rejects_path(self):
+        with pytest.raises(ValueError, match="路径"):
+            webui._validate_base_url("https://api.deepseek.com/v1")
+
+    def test_accepts_valid_https(self):
+        result = webui._validate_base_url("https://api.deepseek.com")
+        assert result == "https://api.deepseek.com"

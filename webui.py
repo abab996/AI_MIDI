@@ -192,15 +192,19 @@ def _validate_base_url(base_url: str) -> str:
     if not url:
         return config.BASE_URL
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"base_url 协议必须为 http 或 https: {parsed.scheme}")
+    if parsed.scheme != "https":
+        raise ValueError(f"base_url 必须使用 https 协议: {parsed.scheme}")
     host = parsed.hostname or ""
-    if host in _ALLOWED_BASE_URL_DOMAINS:
-        return f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
-    raise ValueError(
-        f"base_url 域名不在允许列表中: {host}。"
-        f"如需使用其他服务商,请修改 _ALLOWED_BASE_URL_DOMAINS。"
-    )
+    if host not in _ALLOWED_BASE_URL_DOMAINS:
+        raise ValueError(
+            f"base_url 域名不在允许列表中: {host}。"
+            f"如需使用其他服务商,请修改 _ALLOWED_BASE_URL_DOMAINS。"
+        )
+    if parsed.port is not None and parsed.port != 443:
+        raise ValueError(f"base_url 端口必须为 443（标准 HTTPS 端口）: {parsed.port}")
+    if parsed.path and parsed.path != "/":
+        raise ValueError(f"base_url 不能包含路径: {parsed.path}")
+    return f"https://{host}"
 
 
 # ===== 用户设置持久化(委托给 config 统一管理) =====

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import ai_api
+import openai
 
 
 class TestApiTimeout:
@@ -34,3 +35,15 @@ class TestApiTimeout:
         
         _, kwargs = mock_client.chat.completions.create.call_args
         assert kwargs.get("timeout") == 30
+
+
+class TestChatStream:
+    def test_stream_returns_empty_iterator_on_api_error(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = openai.APIError(
+            message="test", request=None, body=None
+        )
+        
+        with patch.object(ai_api, "get_client", return_value=mock_client):
+            result = list(ai_api._chat_stream([{"role": "user", "content": "hi"}]))
+            assert result == []

@@ -38,6 +38,16 @@ _PATTERN = re.compile(
 )
 
 
+def _extract_fields(line: str) -> tuple[str, str, str, str] | None:
+    note_match = re.search(r'note:\s*[^A-G]*([A-G][#b]?\d+)', line, re.IGNORECASE)
+    vel_match = re.search(r'velocity:\s*[^\d]*([\d.]+)', line, re.IGNORECASE)
+    start_match = re.search(r'start:\s*[^\d]*([\d.]+)', line, re.IGNORECASE)
+    end_match = re.search(r'end:\s*[^\d]*([\d.]+)', line, re.IGNORECASE)
+    if note_match and vel_match and start_match and end_match:
+        return note_match.group(1), vel_match.group(1), start_match.group(1), end_match.group(1)
+    return None
+
+
 def _clamp_velocity(vel) -> int:
     """将力度值限制在 MIDI 合法范围 0-127。"""
     v = int(float(vel))
@@ -107,9 +117,9 @@ def _parse_lines(lines) -> tuple[list[dict], int]:
         if not clean_line:
             continue
 
-        match = _PATTERN.search(clean_line)
-        if match:
-            note_str, vel_str, start_str, end_str = match.groups()
+        result = _extract_fields(clean_line)
+        if result:
+            note_str, vel_str, start_str, end_str = result
             try:
                 vel_val = float(vel_str)
                 start_val = float(start_str)

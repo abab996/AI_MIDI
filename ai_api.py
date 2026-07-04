@@ -57,6 +57,7 @@ def _chat(
     max_completion_tokens: int | None = None,
     reasoning_effort: str | None = None,
     thinking_enabled: bool = True,
+    timeout: int | None = None,
 ) -> str:
     """统一调用 DeepSeek(非流式)。
 
@@ -71,6 +72,7 @@ def _chat(
     - max_completion_tokens: 对应 API 的 max_completion_tokens(最大输出长度)
     - reasoning_effort: "low" / "medium" / "max"
     - thinking_enabled: 是否启用 thinking 模式
+    - timeout: 请求超时时间（秒），None 表示使用 API 默认值
     """
     client = get_client(api_key, base_url)
     messages = [
@@ -93,6 +95,8 @@ def _chat(
         kwargs["max_tokens"] = max_tokens
     if max_completion_tokens is not None:
         kwargs["max_completion_tokens"] = max_completion_tokens
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
 
@@ -128,6 +132,7 @@ def _chat_stream(
     max_completion_tokens: int | None = None,
     reasoning_effort: str | None = None,
     thinking_enabled: bool = True,
+    timeout: int | None = None,
 ) -> Iterator[str]:
     """流式调用 DeepSeek，逐 chunk yield 内容。
 
@@ -151,6 +156,8 @@ def _chat_stream(
         kwargs["max_tokens"] = max_tokens
     if max_completion_tokens is not None:
         kwargs["max_completion_tokens"] = max_completion_tokens
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
 

@@ -57,3 +57,29 @@ class TestBaseUrlValidation:
     def test_accepts_valid_https(self):
         result = webui._validate_base_url("https://api.deepseek.com")
         assert result == "https://api.deepseek.com"
+
+
+class TestInputValidation:
+    def test_invalid_bpm_does_not_crash(self):
+        with patch.object(webui, "_validate_base_url", return_value="https://api.deepseek.com"), \
+             patch.object(webui, "ai_api") as mock_ai:
+            mock_ai.add_chord.return_value = "result"
+            # Should not raise on invalid BPM
+            webui._run_task(
+                func=webui.FUNC_ADD_CHORD,
+                note_table=[],
+                bpm="not_a_number",
+                time_signature="4/4",
+                lyrics="",
+                original_language="",
+                target_language="",
+                note_output=False,
+                requirements="test",
+                api_key="sk-test",
+                base_url="https://api.deepseek.com",
+                model="deepseek-v4-pro",
+                max_tokens=None,
+                max_completion_tokens=None,
+                reasoning_effort="max",
+                thinking_enabled=True,
+            )

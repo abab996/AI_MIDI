@@ -550,6 +550,29 @@ def _set_native_window_icon(window_title: str, image_path: Path, timeout: float 
         user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small_icon)
 
 
+def _validate_bpm(bpm_str: str) -> str:
+    try:
+        bpm = int(bpm_str)
+        return str(max(1, min(600, bpm)))
+    except (ValueError, TypeError):
+        return str(config.DEFAULT_BPM)
+
+
+def _validate_time_signature(ts: str) -> str:
+    import re
+    if re.match(r'^\d+/\d+$', ts.strip()):
+        return ts.strip()
+    return config.DEFAULT_TIME_SIGNATURE
+
+
+def _validate_int_param(value, default, min_val, max_val):
+    try:
+        v = int(value)
+        return max(min_val, min(max_val, v))
+    except (ValueError, TypeError):
+        return default
+
+
 def _run_task(
     func: str,
     note_table: list[str],
@@ -583,8 +606,8 @@ def _run_task(
     if not effective_api_key:
         return "", None, _elapsed("⚠ 请先在设置页填写并保存 API Key。")
 
-    bpm = bpm.strip() or str(config.DEFAULT_BPM)
-    time_signature = time_signature.strip() or config.DEFAULT_TIME_SIGNATURE
+    bpm = _validate_bpm(bpm.strip() or str(config.DEFAULT_BPM))
+    time_signature = _validate_time_signature(time_signature.strip() or config.DEFAULT_TIME_SIGNATURE)
     note_text = _note_to_text(note_table) if note_table else ""
 
     # 组装公共 API 参数,空值不传入,让 ai_api 使用默认值
@@ -600,9 +623,9 @@ def _run_task(
     if model.strip():
         api_kwargs["model"] = model.strip()
     if max_tokens:
-        api_kwargs["max_tokens"] = int(max_tokens)
+        api_kwargs["max_tokens"] = _validate_int_param(max_tokens, 4096, 1, 1000000)
     if max_completion_tokens:
-        api_kwargs["max_completion_tokens"] = int(max_completion_tokens)
+        api_kwargs["max_completion_tokens"] = _validate_int_param(max_completion_tokens, 4096, 1, 1000000)
     if reasoning_effort.strip():
         api_kwargs["reasoning_effort"] = reasoning_effort.strip()
     api_kwargs["thinking_enabled"] = thinking_enabled

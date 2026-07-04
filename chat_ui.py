@@ -273,9 +273,28 @@ def _mcp_send(proc: subprocess.Popen, message: dict) -> None:
     proc.stdin.flush()
 
 
-def _mcp_recv(proc: subprocess.Popen) -> dict | None:
-    """从 MCP 进程读取一条 JSON-RPC 响应。"""
-    line = proc.stdout.readline()
+def _mcp_recv(proc: subprocess.Popen, timeout: float = 30.0) -> dict | None:
+    """从 MCP 进程读取一条 JSON-RPC 响应（带超时）。"""
+    import queue
+    import threading
+
+    q: queue.Queue = queue.Queue()
+
+    def _read():
+        try:
+            line = proc.stdout.readline()
+            q.put(line)
+        except Exception:
+            q.put(None)
+
+    t = threading.Thread(target=_read, daemon=True)
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        return None
+
+    line = q.get()
     if not line:
         return None
     try:

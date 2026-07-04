@@ -20,3 +20,22 @@ class TestMcpProcess:
             chat_ui._ensure_mcp_process()
             _, kwargs = mock_popen.call_args
             assert kwargs.get("stderr") != subprocess.PIPE
+
+
+class TestMcpRecv:
+    def test_recv_returns_none_on_timeout(self):
+        mock_proc = MagicMock()
+        
+        def blocking_readline():
+            import time
+            time.sleep(10)
+            return ""
+        
+        mock_proc.stdout.readline = blocking_readline
+        
+        start = __import__("time").time()
+        result = chat_ui._mcp_recv(mock_proc, timeout=1.0)
+        elapsed = __import__("time").time() - start
+        
+        assert result is None
+        assert elapsed < 2.0

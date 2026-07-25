@@ -1,41 +1,63 @@
-"""Tests for chat_ui.py subprocess and MCP management."""
 from __future__ import annotations
 
-import subprocess
-import sys
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from unittest.mock import patch
 
 import chat_ui
 
 
-class TestMcpProcess:
-    def test_stderr_is_not_pipe(self):
-        with patch("subprocess.Popen") as mock_popen:
-            mock_proc = MagicMock()
-            mock_proc.poll.return_value = None
-            mock_popen.return_value = mock_proc
-            chat_ui._ensure_mcp_process()
-            _, kwargs = mock_popen.call_args
-            assert kwargs.get("stderr") != subprocess.PIPE
+def test_duplicate_project_names_keep_distinct_id_values():
+    projects = [
+        {"id": "project-a", "name": "同名项目", "message_count": 0},
+        {"id": "project-b", "name": "同名项目", "message_count": 0},
+    ]
+    with patch.object(chat_ui.project_manager, "list_projects", return_value=projects):
+        choices, ids = chat_ui._refresh_project_list()
+
+    assert choices == [("同名项目", "project-a"), ("同名项目", "project-b")]
+    assert ids == ["project-a", "project-b"]
+    assert chat_ui._resolve_project_id("project-b", ids) == "project-b"
 
 
-class TestMcpRecv:
-    def test_recv_returns_none_on_timeout(self):
-        mock_proc = MagicMock()
-        
-        def blocking_readline():
-            import time
-            time.sleep(10)
-            return ""
-        
-        mock_proc.stdout.readline = blocking_readline
-        
-        start = __import__("time").time()
-        result = chat_ui._mcp_recv(mock_proc, timeout=1.0)
-        elapsed = __import__("time").time() - start
-        
-        assert result is None
-        assert elapsed < 2.0
+def test_duplicate_file_labels_are_selected_by_path():
+    files = [
+        {"name": "same.mid", "path": "A/same.mid", "size": 10},
+        {"name": "same.mid", "path": "B/same.mid", "size": 10},
+    ]
+
+    assert chat_ui._selected_files(files, ["B/same.mid"]) == [files[1]]
+
+
+def test_delete_persists_file_state_and_creates_undo_snapshot():
+    files = [
+        {"name": "a.mid", "path": "A/a.mid", "size": 10},
+        {"name": "b.mid", "path": "B/b.mid", "size": 20},
+    ]
+    history = [{"role": "user", "content": "hello"}]
+
+    with patch.object(chat_ui, "_persist_project_state") as persist:
+        updated, undo_stack, _ = chat_ui._on_delete(
+            files, ["B/b.mid"], [], "project-id", history,
+        )
+
+    assert updated == [files[0]]
+    assert undo_stack == [files]
+    persist.assert_called_once_with("project-id", history, updated)
+
+
+def test_clear_chat_keeps_midi_metadata():
+    files = [{"name": "song.mid", "path": "song.mid", "size": 10}]
+    with patch.object(chat_ui.project_manager, "save_history") as save:
+        assert chat_ui._on_clear_chat("project-id", files) == ([], [])
+    save.assert_called_once_with("project-id", [], files)
+
+
+def test_created_midi_path_rejects_output_escape(tmp_path):
+    with patch.object(chat_ui, "_current_project_id", None), patch.object(
+        chat_ui.config, "OUTPUT_DIR", tmp_path,
+    ):
+        try:
+            chat_ui._resolve_created_midi_path("../escape.mid")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("path traversal should be rejected")

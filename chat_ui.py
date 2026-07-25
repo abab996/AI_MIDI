@@ -7,7 +7,6 @@ import copy
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -18,8 +17,8 @@ import zipfile
 from pathlib import Path
 
 import gradio as gr
+import mido
 
-import ai_api
 import config
 import get
 import out
@@ -156,45 +155,12 @@ def _build_system_prompt(files: list[dict]) -> str:
 
 # ==================== 设置加载 ====================
 
-# 仅允许向已知可信的 API 服务商发送请求,防止密钥被中间人窃取。
-_ALLOWED_BASE_URL_DOMAINS = {
-    "api.deepseek.com",
-    "api.openai.com",
-    "openai.azure.com",
-    "api.anthropic.com",
-    "api.moonshot.cn",
-    "api.stepfun.com",
-    "api.zhipuai.cn",
-    "qianwen.aliyuncs.com",
-    "dashscope.aliyuncs.com",
-}
-
-
-def _validate_base_url(base_url: str) -> str:
-    """验证 base_url 仅指向允许的域名,不安全时抛出 ValueError。"""
-    from urllib.parse import urlparse
-
-    url = base_url.strip()
-    if not url:
-        return config.BASE_URL
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"base_url 协议必须为 http 或 https: {parsed.scheme}")
-    host = parsed.hostname or ""
-    if host in _ALLOWED_BASE_URL_DOMAINS:
-        return f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
-    raise ValueError(
-        f"base_url 域名不在允许列表中: {host}。"
-        f"如需使用其他服务商,请修改 _ALLOWED_BASE_URL_DOMAINS。"
-    )
-
-
 def _load_settings() -> dict:
     """从 config 加载 API 设置。"""
     settings = config.load_settings()
     raw_base_url = settings.get("base_url", "") or config.BASE_URL
     try:
-        base_url = _validate_base_url(raw_base_url)
+        base_url = config.validate_base_url(raw_base_url)
     except ValueError:
         logger.warning("base_url 验证失败，使用默认值: %s", config.BASE_URL)
         base_url = config.BASE_URL
@@ -237,18 +203,24 @@ def _ensure_mcp_process() -> subprocess.Popen | None:
             # 等待进程就绪
             time.sleep(0.5)
             if _mcp_process.poll() is not None:
+                logger.error("MCP 进程启动后立即退出")
+                _mcp_process = None
                 return None
-            # 初始化 MCP 握手
-            _mcp_handshake(_mcp_process)
+            # 初始化 MCP 握手，失败则清理进程
+            if not _mcp_handshake(_mcp_process):
+                logger.error("MCP 握手失败，关闭子进程")
+                _close_mcp_process()
+                return None
             _mcp_initialized = True
             return _mcp_process
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
+            logger.exception("启动 MCP 进程失败")
+            _mcp_process = None
             return None
 
 
-def _mcp_handshake(proc: subprocess.Popen) -> None:
-    """执行 MCP 初始化握手。"""
-    # Send initialize request
+def _mcp_handshake(proc: subprocess.Popen) -> bool:
+    """执行 MCP 初始化握手。返回是否成功。"""
     init_request = {
         "jsonrpc": "2.0",
         "id": 0,
@@ -260,9 +232,13 @@ def _mcp_handshake(proc: subprocess.Popen) -> None:
         },
     }
     _mcp_send(proc, init_request)
-    _mcp_recv(proc)  # initialize result
+    init_result = _mcp_recv(proc)  # initialize result
+    if init_result is None or "error" in init_result:
+        logger.error("MCP initialize 失败: %s", init_result)
+        return False
     # Send initialized notification
     _mcp_send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    return True
 
 
 def _mcp_send(proc: subprocess.Popen, message: dict) -> None:
@@ -276,7 +252,6 @@ def _mcp_send(proc: subprocess.Popen, message: dict) -> None:
 def _mcp_recv(proc: subprocess.Popen, timeout: float = 30.0) -> dict | None:
     """从 MCP 进程读取一条 JSON-RPC 响应（带超时）。"""
     import queue
-    import threading
 
     q: queue.Queue = queue.Queue()
 
@@ -284,7 +259,7 @@ def _mcp_recv(proc: subprocess.Popen, timeout: float = 30.0) -> dict | None:
         try:
             line = proc.stdout.readline()
             q.put(line)
-        except Exception:
+        except (OSError, ValueError):
             q.put(None)
 
     t = threading.Thread(target=_read, daemon=True)
@@ -292,6 +267,8 @@ def _mcp_recv(proc: subprocess.Popen, timeout: float = 30.0) -> dict | None:
     t.join(timeout)
 
     if t.is_alive():
+        # 超时：让孤儿线程继续运行，下次调用可能会读到这条响应
+        # （_mcp_call_tool 会按 id 匹配，未匹配的会被忽略）
         return None
 
     line = q.get()
@@ -329,6 +306,8 @@ def _mcp_call_tool(name: str, arguments: dict) -> str:
         if response is None:
             break
         if response.get("id") == req_id:
+            if "error" in response:
+                return f"错误：MCP 工具返回错误 — {response['error']}"
             result = response.get("result", {})
             content = result.get("content", [])
             if content and isinstance(content, list):
@@ -364,6 +343,9 @@ def _mcp_list_tools() -> list[dict]:
         if response is None:
             break
         if response.get("id") == req_id:
+            if "error" in response:
+                logger.error("MCP tools/list 失败: %s", response["error"])
+                return []
             result = response.get("result", {})
             mcp_tools = result.get("tools", [])
             # 转换为 OpenAI function calling 格式
@@ -386,30 +368,87 @@ def _close_mcp_process() -> None:
     """关闭 MCP 子进程。"""
     global _mcp_process
     with _mcp_lock:
-        if _mcp_process and _mcp_process.poll() is None:
+        if _mcp_process:
             try:
-                _mcp_process.stdin.close()
-                _mcp_process.terminate()
-                _mcp_process.wait(timeout=5)
-            except Exception:
+                if _mcp_process.stdin and not _mcp_process.stdin.closed:
+                    _mcp_process.stdin.close()
+            except OSError:
+                pass
+            if _mcp_process.poll() is None:
                 try:
-                    _mcp_process.kill()
-                except Exception:
-                    pass
-        _mcp_process = None
-        _mcp_initialized = False
+                    _mcp_process.terminate()
+                    _mcp_process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    try:
+                        _mcp_process.kill()
+                        _mcp_process.wait(timeout=2)
+                    except (OSError, subprocess.TimeoutExpired):
+                        logger.warning("MCP 进程 kill 后未能 wait 退出")
+            _mcp_process = None
+            _mcp_initialized = False
+
+
+def _unique_dest_path(dest_dir, basename: str):
+    stem, suffix = os.path.splitext(basename)
+    candidate = dest_dir / basename
+    counter = 2
+    while candidate.exists():
+        candidate = dest_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
+    return candidate
+
+
+def _file_choice_value(file_info: dict) -> str:
+    return str(file_info.get("path") or file_info.get("name", ""))
+
+
+def _file_label(file_info: dict) -> str:
+    size_kb = max(1, file_info.get("size", 0) // 1024)
+    return f"{file_info.get('name', '')}  ({size_kb} KB)"
+
+
+def _selected_files(files: list[dict], selected) -> list[dict]:
+    if not selected:
+        return []
+    selected_values = {str(item[1] if isinstance(item, (list, tuple)) else item) for item in selected}
+    selected_names = {value.split("  (")[0] for value in selected_values}
+    return [
+        file_info for file_info in files
+        if _file_choice_value(file_info) in selected_values or file_info.get("name") in selected_names
+    ]
+
+
+def _persist_project_state(project_id: str | None, full_history, midi_files: list[dict]) -> None:
+    if project_id:
+        project_manager.save_history(project_id, full_history or [], midi_files or [])
+
+
+def _resolve_created_midi_path(filename: str) -> Path:
+    """Resolve a tool-created MIDI path without allowing output-dir escape."""
+    if _current_project_id:
+        return project_manager.resolve_midi_path(_current_project_id, filename)
+    if not filename:
+        raise ValueError("filename 不能为空")
+
+    output_dir = config.OUTPUT_DIR.resolve()
+    filepath = (output_dir / filename).resolve()
+    if filepath == output_dir or not filepath.is_relative_to(output_dir):
+        raise ValueError(f"filename 不能逃逸 output 目录: {filename}")
+    return filepath
 
 
 # ==================== MIDI 操作（兼容旧接口） ====================
 
-def _on_upload(files, current_list):
+def _on_upload(files, current_list, undo_stack, project_id, full_history):
     """上传文件，解析为 note_table 并追加到列表。文件复制到项目 midi 目录。"""
+    current_list = current_list or []
+    undo_stack = undo_stack or []
     if not files:
-        return current_list, gr.update()
+        return current_list, undo_stack, gr.update(choices=_get_choices(current_list))
     new_files = []
     # 确定目标目录：项目目录或临时目录
-    if _current_project_id:
-        dest_dir = project_manager.midi_dir(_current_project_id)
+    if project_id:
+        dest_dir = project_manager.midi_dir(project_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
     else:
         dest_dir = config.OUTPUT_DIR
@@ -418,31 +457,57 @@ def _on_upload(files, current_list):
     for f in files:
         src_path = f.name if hasattr(f, "name") else str(f)
         basename = os.path.basename(src_path)
+        # 仅接受 .mid/.midi 扩展名（防止用户绕过前端 file_types 限制）
+        if not basename.lower().endswith((".mid", ".midi")):
+            logger.warning("跳过非 MIDI 文件: %s", basename)
+            continue
         # 复制到项目/输出目录
-        dest_path = dest_dir / basename
-        shutil.copy2(src_path, dest_path)
+        dest_path = _unique_dest_path(dest_dir, basename)
+        try:
+            shutil.copy2(src_path, dest_path)
+        except OSError:
+            logger.exception("复制 MIDI 文件失败: %s -> %s", src_path, dest_path)
+            continue
+        # 验证文件是合法 MIDI：mido 解析失败的文件直接拒绝
+        try:
+            mido.MidiFile(str(dest_path))
+        except (OSError, ValueError, EOFError):
+            logger.warning("文件不是合法 MIDI,已删除: %s", dest_path)
+            try:
+                dest_path.unlink()
+            except OSError:
+                pass
+            continue
         try:
             note_table = get.get_note(str(dest_path), save_to_file=False)
-            note_table_str = "\n".join(note_table) if note_table else ""
-        except Exception:
-            note_table_str = ""
+        except OSError:
+            logger.exception("读取 MIDI 文件失败: %s", dest_path)
+            note_table = []
+        note_table_str = "\n".join(note_table) if note_table else ""
         new_files.append({
-            "name": basename,
+            "name": dest_path.name,
             "path": str(dest_path),
             "size": dest_path.stat().st_size if dest_path.exists() else 0,
             "note_table": note_table_str,
         })
     updated = current_list + new_files
-    return updated, gr.update(choices=_get_choices(updated), value=[])
+    new_undo_stack = undo_stack + [copy.deepcopy(current_list)] if new_files else undo_stack
+    _persist_project_state(project_id, full_history, updated)
+    return updated, new_undo_stack, gr.update(choices=_get_choices(updated), value=[])
 
 
-def _on_delete(current_list, selected):
+def _on_delete(current_list, selected, undo_stack, project_id, full_history):
     """删除勾选的文件。"""
-    if not current_list or not selected:
-        return current_list, gr.update()
-    selected_names = {s.split("  (")[0] for s in selected}
-    updated = [f for f in current_list if f["name"] not in selected_names]
-    return updated, gr.update(choices=_get_choices(updated), value=[])
+    current_list = current_list or []
+    undo_stack = undo_stack or []
+    selected_file_list = _selected_files(current_list, selected)
+    if not current_list or not selected_file_list:
+        return current_list, undo_stack, gr.update(choices=_get_choices(current_list))
+    selected_values = {_file_choice_value(file_info) for file_info in selected_file_list}
+    updated = [f for f in current_list if _file_choice_value(f) not in selected_values]
+    new_undo_stack = undo_stack + [copy.deepcopy(current_list)]
+    _persist_project_state(project_id, full_history, updated)
+    return updated, new_undo_stack, gr.update(choices=_get_choices(updated), value=[])
 
 
 def _on_download(current_list, selected):
@@ -451,8 +516,7 @@ def _on_download(current_list, selected):
         return None
 
     if selected:
-        selected_names = {s.split("  (")[0] for s in selected}
-        files = [f for f in current_list if f["name"] in selected_names]
+        files = _selected_files(current_list, selected)
     else:
         files = list(current_list)
 
@@ -463,34 +527,51 @@ def _on_download(current_list, selected):
         return files[0]["path"]
 
     zip_path = os.path.join(tempfile.gettempdir(), "AI_MIDI_files.zip")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in files:
-            if os.path.isfile(f["path"]):
-                zf.write(f["path"], f["name"])
+    used_names = set()
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in files:
+                if os.path.isfile(f["path"]):
+                    arcname = f["name"]
+                    stem, suffix = os.path.splitext(arcname)
+                    counter = 2
+                    while arcname in used_names:
+                        arcname = f"{stem}_{counter}{suffix}"
+                        counter += 1
+                    used_names.add(arcname)
+                    zf.write(f["path"], arcname)
+    except OSError:
+        logger.exception("创建 zip 失败: %s", zip_path)
+        if os.path.exists(zip_path):
+            try:
+                os.unlink(zip_path)
+            except OSError:
+                pass
+        return None
     return zip_path
 
 
-def _on_undo(undo_stack, current_files):
+def _on_undo(undo_stack, current_files, project_id, full_history):
     """撤销最近一次操作。"""
+    current_files = current_files or []
+    undo_stack = undo_stack or []
     if not undo_stack:
         return current_files, [], gr.update(choices=_get_choices(current_files))
     restored = undo_stack.pop()
+    _persist_project_state(project_id, full_history, restored)
     return restored, undo_stack, gr.update(choices=_get_choices(restored), value=[])
 
 
-def _get_choices(files: list[dict]) -> list[str]:
+def _get_choices(files: list[dict]) -> list[tuple[str, str]]:
     """生成 CheckboxGroup 选项列表。"""
-    return [
-        f"{f['name']}  ({max(1, f.get('size', 0) // 1024)} KB)"
-        for f in files
-    ]
+    return [(_file_label(file_info), _file_choice_value(file_info)) for file_info in files]
 
 
 # ==================== 上下文压缩 ====================
 
 # 压缩阈值（估算 tokens ≈ chars / 3）
-_MAX_CONTEXT_CHARS = 400_000  # 约为 133K tokens，适配大多数模型的 256K 上限
-_COMPACT_KEEP_RECENT = 3       # 保留最近 3 轮对话
+_MAX_CONTEXT_CHARS = config.MAX_CONTEXT_CHARS
+_COMPACT_KEEP_RECENT = config.COMPACT_KEEP_RECENT_MESSAGES
 
 
 def _compact_full_history(full_history: list[dict]) -> list[dict]:
@@ -536,11 +617,11 @@ def _generate_summary(old_messages: list[dict]) -> dict:
         content = msg.get("content", "") or ""
         if role == "user" and content:
             # 截取用户请求的前 100 字
-            snippet = content[:100].replace("\n", " ")
+            snippet = content[:config.SUMMARY_USER_TRUNCATE_CHARS].replace("\n", " ")
             lines.append(f"- 用户: {snippet}...")
         elif role == "assistant" and content:
             # 截取 AI 回复的前 80 字
-            snippet = content[:80].replace("\n", " ")
+            snippet = content[:config.SUMMARY_AI_TRUNCATE_CHARS].replace("\n", " ")
             lines.append(f"  AI: {snippet}...")
 
     summary_text = (
@@ -580,18 +661,26 @@ def _execute_tool_call(tool_call, midi_files: list[dict]) -> tuple[str, list[dic
     # 如果创建了文件，更新文件列表
     if func_name == "create_midi":
         filename = func_args.get("filename", "")
-        if _current_project_id:
-            filepath = project_manager.resolve_midi_path(_current_project_id, filename)
-        else:
-            filepath = config.OUTPUT_DIR / filename
+        try:
+            filepath = _resolve_created_midi_path(filename)
+        except ValueError as exc:
+            return f"错误：{exc}", updated_files
         if filepath.exists():
-            note_data = func_args.get("notes", "")
-            updated_files.append({
-                "name": filename,
+            # 从实际写入的文件重新解析，确保 UI 显示内容与 AI 读到的一致
+            # （AI 可能用 notes 或 note_table 两种参数名，且原始输入经过
+            #  _normalize_note_data 转换后格式会变；统一从文件读回最准确）
+            try:
+                note_data = get.get_note(str(filepath), save_to_file=False)
+            except Exception:
+                note_data = func_args.get("notes", "") or func_args.get("note_table", "")
+            file_info = {
+                "name": filepath.name,
                 "path": str(filepath),
                 "size": filepath.stat().st_size,
                 "note_table": note_data,
-            })
+            }
+            updated_files = [f for f in updated_files if _file_choice_value(f) != str(filepath)]
+            updated_files.append(file_info)
 
     # 如果删除了文件，更新文件列表
     elif func_name == "delete_midi":
@@ -618,11 +707,54 @@ def _format_tool_log(tool_log: list[str]) -> str:
     return "\n\n".join(tool_log)
 
 
-def _format_single_tool_entry(tc_name: str, args_str: str, result_text: str) -> str:
-    """格式化单个工具调用为可折叠 HTML details 标签。"""
+# summary 行参数值截断阈值：超过此长度的参数只显示短摘要，
+# 完整内容放到 <details> 展开区里，避免折叠标签外露出一大段音符
+_TOOL_ARG_SUMMARY_LIMIT = 80
+
+
+def _truncate_arg_value(value) -> str:
+    """把参数值转成短字符串，超长则截断并标注总长度。"""
+    s = str(value)
+    if len(s) <= _TOOL_ARG_SUMMARY_LIMIT:
+        return s
+    return s[:_TOOL_ARG_SUMMARY_LIMIT] + f"…（共 {len(s)} 字符）"
+
+
+def _format_single_tool_entry(tc_name: str, tc_args, result_text: str) -> str:
+    """格式化单个工具调用为可折叠 HTML details 标签。
+
+    Args:
+        tc_args: 工具参数。支持 dict（推荐，可做长参数截断）或已格式化的
+            字符串（向后兼容，直接原样显示）。
+        result_text: 工具执行结果文本。
+
+    对超长参数（如 create_midi 的 notes）进行截断，summary 行只保留短摘要，
+    完整参数单独放在 <details> 展开区，用户点开才能看到全部内容。
+    """
+    if isinstance(tc_args, dict):
+        short_parts = ", ".join(
+            f"{k}={_truncate_arg_value(v)}" for k, v in tc_args.items()
+        )
+        # 若有参数被截断，在展开区补一份完整参数
+        has_long = any(
+            len(str(v)) > _TOOL_ARG_SUMMARY_LIMIT for v in tc_args.values()
+        )
+        if has_long:
+            full_args_lines = "\n".join(f"{k}: {v}" for k, v in tc_args.items())
+            full_args_block = (
+                f"**完整参数:**\n```\n{full_args_lines}\n```\n\n"
+            )
+        else:
+            full_args_block = ""
+    else:
+        # 向后兼容：直接传字符串的情况
+        short_parts = str(tc_args)
+        full_args_block = ""
+
     return (
         f"<details>\n"
-        f"<summary>🔧 调用 `{tc_name}({args_str})`</summary>\n\n"
+        f"<summary>🔧 调用 `{tc_name}({short_parts})`</summary>\n\n"
+        f"{full_args_block}"
         f"```\n{result_text}\n```\n"
         f"</details>"
     )
@@ -646,10 +778,12 @@ def send_message(message, history, midi_files, undo_stack, full_history):
     Args:
         full_history: 完整 API 消息历史（含 tool 调用），用于构建 API 上下文。
     """
+    # ── 早期返回：空消息 ──
     if not message.strip():
         yield history, "", midi_files, undo_stack, full_history, None, gr.update()
         return
 
+    # ── 早期返回：未配置 API Key ──
     settings = _load_settings()
     if not settings["api_key"]:
         yield history + [
@@ -658,287 +792,18 @@ def send_message(message, history, midi_files, undo_stack, full_history):
         ], "", midi_files, undo_stack, full_history, None, gr.update()
         return
 
-    # 快照当前文件列表（用于撤销）
+    # ── 快照（用于撤销）──
     snapshot = copy.deepcopy(midi_files)
     new_undo_stack = undo_stack + [snapshot]
 
-    # 获取 MCP 工具定义
-    openai_tools = _mcp_list_tools()
-    logger.info("MCP 工具数量: %d", len(openai_tools))
-    if openai_tools:
-        logger.info("MCP 工具列表: %s", [t["function"]["name"] for t in openai_tools])
-    else:
-        logger.warning("MCP 工具列表为空！tools 参数不会传给 API")
+    # Lazy import to avoid circular dependency at module level
+    from chat_pipeline import _prepare_context, _execute_tool_loop  # noqa: E402
 
-    # 构建对话消息：使用完整 API 历史作为上下文
-    system_prompt = _build_system_prompt(midi_files)
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in full_history:
-        messages.append(msg)
-    messages.append({"role": "user", "content": message})
+    # ── 准备上下文 ──
+    ctx = _prepare_context(message, full_history, midi_files, settings, history)
 
-    # 记录本轮起始索引（之后新增的 assistant/tool 消息才是本轮产物）
-    _round_start_idx = len(messages)  # user 消息在最后
-
-    client = ai_api.get_client(
-        api_key=settings["api_key"],
-        base_url=settings["base_url"],
-    )
-
-    # 构建 API 参数
-    kwargs = {
-        "model": settings["model"],
-        "messages": messages,
-        "stream": False,
-    }
-    if openai_tools:
-        kwargs["tools"] = openai_tools
-    if settings["max_tokens"]:
-        kwargs["max_tokens"] = int(settings["max_tokens"])
-    if settings["max_completion_tokens"]:
-        kwargs["max_completion_tokens"] = int(settings["max_completion_tokens"])
-    if settings["reasoning_effort"]:
-        kwargs["reasoning_effort"] = settings["reasoning_effort"]
-    if settings["thinking_enabled"]:
-        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-
-    updated_files = list(midi_files)
-    download_path = None
-    tool_log: list[str] = []
-    max_tool_rounds = 10
-    chat_display = list(history)
-    # 预添加本轮用户消息（所有路径共享，避免后续重复添加）
-    chat_display.append({"role": "user", "content": message})
-
-    try:
-        for round_idx in range(max_tool_rounds):
-            # 上下文压缩：检查并压缩过大历史
-            if _should_compact(messages, full_history):
-                logger.warning(
-                    "上下文过大 (约 %d tokens)，执行压缩...",
-                    sum(len(str(m.get("content", ""))) for m in messages) // 3,
-                )
-                full_history = _compact_full_history(full_history)
-                # 重建 messages：system + compacted_full_history + user
-                messages = [{"role": "system", "content": system_prompt}]
-                for msg in full_history:
-                    messages.append(msg)
-                messages.append({"role": "user", "content": message})
-                kwargs["messages"] = messages
-                _round_start_idx = len(messages)
-                logger.info("压缩完成，full_history 长度: %d", len(full_history))
-            # 更新 system prompt 以反映当前文件列表
-            kwargs["messages"][0] = {"role": "system", "content": _build_system_prompt(updated_files)}
-
-            response = client.chat.completions.create(**kwargs)
-            choice = response.choices[0]
-            assistant_msg = choice.message
-
-            logger.info("API 返回: finish_reason=%s, tool_calls=%d, content=%s",
-                       choice.finish_reason,
-                       len(getattr(assistant_msg, "tool_calls", None) or []),
-                       (assistant_msg.content or "")[:100])
-
-            # 构造助手消息
-            msg_content = assistant_msg.content if assistant_msg.content else None
-            msg_tool_calls = getattr(assistant_msg, "tool_calls", None) or []
-
-            assistant_message = {
-                "role": "assistant",
-                "content": msg_content,
-            }
-            if msg_tool_calls:
-                assistant_message["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": tc.type or "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in msg_tool_calls
-                ]
-
-            messages.append(assistant_message)
-
-            # 如果没有工具调用，说明 AI 给出了最终回复
-            if not msg_tool_calls:
-                # 构建完整 API 历史
-                new_full_history = full_history + [
-                    {"role": "user", "content": message},
-                ]
-                for api_msg in messages[_round_start_idx:]:
-                    if api_msg.get("role") in ("assistant", "tool"):
-                        new_full_history.append(api_msg)
-
-                # 构建最终显示内容：AI 回复（工具 details 已在 chat_display 中）
-                final_display = msg_content or ""
-
-                # 逐字流式显示
-                displayed = ""
-                # 添加一条空的 assistant 消息作为流式输出的占位
-                chat_display.append({"role": "assistant", "content": ""})
-                for ch in final_display:
-                    displayed += ch
-                    chat_display[-1] = {"role": "assistant", "content": displayed}
-                    yield (
-                        list(chat_display),
-                        "",
-                        updated_files,
-                        new_undo_stack,
-                        new_full_history,
-                        download_path,
-                        gr.update(choices=_get_choices(updated_files), value=[]),
-                    )
-
-                # 保存历史
-                if _current_project_id:
-                    project_manager.save_history(_current_project_id, new_full_history, updated_files)
-
-                return
-
-            # 如果 AI 在调用工具前有说明文字，先显示
-            if msg_content and msg_content.strip():
-                chat_display.append({"role": "assistant", "content": msg_content})
-                yield (
-                    list(chat_display),
-                    "",
-                    updated_files,
-                    new_undo_stack,
-                    full_history,
-                    download_path,
-                    gr.update(choices=_get_choices(updated_files), value=[]),
-                )
-
-            # 执行工具调用
-            for tc in msg_tool_calls:
-                tc_id = tc.id
-                tc_name = tc.function.name
-                tc_args_raw = tc.function.arguments
-
-                # 显示"正在调用工具"状态
-                chat_display.append({
-                    "role": "assistant",
-                    "content": f"🔧 正在调用 `{tc_name}`...",
-                })
-                yield (
-                    list(chat_display),
-                    "",
-                    updated_files,
-                    new_undo_stack,
-                    full_history,
-                    download_path,
-                    gr.update(choices=_get_choices(updated_files), value=[]),
-                )
-
-                try:
-                    tc_args = json.loads(tc_args_raw) if isinstance(tc_args_raw, str) else tc_args_raw
-                except json.JSONDecodeError:
-                    tc_args = {}
-
-                result_text, updated_files = _execute_tool_call(
-                    {"function": {"name": tc_name, "arguments": tc_args}},
-                    updated_files,
-                )
-
-                # 构建 args_str 和 details 标签
-                args_str = ", ".join(f"{k}={v}" for k, v in tc_args.items())
-                entry = _format_single_tool_entry(tc_name, args_str, result_text)
-
-                # 记录工具执行日志（使用 details 标签格式，与 chat_display 一致）
-                tool_log.append(entry)
-
-                # 如果创建了文件，设置下载路径
-                if tc_name == "create_midi":
-                    filename = tc_args.get("filename", "")
-                    if _current_project_id:
-                        filepath = project_manager.resolve_midi_path(_current_project_id, filename)
-                    else:
-                        filepath = config.OUTPUT_DIR / filename
-                    if filepath.exists():
-                        download_path = str(filepath)
-
-                # 将工具结果回传给 API
-                messages.append(_make_tool_result_message(tc_id, result_text))
-
-                # 更新 chat_display：将"正在调用..."替换为包含结果的 details 标签
-                if chat_display and chat_display[-1].get("role") == "assistant":
-                    # 替换最后一条 assistant 消息
-                    chat_display[-1] = {"role": "assistant", "content": entry}
-                else:
-                    chat_display.append({"role": "assistant", "content": entry})
-                yield (
-                    list(chat_display),
-                    "",
-                    updated_files,
-                    new_undo_stack,
-                    full_history,
-                    download_path,
-                    gr.update(choices=_get_choices(updated_files), value=[]),
-                )
-
-        # 达到最大轮数，用当前内容作为最终回复
-        tool_log_html = _format_tool_log(tool_log)
-        final_content = messages[-1].get("content", "（已达到最大工具调用轮数）")
-
-        # 构建完整 API 历史
-        new_full_history = full_history + [{"role": "user", "content": message}]
-        for api_msg in messages[_round_start_idx:]:
-            if api_msg.get("role") in ("assistant", "tool"):
-                new_full_history.append(api_msg)
-
-        # 构建最终显示内容（工具 details 已在 chat_display 中）
-        full_display = final_content
-
-        # 逐字流式显示
-        displayed = ""
-        # 添加一条空的 assistant 消息作为流式输出的占位
-        chat_display.append({"role": "assistant", "content": ""})
-        for ch in full_display:
-            displayed += ch
-            chat_display[-1] = {"role": "assistant", "content": displayed}
-            yield (
-                list(chat_display),
-                "",
-                updated_files,
-                new_undo_stack,
-                new_full_history,
-                download_path,
-                gr.update(choices=_get_choices(updated_files), value=[]),
-            )
-
-        # 保存历史
-        if _current_project_id:
-            project_manager.save_history(_current_project_id, new_full_history, updated_files)
-
-    except Exception as e:
-        # 如果是 GeneratorExit，说明用户取消了操作，不修改 history
-        if isinstance(e, GeneratorExit):
-            raise
-        tool_log_html = _format_tool_log(tool_log)
-        # 不直接 str(e) 暴露给 UI，避免 API 异常可能包含敏感请求信息
-        error_base = (
-            f"⚠ 调用失败: {type(e).__name__}"
-            + (f" (HTTP {e.status_code})" if hasattr(e, 'status_code') else "")
-        )
-        error_msg = (error_base + "\n\n" + tool_log_html).strip() if tool_log_html else error_base
-        chat_display.append({"role": "assistant", "content": error_msg})
-        new_error_history = full_history + [{"role": "user", "content": message}]
-        for api_msg in messages[_round_start_idx:]:
-            if api_msg.get("role") in ("assistant", "tool"):
-                new_error_history.append(api_msg)
-        if _current_project_id:
-            project_manager.save_history(_current_project_id, new_error_history, updated_files)
-        yield (
-            list(chat_display),
-            "",
-            updated_files,
-            new_undo_stack,
-            new_error_history,
-            None,
-            gr.update(),
-        )
+    # ── 执行工具循环（所有后续 yield 均来自这里）──
+    yield from _execute_tool_loop(ctx, new_undo_stack, full_history, message)
 
 
 # ==================== 项目生命周期 ====================
@@ -948,6 +813,64 @@ def _restart_mcp_for_project(project_id: str) -> None:
     global _current_project_id
     _current_project_id = project_id
     _close_mcp_process()
+
+
+def _rebuild_display_from_history(all_messages: list[dict]) -> list[dict]:
+    """从完整 API 历史（含 tool 调用）重建 Chatbot 显示列表。
+
+    full_history 中保存的是原始 API 消息：带 tool_calls 的 assistant 消息
+    和 tool 角色的结果消息。这些在实时对话时会被 _format_single_tool_entry
+    渲染为可折叠的 <details> 标签，但该渲染结果只存在于临时的 chat_display，
+    并未单独持久化。重新打开项目时需要在这里重新格式化，否则工具调用标签会消失。
+
+    策略：
+    - user 消息原样保留
+    - assistant 纯文本回复原样保留
+    - assistant 带 tool_calls：先输出其 content（工具调用前的说明文字），
+      再把每个 tool_call 与配套的 tool 结果消息组合为 <details> 标签
+    - tool 角色消息已被上面的 tool_calls 消费，跳过
+    """
+    # 建立 tool_call_id -> 结果文本 映射
+    tool_results: dict[str, str] = {}
+    for m in all_messages:
+        if m.get("role") == "tool":
+            tcid = m.get("tool_call_id", "")
+            if tcid:
+                tool_results[tcid] = m.get("content", "") or ""
+
+    display: list[dict] = []
+    for m in all_messages:
+        role = m.get("role", "")
+        content = m.get("content")
+        tool_calls = m.get("tool_calls") or []
+
+        if role == "user":
+            if content:
+                display.append({"role": "user", "content": content})
+        elif role == "assistant":
+            # 工具调用前的说明文字（若存在且非空）
+            if content and content.strip():
+                display.append({"role": "assistant", "content": content})
+            # 把每个工具调用重新格式化为可折叠标签
+            for tc in tool_calls:
+                tc_id = tc.get("id", "")
+                func = tc.get("function", {})
+                tc_name = func.get("name", "")
+                args_raw = func.get("arguments", "")
+                try:
+                    tc_args = (
+                        json.loads(args_raw)
+                        if isinstance(args_raw, str)
+                        else (args_raw or {})
+                    )
+                except json.JSONDecodeError:
+                    tc_args = {}
+                result_text = tool_results.get(tc_id, "（未找到工具结果）")
+                entry = _format_single_tool_entry(tc_name, tc_args, result_text)
+                display.append({"role": "assistant", "content": entry})
+        # role == "tool" 跳过（已被上面的 tool_calls 消费）
+
+    return display
 
 
 def _open_project(project_id: str) -> tuple:
@@ -960,11 +883,8 @@ def _open_project(project_id: str) -> tuple:
     meta = project_manager.load_project(project_id)
     choices = _get_choices(midi_files)
 
-    # 只保留 user/assistant 消息用于 Chatbot 显示（过滤 tool 角色消息）
-    display_messages = [
-        m for m in all_messages
-        if m.get("role") in ("user", "assistant") and m.get("content")
-    ]
+    # 从完整 API 历史重建 Chatbot 显示列表（含工具调用折叠标签）
+    display_messages = _rebuild_display_from_history(all_messages)
 
     return (
         gr.update(visible=False),                   # 隐藏项目浏览器
@@ -979,9 +899,10 @@ def _open_project(project_id: str) -> tuple:
     )
 
 
-def _close_project() -> tuple:
+def _close_project(project_id: str | None, full_history, midi_files) -> tuple:
     """保存当前状态，返回项目浏览器并刷新项目列表。"""
     global _current_project_id
+    _persist_project_state(project_id, full_history, midi_files or [])
     _current_project_id = None
     _close_mcp_process()
     choices, ids = _refresh_project_list()
@@ -989,7 +910,7 @@ def _close_project() -> tuple:
         gr.update(visible=True),       # 显示项目浏览器
         gr.update(visible=False),      # 隐藏聊天面板
         None,                           # project_id_state
-        gr.update(choices=choices),     # project_radio
+        gr.update(choices=choices, value=None),     # project_radio
         ids,                            # project_list_ids
     )
 
@@ -1004,7 +925,7 @@ def _on_new_project(name: str) -> tuple:
     return _open_project(pid)
 
 
-def _refresh_project_list() -> tuple[list[str], list[str]]:
+def _refresh_project_list() -> tuple[list[tuple[str, str]], list[str]]:
     """从索引加载项目列表，返回 (下拉选项列表, 项目ID列表)。"""
     projects = project_manager.list_projects()
     choices = []
@@ -1013,49 +934,36 @@ def _refresh_project_list() -> tuple[list[str], list[str]]:
         name = p.get("name", "未命名")
         msg_count = p.get("message_count", 0)
         label = f"{name}  ({msg_count} 条消息)" if msg_count else name
-        choices.append(label)
+        choices.append((label, p["id"]))
         ids.append(p["id"])
     return choices, ids
 
 
-def _extract_project_name(dropdown_label: str) -> str:
-    """从下拉选项标签中提取项目名称（去掉 '  (N 条消息)' 后缀）。"""
-    if "  (" in dropdown_label:
-        return dropdown_label[: dropdown_label.rfind("  (")]
-    return dropdown_label
-
-
-def _resolve_project_id(selected_name: str, project_ids: list[str]) -> str | None:
-    """根据下拉选项标签和 ID 列表，解析出项目 ID。"""
-    if not selected_name or not project_ids:
+def _resolve_project_id(selected_project: str, project_ids: list[str]) -> str | None:
+    """根据 Radio 选中的稳定项目 ID 解析项目。"""
+    if not selected_project or not project_ids:
         return None
-    # 先尝试精确匹配（名称本身就在 choices 中）
-    # 然后通过索引匹配（choices 和 ids 是平行数组）
-    name = _extract_project_name(selected_name)
-    # 按索引查找：遍历 ids，通过 list_projects 的顺序匹配
-    projects = project_manager.list_projects()
-    for i, p in enumerate(projects):
-        if i < len(project_ids) and p["name"] == name:
-            return project_ids[i]
+    if selected_project in project_ids:
+        return selected_project
     return None
 
 
-def _on_open_project(selected_name: str, project_ids: list[str]) -> tuple:
+def _on_open_project(selected_project: str, project_ids: list[str]) -> tuple:
     """打开选中的项目。"""
-    pid = _resolve_project_id(selected_name, project_ids)
+    pid = _resolve_project_id(selected_project, project_ids)
     if not pid:
         return tuple([gr.update()] * 9)
     return _open_project(pid)
 
 
-def _on_delete_project(selected_name: str, project_ids: list[str]) -> tuple:
+def _on_delete_project(selected_project: str, project_ids: list[str]) -> tuple:
     """删除选中的项目。"""
-    pid = _resolve_project_id(selected_name, project_ids)
+    pid = _resolve_project_id(selected_project, project_ids)
     if not pid:
         return gr.update(), []
     project_manager.delete_project(pid)
     choices, ids = _refresh_project_list()
-    return gr.update(choices=choices), ids
+    return gr.update(choices=choices, value=None), ids
 
 
 def _on_rename_show() -> tuple:
@@ -1063,28 +971,28 @@ def _on_rename_show() -> tuple:
     return gr.update(visible=True), gr.update(visible=True)
 
 
-def _on_confirm_rename(new_name: str, selected_name: str, project_ids: list[str]) -> tuple:
+def _on_confirm_rename(new_name: str, selected_project: str, project_ids: list[str]) -> tuple:
     """确认重命名。"""
     if not new_name.strip():
         return gr.update(), [], gr.update(visible=False), gr.update(value="", visible=False)
-    pid = _resolve_project_id(selected_name, project_ids)
+    pid = _resolve_project_id(selected_project, project_ids)
     if not pid:
         return gr.update(), [], gr.update(visible=False), gr.update(value="", visible=False)
     project_manager.rename_project(pid, new_name.strip())
     choices, ids = _refresh_project_list()
-    return gr.update(choices=choices), ids, gr.update(visible=False), gr.update(value="", visible=False)
+    return gr.update(choices=choices, value=pid), ids, gr.update(visible=False), gr.update(value="", visible=False)
 
 
-def _on_copy_project(selected_name: str, project_ids: list[str]) -> tuple:
+def _on_copy_project(selected_project: str, project_ids: list[str]) -> tuple:
     """复制选中的项目。"""
-    pid = _resolve_project_id(selected_name, project_ids)
+    pid = _resolve_project_id(selected_project, project_ids)
     if not pid:
         return gr.update(), []
     src_meta = project_manager.load_project(pid)
     new_name = f"{src_meta.get('name', '未命名')} (副本)"
-    project_manager.copy_project(pid, new_name)
+    copied = project_manager.copy_project(pid, new_name)
     choices, ids = _refresh_project_list()
-    return gr.update(choices=choices), ids
+    return gr.update(choices=choices, value=copied.get("id")), ids
 
 
 def _on_search(query: str) -> tuple:
@@ -1109,10 +1017,10 @@ def _on_open_from_search(evt: gr.SelectData, search_result_ids: list[str]) -> tu
     return _open_project(pid)
 
 
-def _on_clear_chat(project_id: str | None) -> tuple[list, list]:
-    """清空对话并持久化。"""
+def _on_clear_chat(project_id: str | None, midi_files: list[dict]) -> tuple[list, list]:
+    """清空对话并保留 MIDI 文件元数据。"""
     if project_id:
-        project_manager.save_history(project_id, [], [])
+        project_manager.save_history(project_id, [], midi_files or [])
     return [], []
 
 
@@ -1316,7 +1224,7 @@ def build_chat_ui() -> gr.Blocks:
         # 返回项目列表
         back_btn.click(
             fn=_close_project,
-            inputs=[],
+            inputs=[project_id_state, full_history_state, midi_files_state],
             outputs=[
                 project_browser,
                 chat_panel,
@@ -1329,14 +1237,14 @@ def build_chat_ui() -> gr.Blocks:
         # 文件管理
         upload_btn.change(
             fn=_on_upload,
-            inputs=[upload_btn, midi_files_state],
-            outputs=[midi_files_state, file_checkboxes],
+            inputs=[upload_btn, midi_files_state, undo_stack, project_id_state, full_history_state],
+            outputs=[midi_files_state, undo_stack, file_checkboxes],
         )
 
         delete_btn.click(
             fn=_on_delete,
-            inputs=[midi_files_state, file_checkboxes],
-            outputs=[midi_files_state, file_checkboxes],
+            inputs=[midi_files_state, file_checkboxes, undo_stack, project_id_state, full_history_state],
+            outputs=[midi_files_state, undo_stack, file_checkboxes],
         )
 
         download_btn.click(
@@ -1347,7 +1255,7 @@ def build_chat_ui() -> gr.Blocks:
 
         undo_btn.click(
             fn=_on_undo,
-            inputs=[undo_stack, midi_files_state],
+            inputs=[undo_stack, midi_files_state, project_id_state, full_history_state],
             outputs=[midi_files_state, undo_stack, file_checkboxes],
         )
 
@@ -1367,7 +1275,7 @@ def build_chat_ui() -> gr.Blocks:
 
         clear_btn.click(
             fn=_on_clear_chat,
-            inputs=[project_id_state],
+            inputs=[project_id_state, midi_files_state],
             outputs=[chatbot, full_history_state],
         )
 
@@ -1377,7 +1285,6 @@ def build_chat_ui() -> gr.Blocks:
 def main() -> None:
     """启动多轮对话服务。"""
     import argparse
-    import signal
 
     parser = argparse.ArgumentParser(description="AI_MIDI Chat UI")
     parser.add_argument("--port", type=int, default=7861, help="服务端口")

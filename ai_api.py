@@ -7,10 +7,10 @@
 各自只负责拼装对应的 user content。
 """
 import logging
-from collections.abc import Iterator
 
-from openai import OpenAI
+import httpx
 import openai
+from openai import OpenAI
 
 import config
 
@@ -36,14 +36,29 @@ NOTE_TABLE_ONLY_SUFFIX: str = (
 )
 
 
-def get_client(api_key: str | None = None, base_url: str | None = None) -> OpenAI:
+def get_client(
+    api_key: str | None = None,
+    base_url: str | None = None,
+    *,
+    timeout: float | None = None,
+    http_client: httpx.Client | None = None,
+) -> OpenAI:
     """创建并返回 OpenAI 客户端。
 
     参数为空时从 settings.json 读取,便于在 Web UI 等场景下动态切换。
+    默认禁用 HTTP 重定向,防止 API key 跟随重定向泄漏到第三方域名。
     """
+    if http_client is None:
+        _timeout = httpx.Timeout(timeout or config.DEFAULT_TIMEOUT_SECONDS, connect=config.DEFAULT_CONNECT_TIMEOUT_SECONDS)
+        http_client = httpx.Client(follow_redirects=False, timeout=_timeout)
+    else:
+        # 即使调用方传入自定义 client,也强制关闭重定向,避免密钥泄漏。
+        http_client.follow_redirects = False
+
     return OpenAI(
         api_key=api_key or config.get_api_key(),
         base_url=base_url or config.BASE_URL,
+        http_client=http_client,
     )
 
 
@@ -115,60 +130,6 @@ def _chat(
     return result
 
 
-def _chat_stream(
-    messages: list[dict],
-    *,
-    api_key: str | None = None,
-    base_url: str | None = None,
-    model: str | None = None,
-    max_tokens: int | None = None,
-    max_completion_tokens: int | None = None,
-    reasoning_effort: str | None = None,
-    thinking_enabled: bool = True,
-    timeout: int | None = None,
-) -> Iterator[str]:
-    """流式调用 DeepSeek，逐 chunk yield 内容。
-
-    用于最终回复阶段的逐字显示。
-    参数与 _chat 相同，但接受 messages 列表而非 user_content。
-    """
-    client = get_client(api_key, base_url)
-
-    extra_body: dict | None = None
-    if thinking_enabled:
-        extra_body = {"thinking": {"type": "enabled"}}
-
-    kwargs: dict = {
-        "model": model or config.MODEL,
-        "messages": messages,
-        "stream": True,
-    }
-    if reasoning_effort is not None:
-        kwargs["reasoning_effort"] = reasoning_effort
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-    if max_completion_tokens is not None:
-        kwargs["max_completion_tokens"] = max_completion_tokens
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    if extra_body is not None:
-        kwargs["extra_body"] = extra_body
-
-    try:
-        response = client.chat.completions.create(**kwargs)
-    except (openai.APIError, openai.OpenAIError, TypeError) as e:
-        logger.error(
-            "调用 AI API 时发生错误: status=%s, type=%s",
-            getattr(e, 'status_code', '?'),
-            type(e).__name__,
-        )
-        return
-
-    for chunk in response:
-        if chunk.choices and chunk.choices[0].delta.content:
-            yield chunk.choices[0].delta.content
-
-
 def add_chord(
     note_table,
     bpm,
@@ -181,7 +142,6 @@ def add_chord(
     user_content = (
         f"音符数据：{note_table}，BPM：{bpm}，拍号：{time_signature}，"
         f"现在你需要给这段旋律配上适合的和弦。"
-        f"注意最终回答内只能包含\"note_table\"格式数据，禁止出现任何额外内容或不符合格式的内容"
         f"{NOTE_TABLE_ONLY_SUFFIX}。有如下要求：{requirements}"
     )
     return _chat(user_content, **kwargs)

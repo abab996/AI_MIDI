@@ -21,6 +21,22 @@ import ai_api
 import config
 import get
 import out
+from out import EmptyNoteTableError
+from webui_components import (
+    FUNC_ADD_CHORD,
+    FUNC_MELISMA,
+    FUNC_OTHER,
+    FUNC_TRANSLATE,
+    _build_function_section,
+    _build_header,
+    _build_mode_section,
+    _build_result_section,
+    _build_settings_section,
+    _build_tuning_section,
+    _build_upload_section,
+    _FUNC_CHOICES,
+    _FUNC_FIELDS,
+)
 
 logger = logging.getLogger("ai_midi")
 
@@ -38,28 +54,13 @@ LR_DEFAULTSIZE = 0x0040
 GCLP_HICON = -14
 GCLP_HICONSM = -34
 
-# ===== 功能常量 =====
-FUNC_ADD_CHORD = "配和弦"
-FUNC_TRANSLATE = "翻译歌词"
-FUNC_MELISMA = "设计转音"
-FUNC_OTHER = "其他要求"
-
-_FUNC_CHOICES = [FUNC_ADD_CHORD, FUNC_TRANSLATE, FUNC_MELISMA, FUNC_OTHER]
-
-# 各功能需要哪些字段
-_FUNC_FIELDS = {
-    FUNC_ADD_CHORD: {"lyrics": False, "lang": False, "note_sw": False, "req": True},
-    FUNC_TRANSLATE: {"lyrics": True, "lang": True, "note_sw": False, "req": False},
-    FUNC_MELISMA: {"lyrics": True, "lang": False, "note_sw": False, "req": True},
-    FUNC_OTHER: {"lyrics": True, "lang": False, "note_sw": True, "req": True},
-}
-
 # ===== 多轮对话相关 =====
 CHAT_PORT = 7861
 CHAT_URL = f"http://127.0.0.1:{CHAT_PORT}"
 _chat_thread: threading.Thread | None = None
 _chat_started = False
 _chat_launch_error: str | None = None
+_chat_launch_lock = threading.Lock()
 
 
 def _is_chat_running() -> bool:
@@ -67,7 +68,7 @@ def _is_chat_running() -> bool:
     try:
         urllib.request.urlopen(CHAT_URL, timeout=0.5)
         return True
-    except Exception:
+    except OSError:
         return False
 
 
@@ -78,40 +79,9 @@ def _wait_for_chat_ready(timeout: float = 15.0) -> bool:
         try:
             urllib.request.urlopen(CHAT_URL, timeout=0.5)
             return True
-        except Exception:
+        except OSError:
             time.sleep(0.3)
     return False
-
-
-def _start_chat_server() -> None:
-    """在后台启动多轮对话 Gradio 服务并等待就绪。"""
-    global _chat_launch_error
-    try:
-        from chat_ui import build_chat_ui
-
-        app = build_chat_ui()
-        app.launch(
-            prevent_thread_lock=True,
-            server_name="127.0.0.1",
-            server_port=CHAT_PORT,
-            share=False,
-            inbrowser=False,
-        )
-        if not _wait_for_chat_ready(timeout=10.0):
-            _chat_launch_error = "服务启动超时"
-        else:
-            _chat_launch_error = None
-    except OSError as e:
-        if "Address already in use" in str(e):
-            if _wait_for_chat_ready(timeout=3.0):
-                _chat_launch_error = None
-            else:
-                _chat_launch_error = f"端口 {CHAT_PORT} 被占用且服务不可用"
-        else:
-            _chat_launch_error = str(e)
-    except Exception as e:  # noqa: BLE001
-        _chat_launch_error = str(e)
-        logger.exception("启动多轮对话服务失败")
 
 
 def _start_chat_server() -> None:
@@ -155,57 +125,20 @@ def launch_chat() -> str:
     """启动多轮对话窗口（供 Gradio 按钮回调使用）。"""
     global _chat_thread, _chat_started, _chat_launch_error
 
-    _chat_launch_error = None
+    with _chat_launch_lock:
+        _chat_launch_error = None
 
-    if _is_chat_running():
-        _chat_started = True
-        return f"多轮对话窗口已就绪：{CHAT_URL}"
+        if _is_chat_running():
+            _chat_started = True
+            return f"多轮对话窗口已就绪：{CHAT_URL}"
 
-    if _chat_started and _chat_thread and _chat_thread.is_alive():
-        return f"正在启动多轮对话窗口… {CHAT_URL}"
+        if _chat_started and _chat_thread and _chat_thread.is_alive():
+            return f"正在启动多轮对话窗口… {CHAT_URL}"
 
-    _chat_thread = threading.Thread(target=_start_chat_server, daemon=True)
-    _chat_thread.start()
+        _chat_thread = threading.Thread(target=_start_chat_server, daemon=True)
+        _chat_thread.start()
 
     return f"正在启动多轮对话窗口… {CHAT_URL}"
-
-# ===== base_url 安全验证 =====
-# 仅允许向已知可信的 API 服务商发送请求,防止密钥被中间人窃取。
-_ALLOWED_BASE_URL_DOMAINS = {
-    "api.deepseek.com",
-    "api.openai.com",
-    "openai.azure.com",
-    "api.anthropic.com",
-    "api.moonshot.cn",
-    "api.stepfun.com",
-    "api.zhipuai.cn",
-    "qianwen.aliyuncs.com",
-    "dashscope.aliyuncs.com",
-}
-
-
-def _validate_base_url(base_url: str) -> str:
-    """验证 base_url 仅指向允许的域名,返回规范化后的 URL;不安全时抛出 ValueError。"""
-    from urllib.parse import urlparse
-
-    url = base_url.strip()
-    if not url:
-        return config.BASE_URL
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise ValueError(f"base_url 必须使用 https 协议: {parsed.scheme}")
-    host = parsed.hostname or ""
-    if host not in _ALLOWED_BASE_URL_DOMAINS:
-        raise ValueError(
-            f"base_url 域名不在允许列表中: {host}。"
-            f"如需使用其他服务商,请修改 _ALLOWED_BASE_URL_DOMAINS。"
-        )
-    if parsed.port is not None and parsed.port != 443:
-        raise ValueError(f"base_url 端口必须为 443（标准 HTTPS 端口）: {parsed.port}")
-    if parsed.path and parsed.path != "/":
-        raise ValueError(f"base_url 不能包含路径: {parsed.path}")
-    return f"https://{host}"
-
 
 # ===== 用户设置持久化(委托给 config 统一管理) =====
 def _load_settings() -> dict:
@@ -225,16 +158,24 @@ def _save_settings(
     """保存用户设置到本地 JSON 文件。"""
     # 在保存前验证 base_url，防止恶意域名写入 settings.json
     try:
-        validated_url = _validate_base_url(base_url.strip())
+        validated_url = config.validate_base_url(base_url.strip())
     except ValueError as e:
         return f"✗ 保存失败：{e}"
+
+    def _to_int(value) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return None
 
     settings = {
         "api_key": api_key.strip(),
         "base_url": validated_url,
         "model": model,
-        "max_tokens": int(max_tokens) if max_tokens else None,
-        "max_completion_tokens": int(max_completion_tokens) if max_completion_tokens else None,
+        "max_tokens": _to_int(max_tokens),
+        "max_completion_tokens": _to_int(max_completion_tokens),
         "reasoning_effort": reasoning_effort,
         "thinking_enabled": thinking_enabled,
     }
@@ -256,7 +197,7 @@ def _fetch_models(api_key: str, base_url: str) -> tuple[list[str], str]:
         return [], "⚠ 请先填写并保存 API Key"
 
     try:
-        url = _validate_base_url(url)
+        url = config.validate_base_url(url)
     except ValueError:
         logger.exception("base_url 验证失败")
         return [], "✗ 配置错误,请检查 base_url。"
@@ -268,6 +209,7 @@ def _fetch_models(api_key: str, base_url: str) -> tuple[list[str], str]:
         if not ids:
             return [], "⚠ 未获取到任何模型"
         return ids, f"✓ 已获取 {len(ids)} 个模型"
+    # intentional: AI API can raise various exception types (network, auth, rate-limit, response parse)
     except Exception:  # noqa: BLE001
         logger.exception("获取模型列表失败")
         return [], "✗ 获取模型失败,请检查网络或 API Key。"
@@ -288,7 +230,7 @@ def _parse_midi(file_path: str | None) -> tuple[str, list[str]]:
 
     try:
         note_table = get.get_note(str(config.INPUT_MIDI), save_to_file=False)
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError):
         logger.exception("MIDI 解析失败")
         return "解析失败,请检查 MIDI 文件后重试。", []
 
@@ -318,7 +260,7 @@ def _get_dpi_scale() -> float:
         dpi = ctypes.windll.gdi32.GetDeviceCaps(dc, 88)  # LOGPIXELSX
         ctypes.windll.user32.ReleaseDC(0, dc)
         return max(dpi / 96.0, 1.0)
-    except Exception:  # noqa: BLE001
+    except (OSError, AttributeError, ImportError):
         return 1.0
 
 
@@ -332,7 +274,7 @@ def _get_work_area() -> tuple[int, int]:
         # 不设置 DPI 感知,让 SPI_GETWORKAREA 返回逻辑像素(与 pywebview 的 width/height 单位一致)
         ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
         return int(rect.right - rect.left), int(rect.bottom - rect.top)
-    except Exception:  # noqa: BLE001
+    except (OSError, AttributeError, ImportError):
         return 1920, 1080
 
 
@@ -351,7 +293,7 @@ def _set_current_process_app_id(app_id: str = WINDOW_TITLE) -> None:
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
-    except Exception:  # noqa: BLE001
+    except (OSError, AttributeError, ImportError):
         pass
 
 
@@ -375,7 +317,7 @@ def _is_usable_icon_file(icon_path: Path, source_path: Path) -> bool:
             return False
         image_count = struct.unpack("<H", icon_bytes[4:6])[0]
         return image_count >= 4
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, struct.error):
         return False
 
 
@@ -442,6 +384,7 @@ def _ensure_icon_file(image_path: Path, icon_path: Path | None = None) -> Path:
 
         icon_path.write_bytes(header + b"".join(entries) + b"".join(payloads))
         return icon_path
+    # intentional: fallback path must catch any CLR/.NET interop failure
     except Exception:  # noqa: BLE001
         png_bytes = image_path.read_bytes()
         width, height = _png_size(png_bytes)
@@ -503,13 +446,14 @@ def _set_native_window_icon(window_title: str, image_path: Path, timeout: float 
                 else:
                     _apply_icon()
                 return
+    # intentional: retry loop for CLR interop, any transient failure should retry
         except Exception:  # noqa: BLE001
             pass
         time.sleep(0.1)
 
     try:
         import ctypes
-    except Exception:  # noqa: BLE001
+    except ImportError:
         return
 
     user32 = ctypes.windll.user32
@@ -550,10 +494,11 @@ def _set_native_window_icon(window_title: str, image_path: Path, timeout: float 
         user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small_icon)
 
 
-def _validate_bpm(bpm_str: str) -> str:
+def _validate_bpm(bpm) -> str:
+    """验证 BPM 值,返回字符串形式的合法 BPM。"""
     try:
-        bpm = int(bpm_str)
-        return str(max(1, min(600, bpm)))
+        bpm = int(bpm)
+        return str(max(config.BPM_MIN, min(config.BPM_MAX, bpm)))
     except (ValueError, TypeError):
         return str(config.DEFAULT_BPM)
 
@@ -563,6 +508,12 @@ def _validate_time_signature(ts: str) -> str:
     if re.match(r'^\d+/\d+$', ts.strip()):
         return ts.strip()
     return config.DEFAULT_TIME_SIGNATURE
+
+
+def _is_valid_time_signature(ts: str) -> bool:
+    """检查拍号格式是否合法 (如 4/4, 3/4)。"""
+    import re
+    return bool(re.match(r'^\d+/\d+$', ts.strip()))
 
 
 def _validate_int_param(value, default, min_val, max_val):
@@ -590,6 +541,7 @@ def _run_task(
     max_completion_tokens: int | None,
     reasoning_effort: str,
     thinking_enabled: bool,
+    progress: gr.Progress = gr.Progress(),
 ) -> tuple[str, str | None, str]:
     """调用 AI API 并返回 (结果文本, 可下载文件路径, 状态文本)。"""
     start_time = time.time()
@@ -601,13 +553,18 @@ def _run_task(
     if func != FUNC_OTHER and not note_table:
         return "", None, _elapsed("⚠ 请先解析 MIDI 文件。")
 
+    progress(0.2, desc="解析 MIDI")
+
     # API key:输入框优先,为空时回退到 settings.json 中保存的值
     effective_api_key = api_key.strip() or config.get_api_key()
     if not effective_api_key:
         return "", None, _elapsed("⚠ 请先在设置页填写并保存 API Key。")
 
-    bpm = _validate_bpm(bpm.strip() or str(config.DEFAULT_BPM))
-    time_signature = _validate_time_signature(time_signature.strip() or config.DEFAULT_TIME_SIGNATURE)
+    bpm = _validate_bpm(bpm if not isinstance(bpm, str) else bpm.strip() or str(config.DEFAULT_BPM))
+    ts_raw = time_signature if isinstance(time_signature, str) else str(time_signature)
+    if not _is_valid_time_signature(ts_raw):
+        gr.Warning(f"拍号格式无效 '{ts_raw}',已回退到 {config.DEFAULT_TIME_SIGNATURE}")
+    time_signature = _validate_time_signature(ts_raw.strip() or config.DEFAULT_TIME_SIGNATURE)
     note_text = _note_to_text(note_table) if note_table else ""
 
     # 组装公共 API 参数,空值不传入,让 ai_api 使用默认值
@@ -616,19 +573,21 @@ def _run_task(
         api_kwargs["api_key"] = effective_api_key
     if base_url.strip():
         try:
-            api_kwargs["base_url"] = _validate_base_url(base_url.strip())
+            api_kwargs["base_url"] = config.validate_base_url(base_url.strip())
         except ValueError:
             logger.exception("base_url 验证失败")
             return "", None, _elapsed("✗ 配置错误,请检查 base_url。")
     if model.strip():
         api_kwargs["model"] = model.strip()
     if max_tokens:
-        api_kwargs["max_tokens"] = _validate_int_param(max_tokens, 4096, 1, 1000000)
+        api_kwargs["max_tokens"] = _validate_int_param(max_tokens, config.DEFAULT_MAX_TOKENS, config.MAX_TOKENS_MIN, config.MAX_TOKENS_MAX)
     if max_completion_tokens:
-        api_kwargs["max_completion_tokens"] = _validate_int_param(max_completion_tokens, 4096, 1, 1000000)
+        api_kwargs["max_completion_tokens"] = _validate_int_param(max_completion_tokens, config.DEFAULT_MAX_TOKENS, config.MAX_TOKENS_MIN, config.MAX_TOKENS_MAX)
     if reasoning_effort.strip():
         api_kwargs["reasoning_effort"] = reasoning_effort.strip()
     api_kwargs["thinking_enabled"] = thinking_enabled
+
+    progress(0.5, desc="调用 AI")
 
     try:
         if func == FUNC_ADD_CHORD:
@@ -656,12 +615,15 @@ def _run_task(
                 note_text, lyrics, bpm, time_signature,
                 requirements, note_output, **api_kwargs
             )
+    # intentional: AI API call encompasses network, auth, rate-limit, and response parsing errors
     except Exception:  # noqa: BLE001
         logger.exception("AI API 调用失败")
         return "", None, _elapsed("✗ 调用失败,请稍后重试。")
 
     if not result:
         return "", None, _elapsed("✗ AI 未返回内容或调用失败。")
+
+    progress(0.9, desc="保存结果")
 
     # 保存结果
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
@@ -686,7 +648,9 @@ def _run_task(
             download_path = str(config.OUTPUT_MIDI)
             status_msg = f"✓ MIDI 已生成: {config.OUTPUT_MIDI.name}"
 
-    except Exception:  # noqa: BLE001
+    except EmptyNoteTableError:
+        return result, None, _elapsed("⚠ AI 回复中未解析出有效音符，请检查 AI 输出格式。")
+    except (OSError, ValueError):
         logger.exception("保存结果失败")
         return result, None, _elapsed("✓ AI 返回结果,但保存失败,请重试。")
 
@@ -694,234 +658,62 @@ def _run_task(
 
 
 def build_ui() -> gr.Blocks:
-    """构建并返回 Gradio 应用。"""
+    """构建并返回 Gradio 应用 (薄编排层, 组件由 webui_components 构建)。"""
     settings = _load_settings()
-    saved_model = settings.get("model", config.MODEL)
 
     with gr.Blocks(title="AI_MIDI · AI 编曲助手") as app:
-        gr.Markdown("# AI_MIDI · AI 编曲助手")
-        gr.Markdown("上传 MIDI → 解析 → 选择任务 → AI 处理 → 下载结果")
-
-        # 运行时状态
+        _build_header()
         note_table_state = gr.State(value=[])
 
         with gr.Tabs():
-            # ==================== 处理标签页 ====================
             with gr.Tab("处理"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        # MIDI 上传与解析
-                        midi_file = gr.File(
-                            label="上传 MIDI 文件",
-                            file_types=[".mid", ".midi"],
-                        )
-                        parse_btn = gr.Button("解析 MIDI", variant="primary")
-                        parse_status = gr.Textbox(
-                            label="解析状态",
-                            value="尚未解析",
-                            interactive=False,
-                        )
-
-                        # 功能选择
-                        func_selector = gr.Radio(
-                            label="功能",
-                            choices=_FUNC_CHOICES,
-                            value=FUNC_ADD_CHORD,
-                        )
-
-                        # 公共参数
-                        bpm_input = gr.Textbox(
-                            label="BPM",
-                            value=str(config.DEFAULT_BPM),
-                        )
-                        timesig_input = gr.Textbox(
-                            label="拍号",
-                            value=config.DEFAULT_TIME_SIGNATURE,
-                        )
-
-                        # 歌词
-                        lyrics_box = gr.Textbox(
-                            label="歌词",
-                            lines=3,
-                            visible=False,
-                        )
-
-                        # 语言(仅翻译歌词)
-                        with gr.Row(visible=False) as lang_row:
-                            orig_lang_input = gr.Textbox(
-                                label="原语言",
-                                placeholder="如:日语",
-                            )
-                            target_lang_input = gr.Textbox(
-                                label="目标语言",
-                                placeholder="如:中文",
-                            )
-
-                        # 输出音符开关(仅其他要求)
-                        note_sw = gr.Checkbox(
-                            label="输出音符数据 (MIDI)",
-                            value=False,
-                            visible=False,
-                        )
-
-                        # 具体要求
-                        req_box = gr.Textbox(
-                            label="具体要求",
-                            lines=3,
-                            visible=True,
-                        )
-
+                        midi_file, parse_btn, parse_status = _build_upload_section()
+                        (func_selector, lyrics_box, lang_row, orig_lang_input,
+                         target_lang_input, note_sw, req_box) = _build_function_section()
+                        bpm_input, timesig_input = _build_tuning_section()
                         start_btn = gr.Button("▶ 开始", variant="primary")
-                        status_text = gr.Textbox(
-                            label="状态",
-                            interactive=False,
-                        )
-
+                        status_text = gr.Textbox(label="状态", interactive=False)
                     with gr.Column(scale=2):
-                        result_box = gr.Textbox(
-                            label="结果",
-                            lines=20,
-                            interactive=False,
-                        )
-                        download_file = gr.File(label="下载结果")
+                        result_box, download_file = _build_result_section()
 
-            # ==================== 设置标签页 ====================
             with gr.Tab("设置"):
-                gr.Markdown("## API 与模型参数")
+                (api_key_input, show_key_sw, base_url_input, model_input,
+                 refresh_model_btn, model_status, max_tokens_input,
+                 max_completion_tokens_input, reasoning_effort_input,
+                 thinking_enabled_input, save_cfg_btn, save_cfg_status) = _build_settings_section(settings)
 
-                # API Key 与显隐开关
-                with gr.Row():
-                    api_key_input = gr.Textbox(
-                        label="API Key",
-                        type="password",
-                        placeholder="sk-...",
-                        value=settings.get("api_key", ""),
-                        scale=4,
-                    )
-                    show_key_sw = gr.Checkbox(
-                        label="显示 API Key",
-                        value=False,
-                        scale=1,
-                    )
-
-                base_url_input = gr.Textbox(
-                    label="Base URL",
-                    value=settings.get("base_url", config.BASE_URL),
-                )
-
-                # 模型:下拉选择 + 允许手动输入 + 刷新按钮
-                with gr.Row():
-                    model_input = gr.Dropdown(
-                        label="模型",
-                        choices=[saved_model],
-                        value=saved_model,
-                        allow_custom_value=True,
-                        scale=4,
-                    )
-                    refresh_model_btn = gr.Button("🔄 刷新", scale=1)
-                model_status = gr.Textbox(
-                    label="模型列表状态",
-                    interactive=False,
-                    value="点击刷新按钮从 API 获取模型列表",
-                )
-
-                gr.Markdown("## 生成参数")
-                with gr.Row():
-                    max_tokens_input = gr.Number(
-                        label="最大上下文 (max_tokens)",
-                        value=settings.get("max_tokens"),
-                        precision=0,
-                        info="留空则使用 API 默认值",
-                    )
-                    max_completion_tokens_input = gr.Number(
-                        label="最大输出长度 (max_completion_tokens)",
-                        value=settings.get("max_completion_tokens"),
-                        precision=0,
-                        info="留空则使用 API 默认值",
-                    )
-                reasoning_effort_input = gr.Radio(
-                    label="推理努力程度 (reasoning_effort)",
-                    choices=["low", "medium", "max"],
-                    value=settings.get("reasoning_effort", "max"),
-                )
-                thinking_enabled_input = gr.Checkbox(
-                    label="启用 thinking 模式",
-                    value=settings.get("thinking_enabled", True),
-                )
-
-                save_cfg_btn = gr.Button("💾 保存配置", variant="primary")
-                save_cfg_status = gr.Textbox(
-                    label="保存状态",
-                    interactive=False,
-                    value="",
-                )
-
-            # ==================== 模式标签页 ====================
             with gr.Tab("模式"):
-                gr.Markdown("## 其他工作模式")
-                launch_chat_btn = gr.Button("🔄 多轮对话", variant="primary", size="lg")
-                chat_status = gr.Textbox(
-                    label="状态",
-                    interactive=False,
-                    value="",
-                )
+                launch_chat_btn, chat_status = _build_mode_section()
 
-                launch_chat_btn.click(
-                    fn=launch_chat,
-                    inputs=[],
-                    outputs=[chat_status],
-                ).then(
-                    fn=None,
-                    inputs=[],
-                    outputs=[],
-                    js=f"""
-                    () => {{
-                        const url = '{CHAT_URL}';
-                        let attempts = 0;
-                        const maxAttempts = 30;
-                        const interval = setInterval(async () => {{
-                            try {{
-                                const res = await fetch(url, {{ mode: 'no-cors' }});
-                                clearInterval(interval);
-                                window.open(url, '_blank');
-                            }} catch (e) {{
-                                attempts++;
-                                if (attempts >= maxAttempts) {{
-                                    clearInterval(interval);
-                                    alert('多轮对话窗口启动超时，请稍后重试。\\nURL: ' + url);
-                                }}
-                            }}
-                        }}, 500);
-                    }}
-                    """,
-                )
-
-        # 事件绑定
+        # ── 事件绑定 ──
         parse_btn.click(
             fn=_parse_midi,
             inputs=midi_file,
             outputs=[parse_status, note_table_state],
         )
-
+        midi_file.upload(
+            fn=_parse_midi,
+            inputs=[midi_file],
+            outputs=[parse_status, note_table_state],
+        )
         func_selector.change(
             fn=_update_func_visibility,
             inputs=func_selector,
             outputs=[lyrics_box, lang_row, note_sw, req_box],
         )
-
-        # API Key 显隐切换
-        def _toggle_key_visibility(show: bool) -> dict:
-            return gr.update(type="text" if show else "password")
-
         show_key_sw.change(
-            fn=_toggle_key_visibility,
+            fn=lambda show: gr.update(type="text" if show else "password"),
             inputs=show_key_sw,
             outputs=api_key_input,
         )
-
-        # 刷新模型列表
         def _refresh_models(api_key: str, base_url: str) -> tuple[dict, str]:
             ids, msg = _fetch_models(api_key, base_url)
+            if ids:
+                gr.Info("模型列表已刷新")
+            else:
+                gr.Warning(f"刷新失败: {msg}")
             return gr.update(choices=ids), msg
 
         refresh_model_btn.click(
@@ -929,45 +721,63 @@ def build_ui() -> gr.Blocks:
             inputs=[api_key_input, base_url_input],
             outputs=[model_input, model_status],
         )
-
         save_cfg_btn.click(
             fn=_save_settings,
-            inputs=[
-                api_key_input,
-                base_url_input,
-                model_input,
-                max_tokens_input,
-                max_completion_tokens_input,
-                reasoning_effort_input,
-                thinking_enabled_input,
-            ],
+            inputs=[api_key_input, base_url_input, model_input,
+                    max_tokens_input, max_completion_tokens_input,
+                    reasoning_effort_input, thinking_enabled_input],
             outputs=save_cfg_status,
         )
-
         start_btn.click(
             fn=_run_task,
-            inputs=[
-                func_selector,
-                note_table_state,
-                bpm_input,
-                timesig_input,
-                lyrics_box,
-                orig_lang_input,
-                target_lang_input,
-                note_sw,
-                req_box,
-                api_key_input,
-                base_url_input,
-                model_input,
-                max_tokens_input,
-                max_completion_tokens_input,
-                reasoning_effort_input,
-                thinking_enabled_input,
-            ],
+            inputs=[func_selector, note_table_state, bpm_input, timesig_input,
+                    lyrics_box, orig_lang_input, target_lang_input, note_sw, req_box,
+                    api_key_input, base_url_input, model_input,
+                    max_tokens_input, max_completion_tokens_input,
+                    reasoning_effort_input, thinking_enabled_input],
             outputs=[result_box, download_file, status_text],
+        )
+        launch_chat_btn.click(
+            fn=launch_chat,
+            inputs=[],
+            outputs=[chat_status],
+        ).then(
+            fn=None,
+            inputs=[],
+            outputs=[],
+            js=f"""
+            () => {{
+                const url = '{CHAT_URL}';
+                let attempts = 0;
+                const maxAttempts = 30;
+                const interval = setInterval(async () => {{
+                    try {{
+                        const res = await fetch(url, {{ mode: 'no-cors' }});
+                        clearInterval(interval);
+                        window.open(url, '_blank');
+                    }} catch (e) {{
+                        attempts++;
+                        if (attempts >= maxAttempts) {{
+                            clearInterval(interval);
+                            alert('多轮对话窗口启动超时，请稍后重试。\\nURL: ' + url);
+                        }}
+                    }}
+                }}, 500);
+            }}
+            """,
         )
 
     return app
+
+
+def _build_allowed_paths() -> list[str]:
+    """返回 Gradio /file= 路由允许访问的目录列表。
+
+    仅公开当前项目的 output/ 和 doing/ 目录。
+    PROJECTS_DIR 不在此列表中,防止跨项目文件访问
+    （如 /file=../projects/other-project/history.json）。
+    """
+    return [str(config.OUTPUT_DIR), str(config.DOING_DIR)]
 
 
 def main() -> None:
@@ -991,8 +801,9 @@ def main() -> None:
     _set_current_process_app_id()
     app = build_ui()
 
-    # 允许 Gradio 的 /file= 路由访问输出目录和项目目录,以便自定义下载链接可用。
-    allowed_paths = [str(config.OUTPUT_DIR), str(config.PROJECTS_DIR)]
+    # 允许 Gradio 的 /file= 路由访问输出目录和中间产物目录。
+    # 不再包含 PROJECTS_DIR,防止跨项目文件访问。
+    allowed_paths = _build_allowed_paths()
 
     if args.browser:
         app.launch(share=False, inbrowser=True, allowed_paths=allowed_paths, server_name="127.0.0.1")

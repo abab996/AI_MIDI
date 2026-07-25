@@ -39,7 +39,7 @@ def _load_index() -> list[dict]:
     try:
         data = json.loads(INDEX_FILE.read_text(encoding="utf-8"))
         return data.get("projects", [])
-    except Exception:  # noqa: BLE001
+    except (OSError, json.JSONDecodeError):
         logger.exception("读取项目索引失败")
         return []
 
@@ -54,7 +54,7 @@ def _save_index(index: list[dict]) -> None:
             encoding="utf-8",
         )
         tmp.replace(INDEX_FILE)
-    except Exception:  # noqa: BLE001
+    except OSError:
         logger.exception("写入项目索引失败")
         if tmp.exists():
             tmp.unlink()
@@ -91,8 +91,87 @@ def midi_dir(project_id: str) -> Path:
 
 
 def resolve_midi_path(project_id: str, filename: str) -> Path:
-    """返回项目 midi 目录中指定文件的绝对路径。"""
-    return PROJECTS_DIR / project_id / "midi" / filename
+    """返回项目 midi 目录中指定文件的绝对路径。
+
+    对 filename 执行路径穿越防护：
+    - 拒绝空文件名
+    - 拒绝含空字节的文件名
+    - 拒绝绝对路径（包括 Windows 盘符路径）
+    - 拒绝含 ".." 或 "~" 的文件名
+    - 拒绝解析后逃逸出项目 midi/ 目录的路径
+
+    Raises:
+        ValueError: 文件名不合法或路径逃逸。
+    """
+    if not filename:
+        raise ValueError("filename 不能为空")
+    if "\x00" in filename:
+        raise ValueError("filename 包含非法字符 (空字节)")
+    if ".." in filename:
+        raise ValueError(f"filename 包含非法路径段: {filename}")
+    if "~" in filename:
+        raise ValueError(f"filename 包含非法字符 '~': {filename}")
+    if os.path.isabs(filename):
+        raise ValueError(f"filename 不能是绝对路径: {filename}")
+
+    base_dir = (PROJECTS_DIR / project_id / "midi").resolve()
+    filepath = (base_dir / filename).resolve()
+
+    if filepath != base_dir and not filepath.is_relative_to(base_dir):
+        raise ValueError(f"路径逃逸检测: {filename}")
+
+    return filepath
+
+
+def _rewrite_history_paths(project_dir: Path, old_project_dir: Path) -> None:
+    """重写 history.json 中所有 midi_files[].path，将旧项目路径替换为新路径。
+
+    同时处理绝对路径和相对路径两种形式。
+    """
+    history_file = project_dir / "history.json"
+    if not history_file.exists():
+        return
+
+    try:
+        history_data = json.loads(history_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        logger.exception("读取项目历史文件失败: %s", history_file)
+        return
+
+    old_id = old_project_dir.name
+    new_id = project_dir.name
+    old_abs = str(old_project_dir)
+    new_abs = str(project_dir)
+
+    for mf in history_data.get("midi_files", []):
+        path = mf.get("path", "")
+        if not path:
+            continue
+
+        # 1. 替换绝对路径
+        rewritten = path.replace(old_abs, new_abs)
+
+        # 2. 替换相对路径中的项目 ID（作为目录组件）
+        if rewritten == path:
+            # 将路径按分隔符拆分，替换匹配的项目 ID 组件
+            parts = Path(path).parts
+            new_parts = [new_id if p == old_id else p for p in parts]
+            if tuple(new_parts) != parts:
+                rewritten = str(Path(*new_parts))
+
+        mf["path"] = rewritten
+
+    tmp = history_file.with_suffix(".tmp")
+    try:
+        tmp.write_text(
+            json.dumps(history_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(history_file)
+    except OSError:
+        logger.exception("重写项目历史路径失败: %s", project_dir)
+        if tmp.exists():
+            tmp.unlink()
 
 
 # ==================== 项目 CRUD ====================
@@ -146,11 +225,11 @@ def create_project(name: str) -> dict:
 
 
 def delete_project(project_id: str) -> None:
-    """删除项目目录并从索引中移除。"""
+    """删除项目目录并从索引中移除。先更新索引，避免异常时留下死引用。"""
+    _remove_index_entry(project_id)
     pdir = project_dir(project_id)
     if pdir.exists():
         shutil.rmtree(pdir)
-    _remove_index_entry(project_id)
     logger.info("项目已删除: %s", project_id)
 
 
@@ -183,6 +262,9 @@ def copy_project(source_id: str, new_name: str) -> dict:
     dst_dir = project_dir(new_id)
 
     shutil.copytree(src_dir, dst_dir)
+
+    # 重写 history.json 中 midi_files 的路径，指向新项目目录
+    _rewrite_history_paths(dst_dir, src_dir)
 
     # 更新新项目的 meta.json
     meta = {
@@ -229,7 +311,7 @@ def load_project(project_id: str) -> dict:
         return {}
     try:
         return json.loads(meta_file.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    except (OSError, json.JSONDecodeError):
         logger.exception("读取项目元数据失败: %s", project_id)
         return {}
 
@@ -264,7 +346,7 @@ def save_history(project_id: str, messages: list[dict], midi_files: list[dict]) 
             encoding="utf-8",
         )
         tmp.replace(history_file)
-    except Exception:  # noqa: BLE001
+    except OSError:
         logger.exception("保存聊天历史失败: %s", project_id)
         if tmp.exists():
             tmp.unlink()
@@ -291,7 +373,7 @@ def load_history(project_id: str) -> tuple[list[dict], list[dict]]:
     try:
         data = json.loads(history_file.read_text(encoding="utf-8"))
         return data.get("messages", []), data.get("midi_files", [])
-    except Exception:  # noqa: BLE001
+    except (OSError, json.JSONDecodeError):
         logger.exception("读取聊天历史失败: %s", project_id)
         return [], []
 

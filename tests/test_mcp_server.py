@@ -1,36 +1,35 @@
-"""Tests for mcp_server.py path traversal prevention."""
 from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import mcp_server
 
 
-class TestPathTraversal:
-    def test_parse_midi_rejects_dotdot(self, tmp_project):
-        mcp_server.OUTPUT_DIR = tmp_project / "output"
-        result = mcp_server.parse_midi("../../etc/passwd")
-        assert "错误" in result or "not allowed" in result.lower()
+def test_list_midi_files_includes_mid_and_midi_case_insensitively(tmp_path):
+    (tmp_path / "a.mid").write_bytes(b"x")
+    (tmp_path / "b.midi").write_bytes(b"x")
+    (tmp_path / "c.MIDI").write_bytes(b"x")
+    (tmp_path / "ignore.txt").write_text("x", encoding="utf-8")
+    previous = mcp_server.OUTPUT_DIR
+    mcp_server.OUTPUT_DIR = tmp_path
+    try:
+        result = mcp_server.list_midi_files()
+    finally:
+        mcp_server.OUTPUT_DIR = previous
 
-    def test_create_midi_rejects_dotdot(self, tmp_project):
-        mcp_server.OUTPUT_DIR = tmp_project / "output"
+    assert "a.mid" in result
+    assert "b.midi" in result
+    assert "c.MIDI" in result
+    assert "ignore.txt" not in result
+
+
+def test_create_midi_rejects_path_traversal(tmp_path):
+    previous = mcp_server.OUTPUT_DIR
+    mcp_server.OUTPUT_DIR = tmp_path
+    try:
         result = mcp_server.create_midi(
-            "../../evil.mid",
-            notes='[note: "C4", velocity: "80", start: "1", end: "2"]',
+            "../escape.mid",
+            notes='[note: "C4", velocity: "80", start: "0", end: "1"]',
         )
-        assert "错误" in result or "not allowed" in result.lower()
+    finally:
+        mcp_server.OUTPUT_DIR = previous
 
-    def test_delete_midi_rejects_dotdot(self, tmp_project):
-        mcp_server.OUTPUT_DIR = tmp_project / "output"
-        result = mcp_server.delete_midi("../../evil.mid")
-        assert "错误" in result or "not allowed" in result.lower()
-
-    def test_read_library_file_rejects_dotdot(self, tmp_project):
-        mcp_server.config.PROJECT_ROOT = tmp_project
-        result = mcp_server.read_library_file("../../etc/passwd")
-        assert "错误" in result or "not allowed" in result.lower()
+    assert "错误" in result

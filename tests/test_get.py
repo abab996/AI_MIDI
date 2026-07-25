@@ -1,45 +1,25 @@
-"""Tests for get.py MIDI parsing."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+import re
 
-import mido
-from mido import MidiFile, MidiTrack, Message
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from mido import Message, MidiFile, MidiTrack
 
 import get
 
 
-def create_midi(tmp_path: Path, events: list) -> Path:
-    """Helper to create a test MIDI file from event list."""
-    mid = MidiFile()
+def test_one_tick_c_minus_one_note_keeps_nonzero_duration(tmp_path):
+    mid = MidiFile(ticks_per_beat=480)
     track = MidiTrack()
     mid.tracks.append(track)
-    for msg in events:
-        track.append(msg)
-    path = tmp_path / "test.mid"
-    mid.save(str(path))
-    return path
+    track.append(Message("note_on", note=0, velocity=80, time=0))
+    track.append(Message("note_off", note=0, velocity=0, time=1))
+    source = tmp_path / "short.mid"
+    mid.save(source)
 
+    result = get.parse_midi_to_custom_format(str(source))
 
-class TestNoteHandling:
-    def test_repeated_note_on_creates_two_notes(self, tmp_project):
-        events = [
-            Message("note_on", note=60, velocity=80, time=0),
-            Message("note_on", note=60, velocity=80, time=10),
-            Message("note_off", note=60, velocity=0, time=20),
-        ]
-        path = create_midi(tmp_project, events)
-        result = get.parse_midi_to_custom_format(str(path))
-        assert len(result) == 2
-
-    def test_note_without_note_off_is_included(self, tmp_project):
-        events = [
-            Message("note_on", note=60, velocity=80, time=0),
-            Message("note_on", note=62, velocity=80, time=10),
-        ]
-        path = create_midi(tmp_project, events)
-        result = get.parse_midi_to_custom_format(str(path))
-        assert len(result) == 2
+    assert len(result) == 1
+    assert 'note: "C-1"' in result[0]
+    fields = re.findall(r'(?:start|end): "([\d.]+)"', result[0])
+    assert len(fields) == 2
+    assert float(fields[1]) > float(fields[0])

@@ -16,6 +16,13 @@ import config
 
 logger = logging.getLogger("ai_midi")
 
+
+class EmptyNoteTableError(ValueError):
+    """当 AI 回复中未解析出任何音符数据时抛出。"""
+
+    def __init__(self, message: str = "未从 AI 回复中解析出任何音符") -> None:
+        super().__init__(message)
+
 # 音名 → 半音数(支持 # 与 b 升降记号)
 NOTES_MAP = {
     'C': 0, 'C#': 1, 'Db': 1,
@@ -28,21 +35,11 @@ NOTES_MAP = {
     'B': 11, 'Cb': 11
 }
 
-# 极度宽容的正则:精准匹配数据本身,允许字段间出现各种噪声字符。
-_PATTERN = re.compile(
-    r'note:\s*[^A-G]*([A-G][#b]?\d+)[^,]*,'
-    r'\s*velocity:\s*[^\d]*([\d.]+)[^,]*,'
-    r'\s*start:\s*[^\d]*([\d.]+)[^,]*,'
-    r'\s*end:\s*[^\d]*([\d.]+)',
-    re.IGNORECASE
-)
-
-
 def _extract_fields(line: str) -> tuple[str, str, str, str] | None:
-    note_match = re.search(r'note:\s*[^A-G]*([A-G][#b]?\d+)', line, re.IGNORECASE)
-    vel_match = re.search(r'velocity:\s*[^\d]*([\d.]+)', line, re.IGNORECASE)
-    start_match = re.search(r'start:\s*[^\d]*([\d.]+)', line, re.IGNORECASE)
-    end_match = re.search(r'end:\s*[^\d]*([\d.]+)', line, re.IGNORECASE)
+    note_match = re.search(r'note:\s*[^A-G]*([A-G][#b]*-?\d+)', line, re.IGNORECASE)
+    vel_match = re.search(r'velocity:\s*[^\d.-]*([-\d.]+)', line, re.IGNORECASE)
+    start_match = re.search(r'start:\s*[^\d.-]*([-\d.]+)', line, re.IGNORECASE)
+    end_match = re.search(r'end:\s*[^\d.-]*([-\d.]+)', line, re.IGNORECASE)
     if note_match and vel_match and start_match and end_match:
         return note_match.group(1), vel_match.group(1), start_match.group(1), end_match.group(1)
     return None
@@ -51,25 +48,25 @@ def _extract_fields(line: str) -> tuple[str, str, str, str] | None:
 def _clamp_velocity(vel) -> int:
     """将力度值限制在 MIDI 合法范围 0-127。"""
     v = int(float(vel))
-    if not (0 <= v <= 127):
+    if not (config.MIN_VELOCITY <= v <= config.MAX_VELOCITY):
         logger.warning("velocity %s 超出范围,已钳制到 0-127", vel)
-    return max(0, min(127, v))
+    return max(config.MIN_VELOCITY, min(config.MAX_VELOCITY, v))
 
 
 def _clamp_bpm(bpm) -> int:
     """将 BPM 限制在合理范围 1-600。"""
     b = int(float(bpm))
-    if not (1 <= b <= 600):
+    if not (config.BPM_MIN <= b <= config.BPM_MAX):
         logger.warning("BPM %s 超出合理范围,已钳制到 1-600", bpm)
-    return max(1, min(600, b))
+    return max(config.BPM_MIN, min(config.BPM_MAX, b))
 
 
 def _clamp_midi_number(note_num) -> int:
     """将 MIDI 音高编号限制在合法范围 0-127。"""
     n = int(note_num)
-    if not (0 <= n <= 127):
+    if not (config.NOTE_NUMBER_MIN <= n <= config.NOTE_NUMBER_MAX):
         logger.warning("MIDI 音高 %s 超出范围,已钳制到 0-127", note_num)
-    return max(0, min(127, n))
+    return max(config.NOTE_NUMBER_MIN, min(config.NOTE_NUMBER_MAX, n))
 
 
 def note_name_to_midi_number(note_name: str) -> int:
@@ -127,9 +124,9 @@ def _parse_lines(lines) -> tuple[list[dict], int]:
             except ValueError:
                 logger.warning("第 %d 行数值解析失败，跳过: %s...", line_count, clean_line[:80])
                 continue
-            if end_val <= start_val:
+            if end_val < start_val:
                 logger.warning(
-                    "第 %d 行 end(%s) <= start(%s)，跳过音符 %s",
+                    "第 %d 行 end(%s) < start(%s)，跳过音符 %s",
                     line_count, end_str, start_str, note_str,
                 )
                 continue
@@ -153,32 +150,43 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
     if output_midi_path is None:
         output_midi_path = config.OUTPUT_MIDI
 
-    # 判断输入是文件路径还是内容字符串。
-    is_file = os.path.isfile(source)
+    source_is_pathlike = isinstance(source, os.PathLike)
+    source_text = os.fspath(source) if source_is_pathlike else source
+    if isinstance(source_text, str):
+        looks_like_note_table = _extract_fields(source_text) is not None or "\n" in source_text
+        looks_like_path = bool(re.search(r"([A-Za-z]:[\\/]|[\\/]|\.[A-Za-z0-9]+$)", source_text))
+        if os.path.isfile(source_text):
+            source_is_file = True
+        elif source_is_pathlike or (looks_like_path and not looks_like_note_table):
+            raise FileNotFoundError(f"找不到文件: {source_text}")
+        else:
+            source_is_file = False
+    else:
+        source_is_file = False
 
-    if is_file:
-        logger.info("正在读取文件: %s", source)
+    if source_is_file:
+        logger.info("正在读取文件: %s", source_text)
         try:
-            with open(source, 'r', encoding='utf-8') as f:
+            with open(source_text, 'r', encoding='utf-8') as f:
                 notes_info, line_count = _parse_lines(f)
         except UnicodeDecodeError:
-            logger.warning("UTF-8 解码失败，尝试使用 GBK 编码重新读取: %s", source)
+            logger.warning("UTF-8 解码失败，尝试使用 GBK 编码重新读取: %s", source_text)
             try:
-                with open(source, 'r', encoding='gbk') as f:
+                with open(source_text, 'r', encoding='gbk') as f:
                     notes_info, line_count = _parse_lines(f)
-            except Exception as e:
-                logger.exception("读取文件失败")
-                return
+            except (OSError, UnicodeError):
+                logger.exception("GBK 回退读取文件失败: %s", source_text)
+                raise
         except FileNotFoundError:
-            logger.error("找不到文件: %s", source)
-            return
+            logger.error("找不到文件: %s", source_text)
+            raise
     else:
         logger.info("检测到输入为音符内容字符串，直接解析")
-        notes_info, line_count = _parse_lines(io.StringIO(source))
+        notes_info, line_count = _parse_lines(io.StringIO(str(source_text)))
 
     if not notes_info:
         logger.warning("读取了 %d 行，但未找到任何有效的音符数据", line_count)
-        return
+        raise EmptyNoteTableError("未从 AI 回复中解析出任何音符")
 
     logger.info("成功解析出 %d 个音符，开始构建 MIDI", len(notes_info))
 
@@ -219,6 +227,9 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
         last_tick = event['abs_tick']
 
     # 保存文件。
+    output_parent = os.path.dirname(str(output_midi_path))
+    if output_parent:
+        os.makedirs(output_parent, exist_ok=True)
     mid.save(str(output_midi_path))
     logger.info("成功生成 MIDI 文件: %s", output_midi_path)
 

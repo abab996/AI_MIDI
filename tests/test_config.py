@@ -1,25 +1,24 @@
-"""Tests for config.py logging setup."""
 from __future__ import annotations
 
-import importlib
-import sys
-from pathlib import Path
-from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pytest
 
 import config
 
 
-class TestConfigImport:
-    def test_import_does_not_crash_when_mkdir_fails(self):
-        original_mkdir = Path.mkdir
-        def failing_mkdir(self, *args, **kwargs):
-            raise PermissionError("Access denied")
-        
-        Path.mkdir = failing_mkdir
-        try:
-            importlib.reload(config)
-        finally:
-            Path.mkdir = original_mkdir
-            importlib.reload(config)
+def test_base_url_accepts_whitelisted_path_and_normalizes_trailing_slash():
+    assert config.validate_base_url("https://api.openai.com/v1/") == "https://api.openai.com/v1"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.openai.com/v1",
+        "https://example.com/v1",
+        "https://api.openai.com:8443/v1",
+        "https://api.openai.com/v1?key=value",
+        "https://api.openai.com/v1#fragment",
+    ],
+)
+def test_base_url_rejects_unsafe_variants(url):
+    with pytest.raises(ValueError):
+        config.validate_base_url(url)

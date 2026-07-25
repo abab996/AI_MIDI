@@ -6,7 +6,6 @@ __pycache__/
 # 虚拟环境
 .venv/
 venv/
-
 .venv_build/
 venv_build/
 
@@ -15,7 +14,7 @@ build/
 dist/
 *.spec
 
-## 敏感配置(包含 API key)
+# 敏感配置(包含 API key)
 .env
 settings.json
 
@@ -31,6 +30,12 @@ projects/
 /*.mid
 /*.mid.txt
 
-# Claude Code 项目指引文件（本地会话用，不随代码提交）
-CLAUDE.md
-_mcp_wheel/
+# 编辑器与本地会话状态
+.idea/
+.vscode/
+.omo/
+.agents/
+.codeartsdoer/
+.codegraph/
+.coverage
+.pytest_cache/

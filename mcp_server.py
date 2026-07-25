@@ -3,11 +3,8 @@
 通过 FastMCP 暴露 MIDI 操作能力，供 chat_ui.py 的子进程调用。
 传输方式：stdio（JSON-RPC over stdin/stdout）。
 """
-from __future__ import annotations
-
 import json
 import os
-import sys
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -29,8 +26,9 @@ def _safe_join(base_dir: Path, filename: str) -> Path:
 
     Raises ValueError if the resolved path escapes base_dir.
     """
-    filepath = (base_dir / filename).resolve()
-    if not str(filepath).startswith(str(base_dir.resolve()) + os.sep) and filepath != base_dir.resolve():
+    base_resolved = base_dir.resolve()
+    filepath = (base_resolved / filename).resolve()
+    if filepath != base_resolved and not filepath.is_relative_to(base_resolved):
         raise ValueError(f"Path traversal detected: {filename}")
     return filepath
 
@@ -78,7 +76,11 @@ def list_midi_files() -> str:
     """列出 output 目录下所有 MIDI 文件及其大小。"""
     if not OUTPUT_DIR.exists():
         return "（output 目录不存在）"
-    files = sorted(OUTPUT_DIR.glob("*.mid"))
+    files = sorted(
+        path
+        for path in OUTPUT_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in {".mid", ".midi"}
+    )
     if not files:
         return "（暂无 MIDI 文件）"
     lines = []

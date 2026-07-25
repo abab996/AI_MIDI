@@ -1,1 +1,0 @@
-.\.venv_build\Scripts\python.exe run webui.py

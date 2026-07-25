@@ -5,7 +5,6 @@
 """
 import logging
 import os
-from pathlib import Path
 
 import mido
 from mido import MidiFile
@@ -20,12 +19,12 @@ _NOTE_FORMAT = '[note: "{note}", velocity: "{velocity}", start: "{start}", end: 
 
 def midi_number_to_note_name(midi_note: int) -> str:
     """将 MIDI 音高编号(0-127)转换为音符名称,如 C4。无效输入返回 'Invalid'。"""
-    if midi_note < 0 or midi_note > 127:
+    if midi_note < config.NOTE_NUMBER_MIN or midi_note > config.NOTE_NUMBER_MAX:
         return "Invalid"
 
     notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    octave = (midi_note // 12) - 1
-    note = notes[midi_note % 12]
+    octave = (midi_note // config.NOTES_PER_OCTAVE) - 1
+    note = notes[midi_note % config.NOTES_PER_OCTAVE]
     return f"{note}{octave}"
 
 
@@ -37,14 +36,15 @@ def parse_midi_to_custom_format(file_path) -> list[str]:
     """
     try:
         mid = MidiFile(str(file_path))
-    except Exception as e:
+    except (OSError, ValueError, EOFError) as e:
         logger.error("无法读取 MIDI 文件: %s", e)
         return []
 
     tpb = mid.ticks_per_beat
     merged_track = mido.merge_tracks(mid.tracks)
 
-    active_notes: dict[int, dict] = {}
+    # Key by (channel, note) so same pitch on different channels does not collide.
+    active_notes: dict[tuple[int, int], dict] = {}
     parsed_notes: list[dict] = []
 
     current_tick = 0
@@ -53,28 +53,35 @@ def parse_midi_to_custom_format(file_path) -> list[str]:
         current_tick += msg.time
 
         if msg.type == 'note_on' and msg.velocity > 0:
-            if msg.note in active_notes:
-                old_info = active_notes.pop(msg.note)
-                start_beat = round(old_info['start_tick'] / tpb, 2)
-                end_beat = round(current_tick / tpb, 2)
-                if end_beat > start_beat:
+            key = (msg.channel, msg.note)
+            if key in active_notes:
+                # Overlapping note_on for same (channel, note): close previous
+                # and start a new one (legato behavior).
+                old_info = active_notes.pop(key)
+                start_beat = round(old_info['start_tick'] / tpb, config.ROUND_DECIMALS)
+                end_beat = round(current_tick / tpb, config.ROUND_DECIMALS)
+                # Preserve zero-duration notes (end_beat >= start_beat).
+                # Zero-duration notes are represented with start == end so they
+                # are visible in the output and not silently dropped.
+                if end_beat >= start_beat:
                     parsed_notes.append({
                         'note': midi_number_to_note_name(msg.note),
                         'velocity': old_info['velocity'],
                         'start': start_beat,
                         'end': end_beat
                     })
-            active_notes[msg.note] = {
+            active_notes[key] = {
                 'start_tick': current_tick,
                 'velocity': msg.velocity
             }
 
         elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-            if msg.note in active_notes:
-                info = active_notes.pop(msg.note)
+            key = (msg.channel, msg.note)
+            if key in active_notes:
+                info = active_notes.pop(key)
 
-                start_beat = round(info['start_tick'] / tpb, 2)
-                end_beat = round(current_tick / tpb, 2)
+                start_beat = round(info['start_tick'] / tpb, config.ROUND_DECIMALS)
+                end_beat = round(current_tick / tpb, config.ROUND_DECIMALS)
 
                 parsed_notes.append({
                     'note': midi_number_to_note_name(msg.note),
@@ -83,12 +90,14 @@ def parse_midi_to_custom_format(file_path) -> list[str]:
                     'end': end_beat
                 })
 
-    for note_num, info in list(active_notes.items()):
-        start_beat = round(info['start_tick'] / tpb, 2)
-        end_beat = round(current_tick / tpb, 2)
+    for (channel, note_num), info in list(active_notes.items()):
+        start_beat = round(info['start_tick'] / tpb, config.ROUND_DECIMALS)
+        end_beat = round(current_tick / tpb, config.ROUND_DECIMALS)
+        # For dangling notes at end-of-stream, add a minimal epsilon so the
+        # note is visible even when start == end.
         if end_beat <= start_beat:
-            end_beat = round(start_beat + 0.01, 2)
-        if end_beat > start_beat:
+            end_beat = round(start_beat + config.DANGLING_EPSILON, config.ROUND_DECIMALS)
+        if end_beat >= start_beat:
             parsed_notes.append({
                 'note': midi_number_to_note_name(note_num),
                 'velocity': info['velocity'],

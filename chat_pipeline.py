@@ -6,17 +6,86 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 import gradio as gr
 
 import ai_api
 import config
+import project_manager
 
 # Module reference for runtime attribute access (avoids circular import issues
 # with mutable globals like _current_project_id).
 import chat_ui as _chat_ui
 
 logger = logging.getLogger("ai_midi")
+
+
+def _sanitize_messages(messages: list[dict]) -> list[dict]:
+    """清理并修复消息列表，确保兼容 Gemini 等 API 的严格要求。
+
+    1. 将 assistant 消息中 content 为 None 改为 ""。
+    2. 确保 tool 消息包含 name 字段（基于上下文 assistant tool_calls 补充）。
+    """
+    tc_id_to_name: dict[str, str] = {}
+    sanitized: list[dict] = []
+
+    for msg in messages:
+        msg_copy = dict(msg)
+        role = msg_copy.get("role")
+
+        if role == "assistant":
+            if msg_copy.get("content") is None:
+                msg_copy["content"] = ""
+            tool_calls = msg_copy.get("tool_calls") or []
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tc_id = tc.get("id")
+                    func = tc.get("function") or {}
+                    tc_name = func.get("name") if isinstance(func, dict) else getattr(func, "name", None)
+                else:
+                    tc_id = getattr(tc, "id", None)
+                    func = getattr(tc, "function", None)
+                    tc_name = getattr(func, "name", None) if func else None
+                if tc_id and tc_name:
+                    tc_id_to_name[tc_id] = tc_name
+
+        elif role == "tool":
+            tc_id = msg_copy.get("tool_call_id")
+            if not msg_copy.get("name") and tc_id in tc_id_to_name:
+                msg_copy["name"] = tc_id_to_name[tc_id]
+
+        sanitized.append(msg_copy)
+
+    return sanitized
+
+
+def _format_display_message(reasoning: str, content: str) -> str:
+    """结合思考/推理过程和回答正文，构造前端 Markdown HTML 展示文本。
+
+    如果提供推理过程（或 content 中包含 <think> 标签），渲染为可折叠的 details 标签。
+    """
+    res = ""
+    if reasoning and reasoning.strip():
+        res += (
+            f"<details>\n"
+            f"<summary>🧠 思考过程</summary>\n\n"
+            f"{reasoning.strip()}\n"
+            f"</details>\n\n"
+        )
+    elif "<think>" in content and "</think>" in content:
+        parts = content.split("</think>", 1)
+        think_part = parts[0].replace("<think>", "").strip()
+        main_part = parts[1].strip()
+        return (
+            f"<details>\n"
+            f"<summary>🧠 思考过程</summary>\n\n"
+            f"{think_part}\n"
+            f"</details>\n\n"
+            + main_part
+        )
+    res += content
+    return res
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -46,6 +115,7 @@ def _prepare_context(
     for msg in full_history:
         messages.append(msg)
     messages.append({"role": "user", "content": message})
+    messages = _sanitize_messages(messages)
     _round_start_idx = len(messages)
 
     client = ai_api.get_client(
@@ -56,7 +126,7 @@ def _prepare_context(
     kwargs: dict = {
         "model": settings["model"],
         "messages": messages,
-        "stream": False,
+        "stream": True,
     }
     if openai_tools:
         kwargs["tools"] = openai_tools
@@ -104,9 +174,9 @@ def _execute_tool_loop(
 
     Handles:
     - Context compression
-    - API calls
+    - API calls (real SSE streaming)
+    - Reasoning/thinking process streaming and rendering
     - Tool execution with display updates
-    - Final reply streaming (delegates to _stream_final_reply)
     - Max-rounds fallback
     - Error handling
     """
@@ -139,60 +209,206 @@ def _execute_tool_loop(
                 logger.info("压缩完成，full_history 长度: %d", len(full_history))
 
             # 更新 system prompt 以反映当前文件列表
-            kwargs["messages"][0] = {
+            messages[0] = {
                 "role": "system",
                 "content": _chat_ui._build_system_prompt(updated_files),
             }
+            kwargs["messages"] = _sanitize_messages(messages)
+            kwargs["stream"] = True
 
-            response = client.chat.completions.create(**kwargs)
-            choice = response.choices[0]
-            assistant_msg = choice.message
+            # 尝试 API 调用,逐步去除不兼容参数并重试
+            _strippable = [
+                ("extra_body", "thinking"),
+                ("reasoning_effort", "reasoning_effort"),
+            ]
+            max_retries = 3
+            for _attempt in range(max_retries + 1):
+                try:
+                    stream_response = client.chat.completions.create(**kwargs)
+                    break
+                except Exception as api_err:
+                    is_rate_limit = (
+                        getattr(api_err, "status_code", None) == 429
+                        or "429" in str(api_err)
+                        or "rate" in str(api_err).lower()
+                        or "resource_exhausted" in str(api_err).lower()
+                    )
+                    if is_rate_limit and _attempt < max_retries:
+                        wait_sec = (2 ** _attempt) + 1
+                        logger.warning("触发 429 API 限流，等待 %d 秒后重试 (%d/%d)...", wait_sec, _attempt + 1, max_retries)
+                        time.sleep(wait_sec)
+                        continue
 
-            logger.info(
-                "API 返回: finish_reason=%s, tool_calls=%d, content=%s",
-                choice.finish_reason,
-                len(getattr(assistant_msg, "tool_calls", None) or []),
-                (assistant_msg.content or "")[:100],
-            )
+                    stripped = False
+                    for param_key, error_kw in _strippable:
+                        if param_key in kwargs and error_kw in str(api_err).lower():
+                            logger.warning("API 不支持 %s 参数,去掉后重试", param_key)
+                            kwargs.pop(param_key)
+                            stripped = True
+                            break
+                    if not stripped:
+                        raise
 
-            # ── 构造助手消息 ──
-            msg_content = assistant_msg.content if assistant_msg.content else None
-            msg_tool_calls = getattr(assistant_msg, "tool_calls", None) or []
+            if not hasattr(stream_response, "__iter__") or isinstance(stream_response, dict):
+                chunks = [stream_response]
+            else:
+                chunks = stream_response
+
+            accumulated_content = ""
+            accumulated_reasoning = ""
+            tool_calls_builder: dict[int, dict] = {}
+            is_streaming = False
+
+            for chunk in chunks:
+                if not hasattr(chunk, "choices") or not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = getattr(choice, "delta", None)
+                msg_obj = getattr(choice, "message", None)
+                item = delta if delta is not None else msg_obj
+                if item is None:
+                    continue
+
+                # 提取推理/思考片段
+                r_chunk = (
+                    getattr(item, "reasoning_content", None)
+                    or getattr(item, "reasoning", None)
+                )
+                if r_chunk:
+                    accumulated_reasoning += r_chunk
+
+                # 提取正文片段
+                c_chunk = getattr(item, "content", None)
+                if c_chunk:
+                    accumulated_content += c_chunk
+
+                # 提取工具调用片段
+                tc_chunks = getattr(item, "tool_calls", None)
+                if tc_chunks:
+                    for tc_item in tc_chunks:
+                        idx = getattr(tc_item, "index", 0)
+                        if idx not in tool_calls_builder:
+                            tool_calls_builder[idx] = {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        tc_id = getattr(tc_item, "id", None)
+                        if tc_id:
+                            curr_id = tool_calls_builder[idx]["id"]
+                            if not curr_id:
+                                tool_calls_builder[idx]["id"] = tc_id
+                            elif curr_id != tc_id and tc_id not in curr_id:
+                                tool_calls_builder[idx]["id"] += tc_id
+
+                        if isinstance(tc_item, dict):
+                            func_obj = tc_item.get("function", {})
+                            f_name = func_obj.get("name", "")
+                            f_args = func_obj.get("arguments", "")
+                        else:
+                            func_obj = getattr(tc_item, "function", None)
+                            f_name = getattr(func_obj, "name", "") if func_obj else ""
+                            f_args = getattr(func_obj, "arguments", "") if func_obj else ""
+
+                        if f_name:
+                            curr_name = tool_calls_builder[idx]["function"]["name"]
+                            if not curr_name:
+                                tool_calls_builder[idx]["function"]["name"] = f_name
+                            elif curr_name != f_name:
+                                known_tools = [
+                                    "read_library_file", "list_midi_files",
+                                    "parse_midi", "create_midi", "delete_midi"
+                                ]
+                                if f_name in known_tools:
+                                    tool_calls_builder[idx]["function"]["name"] = f_name
+                                elif curr_name not in known_tools and f_name not in curr_name:
+                                    tool_calls_builder[idx]["function"]["name"] += f_name
+
+                        if f_args:
+                            if isinstance(f_args, dict):
+                                f_args = json.dumps(f_args, ensure_ascii=False)
+                            curr_args = tool_calls_builder[idx]["function"]["arguments"]
+                            if not curr_args:
+                                tool_calls_builder[idx]["function"]["arguments"] = f_args
+                            elif curr_args != f_args:
+                                try:
+                                    json.loads(curr_args)
+                                    try:
+                                        json.loads(f_args)
+                                        if len(f_args) > len(curr_args):
+                                            tool_calls_builder[idx]["function"]["arguments"] = f_args
+                                    except json.JSONDecodeError:
+                                        pass
+                                except json.JSONDecodeError:
+                                    tool_calls_builder[idx]["function"]["arguments"] += f_args
+
+                # 真实流式实时 yield 给前端呈现
+                if r_chunk or c_chunk:
+                    formatted_display = _format_display_message(accumulated_reasoning, accumulated_content)
+                    if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
+                        chat_display[-1] = {"role": "assistant", "content": formatted_display}
+                    else:
+                        chat_display.append({"role": "assistant", "content": formatted_display})
+                        is_streaming = True
+                    yield (
+                        list(chat_display),
+                        "",
+                        updated_files,
+                        new_undo_stack,
+                        full_history,
+                        download_path,
+                        gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
+                    )
+
+            msg_tool_calls_list = [
+                v for k, v in sorted(tool_calls_builder.items(), key=lambda x: x[0])
+            ]
 
             assistant_message: dict = {
                 "role": "assistant",
-                "content": msg_content,
+                "content": accumulated_content,
             }
-            if msg_tool_calls:
+            if msg_tool_calls_list:
                 assistant_message["tool_calls"] = [
                     {
-                        "id": tc.id,
-                        "type": tc.type or "function",
+                        "id": tc.get("id") or f"call_{i}",
+                        "type": tc.get("type", "function"),
                         "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
+                            "name": tc.get("function", {}).get("name", ""),
+                            "arguments": tc.get("function", {}).get("arguments", ""),
                         },
                     }
-                    for tc in msg_tool_calls
+                    for i, tc in enumerate(msg_tool_calls_list)
                 ]
 
             messages.append(assistant_message)
 
-            # ── 无工具调用 → 最终回复 ──
-            if not msg_tool_calls:
+            # ── 无工具调用 → 最终回复完成 ──
+            if not msg_tool_calls_list:
                 new_full_history = _finalize_response(
                     messages, full_history, message, _round_start_idx, updated_files,
                 )
-                final_display = msg_content or ""
-                yield from _stream_final_reply(
-                    chat_display, final_display, updated_files,
-                    new_undo_stack, new_full_history, download_path,
+                formatted_final = _format_display_message(accumulated_reasoning, accumulated_content)
+                if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
+                    chat_display[-1] = {"role": "assistant", "content": formatted_final}
+                else:
+                    chat_display.append({"role": "assistant", "content": formatted_final})
+
+                yield (
+                    list(chat_display),
+                    "",
+                    updated_files,
+                    new_undo_stack,
+                    new_full_history,
+                    download_path,
+                    gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
                 )
                 return
 
             # ── 工具调用前说明文字 ──
-            if msg_content and msg_content.strip():
-                chat_display.append({"role": "assistant", "content": msg_content})
+            if accumulated_content and accumulated_content.strip():
+                if not (is_streaming and chat_display and chat_display[-1].get("role") == "assistant"):
+                    chat_display.append({"role": "assistant", "content": accumulated_content})
                 yield (
                     list(chat_display),
                     "",
@@ -204,12 +420,11 @@ def _execute_tool_loop(
                 )
 
             # ── 执行工具调用 ──
-            for tc in msg_tool_calls:
-                tc_id = tc.id
-                tc_name = tc.function.name
-                tc_args_raw = tc.function.arguments
+            for tc in msg_tool_calls_list:
+                tc_id = tc.get("id", "")
+                tc_name = tc.get("function", {}).get("name", "")
+                tc_args_raw = tc.get("function", {}).get("arguments", "")
 
-                # 显示"正在调用工具"状态
                 chat_display.append({
                     "role": "assistant",
                     "content": f"🔧 正在调用 `{tc_name}`...",
@@ -241,7 +456,6 @@ def _execute_tool_loop(
                 entry = _chat_ui._format_single_tool_entry(tc_name, tc_args, result_text)
                 tool_log.append(entry)
 
-                # 如果创建了文件，设置下载路径
                 if tc_name == "create_midi":
                     filename = tc_args.get("filename", "")
                     try:
@@ -252,12 +466,10 @@ def _execute_tool_loop(
                     if filepath is not None and filepath.is_file():
                         download_path = str(filepath)
 
-                # 将工具结果回传给 API
                 messages.append(
-                    _chat_ui._make_tool_result_message(tc_id, result_text),
+                    _chat_ui._make_tool_result_message(tc_id, result_text, name=tc_name),
                 )
 
-                # 更新 chat_display：替换"正在调用..."
                 if chat_display and chat_display[-1].get("role") == "assistant":
                     chat_display[-1] = {"role": "assistant", "content": entry}
                 else:
@@ -294,17 +506,22 @@ def _execute_tool_loop(
         logger.exception("send_message 调用失败")
         if isinstance(e, GeneratorExit):
             raise
-        tool_log_html = _chat_ui._format_tool_log(tool_log)
         # 不直接 str(e) 暴露给 UI，避免 API 异常可能包含敏感请求信息
-        error_base = (
-            f"⚠ 调用失败: {type(e).__name__}"
-            + (f" (HTTP {e.status_code})" if hasattr(e, "status_code") else "")
-        )
-        error_msg = (
-            (error_base + "\n\n" + tool_log_html).strip()
-            if tool_log_html
-            else error_base
-        )
+        status_code = getattr(e, "status_code", None)
+        err_str = str(e).lower()
+        if status_code == 429 or "429" in err_str or "rate" in err_str or "resource_exhausted" in err_str:
+            error_msg = (
+                "⚠ 调用失败: 触发 API 请求限流 (HTTP 429 / Rate Limit / Quota Exceeded)。\n\n"
+                "当前 API 服务商或 API Key 的请求频率/免费额度已达上限。建议：\n"
+                "1. **稍等 15~60 秒** 后重新发送消息（等待速率恢复）；\n"
+                "2. 在主界面设置页切换额度充足的 API Key 或服务商；\n"
+                "3. 切换为其他消耗更低的模型（如 Gemini 2.5 Flash / DeepSeek 聊天模型）。"
+            )
+        else:
+            error_msg = (
+                f"⚠ 调用失败: {type(e).__name__}"
+                + (f" (HTTP {status_code})" if status_code else "")
+            )
         chat_display.append({"role": "assistant", "content": error_msg})
         new_error_history = full_history + [{"role": "user", "content": message}]
         for api_msg in messages[_round_start_idx:]:

@@ -149,6 +149,7 @@ def _load_settings() -> dict:
 def _save_settings(
     api_key: str,
     base_url: str,
+    api_path: str,
     model: str,
     max_tokens: int | float | None,
     max_completion_tokens: int | float | None,
@@ -158,7 +159,7 @@ def _save_settings(
     """保存用户设置到本地 JSON 文件。"""
     # 在保存前验证 base_url，防止恶意域名写入 settings.json
     try:
-        validated_url = config.validate_base_url(base_url.strip())
+        config.validate_base_url(base_url.strip(), api_path.strip())
     except ValueError as e:
         return f"✗ 保存失败：{e}"
 
@@ -172,7 +173,8 @@ def _save_settings(
 
     settings = {
         "api_key": api_key.strip(),
-        "base_url": validated_url,
+        "base_url": base_url.strip(),
+        "api_path": api_path.strip(),
         "model": model,
         "max_tokens": _to_int(max_tokens),
         "max_completion_tokens": _to_int(max_completion_tokens),
@@ -188,22 +190,23 @@ def _note_to_text(note_table: list[str]) -> str:
     return "\n".join(note_table)
 
 
-def _fetch_models(api_key: str, base_url: str) -> tuple[list[str], str]:
+def _fetch_models(api_key: str, base_url: str, api_path: str = "") -> tuple[list[str], str]:
     """从 API 服务拉取模型列表,返回 (模型 id 列表, 状态信息)。"""
     key = api_key.strip() or config.get_api_key()
     url = base_url.strip() or config.BASE_URL
+    path = api_path.strip()
 
     if not key:
         return [], "⚠ 请先填写并保存 API Key"
 
     try:
-        url = config.validate_base_url(url)
+        full_url = config.validate_base_url(url, path)
     except ValueError:
         logger.exception("base_url 验证失败")
-        return [], "✗ 配置错误,请检查 base_url。"
+        return [], "✗ 配置错误,请检查 Base URL 与 API 路径。"
 
     try:
-        client = ai_api.get_client(api_key=key, base_url=url)
+        client = ai_api.get_client(api_key=key, base_url=full_url)
         models = client.models.list()
         ids = sorted([m.id for m in models.data])
         if not ids:
@@ -536,6 +539,7 @@ def _run_task(
     requirements: str,
     api_key: str,
     base_url: str,
+    api_path: str,
     model: str,
     max_tokens: int | None,
     max_completion_tokens: int | None,
@@ -571,12 +575,12 @@ def _run_task(
     api_kwargs: dict = {}
     if effective_api_key:
         api_kwargs["api_key"] = effective_api_key
-    if base_url.strip():
+    if base_url.strip() or api_path.strip():
         try:
-            api_kwargs["base_url"] = config.validate_base_url(base_url.strip())
+            api_kwargs["base_url"] = config.validate_base_url(base_url.strip(), api_path.strip())
         except ValueError:
-            logger.exception("base_url 验证失败")
-            return "", None, _elapsed("✗ 配置错误,请检查 base_url。")
+            logger.exception("base_url/api_path 验证失败")
+            return "", None, _elapsed("✗ 配置错误,请检查 Base URL 与 API 路径。")
     if model.strip():
         api_kwargs["model"] = model.strip()
     if max_tokens:
@@ -679,7 +683,7 @@ def build_ui() -> gr.Blocks:
                         result_box, download_file = _build_result_section()
 
             with gr.Tab("设置"):
-                (api_key_input, show_key_sw, base_url_input, model_input,
+                (api_key_input, show_key_sw, base_url_input, api_path_input, model_input,
                  refresh_model_btn, model_status, max_tokens_input,
                  max_completion_tokens_input, reasoning_effort_input,
                  thinking_enabled_input, save_cfg_btn, save_cfg_status) = _build_settings_section(settings)
@@ -708,8 +712,8 @@ def build_ui() -> gr.Blocks:
             inputs=show_key_sw,
             outputs=api_key_input,
         )
-        def _refresh_models(api_key: str, base_url: str) -> tuple[dict, str]:
-            ids, msg = _fetch_models(api_key, base_url)
+        def _refresh_models(api_key: str, base_url: str, api_path: str) -> tuple[dict, str]:
+            ids, msg = _fetch_models(api_key, base_url, api_path)
             if ids:
                 gr.Info("模型列表已刷新")
             else:
@@ -718,12 +722,12 @@ def build_ui() -> gr.Blocks:
 
         refresh_model_btn.click(
             fn=_refresh_models,
-            inputs=[api_key_input, base_url_input],
+            inputs=[api_key_input, base_url_input, api_path_input],
             outputs=[model_input, model_status],
         )
         save_cfg_btn.click(
             fn=_save_settings,
-            inputs=[api_key_input, base_url_input, model_input,
+            inputs=[api_key_input, base_url_input, api_path_input, model_input,
                     max_tokens_input, max_completion_tokens_input,
                     reasoning_effort_input, thinking_enabled_input],
             outputs=save_cfg_status,
@@ -732,7 +736,7 @@ def build_ui() -> gr.Blocks:
             fn=_run_task,
             inputs=[func_selector, note_table_state, bpm_input, timesig_input,
                     lyrics_box, orig_lang_input, target_lang_input, note_sw, req_box,
-                    api_key_input, base_url_input, model_input,
+                    api_key_input, base_url_input, api_path_input, model_input,
                     max_tokens_input, max_completion_tokens_input,
                     reasoning_effort_input, thinking_enabled_input],
             outputs=[result_box, download_file, status_text],

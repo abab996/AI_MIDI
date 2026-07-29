@@ -80,3 +80,111 @@ def test_max_tool_rounds_returns_explicit_message():
     final_text = outputs[-1][0][-1]["content"]
     assert "已达到最大工具调用轮数" in final_text
     assert outputs[-1][4][-1] == {"role": "assistant", "content": final_text}
+
+
+def test_sanitize_messages_fixes_none_content_and_missing_tool_name():
+    raw_messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-123",
+                    "type": "function",
+                    "function": {"name": "read_library_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-123",
+            "content": "file content",
+        },
+    ]
+
+    sanitized = chat_pipeline._sanitize_messages(raw_messages)
+
+    assert sanitized[1]["content"] == ""
+    assert sanitized[2]["name"] == "read_library_file"
+
+
+def test_format_display_message_with_reasoning():
+    msg = chat_pipeline._format_display_message("思考如何和弦配理...", "和弦数据如下:")
+    assert "<details>" in msg
+    assert "<summary>🧠 思考过程</summary>" in msg
+    assert "思考如何和弦配理..." in msg
+    assert "和弦数据如下:" in msg
+
+    msg_think_tag = chat_pipeline._format_display_message("", "<think>内置思考内容</think>最终回复")
+    assert "<details>" in msg_think_tag
+    assert "内置思考内容" in msg_think_tag
+    assert "最终回复" in msg_think_tag
+
+
+def test_streaming_duplicate_tool_name_deduplication():
+    chunks = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_gemini_1",
+                                function=SimpleNamespace(
+                                    name="read_library_file",
+                                    arguments='{"filename": "02_配和弦指南.md"}',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_gemini_1",
+                                function=SimpleNamespace(
+                                    name="read_library_file",
+                                    arguments='{"filename": "02_配和弦指南.md"}',
+                                ),
+                            )
+                        ]
+                    )
+                )
+            ]
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="文件读取完成")
+                )
+            ]
+        ),
+    ]
+
+    ctx = _context([chunks, [_response(content="done")]])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), patch.object(
+        chat_pipeline._chat_ui, "_build_system_prompt", return_value="system",
+    ), patch.object(
+        chat_pipeline._chat_ui, "_should_compact", return_value=False,
+    ), patch.object(
+        chat_pipeline._chat_ui, "_execute_tool_call", return_value=("文件内容", []),
+    ):
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    assistant_msgs_with_tools = [
+        msg for msg in outputs[-1][4]
+        if msg.get("role") == "assistant" and "tool_calls" in msg
+    ]
+    assert len(assistant_msgs_with_tools) == 1
+    assert assistant_msgs_with_tools[0]["tool_calls"][0]["function"]["name"] == "read_library_file"
+
+
+

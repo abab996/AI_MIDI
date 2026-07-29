@@ -115,15 +115,30 @@ def _chat(
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
 
-    try:
-        response = client.chat.completions.create(**kwargs)
-    except (openai.APIError, openai.OpenAIError, TypeError) as e:
-        logger.error(
-            "调用 AI API 时发生错误: status=%s, type=%s",
-            getattr(e, 'status_code', '?'),
-            type(e).__name__,
-        )
-        return ""
+    # 尝试 API 调用,逐步去除不兼容参数并重试
+    _strippable = [
+        ("extra_body", "thinking"),
+        ("reasoning_effort", "reasoning_effort"),
+    ]
+    for _attempt in range(len(_strippable) + 1):
+        try:
+            response = client.chat.completions.create(**kwargs)
+            break
+        except (openai.APIError, openai.OpenAIError, TypeError) as e:
+            stripped = False
+            for param_key, error_kw in _strippable:
+                if param_key in kwargs and error_kw in str(e).lower():
+                    logger.warning("API 不支持 %s 参数,去掉后重试", param_key)
+                    kwargs.pop(param_key)
+                    stripped = True
+                    break
+            if not stripped:
+                logger.error(
+                    "调用 AI API 时发生错误: status=%s, type=%s",
+                    getattr(e, 'status_code', '?'),
+                    type(e).__name__,
+                )
+                return ""
 
     result: str = response.choices[0].message.content
     logger.debug("AI 回复: %s", (result or "")[:500])

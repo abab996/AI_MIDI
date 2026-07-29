@@ -48,8 +48,9 @@ def _setup_logging() -> None:
 _setup_logging()
 logger = logging.getLogger("ai_midi")
 
-# ===== DeepSeek API =====
+# ===== DeepSeek / OpenAI / Gemini API =====
 BASE_URL: str = "https://api.deepseek.com"
+API_PATH: str = ""
 MODEL: str = "deepseek-v4-pro"
 
 # 用户设置持久化文件(API key、模型、生成参数等统一存此)。
@@ -96,17 +97,18 @@ _ALLOWED_BASE_URL_DOMAINS: set[str] = {
     "api.zhipuai.cn",
     "qianwen.aliyuncs.com",
     "dashscope.aliyuncs.com",
+    "generativelanguage.googleapis.com",
 }
 
 
-def validate_base_url(url: str) -> str:
-    """验证 base_url 仅指向允许的域名,返回规范化后的 URL;不安全时抛出 ValueError。
+def validate_base_url(url: str, api_path: str = "") -> str:
+    """验证 base_url 仅指向允许的域名,组合 api_path 并返回规范化后的 URL;不安全时抛出 ValueError。
 
     规则:
       - scheme 必须为 https
       - host 归一化为小写后必须在白名单内
       - 端口必须为 443（或省略）
-      - path 允许存在，但会保留并规范化
+      - path / api_path 允许存在，但会保留并规范化组合
       - 禁止 query string 和 fragment
     """
     from urllib.parse import urlparse
@@ -142,8 +144,17 @@ def validate_base_url(url: str) -> str:
     if parsed.fragment:
         raise ValueError(f"base_url 不能包含片段标识符: {parsed.fragment}")
 
-    path = parsed.path.rstrip("/") if parsed.path and parsed.path != "/" else ""
-    return f"https://{host}{path}"
+    existing_path = parsed.path.rstrip("/") if parsed.path and parsed.path != "/" else ""
+
+    raw_api_path = api_path.strip()
+    if raw_api_path:
+        path_part = raw_api_path if raw_api_path.startswith("/") else f"/{raw_api_path}"
+        path_part = path_part.rstrip("/")
+        combined_path = f"{existing_path}{path_part}"
+    else:
+        combined_path = existing_path
+
+    return f"https://{host}{combined_path}"
 
 
 # ===== MIDI 默认参数 =====

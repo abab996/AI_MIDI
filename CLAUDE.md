@@ -46,7 +46,7 @@ webui.py ──chat_ui.py（独立 Gradio 端口 7861）──▷ chat_pipeline.
 
 - **settings.json 持久化**：API Key、模型、生成参数统一存在 `settings.json`，环境变量仅作历史兼容。修改 API 调用逻辑时不要绕开 `config.get_api_key()`。
 - **note_table 格式**：`[note: "C4", velocity: "80", start: "1", end: "2"]`，AI 回复中只应包含这种格式的数据（翻译歌词除外）。`out.py` 的正则对格式噪声极度宽容，但 `get.py` 的输出是规范格式。
-- **base_url 白名单**：`webui.py` 的 `_ALLOWED_BASE_URL_DOMAINS` 硬编码了 9 个可信域名。新增服务商需同步修改此集合。
+- **base_url 白名单**：`config.py` 的 `_ALLOWED_BASE_URL_DOMAINS` 硬编码了 10 个可信域名（含 generativelanguage.googleapis.com）。新增服务商需同步修改此集合。
 - **音符名称规范化**：`out.py` 的 `note_name_to_midi_number` 处理了 B#→C、Cb→B、E#→F、Fb→E 等等价音名。
 - **多轮对话的 MCP 隔离**：`mcp_server.py` 以独立子进程运行（stdio JSON-RPC），AI 通过 `tools/call` 协议触发对 MIDI 文件的操作，进程崩溃不会拖垮主 UI。
 - **多轮对话上下文压缩**：超出 `MAX_CONTEXT_CHARS` 时自动压缩，保留最近 N 轮对话，替换为简明摘要。

@@ -43,15 +43,16 @@ python webui.py --browser
 python webui.py
 ```
 
-- 支持在设置页配置 Base URL、模型、API Key、上下文长度、思考强度等。
+- 支持在设置页配置 Base URL、API 路径 (API Path)、模型、API Key、上下文长度、思考强度等。
 - 点击"保存配置"后，设置会持久化到 `settings.json`。
-- `config.py` 内置 `base_url` 域名白名单（`_ALLOWED_BASE_URL_DOMAINS`），防止 API Key 被发送到不可信服务；白名单域名下可使用 `/v1` 等兼容 API 路径。
+- `config.py` 内置 `base_url` 域名白名单（`_ALLOWED_BASE_URL_DOMAINS`），防止 API Key 被发送到不可信服务；白名单域名下可结合 API 路径（如 `/v1beta/openai` 或 `/v1`）访问特定服务（如 Gemini API）。
 
 ## 配置 API Key
 
 **不要把 key 写进代码。** 首次运行时，在程序的"设置"标签页填写：
 
-- **Base URL**：默认 `https://api.deepseek.com`，可替换为其他兼容 OpenAI API 的服务地址
+- **Base URL**：默认 `https://api.deepseek.com`，可替换为其他兼容 OpenAI API 的服务地址（如 `https://generativelanguage.googleapis.com`）
+- **API 路径**：如 Gemini API 可填 `/v1beta/openai`，OpenAI 兼容 API 可填 `/v1` 或留空
 - **使用模型**：默认 `deepseek-v4-pro`，可替换为其他模型名称
 - **API Key**：你的 API key
 - **思考长度 / 上下文长度 / 最大输出长度**：按需调整

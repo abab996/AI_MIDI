@@ -159,14 +159,16 @@ def _load_settings() -> dict:
     """从 config 加载 API 设置。"""
     settings = config.load_settings()
     raw_base_url = settings.get("base_url", "") or config.BASE_URL
+    raw_api_path = settings.get("api_path", "") or config.API_PATH
     try:
-        base_url = config.validate_base_url(raw_base_url)
+        base_url = config.validate_base_url(raw_base_url, raw_api_path)
     except ValueError:
         logger.warning("base_url 验证失败，使用默认值: %s", config.BASE_URL)
         base_url = config.BASE_URL
     return {
         "api_key": settings.get("api_key") or config.get_api_key(),
         "base_url": base_url,
+        "api_path": settings.get("api_path", ""),
         "model": settings.get("model") or config.MODEL,
         "max_tokens": settings.get("max_tokens"),
         "max_completion_tokens": settings.get("max_completion_tokens"),
@@ -760,13 +762,16 @@ def _format_single_tool_entry(tc_name: str, tc_args, result_text: str) -> str:
     )
 
 
-def _make_tool_result_message(tool_call_id: str, result: str) -> dict:
+def _make_tool_result_message(tool_call_id: str, result: str, name: str | None = None) -> dict:
     """构造 tool 角色的消息（OpenAI API 格式）。"""
-    return {
+    msg = {
         "role": "tool",
         "tool_call_id": tool_call_id,
         "content": result,
     }
+    if name:
+        msg["name"] = name
+    return msg
 
 
 def send_message(message, history, midi_files, undo_stack, full_history):

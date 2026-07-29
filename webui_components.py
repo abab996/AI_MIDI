@@ -138,7 +138,7 @@ def _build_settings_section(settings: dict) -> tuple:
         settings: 从 settings.json 加载的用户设置字典。
 
     Returns:
-        (api_key_input, show_key_sw, base_url_input, model_input,
+        (api_key_input, show_key_sw, base_url_input, api_path_input, model_input,
          refresh_model_btn, model_status, max_tokens_input,
          max_completion_tokens_input, reasoning_effort_input,
          thinking_enabled_input, save_cfg_btn, save_cfg_status)
@@ -161,10 +161,19 @@ def _build_settings_section(settings: dict) -> tuple:
             scale=1,
         )
 
-    base_url_input = gr.Textbox(
-        label="Base URL",
-        value=settings.get("base_url", config.BASE_URL),
-    )
+    with gr.Row():
+        base_url_input = gr.Textbox(
+            label="Base URL",
+            value=settings.get("base_url", config.BASE_URL),
+            placeholder="如: https://generativelanguage.googleapis.com",
+            scale=3,
+        )
+        api_path_input = gr.Textbox(
+            label="API 路径",
+            value=settings.get("api_path", config.API_PATH),
+            placeholder="如: /v1beta/openai",
+            scale=2,
+        )
 
     with gr.Row():
         model_input = gr.Dropdown(
@@ -213,7 +222,7 @@ def _build_settings_section(settings: dict) -> tuple:
         value="",
     )
 
-    return (api_key_input, show_key_sw, base_url_input, model_input,
+    return (api_key_input, show_key_sw, base_url_input, api_path_input, model_input,
             refresh_model_btn, model_status, max_tokens_input,
             max_completion_tokens_input, reasoning_effort_input,
             thinking_enabled_input, save_cfg_btn, save_cfg_status)

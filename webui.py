@@ -754,19 +754,28 @@ def build_ui() -> gr.Blocks:
                 const url = '{CHAT_URL}';
                 let attempts = 0;
                 const maxAttempts = 30;
-                const interval = setInterval(async () => {{
-                    try {{
-                        const res = await fetch(url, {{ mode: 'no-cors' }});
-                        clearInterval(interval);
-                        window.open(url, '_blank');
-                    }} catch (e) {{
-                        attempts++;
-                        if (attempts >= maxAttempts) {{
-                            clearInterval(interval);
-                            alert('多轮对话窗口启动超时，请稍后重试。\\nURL: ' + url);
-                        }}
-                    }}
-                }}, 500);
+                let opened = false;
+                // 用递归 setTimeout 代替 setInterval：前一次 fetch 完成后才调度下一次，
+                // 避免服务启动期间多个 fetch 并发 resolve 导致重复 window.open。
+                const poll = () => {{
+                    if (opened) return;
+                    fetch(url, {{ mode: 'no-cors' }})
+                        .then(() => {{
+                            if (opened) return;
+                            opened = true;
+                            // 固定窗口名：多次点击复用同一窗口，不再弹出多个标签页。
+                            window.open(url, 'ai_midi_chat');
+                        }})
+                        .catch(() => {{
+                            attempts++;
+                            if (attempts >= maxAttempts) {{
+                                alert('多轮对话窗口启动超时，请稍后重试。\\nURL: ' + url);
+                                return;
+                            }}
+                            setTimeout(poll, 500);
+                        }});
+                }};
+                poll();
             }}
             """,
         )

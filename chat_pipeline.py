@@ -43,6 +43,17 @@ def _sanitize_messages(messages: list[dict]) -> list[dict]:
                     tc_id = tc.get("id")
                     func = tc.get("function") or {}
                     tc_name = func.get("name") if isinstance(func, dict) else getattr(func, "name", None)
+                    # 兜底：补上 Gemini 思考模型要求的 thought_signature（含修复前
+                    # 保存的旧历史），缺签名时用 bypass 串让 Gemini 跳过校验，避免 400。
+                    extra = tc.get("extra_content")
+                    if not isinstance(extra, dict):
+                        tc["extra_content"] = {
+                            "google": {"thought_signature": "skip_thought_signature_validator"}
+                        }
+                    else:
+                        g = extra.get("google")
+                        if not (isinstance(g, dict) and g.get("thought_signature")):
+                            extra["google"] = {"thought_signature": "skip_thought_signature_validator"}
                 else:
                     tc_id = getattr(tc, "id", None)
                     func = getattr(tc, "function", None)
@@ -58,6 +69,34 @@ def _sanitize_messages(messages: list[dict]) -> list[dict]:
         sanitized.append(msg_copy)
 
     return sanitized
+
+
+def _extract_thought_signature(tc_item) -> str:
+    """从流式 tool_call delta 提取 Gemini 思考模型的 thought_signature。
+
+    Gemini 思考模型通过 OpenAI 兼容端点做 function calling 时，会在每个
+    tool_call 上附带 ``extra_content.google.thought_signature``。回传
+    assistant 的 tool_calls 消息时必须原样带回，否则下一轮请求报 400
+    "Function call is missing a thought_signature"。
+
+    兼容 dict 与 pydantic 对象两种 ``tc_item``（SDK extra="allow" 下未建模
+    字段保留在 extra_content）。
+    """
+    if isinstance(tc_item, dict):
+        extra = tc_item.get("extra_content")
+    else:
+        extra = getattr(tc_item, "extra_content", None)
+        if extra is None:
+            model_extra = getattr(tc_item, "__pydantic_extra__", None)
+            if isinstance(model_extra, dict):
+                extra = model_extra.get("extra_content")
+    if not isinstance(extra, dict):
+        return ""
+    google = extra.get("google")
+    if not isinstance(google, dict):
+        return ""
+    sig = google.get("thought_signature")
+    return sig if isinstance(sig, str) and sig else ""
 
 
 def _format_display_message(reasoning: str, content: str) -> str:
@@ -292,6 +331,7 @@ def _execute_tool_loop(
                                 "id": "",
                                 "type": "function",
                                 "function": {"name": "", "arguments": ""},
+                                "thought_signature": "",
                             }
                         tc_id = getattr(tc_item, "id", None)
                         if tc_id:
@@ -342,6 +382,11 @@ def _execute_tool_loop(
                                 except json.JSONDecodeError:
                                     tool_calls_builder[idx]["function"]["arguments"] += f_args
 
+                        # 提取 Gemini 思考模型的 thought_signature（回传时需原样带回）
+                        sig = _extract_thought_signature(tc_item)
+                        if sig:
+                            tool_calls_builder[idx]["thought_signature"] = sig
+
                 # 真实流式实时 yield 给前端呈现
                 if r_chunk or c_chunk:
                     formatted_display = _format_display_message(accumulated_reasoning, accumulated_content)
@@ -376,6 +421,12 @@ def _execute_tool_loop(
                         "function": {
                             "name": tc.get("function", {}).get("name", ""),
                             "arguments": tc.get("function", {}).get("arguments", ""),
+                        },
+                        "extra_content": {
+                            "google": {
+                                "thought_signature": tc.get("thought_signature")
+                                or "skip_thought_signature_validator"
+                            }
                         },
                     }
                     for i, tc in enumerate(msg_tool_calls_list)
@@ -420,8 +471,8 @@ def _execute_tool_loop(
                 )
 
             # ── 执行工具调用 ──
-            for tc in msg_tool_calls_list:
-                tc_id = tc.get("id", "")
+            for i, tc in enumerate(msg_tool_calls_list):
+                tc_id = tc.get("id") or f"call_{i}"
                 tc_name = tc.get("function", {}).get("name", "")
                 tc_args_raw = tc.get("function", {}).get("arguments", "")
 

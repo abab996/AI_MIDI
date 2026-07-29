@@ -187,4 +187,129 @@ def test_streaming_duplicate_tool_name_deduplication():
     assert assistant_msgs_with_tools[0]["tool_calls"][0]["function"]["name"] == "read_library_file"
 
 
+def _streaming_chunk(*, content=None, tool_call=None):
+    """构造一个流式响应 chunk（SimpleNamespace，模拟 openai SDK 流式对象）。"""
+    if content is not None:
+        delta = SimpleNamespace(content=content)
+    elif tool_call is not None:
+        delta = SimpleNamespace(tool_calls=[tool_call])
+    else:
+        delta = SimpleNamespace()
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
+def _delta_tool_call(*, name="read_library_file", args='{"filename": "01.md"}', signature=None):
+    """构造一个流式 tool_call delta；signature 非 None 时附带 extra_content.google.thought_signature。"""
+    tc = SimpleNamespace(
+        index=0,
+        id="call_gemini_1",
+        function=SimpleNamespace(name=name, arguments=args),
+    )
+    if signature is not None:
+        tc.extra_content = {"google": {"thought_signature": signature}}
+    return tc
+
+
+def _run_tool_loop_with_chunks(chunks):
+    ctx = _context([chunks, [_response(content="done")]])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), patch.object(
+        chat_pipeline._chat_ui, "_build_system_prompt", return_value="system",
+    ), patch.object(
+        chat_pipeline._chat_ui, "_should_compact", return_value=False,
+    ), patch.object(
+        chat_pipeline._chat_ui, "_execute_tool_call", return_value=("文件内容", []),
+    ):
+        return list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+
+def _assistant_tool_calls_from_history(outputs):
+    return [
+        msg for msg in outputs[-1][4]
+        if msg.get("role") == "assistant" and "tool_calls" in msg
+    ]
+
+
+def test_extract_thought_signature_from_dict_and_object():
+    # dict 形式（OpenAI 兼容端点原始 JSON 解析后）
+    assert chat_pipeline._extract_thought_signature(
+        {"extra_content": {"google": {"thought_signature": "SIG_DICT"}}}
+    ) == "SIG_DICT"
+    # pydantic 对象形式（SDK extra="allow" 下字段作为属性）
+    assert chat_pipeline._extract_thought_signature(
+        SimpleNamespace(extra_content={"google": {"thought_signature": "SIG_OBJ"}})
+    ) == "SIG_OBJ"
+    # 缺失时返回空串
+    assert chat_pipeline._extract_thought_signature({}) == ""
+    assert chat_pipeline._extract_thought_signature(SimpleNamespace()) == ""
+    assert chat_pipeline._extract_thought_signature({"extra_content": {}}) == ""
+    assert chat_pipeline._extract_thought_signature({"extra_content": {"google": {}}}) == ""
+
+
+def test_streaming_captures_and_round_trips_thought_signature():
+    sig = "ErUECrIEAXLI2nxC8=="
+    chunks = [
+        _streaming_chunk(tool_call=_delta_tool_call(signature=sig)),
+        _streaming_chunk(content="读取完成"),
+    ]
+    outputs = _run_tool_loop_with_chunks(chunks)
+
+    assistant_msgs = _assistant_tool_calls_from_history(outputs)
+    assert len(assistant_msgs) == 1
+    tc = assistant_msgs[0]["tool_calls"][0]
+    # 真实 signature 原样回传到 assistant 消息的 tool_call 上
+    assert tc["extra_content"]["google"]["thought_signature"] == sig
+
+
+def test_streaming_falls_back_to_validator_skip_when_no_signature():
+    chunks = [
+        _streaming_chunk(tool_call=_delta_tool_call()),  # 未携带 signature
+        _streaming_chunk(content="读取完成"),
+    ]
+    outputs = _run_tool_loop_with_chunks(chunks)
+
+    assistant_msgs = _assistant_tool_calls_from_history(outputs)
+    assert len(assistant_msgs) == 1
+    tc = assistant_msgs[0]["tool_calls"][0]
+    # 无 signature 时用 bypass 串，避免 Gemini 400
+    assert tc["extra_content"]["google"]["thought_signature"] == "skip_thought_signature_validator"
+
+
+def test_sanitize_messages_backfills_missing_thought_signature():
+    raw_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_library_file", "arguments": "{}"},
+                }
+            ],
+        },
+    ]
+    sanitized = chat_pipeline._sanitize_messages(raw_messages)
+    tc = sanitized[0]["tool_calls"][0]
+    assert tc["extra_content"]["google"]["thought_signature"] == "skip_thought_signature_validator"
+
+
+def test_sanitize_messages_preserves_existing_thought_signature():
+    raw_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_library_file", "arguments": "{}"},
+                    "extra_content": {"google": {"thought_signature": "REAL_SIG"}},
+                }
+            ],
+        },
+    ]
+    sanitized = chat_pipeline._sanitize_messages(raw_messages)
+    assert sanitized[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "REAL_SIG"
+
+
 

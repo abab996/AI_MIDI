@@ -9,6 +9,8 @@ import logging
 import time
 
 import gradio as gr
+import httpx
+import openai
 
 import ai_api
 import config
@@ -160,6 +162,7 @@ def _prepare_context(
     client = ai_api.get_client(
         api_key=settings["api_key"],
         base_url=settings["base_url"],
+        timeout=config.CHAT_TIMEOUT_SECONDS,
     )
 
     kwargs: dict = {
@@ -175,7 +178,8 @@ def _prepare_context(
         kwargs["max_completion_tokens"] = int(settings["max_completion_tokens"])
     if settings["reasoning_effort"]:
         kwargs["reasoning_effort"] = settings["reasoning_effort"]
-    if settings["thinking_enabled"]:
+    # thinking 扩展参数仅 Gemini 的 OpenAI 兼容接口支持,其他服务商按标准 OpenAI 格式调用。
+    if settings["thinking_enabled"] and config.is_gemini_provider(settings["base_url"]):
         kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
 
     updated_files = list(midi_files)
@@ -272,9 +276,14 @@ def _execute_tool_loop(
                         or "rate" in str(api_err).lower()
                         or "resource_exhausted" in str(api_err).lower()
                     )
-                    if is_rate_limit and _attempt < max_retries:
+                    # 超时多为瞬时网络/服务波动，重试通常可成功
+                    is_timeout = isinstance(
+                        api_err, (openai.APITimeoutError, httpx.TimeoutException)
+                    ) or "timed out" in str(api_err).lower()
+                    if (is_rate_limit or is_timeout) and _attempt < max_retries:
                         wait_sec = (2 ** _attempt) + 1
-                        logger.warning("触发 429 API 限流，等待 %d 秒后重试 (%d/%d)...", wait_sec, _attempt + 1, max_retries)
+                        err_kind = "API 限流" if is_rate_limit else "请求超时"
+                        logger.warning("触发 %s，等待 %d 秒后重试 (%d/%d)...", err_kind, wait_sec, _attempt + 1, max_retries)
                         time.sleep(wait_sec)
                         continue
 
@@ -357,7 +366,8 @@ def _execute_tool_loop(
                             elif curr_name != f_name:
                                 known_tools = [
                                     "read_library_file", "list_midi_files",
-                                    "parse_midi", "create_midi", "delete_midi"
+                                    "parse_midi", "create_midi", "delete_midi",
+                                    "create_folder", "list_project_structure"
                                 ]
                                 if f_name in known_tools:
                                     tool_calls_builder[idx]["function"]["name"] = f_name

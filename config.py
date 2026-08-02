@@ -86,30 +86,36 @@ def get_api_key() -> str:
 
 
 # ===== base_url 安全验证 =====
-# 仅允许向已知可信的 API 服务商发送请求,防止密钥被中间人窃取。
-_ALLOWED_BASE_URL_DOMAINS: set[str] = {
-    "api.deepseek.com",
-    "api.openai.com",
-    "openai.azure.com",
-    "api.anthropic.com",
-    "api.moonshot.cn",
-    "api.stepfun.com",
-    "api.zhipuai.cn",
-    "qianwen.aliyuncs.com",
-    "dashscope.aliyuncs.com",
-    "generativelanguage.googleapis.com",
-}
+# 仅强制 https + 443 端口,不限制域名,以便接入任意 OpenAI 兼容格式的服务商。
+# （早期版本曾内置域名白名单,已按用户要求移除。）
+# Gemini 的 OpenAI 兼容接口需要额外拼接 API 路径(/v1beta/openai),
+# 且支持 thinking 扩展参数;其他服务商一律走标准 OpenAI 格式,不拼接 api_path。
+GEMINI_BASE_URL_HOST: str = "generativelanguage.googleapis.com"
+
+
+def is_gemini_provider(base_url: str) -> bool:
+    """判断 base_url 是否指向 Gemini 的 OpenAI 兼容接口。"""
+    from urllib.parse import urlparse
+
+    raw = base_url.strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    except ValueError:
+        return False
+    return (parsed.hostname or "").lower() == GEMINI_BASE_URL_HOST
 
 
 def validate_base_url(url: str, api_path: str = "") -> str:
-    """验证 base_url 仅指向允许的域名,组合 api_path 并返回规范化后的 URL;不安全时抛出 ValueError。
+    """验证 base_url 并返回规范化后的 URL;不安全时抛出 ValueError。
 
     规则:
       - scheme 必须为 https
-      - host 归一化为小写后必须在白名单内
       - 端口必须为 443（或省略）
-      - path / api_path 允许存在，但会保留并规范化组合
       - 禁止 query string 和 fragment
+      - api_path 仅在 Gemini 服务商时拼接(其 OpenAI 兼容接口需 /v1beta/openai 路径);
+        其他服务商按标准 OpenAI 格式使用 base_url 原路径,忽略 api_path
     """
     from urllib.parse import urlparse
 
@@ -126,12 +132,6 @@ def validate_base_url(url: str, api_path: str = "") -> str:
     if not host:
         raise ValueError("base_url 缺少主机名")
 
-    if host not in _ALLOWED_BASE_URL_DOMAINS:
-        raise ValueError(
-            f"base_url 域名不在允许列表中: {host}。"
-            f"如需使用其他服务商,请修改 _ALLOWED_BASE_URL_DOMAINS。"
-        )
-
     if parsed.port is not None and parsed.port != 443:
         raise ValueError(f"base_url 端口必须为 443（标准 HTTPS 端口）: {parsed.port}")
 
@@ -146,13 +146,14 @@ def validate_base_url(url: str, api_path: str = "") -> str:
 
     existing_path = parsed.path.rstrip("/") if parsed.path and parsed.path != "/" else ""
 
-    raw_api_path = api_path.strip()
-    if raw_api_path:
-        path_part = raw_api_path if raw_api_path.startswith("/") else f"/{raw_api_path}"
-        path_part = path_part.rstrip("/")
-        combined_path = f"{existing_path}{path_part}"
-    else:
-        combined_path = existing_path
+    # api_path 是 Gemini 的专属适配字段,仅对 Gemini 生效
+    combined_path = existing_path
+    if host == GEMINI_BASE_URL_HOST:
+        raw_api_path = api_path.strip()
+        if raw_api_path:
+            path_part = raw_api_path if raw_api_path.startswith("/") else f"/{raw_api_path}"
+            path_part = path_part.rstrip("/")
+            combined_path = f"{existing_path}{path_part}"
 
     return f"https://{host}{combined_path}"
 
@@ -178,6 +179,9 @@ DANGLING_EPSILON: float = 1 / TICKS_PER_BEAT
 # ===== 超时默认值 =====
 DEFAULT_TIMEOUT_SECONDS: float = 60.0
 DEFAULT_CONNECT_TIMEOUT_SECONDS: float = 10.0
+# 多轮对话(工具调用)流式请求的读超时：思考模型(如 step-3.7-flash, thinking=max)
+# 可能长时间不输出首字节，60s 默认值会误杀，故单独放宽。
+CHAT_TIMEOUT_SECONDS: float = 300.0
 MCP_RESPONSE_TIMEOUT: float = 30.0
 MCP_LIST_TIMEOUT: float = 15.0
 MCP_STARTUP_SLEEP: float = 0.5

@@ -5,7 +5,6 @@
 用法:
     python webui.py
 """
-import json
 import logging
 import os
 import shutil
@@ -34,7 +33,6 @@ from webui_components import (
     _build_settings_section,
     _build_tuning_section,
     _build_upload_section,
-    _FUNC_CHOICES,
     _FUNC_FIELDS,
 )
 
@@ -84,6 +82,55 @@ def _wait_for_chat_ready(timeout: float = 15.0) -> bool:
     return False
 
 
+_CHAT_WINDOW_TITLE = "AI_MIDI · 多轮对话"
+
+
+def _is_native_window_mode() -> bool:
+    """主界面是否以 pywebview 原生窗口模式运行（而非 --browser 浏览器模式）。"""
+    try:
+        import webview
+        return bool(webview.windows)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _open_chat_window() -> None:
+    """多轮对话服务就绪后打开窗口。
+
+    与主界面一致优先使用 pywebview 原生窗口；若已有同名对话窗口则激活它
+    而非新开，避免弹出多个窗口。当主界面以浏览器模式运行（pywebview 未
+    启动）时，回退到系统默认浏览器打开。
+    """
+    if _is_native_window_mode():
+        try:
+            import webview
+            # 已有对话窗口则激活，不重复开窗
+            for w in webview.windows:
+                if getattr(w, "title", "") == _CHAT_WINDOW_TITLE:
+                    try:
+                        w.show()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return
+            work_w, work_h, _ = _get_logical_work_area()
+            ratio = 0.72
+            width = max(640, int(work_w * ratio))
+            height = max(480, int(work_h * ratio))
+            webview.create_window(
+                _CHAT_WINDOW_TITLE,
+                CHAT_URL,
+                width=width,
+                height=height,
+                min_size=(int(width * 0.8), int(height * 0.8)),
+            )
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("pywebview 打开多轮对话窗口失败，回退浏览器")
+
+    import webbrowser
+    webbrowser.open(CHAT_URL)
+
+
 def _start_chat_server() -> None:
     """在后台启动多轮对话 Gradio 服务并等待就绪。"""
     global _chat_launch_error, _chat_started
@@ -104,11 +151,13 @@ def _start_chat_server() -> None:
         else:
             _chat_launch_error = None
             _chat_started = True
+            _open_chat_window()
     except OSError as e:
         if "Address already in use" in str(e):
             if _wait_for_chat_ready(timeout=3.0):
                 _chat_launch_error = None
                 _chat_started = True
+                _open_chat_window()
             else:
                 _chat_launch_error = f"端口 {CHAT_PORT} 被占用且服务不可用"
                 _chat_started = False
@@ -130,7 +179,8 @@ def launch_chat() -> str:
 
         if _is_chat_running():
             _chat_started = True
-            return f"多轮对话窗口已就绪：{CHAT_URL}"
+            _open_chat_window()
+            return f"多轮对话窗口已打开：{CHAT_URL}"
 
         if _chat_started and _chat_thread and _chat_thread.is_alive():
             return f"正在启动多轮对话窗口… {CHAT_URL}"
@@ -745,39 +795,6 @@ def build_ui() -> gr.Blocks:
             fn=launch_chat,
             inputs=[],
             outputs=[chat_status],
-        ).then(
-            fn=None,
-            inputs=[],
-            outputs=[],
-            js=f"""
-            () => {{
-                const url = '{CHAT_URL}';
-                let attempts = 0;
-                const maxAttempts = 30;
-                let opened = false;
-                // 用递归 setTimeout 代替 setInterval：前一次 fetch 完成后才调度下一次，
-                // 避免服务启动期间多个 fetch 并发 resolve 导致重复 window.open。
-                const poll = () => {{
-                    if (opened) return;
-                    fetch(url, {{ mode: 'no-cors' }})
-                        .then(() => {{
-                            if (opened) return;
-                            opened = true;
-                            // 固定窗口名：多次点击复用同一窗口，不再弹出多个标签页。
-                            window.open(url, 'ai_midi_chat');
-                        }})
-                        .catch(() => {{
-                            attempts++;
-                            if (attempts >= maxAttempts) {{
-                                alert('多轮对话窗口启动超时，请稍后重试。\\nURL: ' + url);
-                                return;
-                            }}
-                            setTimeout(poll, 500);
-                        }});
-                }};
-                poll();
-            }}
-            """,
         )
 
     return app

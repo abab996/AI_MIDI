@@ -40,7 +40,9 @@ def parse_midi_to_custom_format(file_path) -> list[str]:
         logger.error("无法读取 MIDI 文件: %s", e)
         return []
 
-    tpb = mid.ticks_per_beat
+    # type-2 (异步) MIDI 的 ticks_per_beat 可能为 0，除以它会导致
+    # ZeroDivisionError；兜底用标准 480，保证解析不崩溃。
+    tpb = mid.ticks_per_beat or config.TICKS_PER_BEAT
     merged_track = mido.merge_tracks(mid.tracks)
 
     # Key by (channel, note) so same pitch on different channels does not collide.

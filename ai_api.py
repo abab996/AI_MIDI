@@ -96,7 +96,9 @@ def _chat(
     ]
 
     extra_body: dict | None = None
-    if thinking_enabled:
+    # thinking 扩展参数是 Gemini OpenAI 兼容接口的专属适配,
+    # 其他服务商按标准 OpenAI 格式调用,不发送。
+    if thinking_enabled and config.is_gemini_provider(base_url or config.BASE_URL):
         extra_body = {"thinking": {"type": "enabled"}}
 
     kwargs: dict = {
@@ -115,7 +117,8 @@ def _chat(
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
 
-    # 尝试 API 调用,逐步去除不兼容参数并重试
+    # 尝试 API 调用;部分服务商不认识 thinking/reasoning_effort 等扩展参数,
+    # 遇到 400 时按序剥除不兼容参数并重试（不依赖错误文本猜测,更健壮）。
     _strippable = [
         ("extra_body", "thinking"),
         ("reasoning_effort", "reasoning_effort"),
@@ -124,6 +127,17 @@ def _chat(
         try:
             response = client.chat.completions.create(**kwargs)
             break
+        except openai.BadRequestError:
+            stripped = False
+            for param_key, _error_kw in _strippable:
+                if param_key in kwargs:
+                    logger.warning("API 返回 400,去掉 %s 参数后重试", param_key)
+                    kwargs.pop(param_key)
+                    stripped = True
+                    break
+            if not stripped:
+                logger.error("调用 AI API 时发生错误: HTTP 400")
+                return ""
         except (openai.APIError, openai.OpenAIError, TypeError) as e:
             stripped = False
             for param_key, error_kw in _strippable:

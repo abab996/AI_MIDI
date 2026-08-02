@@ -312,4 +312,63 @@ def test_sanitize_messages_preserves_existing_thought_signature():
     assert sanitized[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "REAL_SIG"
 
 
+def test_execute_tool_call_create_midi_uses_relpath(tmp_path, monkeypatch):
+    """create_midi 后 file_info.name 用相对主目录的路径（含子目录）。"""
+    import chat_ui
+
+    base = tmp_path / "base"
+    (base / "drums").mkdir(parents=True)
+    created = base / "drums" / "beat.mid"
+    created.write_bytes(b"MThd\x00\x00\x00\x06")
+
+    monkeypatch.setattr(chat_ui, "_current_project_id", "pid1")
+    monkeypatch.setattr(chat_ui.project_manager, "get_midi_base_dir", lambda pid: base)
+    monkeypatch.setattr(chat_ui, "_resolve_created_midi_path", lambda fn: created)
+    monkeypatch.setattr(chat_ui, "_mcp_call_tool", lambda name, args: "ok")
+    monkeypatch.setattr(chat_ui.get, "get_note", lambda p, save_to_file=False: ['[note: "C4"]'])
+
+    tool_call = {"function": {"name": "create_midi", "arguments": {"filename": "drums/beat.mid"}}}
+    result, files = chat_ui._execute_tool_call(tool_call, [])
+    assert result == "ok"
+    assert len(files) == 1
+    assert files[0]["name"] == "drums/beat.mid"
+    assert files[0]["path"] == str(created)
+
+
+def test_execute_tool_call_delete_midi_matches_relpath(monkeypatch):
+    """delete_midi 按 relpath 匹配（含子目录）。"""
+    import chat_ui
+
+    existing = [{"name": "drums/beat.mid", "path": "/x/drums/beat.mid", "size": 10, "note_table": ""}]
+    monkeypatch.setattr(chat_ui, "_mcp_call_tool", lambda name, args: "deleted")
+
+    tool_call = {"function": {"name": "delete_midi", "arguments": {"filename": "drums/beat.mid"}}}
+    _, files = chat_ui._execute_tool_call(tool_call, existing)
+    assert files == []
+
+
+def test_execute_tool_call_delete_midi_matches_basename(monkeypatch):
+    """delete_midi 兼容裸文件名匹配（旧历史 name 可能是裸名）。"""
+    import chat_ui
+
+    existing = [{"name": "drums/beat.mid", "path": "/x/drums/beat.mid", "size": 10, "note_table": ""}]
+    monkeypatch.setattr(chat_ui, "_mcp_call_tool", lambda name, args: "deleted")
+
+    tool_call = {"function": {"name": "delete_midi", "arguments": {"filename": "beat.mid"}}}
+    _, files = chat_ui._execute_tool_call(tool_call, existing)
+    assert files == []
+
+
+def test_execute_tool_call_parse_midi_matches_relpath(monkeypatch):
+    """parse_midi 按 relpath 匹配并更新 note_table。"""
+    import chat_ui
+
+    existing = [{"name": "sub/x.mid", "path": "/x/sub/x.mid", "size": 10, "note_table": ""}]
+    monkeypatch.setattr(chat_ui, "_mcp_call_tool", lambda name, args: "parsed_notes")
+
+    tool_call = {"function": {"name": "parse_midi", "arguments": {"filename": "sub/x.mid"}}}
+    _, files = chat_ui._execute_tool_call(tool_call, existing)
+    assert files[0]["note_table"] == "parsed_notes"
+
+
 

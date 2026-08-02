@@ -114,13 +114,236 @@ def resolve_midi_path(project_id: str, filename: str) -> Path:
     if os.path.isabs(filename):
         raise ValueError(f"filename 不能是绝对路径: {filename}")
 
-    base_dir = (PROJECTS_DIR / project_id / "midi").resolve()
+    base_dir = get_midi_base_dir(project_id)
     filepath = (base_dir / filename).resolve()
 
     if filepath != base_dir and not filepath.is_relative_to(base_dir):
         raise ValueError(f"路径逃逸检测: {filename}")
 
     return filepath
+
+
+# ==================== 工作区绑定 ====================
+
+MIDI_EXTS = {".mid", ".midi"}
+
+
+def get_workspace_dir(project_id: str) -> str | None:
+    """返回项目绑定的工作区目录绝对路径；未绑定返回 None。"""
+    meta = load_project(project_id)
+    ws = meta.get("workspace_dir")
+    if ws and str(ws).strip():
+        return str(ws).strip()
+    return None
+
+
+def set_workspace_dir(project_id: str, path: str | None) -> None:
+    """设置/清除项目的工作区绑定，写入 meta.json 并刷新索引时间。"""
+    pdir = project_dir(project_id)
+    meta_file = pdir / "meta.json"
+    meta: dict = {}
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    if path:
+        meta["workspace_dir"] = str(path).strip()
+    else:
+        meta.pop("workspace_dir", None)
+    meta["updated_at"] = _now_str()
+    meta_file.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+    _update_index_entry(project_id, updated_at=meta["updated_at"])
+
+
+def get_midi_base_dir(project_id: str) -> Path:
+    """返回当前主 MIDI 目录：绑定->工作区，否则 projects/<id>/midi。"""
+    ws = get_workspace_dir(project_id)
+    if ws:
+        return Path(ws).expanduser().resolve()
+    return midi_dir(project_id).resolve()
+
+
+def get_midi_mirror_dir(project_id: str) -> Path | None:
+    """返回镜像目录：绑定时为 projects/<id>/midi（用于双写），否则 None。"""
+    if get_workspace_dir(project_id):
+        return midi_dir(project_id).resolve()
+    return None
+
+
+def scan_midi_files(base_dir: Path) -> list[dict]:
+    """递归扫描 base_dir 下的 mid 文件，返回 [{name, path, size}]。
+
+    name 为相对 base_dir 的 posix 路径（含子目录），path 为绝对路径。
+    非 mid 文件自动过滤。
+    """
+    base = Path(base_dir)
+    if not base.exists():
+        return []
+    result: list[dict] = []
+    for p in sorted(base.rglob("*")):
+        if p.is_file() and p.suffix.lower() in MIDI_EXTS:
+            try:
+                rel = p.relative_to(base).as_posix()
+            except ValueError:
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            result.append({"name": rel, "path": str(p.resolve()), "size": size})
+    return result
+
+
+def _merge_note_table(scanned: list[dict], prev: list[dict]) -> list[dict]:
+    """把 prev 中的 note_table 按 name(relpath) 合并到 scanned 结果。"""
+    prev_nt = {f.get("name"): f.get("note_table", "") for f in prev}
+    for f in scanned:
+        f["note_table"] = prev_nt.get(f["name"], "")
+    return scanned
+
+
+def bind_workspace(project_id: str, workspace_dir: str) -> dict:
+    """绑定工作区目录并初始化同步 projects/<id>/midi -> 工作区。
+
+    - 校验/创建 workspace_dir
+    - 把 projects/<id>/midi 的 mid 文件复制到工作区（目标已存在则加序号 stem_2.mid）
+    - 返回 {"renamed": [(orig_rel, new_rel)], "midi_files": [...]}
+    """
+    ws = Path(workspace_dir).expanduser().resolve()
+    if ws.exists() and not ws.is_dir():
+        raise ValueError(f"路径已存在且不是目录: {ws}")
+    ws.mkdir(parents=True, exist_ok=True)
+
+    set_workspace_dir(project_id, str(ws))
+
+    src_dir = midi_dir(project_id).resolve()
+    renamed: list[tuple[str, str]] = []
+    if src_dir.exists():
+        for src_file in sorted(src_dir.rglob("*")):
+            if not (src_file.is_file() and src_file.suffix.lower() in MIDI_EXTS):
+                continue
+            rel = src_file.relative_to(src_dir).as_posix()
+            dst = ws / rel
+            if dst.exists():
+                stem, suffix = dst.stem, dst.suffix
+                i = 2
+                while True:
+                    cand = dst.with_name(f"{stem}_{i}{suffix}")
+                    if not cand.exists():
+                        dst = cand
+                        break
+                    i += 1
+                renamed.append((rel, dst.relative_to(ws).as_posix()))
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst)
+
+    _, prev_midi_files = load_history(project_id)
+    midi_files = _merge_note_table(scan_midi_files(ws), prev_midi_files)
+    logger.info("项目 %s 已绑定工作区: %s（重名 %d 个）", project_id, ws, len(renamed))
+    return {"renamed": renamed, "midi_files": midi_files}
+
+
+def unbind_workspace(project_id: str) -> list[dict]:
+    """解绑工作区（不动工作区文件），返回 projects/<id>/midi 的 midi_files。"""
+    set_workspace_dir(project_id, None)
+    _, prev_midi_files = load_history(project_id)
+    base = midi_dir(project_id).resolve()
+    logger.info("项目 %s 已解绑工作区", project_id)
+    return _merge_note_table(scan_midi_files(base), prev_midi_files)
+
+
+def sync_workspace_to_projects(project_id: str, prev_midi_files: list[dict]) -> list[dict]:
+    """以工作区为准完全同步到 projects 镜像，返回合并 note_table 的 midi_files。
+
+    未绑定时直接返回 prev_midi_files（不同步）。
+    """
+    ws = get_workspace_dir(project_id)
+    if not ws:
+        return prev_midi_files
+
+    ws_dir = Path(ws).expanduser().resolve()
+    mirror = midi_dir(project_id).resolve()
+    mirror.mkdir(parents=True, exist_ok=True)
+
+    ws_files = {f["name"]: f for f in scan_midi_files(ws_dir)}
+    mirror_files = {f["name"]: f for f in scan_midi_files(mirror)}
+
+    # 工作区有、projects 无 -> 复制；都有但内容不同 -> 工作区覆盖
+    for rel, wf in ws_files.items():
+        src = Path(wf["path"])
+        mf = mirror_files.get(rel)
+        if mf is None:
+            dst = mirror / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        else:
+            mp = Path(mf["path"])
+            try:
+                same = (
+                    src.stat().st_size == mp.stat().st_size
+                    and int(src.stat().st_mtime) == int(mp.stat().st_mtime)
+                )
+            except OSError:
+                same = False
+            if not same:
+                shutil.copy2(src, mp)
+
+    # projects 有、工作区无 -> 删除镜像文件及空父目录
+    for rel, mf in mirror_files.items():
+        if rel not in ws_files:
+            mp = Path(mf["path"])
+            try:
+                mp.unlink()
+            except OSError:
+                pass
+            parent = mp.parent
+            while parent != mirror and parent.is_dir():
+                try:
+                    parent.rmdir()
+                    parent = parent.parent
+                except OSError:
+                    break
+
+    return _merge_note_table(scan_midi_files(ws_dir), prev_midi_files)
+
+
+def _normalize_copied_midi_paths(pdir: Path, project_id: str) -> None:
+    """把 history.json 的 midi_files.path 标准化为本项目 midi 目录路径。
+
+    用于 copy_project：源项目可能绑定了工作区，复制后 path 仍指向源路径，
+    这里统一改写为新项目 projects/<id>/midi/<name>。
+    """
+    history_file = pdir / "history.json"
+    if not history_file.exists():
+        return
+    try:
+        data = json.loads(history_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    base = midi_dir(project_id).resolve()
+    changed = False
+    for mf in data.get("midi_files", []):
+        name = mf.get("name", "")
+        if name:
+            new_path = str((base / name).resolve())
+            if mf.get("path") != new_path:
+                mf["path"] = new_path
+                changed = True
+    if not changed:
+        return
+    tmp = history_file.with_suffix(".tmp")
+    try:
+        tmp.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        tmp.replace(history_file)
+    except OSError:
+        logger.exception("标准化复制项目路径失败: %s", pdir)
+        if tmp.exists():
+            tmp.unlink()
 
 
 def _rewrite_history_paths(project_dir: Path, old_project_dir: Path) -> None:
@@ -265,6 +488,8 @@ def copy_project(source_id: str, new_name: str) -> dict:
 
     # 重写 history.json 中 midi_files 的路径，指向新项目目录
     _rewrite_history_paths(dst_dir, src_dir)
+    # 源项目可能绑定了工作区，标准化 midi_files.path 指向新项目 midi 目录
+    _normalize_copied_midi_paths(dst_dir, new_id)
 
     # 更新新项目的 meta.json
     meta = {

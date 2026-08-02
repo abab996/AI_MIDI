@@ -45,7 +45,7 @@ python webui.py
 
 - 支持在设置页配置 Base URL、API 路径 (API Path)、模型、API Key、上下文长度、思考强度等。
 - 点击"保存配置"后，设置会持久化到 `settings.json`。
-- `config.py` 内置 `base_url` 域名白名单（`_ALLOWED_BASE_URL_DOMAINS`），防止 API Key 被发送到不可信服务；白名单域名下可结合 API 路径（如 `/v1beta/openai` 或 `/v1`）访问特定服务（如 Gemini API）。
+- `config.py` 的 `validate_base_url` 仅强制 https 与 443 端口，不限制域名，任意 OpenAI 兼容服务商均可接入；`api_path`（如 `/v1beta/openai`）仅对 Gemini 服务商生效，其他服务商按标准 OpenAI 格式直接使用 base_url 原路径。
 
 ## 配置 API Key
 
@@ -62,7 +62,7 @@ python webui.py
 ## 安全提示
 
 - `settings.json` 保存了你的 API Key、Base URL、模型等敏感信息，已列入 `.gitignore`，**不要提交、不要分享**。
-- `config.py` 的 `_ALLOWED_BASE_URL_DOMAINS` 硬编码了可信域名白名单，新增服务商需同步修改此集合，否则 API Key 不会被发送到该域名。
+- `config.py` 仅强制 base_url 使用 https（443 端口），不限制域名；API Key 只会发送到你填写的 Base URL，请确认该地址可信。
 
 ## 打包成可执行文件
 

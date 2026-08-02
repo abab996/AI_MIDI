@@ -21,7 +21,6 @@ import mido
 
 import config
 import get
-import out
 import project_manager
 
 logger = logging.getLogger("ai_midi")
@@ -142,7 +141,10 @@ def _build_system_prompt(files: list[dict]) -> str:
     prompt += "- **`list_midi_files`**：列出当前项目的 MIDI 文件。无参数。\n"
     prompt += "- **`parse_midi`**：解析 MIDI 文件为 note_table。参数：`filename`\n"
     prompt += "- **`create_midi`**：从 note_table 创建 MIDI 文件。参数：`filename`, `bpm`, `notes`\n"
-    prompt += "- **`delete_midi`**：删除 MIDI 文件。参数：`filename`\n\n"
+    prompt += "- **`delete_midi`**：删除 MIDI 文件。参数：`filename`\n"
+    prompt += "- **`create_folder`**：创建文件夹（支持多级子目录）。参数：`name`（如 `drums`、`sectionA/drums`）\n"
+    prompt += "- **`list_project_structure`**：以树状图查看项目所有 MIDI 文件的目录层级。无参数。\n\n"
+    prompt += "**文件路径说明**：`filename`/`name` 可含子目录路径（如 `drums/beat.mid`），文件会保存到对应子目录并在工作区与项目目录双写。\n\n"
 
     prompt += "## 重要提醒\n"
     prompt += "- **你现在的身份是乐理专家，不是通用 AI**。所有专业问题都必须基于 Library 文件回答。\n"
@@ -190,7 +192,12 @@ def _ensure_mcp_process() -> subprocess.Popen | None:
         try:
             env = os.environ.copy()
             if _current_project_id:
-                env["AI_MIDI_OUTPUT_DIR"] = str(project_manager.midi_dir(_current_project_id))
+                env["AI_MIDI_OUTPUT_DIR"] = str(
+                    project_manager.get_midi_base_dir(_current_project_id)
+                )
+                mirror = project_manager.get_midi_mirror_dir(_current_project_id)
+                if mirror is not None:
+                    env["AI_MIDI_MIRROR_DIR"] = str(mirror)
             _mcp_process = subprocess.Popen(
                 [sys.executable, str(_MCP_SCRIPT)],
                 stdin=subprocess.PIPE,
@@ -203,7 +210,7 @@ def _ensure_mcp_process() -> subprocess.Popen | None:
             )
             _mcp_initialized = False
             # 等待进程就绪
-            time.sleep(0.5)
+            time.sleep(config.MCP_STARTUP_SLEEP)
             if _mcp_process.poll() is not None:
                 logger.error("MCP 进程启动后立即退出")
                 _mcp_process = None
@@ -251,7 +258,7 @@ def _mcp_send(proc: subprocess.Popen, message: dict) -> None:
     proc.stdin.flush()
 
 
-def _mcp_recv(proc: subprocess.Popen, timeout: float = 30.0) -> dict | None:
+def _mcp_recv(proc: subprocess.Popen, timeout: float = config.MCP_RESPONSE_TIMEOUT) -> dict | None:
     """从 MCP 进程读取一条 JSON-RPC 响应（带超时）。"""
     import queue
 
@@ -302,7 +309,7 @@ def _mcp_call_tool(name: str, arguments: dict) -> str:
     _mcp_send(proc, request)
 
     # 读取响应（可能有中间通知，需要找到匹配 id 的响应）
-    deadline = time.time() + 30
+    deadline = time.time() + config.MCP_RESPONSE_TIMEOUT
     while time.time() < deadline:
         response = _mcp_recv(proc)
         if response is None:
@@ -339,7 +346,7 @@ def _mcp_list_tools() -> list[dict]:
     }
     _mcp_send(proc, request)
 
-    deadline = time.time() + 15
+    deadline = time.time() + config.MCP_LIST_TIMEOUT
     while time.time() < deadline:
         response = _mcp_recv(proc)
         if response is None:
@@ -439,6 +446,17 @@ def _resolve_created_midi_path(filename: str) -> Path:
     return filepath
 
 
+def _filepath_relpath(filepath) -> str:
+    """把绝对路径转成相对项目主目录的 posix 路径（含子目录）；无项目时返回文件名。"""
+    if _current_project_id:
+        try:
+            base = project_manager.get_midi_base_dir(_current_project_id)
+            return Path(filepath).resolve().relative_to(base).as_posix()
+        except (ValueError, OSError):
+            pass
+    return Path(filepath).name
+
+
 # ==================== MIDI 操作（兼容旧接口） ====================
 
 def _on_upload(files, current_list, undo_stack, project_id, full_history):
@@ -448,13 +466,15 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history):
     if not files:
         return current_list, undo_stack, gr.update(choices=_get_choices(current_list))
     new_files = []
-    # 确定目标目录：项目目录或临时目录
+    # 确定目标目录：绑定工作区->工作区(主)，否则项目 midi 目录；并准备镜像
     if project_id:
-        dest_dir = project_manager.midi_dir(project_id)
+        dest_dir = project_manager.get_midi_base_dir(project_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
+        mirror_dir = project_manager.get_midi_mirror_dir(project_id)
     else:
         dest_dir = config.OUTPUT_DIR
         dest_dir.mkdir(exist_ok=True)
+        mirror_dir = None
 
     for f in files:
         src_path = f.name if hasattr(f, "name") else str(f)
@@ -463,13 +483,21 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history):
         if not basename.lower().endswith((".mid", ".midi")):
             logger.warning("跳过非 MIDI 文件: %s", basename)
             continue
-        # 复制到项目/输出目录
+        # 复制到主目录（项目 midi 或工作区）
         dest_path = _unique_dest_path(dest_dir, basename)
         try:
             shutil.copy2(src_path, dest_path)
         except OSError:
             logger.exception("复制 MIDI 文件失败: %s -> %s", src_path, dest_path)
             continue
+        # 镜像双写（绑定工作区时同步到 projects/<id>/midi）
+        if mirror_dir is not None:
+            try:
+                mp = mirror_dir / dest_path.relative_to(dest_dir)
+                mp.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dest_path, mp)
+            except OSError:
+                logger.exception("镜像同步上传文件失败: %s", dest_path)
         # 验证文件是合法 MIDI：mido 解析失败的文件直接拒绝
         try:
             mido.MidiFile(str(dest_path))
@@ -486,8 +514,9 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history):
             logger.exception("读取 MIDI 文件失败: %s", dest_path)
             note_table = []
         note_table_str = "\n".join(note_table) if note_table else ""
+        rel = dest_path.relative_to(dest_dir).as_posix()
         new_files.append({
-            "name": dest_path.name,
+            "name": rel,
             "path": str(dest_path),
             "size": dest_path.stat().st_size if dest_path.exists() else 0,
             "note_table": note_table_str,
@@ -675,25 +704,30 @@ def _execute_tool_call(tool_call, midi_files: list[dict]) -> tuple[str, list[dic
                 note_data = get.get_note(str(filepath), save_to_file=False)
             except Exception:
                 note_data = func_args.get("notes", "") or func_args.get("note_table", "")
+            rel = _filepath_relpath(filepath)
             file_info = {
-                "name": filepath.name,
+                "name": rel,
                 "path": str(filepath),
                 "size": filepath.stat().st_size,
                 "note_table": note_data,
             }
-            updated_files = [f for f in updated_files if _file_choice_value(f) != str(filepath)]
+            updated_files = [f for f in updated_files if f.get("name") != rel and _file_choice_value(f) != str(filepath)]
             updated_files.append(file_info)
 
     # 如果删除了文件，更新文件列表
     elif func_name == "delete_midi":
         filename = func_args.get("filename", "")
-        updated_files = [f for f in updated_files if f["name"] != filename]
+        updated_files = [
+            f for f in updated_files
+            if f.get("name") != filename
+            and os.path.basename(f.get("name", "")) != filename
+        ]
 
     # 如果解析了文件，更新 note_table
     elif func_name == "parse_midi":
         filename = func_args.get("filename", "")
         for f in updated_files:
-            if f["name"] == filename:
+            if f.get("name") == filename or os.path.basename(f.get("name", "")) == filename:
                 f["note_table"] = result_text
                 break
 
@@ -797,6 +831,13 @@ def send_message(message, history, midi_files, undo_stack, full_history):
         ], "", midi_files, undo_stack, full_history, None, gr.update()
         return
 
+    # ── 绑定工作区：发送前完全同步工作区->projects，刷新文件列表 ──
+    if _current_project_id and project_manager.get_workspace_dir(_current_project_id):
+        try:
+            midi_files = project_manager.sync_workspace_to_projects(_current_project_id, midi_files or [])
+        except Exception:  # noqa: BLE001
+            logger.exception("发送消息前工作区同步失败")
+
     # ── 快照（用于撤销）──
     snapshot = copy.deepcopy(midi_files)
     new_undo_stack = undo_stack + [snapshot]
@@ -885,11 +926,23 @@ def _open_project(project_id: str) -> tuple:
     _close_mcp_process()
 
     all_messages, midi_files = project_manager.load_history(project_id)
+    # 绑定工作区时：完全同步工作区->projects，并按工作区扫描刷新文件列表
+    if project_manager.get_workspace_dir(project_id):
+        try:
+            midi_files = project_manager.sync_workspace_to_projects(project_id, midi_files)
+        except Exception:  # noqa: BLE001
+            logger.exception("打开项目时工作区同步失败")
     meta = project_manager.load_project(project_id)
     choices = _get_choices(midi_files)
 
     # 从完整 API 历史重建 Chatbot 显示列表（含工具调用折叠标签）
     display_messages = _rebuild_display_from_history(all_messages)
+
+    ws = project_manager.get_workspace_dir(project_id)
+    if ws:
+        ws_bind_vis, ws_bound_vis, ws_status = False, True, f"📁 工作区: `{ws}`"
+    else:
+        ws_bind_vis, ws_bound_vis, ws_status = True, False, ""
 
     return (
         gr.update(visible=False),                   # 隐藏项目浏览器
@@ -901,12 +954,21 @@ def _open_project(project_id: str) -> tuple:
         all_messages,                                  # full_history_state
         gr.update(choices=choices, value=[]),         # file_checkboxes
         f"### 当前项目: {meta.get('name', '未命名')}",  # project_name_display
+        gr.update(visible=ws_bind_vis),               # workspace_bind_col
+        gr.update(visible=ws_bound_vis),              # workspace_bound_col
+        ws_status,                                     # workspace_status
     )
 
 
 def _close_project(project_id: str | None, full_history, midi_files) -> tuple:
     """保存当前状态，返回项目浏览器并刷新项目列表。"""
     global _current_project_id
+    # 绑定工作区时，关闭前同步一次，保证 projects 镜像最新
+    if project_id and project_manager.get_workspace_dir(project_id):
+        try:
+            midi_files = project_manager.sync_workspace_to_projects(project_id, midi_files or [])
+        except Exception:  # noqa: BLE001
+            logger.exception("关闭项目时工作区同步失败")
     _persist_project_state(project_id, full_history, midi_files or [])
     _current_project_id = None
     _close_mcp_process()
@@ -918,6 +980,205 @@ def _close_project(project_id: str | None, full_history, midi_files) -> tuple:
         gr.update(choices=choices, value=None),     # project_radio
         ids,                            # project_list_ids
     )
+
+
+# ==================== 工作区绑定 ====================
+
+# IFileOpenDialog (Vista 风格现代对话框) 的 C# COM 互操作源码，由 PowerShell Add-Type 编译。
+# 参考实现：Simon Mourier 的 OpenFolderDialog（Apache-2.0）。
+_PICK_FOLDER_CS = """
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+public static class NativeFolderPicker
+{
+    [ComImport, ClassInterface(ClassInterfaceType.None), TypeLibType(TypeLibTypeFlags.FCanCreate), Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    internal class FileOpenDialogRCW { }
+
+    [ComImport, Guid("42F85136-DB7E-439C-85F1-E4075D135FC8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IFileDialog
+    {
+        [PreserveSig] uint Show(IntPtr hwndOwner);
+        uint SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        uint SetFileTypeIndex(uint iFileType);
+        uint GetFileTypeIndex(out uint piFileType);
+        uint Advise(IntPtr pfde, out uint pdwCookie);
+        uint Unadvise(uint dwCookie);
+        uint SetOptions(uint fos);
+        uint GetOptions(out uint fos);
+        void SetDefaultFolder(IShellItem psi);
+        uint SetFolder(IShellItem psi);
+        uint GetFolder(out IShellItem ppsi);
+        uint GetCurrentSelection(out IShellItem ppsi);
+        uint SetFileName(string pszName);
+        uint GetFileName(out string pszName);
+        uint SetTitle(string pszTitle);
+        uint SetOkButtonLabel(string pszText);
+        uint SetFileNameLabel(string pszLabel);
+        uint GetResult(out IShellItem ppsi);
+        uint AddPlace(IShellItem psi, uint fdap);
+        uint SetDefaultExtension(string pszDefaultExtension);
+        uint Close(uint hr);
+        uint SetClientGuid(ref Guid guid);
+        uint ClearClientData();
+        uint SetFilter(IntPtr pFilter);
+    }
+
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellItem
+    {
+        uint BindToHandler(IntPtr pbc, ref Guid rbhid, ref Guid riid, out IntPtr ppvOut);
+        uint GetParent(out IShellItem ppsi);
+        uint GetDisplayName(uint sigdnName, out IntPtr ppszName);
+        uint GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        uint Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int SHCreateItemFromParsingName(string pszPath, IntPtr pbc, ref Guid riid, out IShellItem ppv);
+
+    private const uint FOS_PICKFOLDERS = 0x00000020;
+    private const uint FOS_FORCEFILESYSTEM = 0x00000040;
+    private const uint SIGDN_FILESYSPATH = 0x80058000;
+    private static readonly Guid IID_IShellItem = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");
+
+    public static string PickFolder(string title, string initialDirectory)
+    {
+        IFileDialog dialog = (IFileDialog)(new FileOpenDialogRCW());
+        uint options = FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM;
+        dialog.GetOptions(out options);
+        options |= FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM;
+        dialog.SetOptions(options);
+        if (!string.IsNullOrEmpty(title))
+            dialog.SetTitle(title);
+        if (!string.IsNullOrEmpty(initialDirectory) && Directory.Exists(initialDirectory))
+        {
+            Guid iid = IID_IShellItem;
+            IShellItem dirItem;
+            if (SHCreateItemFromParsingName(initialDirectory, IntPtr.Zero, ref iid, out dirItem) == 0)
+                dialog.SetFolder(dirItem);
+        }
+        if (dialog.Show(IntPtr.Zero) != 0)
+            return null;
+        IShellItem shellItem;
+        if (dialog.GetResult(out shellItem) != 0)
+            return null;
+        IntPtr pszString;
+        if (shellItem.GetDisplayName(SIGDN_FILESYSPATH, out pszString) != 0 || pszString == IntPtr.Zero)
+            return null;
+        try
+        {
+            return Marshal.PtrToStringUni(pszString);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(pszString);
+        }
+    }
+}
+"""
+
+
+def _pick_folder_dialog() -> str:
+    """弹出 Windows Vista 风格（IFileOpenDialog）原生文件夹选择对话框，返回所选路径；取消返回空串。"""
+    ps_script = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "$src = @'\n"
+        + _PICK_FOLDER_CS
+        + "\n'@\n"
+        "Add-Type -TypeDefinition $src\n"
+        "[NativeFolderPicker]::PickFolder('请选择工作区文件夹', $null)"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        logger.exception("打开文件夹选择对话框失败")
+        return ""
+    path = result.stdout.strip()
+    return path if path and os.path.isdir(path) else ""
+
+
+def _on_pick_workspace() -> dict:
+    """点击『选择文件夹』按钮：弹出系统对话框并把路径填入输入框。"""
+    path = _pick_folder_dialog()
+    if not path:
+        return gr.update()
+    return gr.update(value=path)
+
+
+def _on_bind_workspace(path: str, project_id: str | None, midi_files, full_history) -> tuple:
+    """绑定工作区目录：初始化同步 projects->工作区，刷新文件列表，重启 MCP。"""
+    if not project_id:
+        gr.Info("请先选择项目")
+        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
+    path = (path or "").strip()
+    if not path:
+        gr.Info("请输入工作区目录路径")
+        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
+    try:
+        result = project_manager.bind_workspace(project_id, path)
+    except Exception as exc:  # noqa: BLE001
+        gr.Info(f"绑定失败: {exc}")
+        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
+    _close_mcp_process()
+    midi_files = result["midi_files"]
+    _persist_project_state(project_id, full_history, midi_files)
+    renamed = result["renamed"]
+    if renamed:
+        gr.Info(
+            "已绑定工作区。以下文件重名已加序号:\n"
+            + "\n".join(f"{o} -> {n}" for o, n in renamed)
+        )
+    else:
+        gr.Info("已绑定工作区")
+    ws = project_manager.get_workspace_dir(project_id)
+    return (
+        midi_files,
+        gr.update(choices=_get_choices(midi_files), value=[]),
+        gr.update(visible=False),   # workspace_bind_col
+        gr.update(visible=True),    # workspace_bound_col
+        f"📁 工作区: `{ws}`",
+    )
+
+
+def _on_unbind_workspace(project_id: str | None, midi_files, full_history) -> tuple:
+    """解绑工作区：不动工作区文件，读取改回 projects，重启 MCP。"""
+    if not project_id:
+        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
+    midi_files = project_manager.unbind_workspace(project_id)
+    _close_mcp_process()
+    _persist_project_state(project_id, full_history, midi_files)
+    gr.Info("已解绑工作区，文件读取改回项目目录")
+    return (
+        midi_files,
+        gr.update(choices=_get_choices(midi_files), value=[]),
+        gr.update(visible=True),    # workspace_bind_col
+        gr.update(visible=False),   # workspace_bound_col
+        "",
+    )
+
+
+def _on_refresh_workspace(project_id: str | None, midi_files, full_history) -> tuple:
+    """手动刷新：完全同步工作区->projects，刷新文件列表。"""
+    if not project_id or not project_manager.get_workspace_dir(project_id):
+        gr.Info("当前项目未绑定工作区")
+        return midi_files, gr.update()
+    try:
+        midi_files = project_manager.sync_workspace_to_projects(project_id, midi_files or [])
+    except Exception as exc:  # noqa: BLE001
+        gr.Info(f"刷新失败: {exc}")
+        return midi_files, gr.update()
+    _persist_project_state(project_id, full_history, midi_files)
+    gr.Info("已刷新工作区文件")
+    return midi_files, gr.update(choices=_get_choices(midi_files), value=[])
 
 
 def _on_new_project(name: str) -> tuple:
@@ -957,7 +1218,7 @@ def _on_open_project(selected_project: str, project_ids: list[str]) -> tuple:
     """打开选中的项目。"""
     pid = _resolve_project_id(selected_project, project_ids)
     if not pid:
-        return tuple([gr.update()] * 9)
+        return tuple([gr.update()] * 12)
     return _open_project(pid)
 
 
@@ -1015,10 +1276,10 @@ def _on_open_from_search(evt: gr.SelectData, search_result_ids: list[str]) -> tu
     try:
         idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
         if idx < 0 or idx >= len(search_result_ids):
-            return tuple([gr.update()] * 9)
+            return tuple([gr.update()] * 12)
         pid = search_result_ids[idx]
     except (IndexError, TypeError, ValueError):
-        return tuple([gr.update()] * 9)
+        return tuple([gr.update()] * 12)
     return _open_project(pid)
 
 
@@ -1117,10 +1378,35 @@ def build_chat_ui() -> gr.Blocks:
 
                     download_file = gr.File(label="下载文件", visible=True)
 
+                    # ===== 工作区绑定 =====
+                    gr.Markdown("---")
+                    gr.Markdown("### 工作区")
+                    with gr.Column(visible=True) as workspace_bind_col:
+                        with gr.Row():
+                            pick_folder_btn = gr.Button("📂 选择文件夹", scale=1)
+                            workspace_path_input = gr.Textbox(
+                                placeholder="输入本地目录路径…",
+                                show_label=False,
+                                scale=4,
+                            )
+                            bind_btn = gr.Button("🔗 绑定", variant="primary", scale=1)
+                    with gr.Column(visible=False) as workspace_bound_col:
+                        workspace_status = gr.Markdown("")
+                        with gr.Row():
+                            refresh_btn = gr.Button("🔄 刷新文件", scale=1)
+                            unbind_btn = gr.Button("🔓 解绑", variant="stop", scale=1)
+
                     # ===== 对话设置 =====
                     gr.Markdown("---")
                     gr.Markdown("### 对话设置")
-                    gr.Markdown("- 模型：step-3.7-flash\n- 上下文长度：自动\n- 思考强度：max")
+                    _chat_settings = _load_settings()
+                    _chat_model = _chat_settings.get("model") or config.MODEL
+                    _chat_effort = _chat_settings.get("reasoning_effort") or "auto"
+                    gr.Markdown(
+                        f"- 模型：{_chat_model}\n"
+                        f"- 上下文长度：自动\n"
+                        f"- 思考强度：{_chat_effort}"
+                    )
 
                 with gr.Column(scale=3):
                     chatbot = gr.Chatbot(
@@ -1165,6 +1451,7 @@ def build_chat_ui() -> gr.Blocks:
             project_browser, chat_panel, project_id_state,
             chatbot, midi_files_state, undo_stack, full_history_state,
             file_checkboxes, project_name_display,
+            workspace_bind_col, workspace_bound_col, workspace_status,
         ]
 
         new_project_confirm_btn.click(
@@ -1262,6 +1549,32 @@ def build_chat_ui() -> gr.Blocks:
             fn=_on_undo,
             inputs=[undo_stack, midi_files_state, project_id_state, full_history_state],
             outputs=[midi_files_state, undo_stack, file_checkboxes],
+        )
+
+        # 工作区绑定
+        pick_folder_btn.click(
+            fn=_on_pick_workspace,
+            inputs=[],
+            outputs=[workspace_path_input],
+        )
+        bind_btn.click(
+            fn=_on_bind_workspace,
+            inputs=[workspace_path_input, project_id_state, midi_files_state, full_history_state],
+            outputs=[midi_files_state, file_checkboxes, workspace_bind_col, workspace_bound_col, workspace_status],
+        ).then(
+            fn=lambda: gr.update(value=""),
+            inputs=[],
+            outputs=[workspace_path_input],
+        )
+        unbind_btn.click(
+            fn=_on_unbind_workspace,
+            inputs=[project_id_state, midi_files_state, full_history_state],
+            outputs=[midi_files_state, file_checkboxes, workspace_bind_col, workspace_bound_col, workspace_status],
+        )
+        refresh_btn.click(
+            fn=_on_refresh_workspace,
+            inputs=[project_id_state, midi_files_state, full_history_state],
+            outputs=[midi_files_state, file_checkboxes],
         )
 
         # 对话事件

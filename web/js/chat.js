@@ -98,37 +98,90 @@
     );
   }
 
-  /* 工作台内部元素错峰弹入（一次性，动画结束移除类，SSE 重渲染不重播） */
-  function springIn() {
+  var reducedMotion = typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* 按"距原点的方向"依次浮现：
+     originX/originY = 涟漪中心（通常是点击的卡片中心）；
+     无原点时（新建项目）传 null，落到面板左上角 */
+  function springIn(originX, originY) {
     var token = ++springToken;
     var studio = $("#studioView");
     var els = springEls();
-    els.forEach(function (el, i) {
-      el.style.setProperty("--spring-i", i);
-      el.classList.add("spring-el");
-    });
+    var maxDelay = 0;
+    if (els.length) {
+      var ox = (originX == null) ? 0 : originX;
+      var oy = (originY == null) ? 0 : originY;
+      els.forEach(function (el) {
+        var r = el.getBoundingClientRect();
+        var dx = (r.left + r.width / 2) - ox;
+        var dy = (r.top + r.height / 2) - oy;
+        var dist = Math.hypot(dx, dy);
+        /* reduced-motion：忽略距离延迟，避免内容长时间不可见 */
+        var delay = reducedMotion ? 0 : Math.round(dist * 0.5);
+        if (delay > maxDelay) maxDelay = delay;
+        el.style.setProperty("--spring-delay", delay + "ms");
+        el.classList.add("spring-el", "pre-reveal");
+      });
+    }
     studio.classList.add("enter");
+    /* 涟漪启动一帧后移除 pre-reveal，动画从 opacity 0 接管（防止内容卡透明） */
+    requestAnimationFrame(function () {
+      if (springToken !== token) return;
+      els.forEach(function (el) { el.classList.remove("pre-reveal"); });
+    });
     setTimeout(function () {
       if (springToken !== token) return;
-      els.forEach(function (el) { el.classList.remove("spring-el"); });
+      els.forEach(function (el) {
+        el.classList.remove("spring-el");
+        el.style.removeProperty("--spring-delay");
+      });
       studio.classList.remove("enter");
-    }, 950);
+    }, maxDelay + 500);
   }
 
-  /* 返回档案库前：内部元素快速收拢 */
-  function springOut() {
-    springToken++; /* 使挂起的 enter 清理定时器失效 */
+  /* 返回档案库前：内部元素朝卡片方向"吸气"汇聚——
+     远的先收（delay 小），近的后收（delay 大），形成向卡片坍缩的视觉 */
+  function springOut(targetX, targetY) {
+    springToken++;
     var studio = $("#studioView");
     var els = springEls();
-    els.forEach(function (el) { el.classList.add("spring-el"); });
-    studio.classList.add("leaving");
+    if (els.length && targetX != null && targetY != null) {
+      var maxDelay = 0;
+      els.forEach(function (el) {
+        var r = el.getBoundingClientRect();
+        var dx = (r.left + r.width / 2) - targetX;
+        var dy = (r.top + r.height / 2) - targetY;
+        var dist = Math.hypot(dx, dy);
+        /* 远的先收：delay 随距离反向 */
+        var delay = reducedMotion ? 0 : Math.round(dist * 0.4);
+        if (delay > maxDelay) maxDelay = delay;
+        el.style.setProperty("--spring-leave-delay", delay + "ms");
+        el.classList.add("spring-el");
+      });
+      /* 留出收拢完成的时间再清理 */
+      setTimeout(function () {
+        springToken++;
+        studio.classList.remove("leaving", "enter");
+        els.forEach(function (el) {
+          el.classList.remove("spring-el");
+          el.style.removeProperty("--spring-leave-delay");
+        });
+      }, maxDelay + 240);
+    } else {
+      studio.classList.add("leaving");
+    }
   }
 
   function clearSprings() {
     springToken++;
     var studio = $("#studioView");
     studio.classList.remove("enter", "leaving");
-    springEls().forEach(function (el) { el.classList.remove("spring-el"); });
+    springEls().forEach(function (el) {
+      el.classList.remove("spring-el", "pre-reveal");
+      el.style.removeProperty("--spring-delay");
+      el.style.removeProperty("--spring-leave-delay");
+    });
   }
 
   function openProject(projectId) {
@@ -168,14 +221,25 @@
          新快照工作台面板上，导致面板额外缩放与旧卡片内容重叠） */
       delete document.documentElement.dataset.vtFlow;
 
+      /* 捕获卡片中心（涟漪原点）——必须在 archive 可见时取 rect，
+         隐藏后 getBoundingClientRect 返回 0；保存为绝对值（不随滚动变化） */
+      var origin = null;
+      if (card) {
+        var cr = card.getBoundingClientRect();
+        origin = { x: cr.left + cr.width / 2, y: cr.top + cr.height / 2 };
+      }
+
       if (card) card.style.viewTransitionName = "project-panel";
       var vt = startViewTransitionSafe(function () {
         archive.hidden = true;
         studio.hidden = false;
         if (card) card.style.viewTransitionName = "";
         studio.style.viewTransitionName = "project-panel";
-        /* 切换一发生就立即解锁：按钮、链接可立即响应点击，
-           后续的弹簧错峰动画是纯视觉装饰，不影响交互 */
+        /* VT 快照前隐藏内容——防止"先出现→又重影浮现"——
+           springIn 启动一帧后会自动移除该 class */
+        if (!reducedMotion) {
+          springEls().forEach(function (el) { el.classList.add("pre-reveal"); });
+        }
         clearTimeout(morphGuard);
         isTransitioning = false;
       });
@@ -186,7 +250,7 @@
       function startSpringOnce() {
         if (springStarted) return;
         springStarted = true;
-        springIn();
+        springIn(origin ? origin.x : null, origin ? origin.y : null);
       }
       setTimeout(startSpringOnce, 200);
 
@@ -219,37 +283,44 @@
     var studio = $("#studioView");
     var archive = $("#archiveView");
 
-    /* 1) 内部元素快速收拢（吸气） */
-    springOut();
-
-    /* 2) 预取项目列表并渲染网格（archive 仍隐藏，卡片落点已就位） */
     UI.getJSON("/api/projects").then(function (projects) {
       renderProjects(projects);
       var card = pid ? UI.qs('.proj-card[data-id="' + pid + '"]') : null;
 
+      /* 关键：archive 隐藏时 getBoundingClientRect 返回 0。
+         同步任务内短暂显示 archive 以触发布局并测量卡片真实位置，
+         再立刻隐藏——浏览器未在两次赋值间渲染，无闪烁。
+         studio 仍可见（springOut 即将作用其上） */
+      if (card) {
+        archive.hidden = false;
+        var cr = card.getBoundingClientRect();
+        archive.hidden = true;
+        var cx = cr.left + cr.width / 2;
+        var cy = cr.top + cr.height / 2;
+        var pr = studio.getBoundingClientRect();
+        var px = pr.left + pr.width / 2;
+        var py = pr.top + pr.height / 2;
+        var dx = cx - px;
+        var dy = cy - py;
+        /* 限制最大飞回距离，避免极端布局下位移过大 */
+        var dist = Math.hypot(dx, dy);
+        var max = 130;
+        if (dist > max) { dx = dx / dist * max; dy = dy / dist * max; }
+        card.style.setProperty("--land-dx", dx.toFixed(1) + "px");
+        card.style.setProperty("--land-dy", dy.toFixed(1) + "px");
+      }
+
+      /* 工作台朝卡片方向"吸气"汇聚（用真实卡片中心算距离延迟） */
+      springOut(card ? cx : null, card ? cy : null);
+
       setTimeout(function () {
-        /* 形态动画：工作台 → 缩回卡片原位
-           预先计算方向向量并写入卡片 CSS 变量，
-           card-arrive 关键帧据此从工作台方向飞回并惯性过冲 */
-        if (card) {
-          card.style.viewTransitionName = "project-panel";
-          var cr = card.getBoundingClientRect();
-          var pr = studio.getBoundingClientRect();
-          var cx = cr.left + cr.width / 2;
-          var cy = cr.top + cr.height / 2;
-          var px = pr.left + pr.width / 2;
-          var py = pr.top + pr.height / 2;
-          var dx = cx - px;
-          var dy = cy - py;
-          /* 限制最大飞回距离，避免极端布局下位移过大 */
-          var dist = Math.hypot(dx, dy);
-          var max = 130;
-          if (dist > max) { dx = dx / dist * max; dy = dy / dist * max; }
-          card.style.setProperty("--land-dx", dx.toFixed(1) + "px");
-          card.style.setProperty("--land-dy", dy.toFixed(1) + "px");
+        if (!card) {
+          /* 无目标卡片时直接收拢再开始 VT */
+          studio.classList.add("leaving");
         }
+        /* 形态动画：工作台 → 缩回卡片原位（弹弓轨迹 + 邻居波纹在 finishBack 触发） */
+        if (card) card.style.viewTransitionName = "project-panel";
         studio.style.viewTransitionName = "project-panel";
-        /* 标记返回流程，使 panel-depart / card-arrive 仅在此流程作用于伪元素 */
         document.documentElement.dataset.vtFlow = "back";
         var vt = startViewTransitionSafe(function () {
           studio.hidden = true;
@@ -265,7 +336,8 @@
             card.style.removeProperty("--land-dy");
           }
           clearSprings();
-          /* 清理流程标记，避免泄漏到下一次打开流程 */
+          /* 强波纹：落点卡片弹回瞬间，向网格四周推开邻居卡片 */
+          if (card && !reducedMotion) applyNeighborRipple(card, archive);
           delete document.documentElement.dataset.vtFlow;
           isTransitioning = false;
           window.scrollTo(0, 0);
@@ -285,6 +357,50 @@
       isTransitioning = false;
       reloadProjects();
     });
+  }
+
+  /* 邻居卡片波纹：落点卡片弹回瞬间，按"远离落点"方向推开其他卡片，
+     距离越远延迟越大，形成向四周扩散的水波 */
+  function applyNeighborRipple(landingCard, archive) {
+    var lr = landingCard.getBoundingClientRect();
+    var lx = lr.left + lr.width / 2;
+    var ly = lr.top + lr.height / 2;
+    var neighbors = [];
+    UI.qsa(".proj-card", archive).forEach(function (n) {
+      if (n === landingCard) return;
+      var nr = n.getBoundingClientRect();
+      var nx = nr.left + nr.width / 2;
+      var ny = nr.top + nr.height / 2;
+      var dx = nx - lx;
+      var dy = ny - ly;
+      var d = Math.hypot(dx, dy);
+      if (d === 0) d = 1;
+      /* 推开 12px 沿远离落点方向归一化 */
+      var push = 12;
+      n.style.setProperty("--push-x", (dx / d * push).toFixed(1) + "px");
+      n.style.setProperty("--push-y", (dy / d * push).toFixed(1) + "px");
+      /* 距离越远延迟越大：~0.5ms/px，最远 ~600ms */
+      n.style.setProperty("--ripple-delay", Math.round(d * 0.5) + "ms");
+      neighbors.push(n);
+    });
+    if (!neighbors.length) return;
+    requestAnimationFrame(function () {
+      neighbors.forEach(function (n) { n.classList.add("rippled"); });
+    });
+    var maxDelay = 0;
+    neighbors.forEach(function (n) {
+      var d = parseInt(n.style.getPropertyValue("--ripple-delay")) || 0;
+      if (d > maxDelay) maxDelay = d;
+    });
+    /* 动画完成后清理 class 与变量 */
+    setTimeout(function () {
+      neighbors.forEach(function (n) {
+        n.classList.remove("rippled");
+        n.style.removeProperty("--push-x");
+        n.style.removeProperty("--push-y");
+        n.style.removeProperty("--ripple-delay");
+      });
+    }, maxDelay + 600);
   }
 
   /* ═══════════ 文件管理 ═══════════ */
@@ -485,16 +601,21 @@
 
           /* 无卡片来源：默认交叉过渡 + 面板内容弹入 */
           isTransitioning = true;
-          /* 安全清理：避免残留的 "back" 标记影响本次 VT 的新快照 */
           delete document.documentElement.dataset.vtFlow;
           var vt = startViewTransitionSafe(function () {
             $("#archiveView").hidden = true;
             $("#studioView").hidden = false;
+            /* VT 快照前隐藏内容（无卡片时 origin 为面板左上角，涟漪从那里扩散） */
+            if (!reducedMotion) {
+              springEls().forEach(function (el) { el.classList.add("pre-reveal"); });
+            }
           });
           function fin() {
             isTransitioning = false;
-            clearSprings();
-            springIn();
+            /* 与打开流程同样的 200ms 重叠启动 + fallback */
+            var started = false;
+            function once() { if (!started) { started = true; springIn(null, null); } }
+            setTimeout(once, 200);
             setTimeout(function () { $("#msgInput").focus(); }, 60);
             window.scrollTo(0, 0);
           }

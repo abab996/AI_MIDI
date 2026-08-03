@@ -1317,44 +1317,46 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   animation-delay: 0.02s;
 }
 
-/* ---------- 工作台内部元素错峰弹簧 ---------- */
-/* 入场：单次平滑过冲（去掉反向小震，避免 wobble）——
-   0% 从自然态起步，无跳变；动画与 VT 形态动画在时间上重叠进行 */
+/* ---------- 工作台内部元素按方向依次浮现 ---------- */
+/* 入场：每个元素一次干净的上浮+淡入——
+   0% 透明 + 向下偏移 12px，100% 严格回到自然态（无缩放过冲，
+   避免"放大后生硬缩小"跳变）。
+   方向感由 --spring-delay（JS 按距卡片原位的距离写入）控制：
+   距卡片近的先浮出、远的后浮出——"沿着卡片展开方向依次浮现"。
+   VT 启动后 200ms 触发，与形态动画在时间上重叠。 */
 .studio-panel.enter .spring-el {
-  animation: spring-in 0.34s cubic-bezier(0.3, 1.2, 0.4, 1) both;
-  animation-delay: calc(var(--spring-i, 0) * 14ms);
+  animation: spring-in 0.4s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+  animation-delay: var(--spring-delay, 0ms);
 }
 
-/* 离场：先小幅外推再收拢——时长与 VT 等待对齐（0.22s），
-   收拢结束即开始形态动画，中间无空档 */
+/* 离场：朝卡片方向的距离延迟——远的先收、近的后收，
+   形成"面板向卡片吸气汇聚"的视觉。
+   时长 0.22s 与 VT 等待对齐，无空档 */
 .studio-panel.leaving .spring-el {
   animation: spring-out 0.22s cubic-bezier(0.4, 0, 0.6, 1) both;
-  animation-delay: 0s;
+  animation-delay: var(--spring-leave-delay, 0ms);
 }
 
 @keyframes spring-in {
-  0% { transform: scale(1); }
-  100% { transform: scale(1.04) translateY(-1px); }
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0); }
 }
 
-/* 离场：先小幅外推，再向内收拢（与 VT 等待时间一致） */
 @keyframes spring-out {
-  0% { transform: scale(1); }
+  0% { transform: scale(1); opacity: 1; }
   30% { transform: scale(1.02) translateY(-1px); }
   100% { transform: scale(0.95) translateY(4px); opacity: 0.7; }
 }
 
-/* 侧栏从左、对话区从右上原点弹出 */
-.studio-panel.enter .sidebar > .spring-el {
-  transform-origin: left center;
+/* VT 快照前隐藏内容（防止"内容先出现→又重影浮现"），
+   springIn 启动一帧后移除此 class，动画接管 opacity。
+   独立选择器，不依赖 .spring-el（VT 快照时元素还没有 spring-el） */
+.studio-panel .pre-reveal {
+  opacity: 0 !important;
 }
 
-.studio-panel.enter .console-wrap > .spring-el {
-  transform-origin: center top;
-}
-
-/* ---------- 卡片飞回惯性（VT 新快照动画） ---------- */
-/* 旧工作台：朝卡片方向明显被拉过去——强化方向感与离开的"拉力" */
+/* ---------- 卡片飞回弹弓（VT 新快照动画） ---------- */
+/* 旧工作台：朝卡片方向明显被拉过去——强化离开的"拉力" */
 @keyframes panel-depart {
   0% { transform: translate(0, 0); }
   100% {
@@ -1366,34 +1368,57 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   }
 }
 
-/* 新卡片：真正的惯性过冲轨迹——
-   0%  在原工作台位置（小、半透明，"飞过来中"）
-   45% 到达原位并越过 15% 的方向位移（明显过冲 scale 1.1）
-   70% 反向回弹到原位的 -18% 方向（scale 0.96）
-   100% 落定原位
-   --land-dx/-dy 由 JS 在 VT 启动前计算并写入卡片元素 */
+/* 新卡片：弹弓轨迹——
+   0%  在原工作台位置（飞过来中）
+   40% 越过原位 22% 方向 + scale 1.1（明显过冲）
+   65% 反向回弹 -16% 方向（弹回）
+   85% 微震 +5%（二次小回弹）
+   100% 落定原位 */
 @keyframes card-arrive {
   0% {
     transform: translate(var(--land-dx, 0px), var(--land-dy, 0px)) scale(0.7);
     opacity: 0.25;
   }
-  45% {
+  40% {
     transform: translate(
-      calc(var(--land-dx, 0px) * 0.15),
-      calc(var(--land-dy, 0px) * 0.15)
+      calc(var(--land-dx, 0px) * 0.22),
+      calc(var(--land-dy, 0px) * 0.22)
     ) scale(1.1);
     opacity: 1;
   }
-  70% {
+  65% {
     transform: translate(
-      calc(var(--land-dx, 0px) * -0.18),
-      calc(var(--land-dy, 0px) * -0.18)
-    ) scale(0.96);
+      calc(var(--land-dx, 0px) * -0.16),
+      calc(var(--land-dy, 0px) * -0.16)
+    ) scale(0.97);
+  }
+  85% {
+    transform: translate(
+      calc(var(--land-dx, 0px) * 0.05),
+      calc(var(--land-dy, 0px) * 0.05)
+    ) scale(1.01);
   }
   100% {
     transform: translate(0, 0) scale(1);
     opacity: 1;
   }
+}
+
+/* ---------- 邻居卡片波纹（强波纹：12px 推开） ---------- */
+.proj-card.rippled {
+  animation: card-push 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  animation-delay: var(--ripple-delay, 0ms);
+}
+
+@keyframes card-push {
+  0% { transform: translate(0, 0); }
+  30% {
+    transform: translate(
+      var(--push-x, 0px),
+      var(--push-y, 0px)
+    );
+  }
+  100% { transform: translate(0, 0); }
 }
 
 /* ---------- 无障碍：减少动态 ---------- */
@@ -1406,7 +1431,8 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
     animation-duration: 0.01ms !important;
   }
 
-  .studio-panel .spring-el {
+  .studio-panel .spring-el,
+  .proj-card.rippled {
     animation: none !important;
   }
 }

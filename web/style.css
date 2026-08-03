@@ -1302,14 +1302,17 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
   animation-timing-function: cubic-bezier(0.32, 0.72, 0.24, 1);
 }
 
-/* 旧工作台：被向卡片方向"拉过去"——强化运动方向感（由 JS 设置 --land-dx/-dy） */
-::view-transition-old(project-panel) {
+/* 旧工作台：被向卡片方向"拉过去"——强化运动方向感（由 JS 设置 --land-dx/-dy）
+   仅返回流程（html[data-vt-flow="back"]）生效；
+   打开流程新快照是工作台，套上此动画会导致面板额外缩放与旧卡片内容重叠 */
+html[data-vt-flow="back"]::view-transition-old(project-panel) {
   animation: panel-depart 0.42s cubic-bezier(0.4, 0, 0.6, 1) both;
 }
 
 /* 新卡片：从工作台方向飞回，沿该方向多移动一段距离后回到原位
-   （惯性过冲；--land-dx/-dy 由 JS 在 VT 启动前计算并写入卡片元素） */
-::view-transition-new(project-panel) {
+   （惯性过冲；--land-dx/-dy 由 JS 在 VT 启动前计算并写入卡片元素）
+   仅返回流程生效 */
+html[data-vt-flow="back"]::view-transition-new(project-panel) {
   animation: card-arrive 0.5s cubic-bezier(0.34, 1.45, 0.64, 1) both;
   animation-delay: 0.02s;
 }
@@ -1395,8 +1398,8 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
   html[data-nav]::view-transition-old(root),
   html[data-nav]::view-transition-new(root),
   ::view-transition-group(project-panel),
-  ::view-transition-old(project-panel),
-  ::view-transition-new(project-panel) {
+  html[data-vt-flow="back"]::view-transition-old(project-panel),
+  html[data-vt-flow="back"]::view-transition-new(project-panel) {
     animation-duration: 0.01ms !important;
   }
 

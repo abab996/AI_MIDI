@@ -164,6 +164,10 @@
       /* 安全兜底：若 VT 异常卡住，1.5 秒后强制释放（避免按钮永久不可点） */
       var morphGuard = setTimeout(function () { isTransitioning = false; }, 1500);
 
+      /* 打开流程：确保 data-vt-flow 不为 "back"（否则 card-arrive 会套到
+         新快照工作台面板上，导致面板额外缩放与旧卡片内容重叠） */
+      delete document.documentElement.dataset.vtFlow;
+
       if (card) card.style.viewTransitionName = "project-panel";
       var vt = startViewTransitionSafe(function () {
         archive.hidden = true;
@@ -235,6 +239,8 @@
           card.style.setProperty("--land-dy", dy.toFixed(1) + "px");
         }
         studio.style.viewTransitionName = "project-panel";
+        /* 标记返回流程，使 panel-depart / card-arrive 仅在此流程作用于伪元素 */
+        document.documentElement.dataset.vtFlow = "back";
         var vt = startViewTransitionSafe(function () {
           studio.hidden = true;
           archive.hidden = false;
@@ -249,6 +255,8 @@
             card.style.removeProperty("--land-dy");
           }
           clearSprings();
+          /* 清理流程标记，避免泄漏到下一次打开流程 */
+          delete document.documentElement.dataset.vtFlow;
           isTransitioning = false;
           window.scrollTo(0, 0);
         }
@@ -261,6 +269,7 @@
     }).catch(function (e) {
       UI.toast("✗ 返回档案库失败: " + e.message, "err");
       clearSprings();
+      delete document.documentElement.dataset.vtFlow;
       studio.hidden = true;
       archive.hidden = false;
       isTransitioning = false;
@@ -466,6 +475,8 @@
 
           /* 无卡片来源：默认交叉过渡 + 面板内容弹入 */
           isTransitioning = true;
+          /* 安全清理：避免残留的 "back" 标记影响本次 VT 的新快照 */
+          delete document.documentElement.dataset.vtFlow;
           var vt = startViewTransitionSafe(function () {
             $("#archiveView").hidden = true;
             $("#studioView").hidden = false;

@@ -1318,11 +1318,11 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
 }
 
 /* ---------- 工作台内部元素错峰弹簧 ---------- */
-/* 入场：从自然态（scale 1）做轻微过冲回弹——
-   不做 0% 预缩，避免与 VT 快照叠加出现"先缩后弹"的断裂 */
+/* 入场：单次平滑过冲（去掉反向小震，避免 wobble）——
+   0% 从自然态起步，无跳变；动画与 VT 形态动画在时间上重叠进行 */
 .studio-panel.enter .spring-el {
-  animation: spring-in 0.36s cubic-bezier(0.34, 1.4, 0.5, 1) both;
-  animation-delay: calc(var(--spring-i, 0) * 18ms);
+  animation: spring-in 0.34s cubic-bezier(0.3, 1.2, 0.4, 1) both;
+  animation-delay: calc(var(--spring-i, 0) * 14ms);
 }
 
 /* 离场：先小幅外推再收拢——时长与 VT 等待对齐（0.22s），
@@ -1334,9 +1334,7 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
 
 @keyframes spring-in {
   0% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-  80% { transform: scale(0.99); }
-  100% { transform: scale(1); }
+  100% { transform: scale(1.04) translateY(-1px); }
 }
 
 /* 离场：先小幅外推，再向内收拢（与 VT 等待时间一致） */
@@ -1356,36 +1354,41 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
 }
 
 /* ---------- 卡片飞回惯性（VT 新快照动画） ---------- */
-/* 旧工作台：朝卡片方向拉一点，强化方向感 */
+/* 旧工作台：朝卡片方向明显被拉过去——强化方向感与离开的"拉力" */
 @keyframes panel-depart {
   0% { transform: translate(0, 0); }
   100% {
     transform: translate(
-      calc(var(--land-dx, 0px) * 0.25),
-      calc(var(--land-dy, 0px) * 0.25)
+      calc(var(--land-dx, 0px) * 0.55),
+      calc(var(--land-dy, 0px) * 0.55)
     );
-    opacity: 0.85;
+    opacity: 0.7;
   }
 }
 
-/* 新卡片：从工作台方向飞回，沿该方向多移动一段距离后回到原位
-   0% = 还在工作台位置（小、略透明，像"飞过来"）
-   50% = 到达原位时略过冲（scale 1.06）
-   100% = 落定 */
+/* 新卡片：真正的惯性过冲轨迹——
+   0%  在原工作台位置（小、半透明，"飞过来中"）
+   45% 到达原位并越过 15% 的方向位移（明显过冲 scale 1.1）
+   70% 反向回弹到原位的 -18% 方向（scale 0.96）
+   100% 落定原位
+   --land-dx/-dy 由 JS 在 VT 启动前计算并写入卡片元素 */
 @keyframes card-arrive {
   0% {
-    transform: translate(var(--land-dx, 0px), var(--land-dy, 0px)) scale(0.82);
-    opacity: 0.4;
+    transform: translate(var(--land-dx, 0px), var(--land-dy, 0px)) scale(0.7);
+    opacity: 0.25;
   }
-  55% {
-    transform: translate(0, 0) scale(1.06);
+  45% {
+    transform: translate(
+      calc(var(--land-dx, 0px) * 0.15),
+      calc(var(--land-dy, 0px) * 0.15)
+    ) scale(1.1);
     opacity: 1;
   }
-  75% {
+  70% {
     transform: translate(
-      calc(var(--land-dx, 0px) * -0.12),
-      calc(var(--land-dy, 0px) * -0.12)
-    ) scale(0.985);
+      calc(var(--land-dx, 0px) * -0.18),
+      calc(var(--land-dy, 0px) * -0.18)
+    ) scale(0.96);
   }
   100% {
     transform: translate(0, 0) scale(1);

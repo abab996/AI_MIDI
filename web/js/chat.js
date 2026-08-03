@@ -180,10 +180,20 @@
         isTransitioning = false;
       });
 
+      /* spring-in 与 VT 形态动画在时间上重叠（VT 走到中段时 springIn 已开始），
+         避免"VT 结束→停顿→springIn 开始"的换场断裂 */
+      var springStarted = false;
+      function startSpringOnce() {
+        if (springStarted) return;
+        springStarted = true;
+        springIn();
+      }
+      setTimeout(startSpringOnce, 200);
+
       function finishOpen() {
         studio.style.viewTransitionName = "";
-        clearSprings();
-        springIn();
+        /* 若 VT 未触发（如不支持或异常），回退为直接启动 spring-in */
+        startSpringOnce();
         setTimeout(function () { input.focus(); }, 60);
         window.scrollTo(0, 0);
       }
@@ -233,7 +243,7 @@
           var dy = cy - py;
           /* 限制最大飞回距离，避免极端布局下位移过大 */
           var dist = Math.hypot(dx, dy);
-          var max = 50;
+          var max = 130;
           if (dist > max) { dx = dx / dist * max; dy = dy / dist * max; }
           card.style.setProperty("--land-dx", dx.toFixed(1) + "px");
           card.style.setProperty("--land-dy", dy.toFixed(1) + "px");

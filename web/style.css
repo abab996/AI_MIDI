@@ -1303,36 +1303,54 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
 }
 
 /* ---------- 工作台内部元素错峰弹簧 ---------- */
+/* 入场：从近自然态做轻微过冲回弹（不做 opacity 0/translateY，
+   避免与 VT 快照叠加产生"重新加载"感——内容已经在快照里显现） */
 .studio-panel.enter .spring-el {
-  animation: spring-in 0.48s cubic-bezier(0.34, 1.4, 0.5, 1) both;
-  animation-delay: calc(var(--spring-i, 0) * 22ms);
+  animation: spring-in 0.42s cubic-bezier(0.34, 1.45, 0.5, 1) both;
+  animation-delay: calc(var(--spring-i, 0) * 20ms);
 }
 
+/* 离场：先做小幅度外推（"被推开"），再收拢——给返回动作惯性 */
 .studio-panel.leaving .spring-el {
-  animation: spring-out 0.24s cubic-bezier(0.55, 0, 0.8, 0.45) both;
-  animation-delay: calc(var(--spring-i, 0) * 18ms);
+  animation: spring-out 0.34s cubic-bezier(0.4, 0, 0.6, 1) both;
+  animation-delay: calc(var(--spring-i, 0) * 14ms);
 }
 
-/* 两段回弹：入位→轻微过冲→静止（比四段振荡更稳） */
 @keyframes spring-in {
-  0% { opacity: 0; transform: scale(0.92) translateY(12px); }
-  60% { opacity: 1; transform: scale(1.025) translateY(-2px); }
-  100% { opacity: 1; transform: scale(1) translateY(0); }
+  0% { transform: scale(0.96); }
+  55% { transform: scale(1.03); }
+  80% { transform: scale(0.995); }
+  100% { transform: scale(1); }
 }
 
-/* 收拢：快速吸回 */
+/* 离场：先小幅外推，再向内收拢 */
 @keyframes spring-out {
-  0% { opacity: 1; transform: scale(1); }
-  100% { opacity: 0; transform: scale(0.88) translateY(8px); }
+  0% { transform: scale(1); }
+  25% { transform: scale(1.02) translateY(-1px); }
+  100% { transform: scale(0.94) translateY(6px); opacity: 0.7; }
 }
 
-/* 侧栏元素从左侧、对话区从右上方弹出（差异化形变原点） */
+/* 侧栏从左、对话区从右上原点弹出（差异化形变支点） */
 .studio-panel.enter .sidebar > .spring-el {
   transform-origin: left center;
 }
 
 .studio-panel.enter .console-wrap > .spring-el {
   transform-origin: center top;
+}
+
+/* ---------- 返回档案库：目标卡片惯性回弹落地 ---------- */
+.proj-card.landed {
+  animation: card-land 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: center;
+}
+
+@keyframes card-land {
+  0% { transform: scale(0.9); }
+  45% { transform: scale(1.07); }
+  72% { transform: scale(0.98); }
+  88% { transform: scale(1.02); }
+  100% { transform: scale(1); }
 }
 
 /* ---------- 无障碍：减少动态 ---------- */
@@ -1343,7 +1361,8 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
     animation-duration: 0.01ms !important;
   }
 
-  .studio-panel .spring-el {
+  .studio-panel .spring-el,
+  .proj-card.landed {
     animation: none !important;
   }
 }

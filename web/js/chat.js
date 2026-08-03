@@ -225,7 +225,12 @@
           isTransitioning = false;
         });
         function finishBack() {
-          if (card) card.style.viewTransitionName = "";
+          if (card) {
+            card.style.viewTransitionName = "";
+            /* 目标卡片惯性回弹落地（与形态动画无缝衔接） */
+            card.classList.add("landed");
+            setTimeout(function () { card.classList.remove("landed"); }, 600);
+          }
           clearSprings();
           isTransitioning = false;
           window.scrollTo(0, 0);

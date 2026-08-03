@@ -878,7 +878,7 @@ a.btn {
 
 .studio-grid {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
@@ -887,6 +887,7 @@ a.btn {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 .file-list {
@@ -996,6 +997,7 @@ a.btn {
   display: flex;
   flex-direction: column;
   min-height: 560px;
+  min-width: 0;
 }
 
 .chat {
@@ -1010,6 +1012,7 @@ a.btn {
   overflow-y: auto;
   min-height: 420px;
   max-height: 62vh;
+  min-width: 0;
 }
 
 .sys-line {
@@ -1027,10 +1030,13 @@ a.btn {
 
 .msg {
   max-width: 82%;
+  min-width: 0;
   padding: 12px 14px;
   border-radius: 2px;
   font-size: 13.5px;
   line-height: 1.7;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .msg p { margin: 4px 0 0; }
@@ -1084,12 +1090,14 @@ a.btn {
 .tool-call {
   align-self: flex-start;
   max-width: 92%;
+  min-width: 0;
 }
 
 .tool-call details {
   border: 1px dashed var(--color-border-dashed);
   border-radius: 2px;
   background: var(--color-bg-console);
+  max-width: 100%;
 }
 
 .tool-call summary {

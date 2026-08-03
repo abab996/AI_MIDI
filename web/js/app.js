@@ -1,0 +1,197 @@
+/* AI_MIDI 前端共享工具库 */
+(function (global) {
+  "use strict";
+
+  /* ---- DOM 工具 ---- */
+  function qs(sel, root) { return (root || document).querySelector(sel); }
+  function qsa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+  /* ---- 提示条 ---- */
+  function ensureToastZone() {
+    var zone = qs(".toast-zone");
+    if (!zone) {
+      zone = document.createElement("div");
+      zone.className = "toast-zone";
+      document.body.appendChild(zone);
+    }
+    return zone;
+  }
+
+  function toast(message, kind) {
+    var zone = ensureToastZone();
+    var el = document.createElement("div");
+    el.className = "toast " + (kind || "");
+    el.textContent = message;
+    zone.appendChild(el);
+    setTimeout(function () {
+      el.style.opacity = "0";
+      el.style.transition = "opacity 0.3s";
+      setTimeout(function () { el.remove(); }, 320);
+    }, 3200);
+  }
+
+  /* ---- 工具 ---- */
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function fmtSize(bytes) {
+    if (!bytes) return "0 B";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  function fmtDate(s) {
+    if (!s) return "";
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return String(s).slice(0, 10);
+    var p = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  /* ---- 网络 ---- */
+  function getJSON(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || ("HTTP " + r.status)); });
+      return r.json();
+    });
+  }
+
+  function postJSON(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || ("HTTP " + r.status)); });
+      return r.json();
+    });
+  }
+
+  function putJSON(url, body) {
+    return fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || ("HTTP " + r.status)); });
+      return r.json();
+    });
+  }
+
+  function delJSON(url, body) {
+    return fetch(url, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || ("HTTP " + r.status)); });
+      return r.json();
+    });
+  }
+
+  /* ---- SSE 消费：POST body，逐事件回调 onEvent(obj)，结束 resolve ---- */
+  function ssePost(url, body, onEvent) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.json().then(function (j) { throw new Error(j.detail || ("HTTP " + resp.status)); });
+      }
+      var reader = resp.body.getReader();
+      var decoder = new TextDecoder("utf-8");
+      var buffer = "";
+
+      function pump() {
+        return reader.read().then(function (result) {
+          if (result.done) return;
+          buffer += decoder.decode(result.value, { stream: true });
+          var lines = buffer.split("\n");
+          buffer = lines.pop();
+          lines.forEach(function (line) {
+            if (line.indexOf("data: ") === 0) {
+              try {
+                onEvent(JSON.parse(line.slice(6)));
+              } catch (e) { /* 忽略坏帧 */ }
+            }
+          });
+          return pump();
+        });
+      }
+
+      return pump();
+    });
+  }
+
+  /* ---- 迷你 Markdown 渲染（输入先 esc，输出安全 HTML） ---- */
+  function md(text) {
+    var s = esc(text);
+    /* 代码块 */
+    s = s.split("```").map(function (part, i) {
+      if (i % 2 === 0) return part;
+      var lines = part.split("\n");
+      lines.shift(); /* 去掉语言标记行 */
+      return "<pre>" + lines.join("\n") + "</pre>";
+    }).join("");
+    /* 行内代码 */
+    s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    /* 加粗 / 斜体 */
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    /* 链接 */
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    /* 标题 */
+    s = s.replace(/^##### (.*)$/gm, "<h6>$1</h6>");
+    s = s.replace(/^#### (.*)$/gm, "<h5>$1</h5>");
+    s = s.replace(/^### (.*)$/gm, "<h4>$1</h4>");
+    s = s.replace(/^## (.*)$/gm, "<h3>$1</h3>");
+    s = s.replace(/^# (.*)$/gm, "<h2>$1</h2>");
+    /* 列表 */
+    s = s.replace(/^[-*] (.*)$/gm, "• $1");
+    /* 段落 */
+    var blocks = s.split(/\n{2,}/).map(function (block) {
+      var t = block.trim();
+      if (!t) return "";
+      if (/^<(h\d|pre|ul|ol)/.test(t)) return t;
+      return "<p>" + t.replace(/\n/g, "<br>") + "</p>";
+    });
+    return blocks.join("\n");
+  }
+
+  /* ---- 档案卡片（对话页档案库渲染） ---- */
+  function projectCard(proj) {
+    var card = document.createElement("article");
+    card.className = "card draft brackets proj-card";
+    card.dataset.id = proj.id;
+    card.dataset.name = proj.name || "未命名";
+    var msgCount = proj.message_count || 0;
+    card.innerHTML =
+      '<div class="proj-name">' + esc(proj.name || "未命名") + "</div>" +
+      '<div class="proj-meta">' +
+      '<span class="stamp">' + msgCount + " \u6761\u6D88\u606F</span>" +
+      '<span class="stamp">' + esc(fmtDate(proj.updated_at)) + "</span>" +
+      "</div>" +
+      '<div class="proj-actions">' +
+      '<button class="btn btn-primary btn-sm action-open">\u6253\u5F00</button>' +
+      '<button class="btn btn-secondary btn-sm action-rename">\u91CD\u547D\u540D</button>' +
+      '<button class="btn btn-secondary btn-sm action-copy">\u590D\u5236</button>' +
+      '<button class="btn btn-danger btn-sm action-delete">\u5220\u9664</button>' +
+      "</div>";
+    return card;
+  }
+
+  global.UI = {
+    qs: qs, qsa: qsa, toast: toast, esc: esc,
+    fmtSize: fmtSize, fmtDate: fmtDate,
+    getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
+    ssePost: ssePost, md: md, projectCard: projectCard,
+  };
+})(window);

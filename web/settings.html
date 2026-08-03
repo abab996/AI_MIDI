@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="parchment">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI_MIDI · 设置</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="page">
+  <header class="title-block">
+    <div>
+      <div class="brand">AI_MIDI <span class="accent">·</span> 设置</div>
+      <div class="brand-sub">Settings / Connection & Generation</div>
+    </div>
+    <div class="stamp-row">
+      <a class="btn btn-secondary btn-sm" href="/">主工作台</a>
+      <a class="btn btn-secondary btn-sm" href="/chat.html">多轮对话</a>
+      <button class="btn btn-secondary btn-sm" id="themeBtn" title="切换主题">☀ 暖纸</button>
+    </div>
+  </header>
+
+  <div class="divider-measure"></div>
+
+  <div class="settings-wrap">
+    <!-- 连接参数 -->
+    <section class="card brackets settings-card">
+      <div class="group-title">连接参数 · Connection</div>
+
+      <div class="field">
+        <label class="field-label" for="apiKey">API Key</label>
+        <div class="row">
+          <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+          <button class="btn btn-secondary btn-sm" id="showKeyBtn">显示</button>
+        </div>
+      </div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="baseUrl">Base URL</label>
+          <input type="url" id="baseUrl" placeholder="如: https://api.deepseek.com">
+        </div>
+        <div class="field">
+          <label class="field-label" for="apiPath">API 路径</label>
+          <input type="text" id="apiPath" placeholder="如: /v1beta/openai（Gemini 专用）">
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="model">模型 · Model</label>
+        <div class="row">
+          <input type="text" id="model" list="modelList" placeholder="输入或从列表选择…">
+          <datalist id="modelList"></datalist>
+          <button class="btn btn-secondary btn-sm" id="refreshModelsBtn">刷新列表</button>
+        </div>
+        <div class="stat-line"><span class="dim" id="modelStatus">点击刷新按钮从 API 获取模型列表</span></div>
+      </div>
+    </section>
+
+    <!-- 生成参数 -->
+    <section class="card brackets settings-card">
+      <div class="group-title">生成参数 · Generation</div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="maxTokens">最大上下文 · max_tokens</label>
+          <input type="number" id="maxTokens" placeholder="留空使用默认值">
+        </div>
+        <div class="field">
+          <label class="field-label" for="maxCompletion">最大输出长度 · max_completion_tokens</label>
+          <input type="number" id="maxCompletion" placeholder="留空使用默认值">
+        </div>
+      </div>
+
+      <label class="field-label">推理努力程度 · reasoning_effort</label>
+      <div class="func-selector" style="grid-template-columns:repeat(3,1fr)" id="effortSelector">
+        <button class="fn" data-effort="low">LOW</button>
+        <button class="fn" data-effort="medium">MEDIUM</button>
+        <button class="fn" data-effort="max">MAX</button>
+      </div>
+
+      <label class="toggle-text">
+        <input type="checkbox" id="thinkingEnabled" checked>
+        <span>启用 thinking 模式</span>
+      </label>
+    </section>
+
+    <!-- 保存 -->
+    <div class="save-row">
+      <span class="save-status" id="saveStatus"></span>
+      <button class="btn btn-secondary" id="resetBtn">恢复默认</button>
+      <button class="btn btn-primary" id="saveBtn">保存配置</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/app.js"></script>
+<script src="/js/theme.js"></script>
+<script src="/js/settings.js"></script>
+</body>
+</html>

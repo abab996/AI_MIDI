@@ -1,8 +1,11 @@
-"""多轮对话 Web UI。
+"""多轮对话服务层（原 chat_ui.py 的逻辑部分，去掉 Gradio 依赖）。
 
-基于 Gradio 实现，支持多轮对话、AI 通过 MCP 工具操作 MIDI 文件、
-流式输出、撤销等功能。
+提供 MCP 子进程管理、消息工具循环（SSE 事件流）、项目生命周期、
+文件管理、工作区绑定与草稿存档，供 FastAPI (server.py) 调用。
+chat_pipeline.py 通过 `import chat_service as _chat_ui` 复用本模块接口。
 """
+from __future__ import annotations
+
 import copy
 import json
 import logging
@@ -16,7 +19,6 @@ import time
 import zipfile
 from pathlib import Path
 
-import gradio as gr
 import mido
 
 import config
@@ -49,6 +51,45 @@ _mcp_initialized = False
 
 # 当前打开的项目 ID（None 表示在项目浏览器）
 _current_project_id: str | None = None
+
+
+# ==================== 会话状态 ====================
+
+# project_id -> {"full_history": [...], "midi_files": [...],
+#                "undo_stack": [...], "chat_display": [...]}
+_sessions: dict[str, dict] = {}
+
+
+def _get_session(project_id: str) -> dict:
+    """获取（或从磁盘水合）项目会话状态。"""
+    session = _sessions.get(project_id)
+    if session is None:
+        full_history, midi_files = project_manager.load_history(project_id)
+        session = {
+            "full_history": full_history,
+            "midi_files": midi_files,
+            "undo_stack": [],
+            "chat_display": _rebuild_display_from_history(full_history),
+        }
+        _sessions[project_id] = session
+    return session
+
+
+def _drop_session(project_id: str) -> None:
+    """项目删除/复制后丢弃内存会话。"""
+    _sessions.pop(project_id, None)
+
+
+def _public_files(files: list[dict]) -> list[dict]:
+    """向前端暴露的文件元数据（不含超大 note_table）。"""
+    return [
+        {
+            "name": f.get("name", ""),
+            "path": f.get("path", ""),
+            "size": f.get("size", 0),
+        }
+        for f in files
+    ]
 
 
 # ==================== Library 知识加载 ====================
@@ -176,6 +217,16 @@ def _load_settings() -> dict:
         "max_completion_tokens": settings.get("max_completion_tokens"),
         "reasoning_effort": settings.get("reasoning_effort"),
         "thinking_enabled": settings.get("thinking_enabled", True),
+    }
+
+
+def _settings_summary() -> dict:
+    """对话侧栏展示的设置摘要。"""
+    s = _load_settings()
+    return {
+        "model": s["model"],
+        "reasoning_effort": s["reasoning_effort"] or "auto",
+        "context": "auto",
     }
 
 
@@ -397,6 +448,8 @@ def _close_mcp_process() -> None:
             _mcp_initialized = False
 
 
+# ==================== 文件工具 ====================
+
 def _unique_dest_path(dest_dir, basename: str):
     stem, suffix = os.path.splitext(basename)
     candidate = dest_dir / basename
@@ -457,14 +510,17 @@ def _filepath_relpath(filepath) -> str:
     return Path(filepath).name
 
 
-# ==================== MIDI 操作（兼容旧接口） ====================
+# ==================== MIDI 文件管理 ====================
 
 def _on_upload(files, current_list, undo_stack, project_id, full_history):
-    """上传文件，解析为 note_table 并追加到列表。文件复制到项目 midi 目录。"""
+    """上传文件，解析为 note_table 并追加到列表。文件复制到项目 midi 目录。
+
+    兼容旧接口签名；files 为带 .name 路径的文件对象列表（server 端已转临时路径）。
+    """
     current_list = current_list or []
     undo_stack = undo_stack or []
     if not files:
-        return current_list, undo_stack, gr.update(choices=_get_choices(current_list))
+        return current_list, undo_stack, _get_choices(current_list)
     new_files = []
     # 确定目标目录：绑定工作区->工作区(主)，否则项目 midi 目录；并准备镜像
     if project_id:
@@ -524,7 +580,7 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history):
     updated = current_list + new_files
     new_undo_stack = undo_stack + [copy.deepcopy(current_list)] if new_files else undo_stack
     _persist_project_state(project_id, full_history, updated)
-    return updated, new_undo_stack, gr.update(choices=_get_choices(updated), value=[])
+    return updated, new_undo_stack, _get_choices(updated)
 
 
 def _on_delete(current_list, selected, undo_stack, project_id, full_history):
@@ -533,23 +589,63 @@ def _on_delete(current_list, selected, undo_stack, project_id, full_history):
     undo_stack = undo_stack or []
     selected_file_list = _selected_files(current_list, selected)
     if not current_list or not selected_file_list:
-        return current_list, undo_stack, gr.update(choices=_get_choices(current_list))
+        return current_list, undo_stack, _get_choices(current_list)
     selected_values = {_file_choice_value(file_info) for file_info in selected_file_list}
     updated = [f for f in current_list if _file_choice_value(f) not in selected_values]
     new_undo_stack = undo_stack + [copy.deepcopy(current_list)]
     _persist_project_state(project_id, full_history, updated)
-    return updated, new_undo_stack, gr.update(choices=_get_choices(updated), value=[])
+    return updated, new_undo_stack, _get_choices(updated)
 
 
-def _on_download(current_list, selected):
-    """下载勾选的文件。未勾选则下载全部。"""
-    if not current_list:
+def _on_undo(undo_stack, current_files, project_id, full_history):
+    """撤销最近一次操作。"""
+    current_files = current_files or []
+    undo_stack = undo_stack or []
+    if not undo_stack:
+        return current_files, [], _get_choices(current_files)
+    restored = undo_stack.pop()
+    _persist_project_state(project_id, full_history, restored)
+    return restored, undo_stack, _get_choices(restored)
+
+
+def _on_clear_chat(project_id: str | None, midi_files: list[dict]) -> tuple[list, list]:
+    """清空对话并保留 MIDI 文件元数据。"""
+    if project_id:
+        project_manager.save_history(project_id, [], midi_files or [])
+    return [], []
+
+
+def _get_choices(files: list[dict]) -> list[tuple[str, str]]:
+    """生成文件选择列表选项（兼容旧接口）。"""
+    return [(_file_label(file_info), _file_choice_value(file_info)) for file_info in files]
+
+
+def _download_path_for_names(project_id: str, names: list[str]) -> str | None:
+    """按文件名（含子目录）解析项目内文件绝对路径。"""
+    session = _get_session(project_id)
+    name_set = set(names)
+    for f in session["midi_files"]:
+        if f.get("name") in name_set or os.path.basename(f.get("name", "")) in name_set:
+            path = f.get("path")
+            if path and os.path.isfile(path):
+                return str(path)
+    return None
+
+
+def _download_files(project_id: str, names: list[str]) -> str | None:
+    """下载勾选的文件；未勾选则下载全部。返回文件路径或 zip 路径。"""
+    session = _get_session(project_id)
+    if not session["midi_files"]:
         return None
 
-    if selected:
-        files = _selected_files(current_list, selected)
+    if names:
+        files = []
+        name_set = set(names)
+        for f in session["midi_files"]:
+            if f.get("name") in name_set or os.path.basename(f.get("name", "")) in name_set:
+                files.append(f)
     else:
-        files = list(current_list)
+        files = list(session["midi_files"])
 
     if not files:
         return None
@@ -557,7 +653,7 @@ def _on_download(current_list, selected):
     if len(files) == 1 and os.path.isfile(files[0]["path"]):
         return files[0]["path"]
 
-    zip_path = os.path.join(tempfile.gettempdir(), "AI_MIDI_files.zip")
+    zip_path = os.path.join(tempfile.gettempdir(), f"AI_MIDI_{project_id}_files.zip")
     used_names = set()
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -582,22 +678,6 @@ def _on_download(current_list, selected):
     return zip_path
 
 
-def _on_undo(undo_stack, current_files, project_id, full_history):
-    """撤销最近一次操作。"""
-    current_files = current_files or []
-    undo_stack = undo_stack or []
-    if not undo_stack:
-        return current_files, [], gr.update(choices=_get_choices(current_files))
-    restored = undo_stack.pop()
-    _persist_project_state(project_id, full_history, restored)
-    return restored, undo_stack, gr.update(choices=_get_choices(restored), value=[])
-
-
-def _get_choices(files: list[dict]) -> list[tuple[str, str]]:
-    """生成 CheckboxGroup 选项列表。"""
-    return [(_file_label(file_info), _file_choice_value(file_info)) for file_info in files]
-
-
 # ==================== 上下文压缩 ====================
 
 # 压缩阈值（估算 tokens ≈ chars / 3）
@@ -606,12 +686,7 @@ _COMPACT_KEEP_RECENT = config.COMPACT_KEEP_RECENT_MESSAGES
 
 
 def _compact_full_history(full_history: list[dict]) -> list[dict]:
-    """压缩完整历史，保留最近几轮对话，旧内容替换为摘要。
-
-    策略：遍历 full_history，找出 user 消息作为分界点。
-    保留最后 _COMPACT_KEEP_RECENT 个 user 之后的全部内容，
-    前面的内容替换为一条 compact_summary 消息。
-    """
+    """压缩完整历史，保留最近几轮对话，旧内容替换为摘要。"""
     # 找出所有 user 消息的索引位置
     user_indices = []
     for i, msg in enumerate(full_history):
@@ -637,11 +712,7 @@ def _compact_full_history(full_history: list[dict]) -> list[dict]:
 
 
 def _generate_summary(old_messages: list[dict]) -> dict:
-    """为旧消息生成摘要。
-
-    简单策略：提取关键信息，不调用 AI（避免额外 API 调用）。
-    改为保留一条简短的用户消息作为上下文提示。
-    """
+    """为旧消息生成摘要（不调用 AI，避免额外 API 调用）。"""
     lines = []
     for msg in old_messages:
         role = msg.get("role", "")
@@ -698,8 +769,6 @@ def _execute_tool_call(tool_call, midi_files: list[dict]) -> tuple[str, list[dic
             return f"错误：{exc}", updated_files
         if filepath.exists():
             # 从实际写入的文件重新解析，确保 UI 显示内容与 AI 读到的一致
-            # （AI 可能用 notes 或 note_table 两种参数名，且原始输入经过
-            #  _normalize_note_data 转换后格式会变；统一从文件读回最准确）
             try:
                 note_data = get.get_note(str(filepath), save_to_file=False)
             except Exception:
@@ -735,9 +804,7 @@ def _execute_tool_call(tool_call, midi_files: list[dict]) -> tuple[str, list[dic
 
 
 def _format_tool_log(tool_log: list[str]) -> str:
-    """将工具调用日志格式化为可折叠的 HTML details 标签。
-    每个工具调用独立为一个标签，方便用户逐个展开查看。
-    """
+    """将工具调用日志格式化为可折叠的 HTML details 标签。"""
     if not tool_log:
         return ""
     return "\n\n".join(tool_log)
@@ -757,16 +824,7 @@ def _truncate_arg_value(value) -> str:
 
 
 def _format_single_tool_entry(tc_name: str, tc_args, result_text: str) -> str:
-    """格式化单个工具调用为可折叠 HTML details 标签。
-
-    Args:
-        tc_args: 工具参数。支持 dict（推荐，可做长参数截断）或已格式化的
-            字符串（向后兼容，直接原样显示）。
-        result_text: 工具执行结果文本。
-
-    对超长参数（如 create_midi 的 notes）进行截断，summary 行只保留短摘要，
-    完整参数单独放在 <details> 展开区，用户点开才能看到全部内容。
-    """
+    """格式化单个工具调用为可折叠 HTML details 标签。"""
     if isinstance(tc_args, dict):
         short_parts = ", ".join(
             f"{k}={_truncate_arg_value(v)}" for k, v in tc_args.items()
@@ -808,48 +866,106 @@ def _make_tool_result_message(tool_call_id: str, result: str, name: str | None =
     return msg
 
 
-def send_message(message, history, midi_files, undo_stack, full_history):
-    """发送消息，调用 AI 并通过 MCP 工具执行操作。
+# ==================== SSE 事件流 ====================
 
-    支持多轮工具调用：AI 可能连续调用多个工具，
-    每次调用后把结果回传给 AI，直到 AI 给出最终回复。
+def _sse_event(data: dict) -> str:
+    """把事件 dict 序列化为 SSE 数据帧。"""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    Args:
-        full_history: 完整 API 消息历史（含 tool 调用），用于构建 API 上下文。
+
+def chat_stream(project_id: str, message: str):
+    """多轮对话 SSE 事件流（生成器）。
+
+    事件类型：
+    - {"type": "chat", "messages": [...]}      完整对话显示列表
+    - {"type": "files", "files": [...]}        文件列表变更
+    - {"type": "download", "url": "..."}       新生成的 MIDI 可下载
+    - {"type": "error", "message": "..."}      致命错误
+    - {"type": "done"}                         结束
     """
+    global _current_project_id
+
     # ── 早期返回：空消息 ──
     if not message.strip():
-        yield history, "", midi_files, undo_stack, full_history, None, gr.update()
+        yield _sse_event({"type": "error", "message": "消息不能为空"})
         return
 
     # ── 早期返回：未配置 API Key ──
     settings = _load_settings()
     if not settings["api_key"]:
-        yield history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": "⚠ 请先在主界面设置页填写并保存 API Key。"},
-        ], "", midi_files, undo_stack, full_history, None, gr.update()
+        yield _sse_event({
+            "type": "error",
+            "message": "⚠ 请先在设置页填写并保存 API Key。",
+        })
         return
 
+    session = _get_session(project_id)
+    _current_project_id = project_id
+
     # ── 绑定工作区：发送前完全同步工作区->projects，刷新文件列表 ──
-    if _current_project_id and project_manager.get_workspace_dir(_current_project_id):
+    if project_manager.get_workspace_dir(project_id):
         try:
-            midi_files = project_manager.sync_workspace_to_projects(_current_project_id, midi_files or [])
+            session["midi_files"] = project_manager.sync_workspace_to_projects(
+                project_id, session["midi_files"] or []
+            )
         except Exception:  # noqa: BLE001
             logger.exception("发送消息前工作区同步失败")
 
     # ── 快照（用于撤销）──
-    snapshot = copy.deepcopy(midi_files)
-    new_undo_stack = undo_stack + [snapshot]
+    session["undo_stack"].append(copy.deepcopy(session["midi_files"]))
+
+    # ── 消息已发送，草稿清除 ──
+    project_manager.save_draft(project_id, "")
 
     # Lazy import to avoid circular dependency at module level
-    from chat_pipeline import _prepare_context, _execute_tool_loop  # noqa: E402
+    from chat_pipeline import _execute_tool_loop, _prepare_context  # noqa: E402
 
     # ── 准备上下文 ──
-    ctx = _prepare_context(message, full_history, midi_files, settings, history)
+    ctx = _prepare_context(
+        message,
+        session["full_history"],
+        session["midi_files"],
+        settings,
+        session["chat_display"],
+    )
 
-    # ── 执行工具循环（所有后续 yield 均来自这里）──
-    yield from _execute_tool_loop(ctx, new_undo_stack, full_history, message)
+    # ── 执行工具循环（SSE 节流：每事件间隔 <25ms 的丢弃，因事件携带全量状态）──
+    last_emit = 0.0
+    try:
+        for gradio_tuple in _execute_tool_loop(
+            ctx, session["undo_stack"], session["full_history"], message
+        ):
+            display, _, updated_files, undo_stack, full_history, download_path, _ = gradio_tuple
+            session["undo_stack"] = undo_stack
+            session["full_history"] = full_history
+            session["midi_files"] = updated_files
+            session["chat_display"] = display
+
+            now = time.time()
+            if now - last_emit < 0.025:
+                continue
+            last_emit = now
+
+            yield _sse_event({"type": "chat", "messages": display})
+            yield _sse_event({"type": "files", "files": _public_files(updated_files)})
+            if download_path:
+                yield _sse_event({"type": "download", "url": download_url(download_path)})
+    except GeneratorExit:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("chat_stream 异常")
+        yield _sse_event({"type": "error", "message": "对话处理发生内部错误"})
+
+    yield _sse_event({"type": "done"})
+
+
+def download_url(filepath: str | Path) -> str:
+    """把服务器本地文件路径转成下载 URL。"""
+    from urllib.parse import quote
+
+    p = Path(filepath)
+    rel = str(p.resolve().relative_to(config.PROJECT_ROOT.resolve()))
+    return f"/api/files/download?path={quote(rel)}"
 
 
 # ==================== 项目生命周期 ====================
@@ -862,20 +978,7 @@ def _restart_mcp_for_project(project_id: str) -> None:
 
 
 def _rebuild_display_from_history(all_messages: list[dict]) -> list[dict]:
-    """从完整 API 历史（含 tool 调用）重建 Chatbot 显示列表。
-
-    full_history 中保存的是原始 API 消息：带 tool_calls 的 assistant 消息
-    和 tool 角色的结果消息。这些在实时对话时会被 _format_single_tool_entry
-    渲染为可折叠的 <details> 标签，但该渲染结果只存在于临时的 chat_display，
-    并未单独持久化。重新打开项目时需要在这里重新格式化，否则工具调用标签会消失。
-
-    策略：
-    - user 消息原样保留
-    - assistant 纯文本回复原样保留
-    - assistant 带 tool_calls：先输出其 content（工具调用前的说明文字），
-      再把每个 tool_call 与配套的 tool 结果消息组合为 <details> 标签
-    - tool 角色消息已被上面的 tool_calls 消费，跳过
-    """
+    """从完整 API 历史（含 tool 调用）重建聊天显示列表。"""
     # 建立 tool_call_id -> 结果文本 映射
     tool_results: dict[str, str] = {}
     for m in all_messages:
@@ -919,73 +1022,119 @@ def _rebuild_display_from_history(all_messages: list[dict]) -> list[dict]:
     return display
 
 
-def _open_project(project_id: str) -> tuple:
-    """加载项目历史和 MIDI 文件，重启 MCP，返回 Gradio 更新。"""
+def open_project(project_id: str) -> dict:
+    """打开项目：加载历史与文件，重启 MCP，返回前端渲染所需数据。"""
     global _current_project_id
     _current_project_id = project_id
     _close_mcp_process()
 
-    all_messages, midi_files = project_manager.load_history(project_id)
+    session = _get_session(project_id)
     # 绑定工作区时：完全同步工作区->projects，并按工作区扫描刷新文件列表
     if project_manager.get_workspace_dir(project_id):
         try:
-            midi_files = project_manager.sync_workspace_to_projects(project_id, midi_files)
+            session["midi_files"] = project_manager.sync_workspace_to_projects(
+                project_id, session["midi_files"]
+            )
         except Exception:  # noqa: BLE001
             logger.exception("打开项目时工作区同步失败")
     meta = project_manager.load_project(project_id)
-    choices = _get_choices(midi_files)
-
-    # 从完整 API 历史重建 Chatbot 显示列表（含工具调用折叠标签）
-    display_messages = _rebuild_display_from_history(all_messages)
-
     ws = project_manager.get_workspace_dir(project_id)
-    if ws:
-        ws_bind_vis, ws_bound_vis, ws_status = False, True, f"📁 工作区: `{ws}`"
-    else:
-        ws_bind_vis, ws_bound_vis, ws_status = True, False, ""
 
-    return (
-        gr.update(visible=False),                   # 隐藏项目浏览器
-        gr.update(visible=True),                    # 显示聊天面板
-        project_id,                                  # project_id_state
-        display_messages,                            # chatbot
-        midi_files,                                   # midi_files_state
-        [],                                           # undo_stack
-        all_messages,                                  # full_history_state
-        gr.update(choices=choices, value=[]),         # file_checkboxes
-        f"### 当前项目: {meta.get('name', '未命名')}",  # project_name_display
-        gr.update(visible=ws_bind_vis),               # workspace_bind_col
-        gr.update(visible=ws_bound_vis),              # workspace_bound_col
-        ws_status,                                     # workspace_status
-    )
+    return {
+        "meta": meta,
+        "display_messages": session["chat_display"],
+        "midi_files": _public_files(session["midi_files"]),
+        "workspace": {
+            "bound": bool(ws),
+            "path": ws or "",
+        },
+        "draft": project_manager.load_draft(project_id),
+        "settings": _settings_summary(),
+    }
 
 
-def _close_project(project_id: str | None, full_history, midi_files) -> tuple:
-    """保存当前状态，返回项目浏览器并刷新项目列表。"""
+def close_project(project_id: str | None) -> list[dict]:
+    """保存当前状态并返回项目列表（供前端回到档案库）。"""
     global _current_project_id
-    # 绑定工作区时，关闭前同步一次，保证 projects 镜像最新
-    if project_id and project_manager.get_workspace_dir(project_id):
-        try:
-            midi_files = project_manager.sync_workspace_to_projects(project_id, midi_files or [])
-        except Exception:  # noqa: BLE001
-            logger.exception("关闭项目时工作区同步失败")
-    _persist_project_state(project_id, full_history, midi_files or [])
+    if project_id:
+        session = _get_session(project_id)
+        # 绑定工作区时，关闭前同步一次，保证 projects 镜像最新
+        if project_manager.get_workspace_dir(project_id):
+            try:
+                session["midi_files"] = project_manager.sync_workspace_to_projects(
+                    project_id, session["midi_files"] or []
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("关闭项目时工作区同步失败")
+        _persist_project_state(project_id, session["full_history"], session["midi_files"])
     _current_project_id = None
     _close_mcp_process()
-    choices, ids = _refresh_project_list()
-    return (
-        gr.update(visible=True),       # 显示项目浏览器
-        gr.update(visible=False),      # 隐藏聊天面板
-        None,                           # project_id_state
-        gr.update(choices=choices, value=None),     # project_radio
-        ids,                            # project_list_ids
-    )
+    return refresh_project_list()
+
+
+def refresh_project_list() -> list[dict]:
+    """返回项目列表（前端卡片渲染用）。"""
+    return project_manager.list_projects()
+
+
+def _refresh_project_list() -> tuple[list[tuple[str, str]], list[str]]:
+    """兼容旧接口：返回 (下拉选项列表, 项目ID列表)。"""
+    projects = project_manager.list_projects()
+    choices = []
+    ids = []
+    for p in projects:
+        name = p.get("name", "未命名")
+        msg_count = p.get("message_count", 0)
+        label = f"{name}  ({msg_count} 条消息)" if msg_count else name
+        choices.append((label, p["id"]))
+        ids.append(p["id"])
+    return choices, ids
+
+
+def _resolve_project_id(selected_project: str, project_ids: list[str]) -> str | None:
+    """兼容旧接口：根据选中值解析稳定的项目 ID。"""
+    if not selected_project or not project_ids:
+        return None
+    if selected_project in project_ids:
+        return selected_project
+    return None
+
+
+def create_project(name: str) -> dict:
+    """创建新项目并打开，返回 open_project 载荷。"""
+    if not name.strip():
+        from datetime import datetime
+
+        name = f"新项目 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    meta = project_manager.create_project(name.strip())
+    return open_project(meta["id"])
+
+
+def delete_project(project_id: str) -> None:
+    """删除项目并清理会话与 MCP。"""
+    global _current_project_id
+    if project_id == _current_project_id:
+        _current_project_id = None
+        _close_mcp_process()
+    project_manager.delete_project(project_id)
+    _drop_session(project_id)
+
+
+def rename_project(project_id: str, new_name: str) -> None:
+    """重命名项目。"""
+    project_manager.rename_project(project_id, new_name.strip())
+
+
+def copy_project(project_id: str, new_name: str) -> dict:
+    """复制项目，返回新项目 meta。"""
+    src_meta = project_manager.load_project(project_id)
+    name = new_name or f"{src_meta.get('name', '未命名')} (副本)"
+    return project_manager.copy_project(project_id, name)
 
 
 # ==================== 工作区绑定 ====================
 
 # IFileOpenDialog (Vista 风格现代对话框) 的 C# COM 互操作源码，由 PowerShell Add-Type 编译。
-# 参考实现：Simon Mourier 的 OpenFolderDialog（Apache-2.0）。
 _PICK_FOLDER_CS = """
 using System;
 using System.IO;
@@ -1106,517 +1255,44 @@ def _pick_folder_dialog() -> str:
     return path if path and os.path.isdir(path) else ""
 
 
-def _on_pick_workspace() -> dict:
-    """点击『选择文件夹』按钮：弹出系统对话框并把路径填入输入框。"""
-    path = _pick_folder_dialog()
-    if not path:
-        return gr.update()
-    return gr.update(value=path)
-
-
-def _on_bind_workspace(path: str, project_id: str | None, midi_files, full_history) -> tuple:
+def bind_workspace(project_id: str, path: str) -> dict:
     """绑定工作区目录：初始化同步 projects->工作区，刷新文件列表，重启 MCP。"""
-    if not project_id:
-        gr.Info("请先选择项目")
-        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
-    path = (path or "").strip()
-    if not path:
-        gr.Info("请输入工作区目录路径")
-        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
-    try:
-        result = project_manager.bind_workspace(project_id, path)
-    except Exception as exc:  # noqa: BLE001
-        gr.Info(f"绑定失败: {exc}")
-        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
+    result = project_manager.bind_workspace(project_id, path)
     _close_mcp_process()
-    midi_files = result["midi_files"]
-    _persist_project_state(project_id, full_history, midi_files)
-    renamed = result["renamed"]
-    if renamed:
-        gr.Info(
-            "已绑定工作区。以下文件重名已加序号:\n"
-            + "\n".join(f"{o} -> {n}" for o, n in renamed)
-        )
-    else:
-        gr.Info("已绑定工作区")
-    ws = project_manager.get_workspace_dir(project_id)
-    return (
-        midi_files,
-        gr.update(choices=_get_choices(midi_files), value=[]),
-        gr.update(visible=False),   # workspace_bind_col
-        gr.update(visible=True),    # workspace_bound_col
-        f"📁 工作区: `{ws}`",
-    )
+    session = _get_session(project_id)
+    session["midi_files"] = result["midi_files"]
+    _persist_project_state(project_id, session["full_history"], session["midi_files"])
+    return {
+        "midi_files": _public_files(session["midi_files"]),
+        "renamed": result["renamed"],
+        "path": project_manager.get_workspace_dir(project_id) or "",
+    }
 
 
-def _on_unbind_workspace(project_id: str | None, midi_files, full_history) -> tuple:
+def unbind_workspace(project_id: str) -> dict:
     """解绑工作区：不动工作区文件，读取改回 projects，重启 MCP。"""
-    if not project_id:
-        return midi_files, gr.update(), gr.update(), gr.update(), gr.update()
-    midi_files = project_manager.unbind_workspace(project_id)
+    session = _get_session(project_id)
+    session["midi_files"] = project_manager.unbind_workspace(project_id)
     _close_mcp_process()
-    _persist_project_state(project_id, full_history, midi_files)
-    gr.Info("已解绑工作区，文件读取改回项目目录")
-    return (
-        midi_files,
-        gr.update(choices=_get_choices(midi_files), value=[]),
-        gr.update(visible=True),    # workspace_bind_col
-        gr.update(visible=False),   # workspace_bound_col
-        "",
-    )
+    _persist_project_state(project_id, session["full_history"], session["midi_files"])
+    return {"midi_files": _public_files(session["midi_files"])}
 
 
-def _on_refresh_workspace(project_id: str | None, midi_files, full_history) -> tuple:
+def refresh_workspace(project_id: str) -> dict:
     """手动刷新：完全同步工作区->projects，刷新文件列表。"""
-    if not project_id or not project_manager.get_workspace_dir(project_id):
-        gr.Info("当前项目未绑定工作区")
-        return midi_files, gr.update()
-    try:
-        midi_files = project_manager.sync_workspace_to_projects(project_id, midi_files or [])
-    except Exception as exc:  # noqa: BLE001
-        gr.Info(f"刷新失败: {exc}")
-        return midi_files, gr.update()
-    _persist_project_state(project_id, full_history, midi_files)
-    gr.Info("已刷新工作区文件")
-    return midi_files, gr.update(choices=_get_choices(midi_files), value=[])
-
-
-def _on_new_project(name: str) -> tuple:
-    """创建新项目并切换到聊天面板。"""
-    if not name.strip():
-        from datetime import datetime
-        name = f"新项目 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    meta = project_manager.create_project(name.strip())
-    pid = meta["id"]
-    return _open_project(pid)
-
-
-def _refresh_project_list() -> tuple[list[tuple[str, str]], list[str]]:
-    """从索引加载项目列表，返回 (下拉选项列表, 项目ID列表)。"""
-    projects = project_manager.list_projects()
-    choices = []
-    ids = []
-    for p in projects:
-        name = p.get("name", "未命名")
-        msg_count = p.get("message_count", 0)
-        label = f"{name}  ({msg_count} 条消息)" if msg_count else name
-        choices.append((label, p["id"]))
-        ids.append(p["id"])
-    return choices, ids
-
-
-def _resolve_project_id(selected_project: str, project_ids: list[str]) -> str | None:
-    """根据 Radio 选中的稳定项目 ID 解析项目。"""
-    if not selected_project or not project_ids:
-        return None
-    if selected_project in project_ids:
-        return selected_project
-    return None
-
-
-def _on_open_project(selected_project: str, project_ids: list[str]) -> tuple:
-    """打开选中的项目。"""
-    pid = _resolve_project_id(selected_project, project_ids)
-    if not pid:
-        return tuple([gr.update()] * 12)
-    return _open_project(pid)
-
-
-def _on_delete_project(selected_project: str, project_ids: list[str]) -> tuple:
-    """删除选中的项目。"""
-    pid = _resolve_project_id(selected_project, project_ids)
-    if not pid:
-        return gr.update(), []
-    project_manager.delete_project(pid)
-    choices, ids = _refresh_project_list()
-    return gr.update(choices=choices, value=None), ids
-
-
-def _on_rename_show() -> tuple:
-    """显示重命名输入框。"""
-    return gr.update(visible=True), gr.update(visible=True)
-
-
-def _on_confirm_rename(new_name: str, selected_project: str, project_ids: list[str]) -> tuple:
-    """确认重命名。"""
-    if not new_name.strip():
-        return gr.update(), [], gr.update(visible=False), gr.update(value="", visible=False)
-    pid = _resolve_project_id(selected_project, project_ids)
-    if not pid:
-        return gr.update(), [], gr.update(visible=False), gr.update(value="", visible=False)
-    project_manager.rename_project(pid, new_name.strip())
-    choices, ids = _refresh_project_list()
-    return gr.update(choices=choices, value=pid), ids, gr.update(visible=False), gr.update(value="", visible=False)
-
-
-def _on_copy_project(selected_project: str, project_ids: list[str]) -> tuple:
-    """复制选中的项目。"""
-    pid = _resolve_project_id(selected_project, project_ids)
-    if not pid:
-        return gr.update(), []
-    src_meta = project_manager.load_project(pid)
-    new_name = f"{src_meta.get('name', '未命名')} (副本)"
-    copied = project_manager.copy_project(pid, new_name)
-    choices, ids = _refresh_project_list()
-    return gr.update(choices=choices, value=copied.get("id")), ids
-
-
-def _on_search(query: str) -> tuple:
-    """搜索项目对话内容。"""
-    if not query.strip():
-        return gr.update(visible=False), []
-    results, result_ids = project_manager.search_projects(query)
-    if not results:
-        return gr.update(visible=True, value=[["", "未找到匹配内容"]]), []
-    return gr.update(visible=True, value=results), result_ids
-
-
-def _on_open_from_search(evt: gr.SelectData, search_result_ids: list[str]) -> tuple:
-    """从搜索结果打开项目。"""
-    try:
-        idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
-        if idx < 0 or idx >= len(search_result_ids):
-            return tuple([gr.update()] * 12)
-        pid = search_result_ids[idx]
-    except (IndexError, TypeError, ValueError):
-        return tuple([gr.update()] * 12)
-    return _open_project(pid)
-
-
-def _on_clear_chat(project_id: str | None, midi_files: list[dict]) -> tuple[list, list]:
-    """清空对话并保留 MIDI 文件元数据。"""
-    if project_id:
-        project_manager.save_history(project_id, [], midi_files or [])
-    return [], []
-
-
-# ==================== Gradio UI ====================
-
-def build_chat_ui() -> gr.Blocks:
-    """构建多轮对话界面（含项目浏览器）。"""
-
-    # 预先加载项目列表，避免 app.load 在后台启动模式下不触发
-    _initial_choices, _initial_ids = _refresh_project_list()
-
-    with gr.Blocks(title="AI_MIDI · 多轮对话") as app:
-        gr.Markdown("# AI_MIDI · 多轮对话")
-
-        # ---- 全局状态 ----
-        project_id_state = gr.State(None)
-        project_list_ids = gr.State(value=_initial_ids)
-        search_result_ids = gr.State([])
-
-        # ==================== 项目浏览器 ====================
-        with gr.Column(visible=True) as project_browser:
-            gr.Markdown("### 选择项目")
-
-            with gr.Row():
-                new_project_btn = gr.Button("＋ 新建项目", variant="primary", scale=1)
-                search_input = gr.Textbox(placeholder="搜索对话内容…", scale=3, show_label=False)
-                search_btn = gr.Button("🔍 搜索", scale=1)
-
-            project_radio = gr.Radio(
-                label="历史项目",
-                choices=_initial_choices,
-                interactive=True,
-            )
-
-            with gr.Row():
-                open_project_btn = gr.Button("📂 打开", variant="primary", scale=2)
-                rename_project_btn = gr.Button("✏ 重命名", scale=1)
-                copy_project_btn = gr.Button("📋 复制", scale=1)
-                delete_project_btn = gr.Button("🗑 删除", variant="stop", scale=1)
-
-            # 重命名区域（默认隐藏）
-            with gr.Row(visible=False) as rename_row:
-                rename_input = gr.Textbox(label="新名称", placeholder="输入新项目名称…", scale=3)
-                rename_confirm_btn = gr.Button("确认重命名", variant="primary", scale=1)
-
-            # 新建项目名称输入
-            with gr.Row(visible=False) as new_project_row:
-                new_project_input = gr.Textbox(label="项目名称", placeholder="输入项目名称…", scale=3)
-                new_project_confirm_btn = gr.Button("创建", variant="primary", scale=1)
-
-            # 搜索结果
-            search_results = gr.Dataframe(
-                headers=["项目名称", "匹配内容"],
-                datatype=["str", "str"],
-                interactive=False,
-                label="搜索结果",
-                visible=False,
-            )
-
-        # ==================== 聊天面板 ====================
-        with gr.Column(visible=False) as chat_panel:
-            with gr.Row():
-                back_btn = gr.Button("← 返回项目列表", scale=1)
-                project_name_display = gr.Markdown("### 当前项目: (未选择)", scale=4)
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    # ===== MIDI 文件管理区 =====
-                    gr.Markdown("### MIDI 文件")
-                    midi_files_state = gr.State([])
-                    undo_stack = gr.State([])
-                    full_history_state = gr.State([])  # 完整 API 消息（含 tool 调用）
-                    file_checkboxes = gr.CheckboxGroup(
-                        label="勾选要操作的文件",
-                        choices=[],
-                        interactive=True,
-                    )
-
-                    with gr.Row():
-                        upload_btn = gr.UploadButton(
-                            "📁 上传",
-                            file_types=[".mid", ".midi"],
-                            file_count="multiple",
-                            scale=3,
-                        )
-                        download_btn = gr.Button("💾 下载", scale=2)
-                        delete_btn = gr.Button("🗑 删除", variant="stop", scale=2)
-                    undo_btn = gr.Button("↩ 撤销")
-
-                    download_file = gr.File(label="下载文件", visible=True)
-
-                    # ===== 工作区绑定 =====
-                    gr.Markdown("---")
-                    gr.Markdown("### 工作区")
-                    with gr.Column(visible=True) as workspace_bind_col:
-                        with gr.Row():
-                            pick_folder_btn = gr.Button("📂 选择文件夹", scale=1)
-                            workspace_path_input = gr.Textbox(
-                                placeholder="输入本地目录路径…",
-                                show_label=False,
-                                scale=4,
-                            )
-                            bind_btn = gr.Button("🔗 绑定", variant="primary", scale=1)
-                    with gr.Column(visible=False) as workspace_bound_col:
-                        workspace_status = gr.Markdown("")
-                        with gr.Row():
-                            refresh_btn = gr.Button("🔄 刷新文件", scale=1)
-                            unbind_btn = gr.Button("🔓 解绑", variant="stop", scale=1)
-
-                    # ===== 对话设置 =====
-                    gr.Markdown("---")
-                    gr.Markdown("### 对话设置")
-                    _chat_settings = _load_settings()
-                    _chat_model = _chat_settings.get("model") or config.MODEL
-                    _chat_effort = _chat_settings.get("reasoning_effort") or "auto"
-                    gr.Markdown(
-                        f"- 模型：{_chat_model}\n"
-                        f"- 上下文长度：自动\n"
-                        f"- 思考强度：{_chat_effort}"
-                    )
-
-                with gr.Column(scale=3):
-                    chatbot = gr.Chatbot(
-                        label="对话",
-                        height=500,
-                    )
-                    with gr.Row():
-                        msg_input = gr.Textbox(
-                            label="",
-                            placeholder="输入你的要求…",
-                            lines=2,
-                            scale=4,
-                        )
-                        send_btn = gr.Button("发送", variant="primary", scale=1)
-                    clear_btn = gr.Button("清空对话")
-
-        # ==================== 事件绑定 ====================
-
-        # ---- 项目浏览器事件 ----
-
-        # 页面加载时刷新项目列表
-        app.load(
-            fn=_refresh_project_list,
-            inputs=[],
-            outputs=[project_radio, project_list_ids],
-        )
-
-        # 新建项目
-        def _show_new_project_input():
-            return gr.update(visible=True)
-
-        new_project_btn.click(
-            fn=_show_new_project_input,
-            inputs=[],
-            outputs=[new_project_row],
-        )
-
-        # 项目浏览器输出列表：project_browser, chat_panel, project_id_state,
-        # chatbot, midi_files_state, undo_stack, full_history_state,
-        # file_checkboxes, project_name_display
-        project_outputs = [
-            project_browser, chat_panel, project_id_state,
-            chatbot, midi_files_state, undo_stack, full_history_state,
-            file_checkboxes, project_name_display,
-            workspace_bind_col, workspace_bound_col, workspace_status,
-        ]
-
-        new_project_confirm_btn.click(
-            fn=_on_new_project,
-            inputs=[new_project_input],
-            outputs=project_outputs,
-        ).then(
-            fn=lambda: (gr.update(value="", visible=False), gr.update(value="")),
-            inputs=[],
-            outputs=[new_project_row, new_project_input],
-        )
-
-        # 打开项目
-        open_project_btn.click(
-            fn=_on_open_project,
-            inputs=[project_radio, project_list_ids],
-            outputs=project_outputs,
-        )
-
-        # 删除项目
-        delete_project_btn.click(
-            fn=_on_delete_project,
-            inputs=[project_radio, project_list_ids],
-            outputs=[project_radio, project_list_ids],
-        )
-
-        # 重命名
-        rename_project_btn.click(
-            fn=_on_rename_show,
-            inputs=[],
-            outputs=[rename_row, rename_input],
-        )
-
-        rename_confirm_btn.click(
-            fn=_on_confirm_rename,
-            inputs=[rename_input, project_radio, project_list_ids],
-            outputs=[project_radio, project_list_ids, rename_row, rename_input],
-        )
-
-        # 复制项目
-        copy_project_btn.click(
-            fn=_on_copy_project,
-            inputs=[project_radio, project_list_ids],
-            outputs=[project_radio, project_list_ids],
-        )
-
-        # 搜索
-        search_btn.click(
-            fn=_on_search,
-            inputs=[search_input],
-            outputs=[search_results, search_result_ids],
-        )
-
-        search_results.select(
-            fn=_on_open_from_search,
-            inputs=[search_result_ids],
-            outputs=project_outputs,
-        )
-
-        # ---- 聊天面板事件 ----
-
-        # 返回项目列表
-        back_btn.click(
-            fn=_close_project,
-            inputs=[project_id_state, full_history_state, midi_files_state],
-            outputs=[
-                project_browser,
-                chat_panel,
-                project_id_state,
-                project_radio,
-                project_list_ids,
-            ],
-        )
-
-        # 文件管理
-        upload_btn.change(
-            fn=_on_upload,
-            inputs=[upload_btn, midi_files_state, undo_stack, project_id_state, full_history_state],
-            outputs=[midi_files_state, undo_stack, file_checkboxes],
-        )
-
-        delete_btn.click(
-            fn=_on_delete,
-            inputs=[midi_files_state, file_checkboxes, undo_stack, project_id_state, full_history_state],
-            outputs=[midi_files_state, undo_stack, file_checkboxes],
-        )
-
-        download_btn.click(
-            fn=_on_download,
-            inputs=[midi_files_state, file_checkboxes],
-            outputs=[download_file],
-        )
-
-        undo_btn.click(
-            fn=_on_undo,
-            inputs=[undo_stack, midi_files_state, project_id_state, full_history_state],
-            outputs=[midi_files_state, undo_stack, file_checkboxes],
-        )
-
-        # 工作区绑定
-        pick_folder_btn.click(
-            fn=_on_pick_workspace,
-            inputs=[],
-            outputs=[workspace_path_input],
-        )
-        bind_btn.click(
-            fn=_on_bind_workspace,
-            inputs=[workspace_path_input, project_id_state, midi_files_state, full_history_state],
-            outputs=[midi_files_state, file_checkboxes, workspace_bind_col, workspace_bound_col, workspace_status],
-        ).then(
-            fn=lambda: gr.update(value=""),
-            inputs=[],
-            outputs=[workspace_path_input],
-        )
-        unbind_btn.click(
-            fn=_on_unbind_workspace,
-            inputs=[project_id_state, midi_files_state, full_history_state],
-            outputs=[midi_files_state, file_checkboxes, workspace_bind_col, workspace_bound_col, workspace_status],
-        )
-        refresh_btn.click(
-            fn=_on_refresh_workspace,
-            inputs=[project_id_state, midi_files_state, full_history_state],
-            outputs=[midi_files_state, file_checkboxes],
-        )
-
-        # 对话事件
-        chat_outputs = [chatbot, msg_input, midi_files_state, undo_stack, full_history_state, download_file, file_checkboxes]
-
-        send_btn.click(
-            fn=send_message,
-            inputs=[msg_input, chatbot, midi_files_state, undo_stack, full_history_state],
-            outputs=chat_outputs,
-        )
-        msg_input.submit(
-            fn=send_message,
-            inputs=[msg_input, chatbot, midi_files_state, undo_stack, full_history_state],
-            outputs=chat_outputs,
-        )
-
-        clear_btn.click(
-            fn=_on_clear_chat,
-            inputs=[project_id_state, midi_files_state],
-            outputs=[chatbot, full_history_state],
-        )
-
-    return app
-
-
-def main() -> None:
-    """启动多轮对话服务。"""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="AI_MIDI Chat UI")
-    parser.add_argument("--port", type=int, default=7861, help="服务端口")
-    parser.add_argument("--browser", action="store_true", help="自动打开浏览器")
-    args = parser.parse_args()
-
-    app = build_chat_ui()
-    app.launch(
-        server_name="127.0.0.1",
-        server_port=args.port,
-        share=False,
-        inbrowser=args.browser,
+    session = _get_session(project_id)
+    session["midi_files"] = project_manager.sync_workspace_to_projects(
+        project_id, session["midi_files"] or []
     )
+    _persist_project_state(project_id, session["full_history"], session["midi_files"])
+    return {"midi_files": _public_files(session["midi_files"])}
 
 
-if __name__ == "__main__":
-    main()
+def clear_chat(project_id: str) -> dict:
+    """清空对话并保留 MIDI 文件元数据。"""
+    session = _get_session(project_id)
+    session["full_history"] = []
+    session["chat_display"] = []
+    session["undo_stack"] = []
+    project_manager.save_history(project_id, [], session["midi_files"] or [])
+    return {"messages": []}

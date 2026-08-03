@@ -603,6 +603,26 @@ def load_history(project_id: str) -> tuple[list[dict], list[dict]]:
         return [], []
 
 
+# ==================== 对话草稿 ====================
+
+def save_draft(project_id: str, text: str) -> None:
+    """持久化项目对话输入框草稿到 draft.txt（空文本也允许，用于清除）。"""
+    pdir = project_dir(project_id)
+    pdir.mkdir(parents=True, exist_ok=True)
+    try:
+        (pdir / config.DRAFT_FILENAME).write_text(text or "", encoding="utf-8")
+    except OSError:
+        logger.exception("保存草稿失败: %s", project_id)
+
+
+def load_draft(project_id: str) -> str:
+    """读取项目对话输入框草稿；无草稿或读取失败返回空串。"""
+    try:
+        return (project_dir(project_id) / config.DRAFT_FILENAME).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 # ==================== 搜索 ====================
 
 def search_projects(query: str) -> tuple[list[list[str]], list[str]]:

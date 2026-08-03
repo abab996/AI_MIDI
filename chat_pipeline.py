@@ -18,7 +18,7 @@ import project_manager
 
 # Module reference for runtime attribute access (avoids circular import issues
 # with mutable globals like _current_project_id).
-import chat_ui as _chat_ui
+import chat_service as _chat_ui
 
 logger = logging.getLogger("ai_midi")
 

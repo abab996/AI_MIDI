@@ -18,6 +18,11 @@ OUTPUT_MIDI: Path = OUTPUT_DIR / "output.mid"        # 生成的 MIDI 输出
 DOING_DIR: Path = PROJECT_ROOT / "doing"               # 中间产物目录
 DOING_OUTPUT_TXT: Path = DOING_DIR / "midi_output.txt" # 解析后的 note_table 文本
 PROJECTS_DIR: Path = PROJECT_ROOT / "projects"         # 多轮对话项目存储目录
+DRAFT_FILENAME: str = "draft.txt"                       # 项目对话输入框草稿文件名
+
+# ===== Web 服务 =====
+SERVER_PORT: int = 7860                                 # FastAPI 服务端口
+WEB_DIR: Path = PROJECT_ROOT / "web"                    # 静态前端目录(工作台/对话/设置页)
 
 # ===== 日志系统 =====
 _LOG_DIR = OUTPUT_DIR

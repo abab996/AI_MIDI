@@ -1,1 +1,1 @@
-.venv\Scripts\python webui.py
+.venv\Scripts\python main.py

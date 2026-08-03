@@ -101,9 +101,11 @@
   var reducedMotion = typeof window.matchMedia === "function"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* 按"距原点的方向"依次浮现：
+  /* 按"距原点的方向"依次浮现（涟漪）：
      originX/originY = 涟漪中心（通常是点击的卡片中心）；
-     无原点时（新建项目）传 null，落到面板左上角 */
+     无原点时（新建项目）传 null，落到面板左上角。
+     每个元素从"背离卡片"的径向方向浮现：--spring-tx/ty =
+     径向单位向量 × 12px；延迟按距离 0.5ms/px（近的先浮现） */
   function springIn(originX, originY) {
     var token = ++springToken;
     var studio = $("#studioView");
@@ -112,14 +114,23 @@
     if (els.length) {
       var ox = (originX == null) ? 0 : originX;
       var oy = (originY == null) ? 0 : originY;
+      var push = 12;
       els.forEach(function (el) {
         var r = el.getBoundingClientRect();
-        var dx = (r.left + r.width / 2) - ox;
-        var dy = (r.top + r.height / 2) - oy;
+        var ex = r.left + r.width / 2;
+        var ey = r.top + r.height / 2;
+        var dx = ex - ox;
+        var dy = ey - oy;
         var dist = Math.hypot(dx, dy);
+        /* 元素恰在原点时兜底为向下方向 */
+        if (dist < 1) { dx = 0; dy = 1; dist = 1; }
+        var dirX = dx / dist;
+        var dirY = dy / dist;
         /* reduced-motion：忽略距离延迟，避免内容长时间不可见 */
         var delay = reducedMotion ? 0 : Math.round(dist * 0.5);
         if (delay > maxDelay) maxDelay = delay;
+        el.style.setProperty("--spring-tx", (dirX * push).toFixed(1) + "px");
+        el.style.setProperty("--spring-ty", (dirY * push).toFixed(1) + "px");
         el.style.setProperty("--spring-delay", delay + "ms");
         el.classList.add("spring-el", "pre-reveal");
       });
@@ -135,27 +146,47 @@
       els.forEach(function (el) {
         el.classList.remove("spring-el");
         el.style.removeProperty("--spring-delay");
+        el.style.removeProperty("--spring-tx");
+        el.style.removeProperty("--spring-ty");
       });
       studio.classList.remove("enter");
-    }, maxDelay + 500);
+    }, maxDelay + 550);
   }
 
   /* 返回档案库前：内部元素朝卡片方向"吸气"汇聚——
-     远的先收（delay 小），近的后收（delay 大），形成向卡片坍缩的视觉 */
+     --spring-ltx/lty 指向卡片（径向单位向量反向 × 8px）；
+     延迟 --spring-leave-delay 按距离反向：远的先收（delay 小）、
+     近的后收（delay 大），形成向卡片坍缩的视觉 */
   function springOut(targetX, targetY) {
     springToken++;
     var studio = $("#studioView");
     var els = springEls();
     if (els.length && targetX != null && targetY != null) {
       var maxDelay = 0;
+      var maxDist = 0;
       els.forEach(function (el) {
         var r = el.getBoundingClientRect();
         var dx = (r.left + r.width / 2) - targetX;
         var dy = (r.top + r.height / 2) - targetY;
         var dist = Math.hypot(dx, dy);
-        /* 远的先收：delay 随距离反向 */
-        var delay = reducedMotion ? 0 : Math.round(dist * 0.4);
+        if (dist > maxDist) maxDist = dist;
+      });
+      els.forEach(function (el) {
+        var r = el.getBoundingClientRect();
+        var ex = r.left + r.width / 2;
+        var ey = r.top + r.height / 2;
+        var dx = ex - targetX;
+        var dy = ey - targetY;
+        var dist = Math.hypot(dx, dy);
+        /* 指向卡片的单位向量 */
+        var pull = 8;
+        var dirX = dist < 1 ? 0 : dx / dist;
+        var dirY = dist < 1 ? 0 : dy / dist;
+        /* 远的先收：delay = (1 - dist/maxDist) × 120ms */
+        var delay = reducedMotion ? 0 : Math.round((1 - (maxDist ? dist / maxDist : 0)) * 120);
         if (delay > maxDelay) maxDelay = delay;
+        el.style.setProperty("--spring-ltx", (-dirX * pull).toFixed(1) + "px");
+        el.style.setProperty("--spring-lty", (-dirY * pull).toFixed(1) + "px");
         el.style.setProperty("--spring-leave-delay", delay + "ms");
         el.classList.add("spring-el");
       });
@@ -166,8 +197,10 @@
         els.forEach(function (el) {
           el.classList.remove("spring-el");
           el.style.removeProperty("--spring-leave-delay");
+          el.style.removeProperty("--spring-ltx");
+          el.style.removeProperty("--spring-lty");
         });
-      }, maxDelay + 240);
+      }, maxDelay + 260);
     } else {
       studio.classList.add("leaving");
     }
@@ -180,7 +213,11 @@
     springEls().forEach(function (el) {
       el.classList.remove("spring-el", "pre-reveal");
       el.style.removeProperty("--spring-delay");
+      el.style.removeProperty("--spring-tx");
+      el.style.removeProperty("--spring-ty");
       el.style.removeProperty("--spring-leave-delay");
+      el.style.removeProperty("--spring-ltx");
+      el.style.removeProperty("--spring-lty");
     });
   }
 
@@ -318,7 +355,7 @@
           /* 无目标卡片时直接收拢再开始 VT */
           studio.classList.add("leaving");
         }
-        /* 形态动画：工作台 → 缩回卡片原位（弹弓轨迹 + 邻居波纹在 finishBack 触发） */
+        /* 形态动画：工作台 → 缩回卡片原位（弹弓轨迹 + 邻居波纹在撞击时刻触发） */
         if (card) card.style.viewTransitionName = "project-panel";
         studio.style.viewTransitionName = "project-panel";
         document.documentElement.dataset.vtFlow = "back";
@@ -329,6 +366,17 @@
           clearTimeout(morphGuard);
           isTransitioning = false;
         });
+
+        /* 关键时序：涟漪在卡片"首次撞击原位"时（VT 启动 ~250ms，
+           即 card-arrive 40% 过冲点前后）触发，而不是等 vt.finished
+           （0.5s+）——消除"卡片落地后干等"的空档 */
+        if (card && !reducedMotion) {
+          setTimeout(function () {
+            /* VT 回调已执行（~16ms），archive 可见、卡片已布局 */
+            applyNeighborRipple(card, archive);
+          }, 250);
+        }
+
         function finishBack() {
           if (card) {
             card.style.viewTransitionName = "";
@@ -336,8 +384,6 @@
             card.style.removeProperty("--land-dy");
           }
           clearSprings();
-          /* 强波纹：落点卡片弹回瞬间，向网格四周推开邻居卡片 */
-          if (card && !reducedMotion) applyNeighborRipple(card, archive);
           delete document.documentElement.dataset.vtFlow;
           isTransitioning = false;
           window.scrollTo(0, 0);
@@ -360,7 +406,9 @@
   }
 
   /* 邻居卡片波纹：落点卡片弹回瞬间，按"远离落点"方向推开其他卡片，
-     距离越远延迟越大，形成向四周扩散的水波 */
+     距离越远延迟越大，形成向四周扩散的水波。
+     在 VT 启动 ~250ms（卡片首次撞击原位）触发，与卡片自身弹弓
+     回弹同步进行——无"落地后干等"空档 */
   function applyNeighborRipple(landingCard, archive) {
     var lr = landingCard.getBoundingClientRect();
     var lx = lr.left + lr.width / 2;
@@ -379,8 +427,8 @@
       var push = 12;
       n.style.setProperty("--push-x", (dx / d * push).toFixed(1) + "px");
       n.style.setProperty("--push-y", (dy / d * push).toFixed(1) + "px");
-      /* 距离越远延迟越大：~0.5ms/px，最远 ~600ms */
-      n.style.setProperty("--ripple-delay", Math.round(d * 0.5) + "ms");
+      /* 距离越远延迟越大：~0.35ms/px，波纹更快扩散（最远 ~400ms） */
+      n.style.setProperty("--ripple-delay", Math.round(d * 0.35) + "ms");
       neighbors.push(n);
     });
     if (!neighbors.length) return;
@@ -400,7 +448,7 @@
         n.style.removeProperty("--push-y");
         n.style.removeProperty("--ripple-delay");
       });
-    }, maxDelay + 600);
+    }, maxDelay + 500);
   }
 
   /* ═══════════ 文件管理 ═══════════ */

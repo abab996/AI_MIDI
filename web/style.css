@@ -1317,35 +1317,50 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   animation-delay: 0.02s;
 }
 
-/* ---------- 工作台内部元素按方向依次浮现 ---------- */
-/* 入场：每个元素一次干净的上浮+淡入——
-   0% 透明 + 向下偏移 12px，100% 严格回到自然态（无缩放过冲，
-   避免"放大后生硬缩小"跳变）。
-   方向感由 --spring-delay（JS 按距卡片原位的距离写入）控制：
-   距卡片近的先浮出、远的后浮出——"沿着卡片展开方向依次浮现"。
-   VT 启动后 200ms 触发，与形态动画在时间上重叠。 */
+/* ---------- 工作台内部元素按展开方向依次浮现（涟漪） ---------- */
+/* 入场：每个元素从"背离卡片原位"的径向方向浮现——
+   0%   透明 + 沿径向偏移 --spring-tx/ty（JS 按元素相对卡片的方向写入）
+   55%  显现 + 反向过冲 25%（Q弹：先外推再轻微回拉）
+   100% 严格回到自然态（无残留跳变）
+   延迟 --spring-delay（距卡片越近越先浮现），VT 启动后 200ms 触发
+   与形态动画重叠 */
 .studio-panel.enter .spring-el {
-  animation: spring-in 0.4s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+  animation: spring-in 0.45s cubic-bezier(0.22, 1.1, 0.3, 1) both;
   animation-delay: var(--spring-delay, 0ms);
 }
 
-/* 离场：朝卡片方向的距离延迟——远的先收、近的后收，
-   形成"面板向卡片吸气汇聚"的视觉。
-   时长 0.22s 与 VT 等待对齐，无空档 */
+/* 离场：朝卡片方向"吸气"汇聚——
+   --spring-ltx/lty 指向卡片（JS 写入），延迟 --spring-leave-delay
+   远的先收、近的后收（JS 按距离反向计算） */
 .studio-panel.leaving .spring-el {
-  animation: spring-out 0.22s cubic-bezier(0.4, 0, 0.6, 1) both;
+  animation: spring-out 0.24s cubic-bezier(0.4, 0, 0.6, 1) both;
   animation-delay: var(--spring-leave-delay, 0ms);
 }
 
 @keyframes spring-in {
-  0% { opacity: 0; transform: translateY(12px); }
-  100% { opacity: 1; transform: translateY(0); }
+  0% {
+    opacity: 0;
+    transform: translate(var(--spring-tx, 0px), var(--spring-ty, 0px));
+  }
+  55% {
+    opacity: 1;
+    transform: translate(
+      calc(var(--spring-tx, 0px) * -0.25),
+      calc(var(--spring-ty, 0px) * -0.25)
+    );
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
 }
 
 @keyframes spring-out {
-  0% { transform: scale(1); opacity: 1; }
-  30% { transform: scale(1.02) translateY(-1px); }
-  100% { transform: scale(0.95) translateY(4px); opacity: 0.7; }
+  0% { opacity: 1; transform: translate(0, 0) scale(1); }
+  100% {
+    opacity: 0.7;
+    transform: translate(var(--spring-ltx, 0px), var(--spring-lty, 0px)) scale(0.95);
+  }
 }
 
 /* VT 快照前隐藏内容（防止"内容先出现→又重影浮现"），
@@ -1368,7 +1383,7 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   }
 }
 
-/* 新卡片：弹弓轨迹——
+/* 新卡片：弹弓轨迹（Q弹）——
    0%  在原工作台位置（飞过来中）
    40% 越过原位 22% 方向 + scale 1.1（明显过冲）
    65% 反向回弹 -16% 方向（弹回）
@@ -1404,9 +1419,11 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   }
 }
 
-/* ---------- 邻居卡片波纹（强波纹：12px 推开） ---------- */
+/* ---------- 邻居卡片波纹（强波纹：12px 推开） ----------
+   在卡片首次撞击原位（VT 启动 ~250ms）时由 JS 触发，
+   水波从落点向四周扩散，与卡片自身的弹弓回弹同时进行 */
 .proj-card.rippled {
-  animation: card-push 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  animation: card-push 0.45s cubic-bezier(0.18, 1.1, 0.3, 1) both;
   animation-delay: var(--ripple-delay, 0ms);
 }
 

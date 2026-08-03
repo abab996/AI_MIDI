@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI_MIDI · 多轮对话</title>
 <link rel="stylesheet" href="/style.css">
+<script>
+  (function () {
+    var dir = null;
+    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    if (dir === "forward" || dir === "back") {
+      document.documentElement.dataset.nav = dir;
+      setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
+    }
+  })();
+</script>
 </head>
 <body>
 
@@ -17,8 +27,8 @@
     <div class="stamp-row">
       <span class="stamp ok">SYS: READY</span>
       <span class="stamp" id="countStamp">ARCHIVE: 0</span>
-      <a class="btn btn-secondary btn-sm" href="/">主工作台</a>
-      <a class="btn btn-secondary btn-sm" href="/settings.html">设置</a>
+      <a class="btn btn-secondary btn-sm" href="/" data-dir="back">主工作台</a>
+      <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
       <button class="btn btn-secondary btn-sm" id="themeBtn" title="切换主题">☀ 暖纸</button>
     </div>
   </header>
@@ -39,7 +49,7 @@
   </section>
 
   <!-- ===================== 视图 2：对话工作台 ===================== -->
-  <section id="studioView" hidden>
+  <section id="studioView" class="studio-panel" hidden>
     <div class="studio-bar">
       <button class="btn btn-secondary" id="backBtn">← 返回档案库</button>
       <div class="studio-title" id="studioProjectName">[PROJECT: --]</div>

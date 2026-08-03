@@ -13,9 +13,17 @@
     if (target) {
       if (document.startViewTransition) {
         try {
-          document.startViewTransition(function () {
+          var vt = document.startViewTransition(function () {
             root.dataset.theme = target;
           });
+          root.classList.add("theme-vt");
+          if (vt && vt.finished) {
+            vt.finished.finally(function () {
+              root.classList.remove("theme-vt");
+            });
+          } else {
+            setTimeout(function () { root.classList.remove("theme-vt"); }, 400);
+          }
         } catch (e) {
           root.dataset.theme = target;
         }

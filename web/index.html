@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI_MIDI · AI 编曲助手</title>
 <link rel="stylesheet" href="/style.css">
+<script>
+  (function () {
+    var dir = null;
+    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    if (dir === "forward" || dir === "back") {
+      document.documentElement.dataset.nav = dir;
+      setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
+    }
+  })();
+</script>
 </head>
 <body>
 
@@ -17,8 +27,8 @@
     <div class="stamp-row">
       <span class="stamp ok" id="stampSys">SYS: READY</span>
       <span class="stamp ok" id="stampApi">API: --</span>
-      <a class="btn btn-secondary btn-sm" href="/chat.html">多轮对话</a>
-      <a class="btn btn-secondary btn-sm" href="/settings.html">设置</a>
+      <a class="btn btn-secondary btn-sm" href="/chat.html" data-dir="forward">多轮对话</a>
+      <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
       <button class="btn btn-secondary btn-sm" id="themeBtn" title="切换主题">☀ 暖纸</button>
     </div>
   </header>

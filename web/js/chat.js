@@ -73,6 +73,9 @@
 
   /* ═══════════ 视图切换与草稿 ═══════════ */
 
+  var isTransitioning = false;
+  var springToken = 0;
+
   function saveDraft() {
     var input = $("#msgInput");
     if (!currentProjectId || !input) return;
@@ -81,7 +84,55 @@
       .catch(function () {});
   }
 
+  function startViewTransitionSafe(callback) {
+    if (document.startViewTransition) {
+      try { return document.startViewTransition(callback); } catch (e) {}
+    }
+    callback();
+    return null;
+  }
+
+  function springEls() {
+    return UI.qsa(".sidebar > *", $("#studioView")).concat(
+      UI.qsa(".console-wrap > *", $("#studioView"))
+    );
+  }
+
+  /* 工作台内部元素错峰弹入（一次性，动画结束移除类，SSE 重渲染不重播） */
+  function springIn() {
+    var token = ++springToken;
+    var studio = $("#studioView");
+    var els = springEls();
+    els.forEach(function (el, i) {
+      el.style.setProperty("--spring-i", i);
+      el.classList.add("spring-el");
+    });
+    studio.classList.add("enter");
+    setTimeout(function () {
+      if (springToken !== token) return;
+      els.forEach(function (el) { el.classList.remove("spring-el"); });
+      studio.classList.remove("enter");
+    }, 950);
+  }
+
+  /* 返回档案库前：内部元素快速收拢 */
+  function springOut() {
+    springToken++; /* 使挂起的 enter 清理定时器失效 */
+    var studio = $("#studioView");
+    var els = springEls();
+    els.forEach(function (el) { el.classList.add("spring-el"); });
+    studio.classList.add("leaving");
+  }
+
+  function clearSprings() {
+    springToken++;
+    var studio = $("#studioView");
+    studio.classList.remove("enter", "leaving");
+    springEls().forEach(function (el) { el.classList.remove("spring-el"); });
+  }
+
   function openProject(projectId) {
+    if (isTransitioning) return;
     if (currentProjectId && currentProjectId !== projectId) saveDraft();
     UI.getJSON("/api/projects/" + projectId).then(function (payload) {
       currentProjectId = projectId;
@@ -89,8 +140,6 @@
       files = payload.midi_files || [];
       draftDirty = false;
 
-      $("#archiveView").hidden = true;
-      $("#studioView").hidden = false;
       $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
       $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
       $("#kvModel").textContent = payload.settings.model || "--";
@@ -107,19 +156,85 @@
       chatBusy = false;
       $("#newMidiLink").hidden = true;
 
-      setTimeout(function () { input.focus(); }, 50);
-      window.scrollTo(0, 0);
+      /* 形态动画：项目卡片 → 整面板展开 */
+      var studio = $("#studioView");
+      var archive = $("#archiveView");
+      var card = UI.qs('.proj-card[data-id="' + projectId + '"]');
+      isTransitioning = true;
+
+      if (card) card.style.viewTransitionName = "project-panel";
+      var vt = startViewTransitionSafe(function () {
+        archive.hidden = true;
+        studio.hidden = false;
+        if (card) card.style.viewTransitionName = "";
+        studio.style.viewTransitionName = "project-panel";
+      });
+
+      function finishOpen() {
+        studio.style.viewTransitionName = "";
+        clearSprings();
+        springIn();
+        setTimeout(function () { input.focus(); }, 60);
+        window.scrollTo(0, 0);
+      }
+      if (vt && vt.finished) {
+        vt.finished.then(finishOpen, finishOpen);
+      } else {
+        finishOpen();
+      }
     }).catch(function (e) {
       UI.toast("✗ 打开项目失败: " + e.message, "err");
+      isTransitioning = false;
     });
   }
 
   function backToArchive() {
+    if (isTransitioning) return;
     if (currentProjectId) saveDraft();
+    var pid = currentProjectId;
     currentProjectId = null;
-    $("#studioView").hidden = true;
-    $("#archiveView").hidden = false;
-    reloadProjects();
+
+    var studio = $("#studioView");
+    var archive = $("#archiveView");
+
+    /* 1) 内部元素快速收拢（吸气） */
+    springOut();
+
+    /* 2) 预取项目列表并渲染网格（archive 仍隐藏，卡片落点已就位） */
+    UI.getJSON("/api/projects").then(function (projects) {
+      renderProjects(projects);
+      var card = pid ? UI.qs('.proj-card[data-id="' + pid + '"]') : null;
+      isTransitioning = true;
+
+      setTimeout(function () {
+        /* 形态动画：工作台 → 缩回卡片原位 */
+        if (card) card.style.viewTransitionName = "project-panel";
+        studio.style.viewTransitionName = "project-panel";
+        var vt = startViewTransitionSafe(function () {
+          studio.hidden = true;
+          archive.hidden = false;
+          studio.style.viewTransitionName = "";
+        });
+        function finishBack() {
+          if (card) card.style.viewTransitionName = "";
+          clearSprings();
+          isTransitioning = false;
+          window.scrollTo(0, 0);
+        }
+        if (vt && vt.finished) {
+          vt.finished.then(finishBack, finishBack);
+        } else {
+          finishBack();
+        }
+      }, 240);
+    }).catch(function (e) {
+      UI.toast("✗ 返回档案库失败: " + e.message, "err");
+      clearSprings();
+      studio.hidden = true;
+      archive.hidden = false;
+      isTransitioning = false;
+      reloadProjects();
+    });
   }
 
   /* ═══════════ 文件管理 ═══════════ */
@@ -302,9 +417,8 @@
     $("#newProjectBtn").addEventListener("click", function () {
       showModal("＋ 新建档案", "", function (name) {
         return UI.postJSON("/api/projects", { name: name }).then(function (payload) {
+          if (isTransitioning) return;
           currentProjectId = null; /* 防止保存旧草稿 */
-          $("#archiveView").hidden = true;
-          $("#studioView").hidden = false;
           currentProjectId = payload.meta.id;
           currentName = payload.meta.name || "未命名";
           files = payload.midi_files || [];
@@ -318,7 +432,22 @@
           $("#msgInput").value = payload.draft || "";
           $("#sendBtn").disabled = false;
           $("#newMidiLink").hidden = true;
-          window.scrollTo(0, 0);
+
+          /* 无卡片来源：默认交叉过渡 + 面板内容弹入 */
+          isTransitioning = true;
+          var vt = startViewTransitionSafe(function () {
+            $("#archiveView").hidden = true;
+            $("#studioView").hidden = false;
+          });
+          function fin() {
+            isTransitioning = false;
+            clearSprings();
+            springIn();
+            setTimeout(function () { $("#msgInput").focus(); }, 60);
+            window.scrollTo(0, 0);
+          }
+          if (vt && vt.finished) vt.finished.then(fin, fin);
+          else fin();
         });
       });
     });

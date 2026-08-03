@@ -131,6 +131,17 @@
     });
   }
 
+  /* ---- 跨文档导航动画：方向记录 ---- */
+  function initNavDirections() {
+    UI.qsa("a[href][data-dir]").forEach(function (a) {
+      a.addEventListener("click", function () {
+        var dir = a.getAttribute("data-dir");
+        document.documentElement.dataset.nav = dir;
+        try { sessionStorage.setItem("ai-midi-nav-dir", dir); } catch (e) {}
+      });
+    });
+  }
+
   /* ---- 迷你 Markdown 渲染（输入先 esc，输出安全 HTML） ---- */
   function md(text) {
     var s = esc(text);
@@ -194,4 +205,6 @@
     getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
     ssePost: ssePost, md: md, projectCard: projectCard,
   };
+
+  document.addEventListener("DOMContentLoaded", initNavDirections);
 })(window);

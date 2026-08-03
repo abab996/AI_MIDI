@@ -161,6 +161,8 @@
       var archive = $("#archiveView");
       var card = UI.qs('.proj-card[data-id="' + projectId + '"]');
       isTransitioning = true;
+      /* 安全兜底：若 VT 异常卡住，1.5 秒后强制释放（避免按钮永久不可点） */
+      var morphGuard = setTimeout(function () { isTransitioning = false; }, 1500);
 
       if (card) card.style.viewTransitionName = "project-panel";
       var vt = startViewTransitionSafe(function () {
@@ -168,6 +170,10 @@
         studio.hidden = false;
         if (card) card.style.viewTransitionName = "";
         studio.style.viewTransitionName = "project-panel";
+        /* 切换一发生就立即解锁：按钮、链接可立即响应点击，
+           后续的弹簧错峰动画是纯视觉装饰，不影响交互 */
+        clearTimeout(morphGuard);
+        isTransitioning = false;
       });
 
       function finishOpen() {
@@ -189,10 +195,12 @@
   }
 
   function backToArchive() {
-    if (isTransitioning) return;
+    /* 返回按钮始终可点：不检查 isTransitioning，避免动画卡住时无法返回 */
     if (currentProjectId) saveDraft();
     var pid = currentProjectId;
     currentProjectId = null;
+    isTransitioning = true;
+    var morphGuard = setTimeout(function () { isTransitioning = false; }, 1500);
 
     var studio = $("#studioView");
     var archive = $("#archiveView");
@@ -204,7 +212,6 @@
     UI.getJSON("/api/projects").then(function (projects) {
       renderProjects(projects);
       var card = pid ? UI.qs('.proj-card[data-id="' + pid + '"]') : null;
-      isTransitioning = true;
 
       setTimeout(function () {
         /* 形态动画：工作台 → 缩回卡片原位 */
@@ -214,6 +221,8 @@
           studio.hidden = true;
           archive.hidden = false;
           studio.style.viewTransitionName = "";
+          clearTimeout(morphGuard);
+          isTransitioning = false;
         });
         function finishBack() {
           if (card) card.style.viewTransitionName = "";
@@ -226,7 +235,7 @@
         } else {
           finishBack();
         }
-      }, 240);
+      }, 220);
     }).catch(function (e) {
       UI.toast("✗ 返回档案库失败: " + e.message, "err");
       clearSprings();

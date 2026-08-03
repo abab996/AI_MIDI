@@ -865,6 +865,9 @@ a.btn {
   gap: 14px;
   padding: 16px 0;
   flex-wrap: wrap;
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
 }
 
 .studio-title {
@@ -1292,36 +1295,35 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
 }
 
 /* ---------- 卡片 ⇄ 工作台 形态动画（共享元素） ---------- */
-/* 几何插值带强过冲：面板撑过目标再回弹，呈现果冻形变 */
+/* 几何插值用平滑 ease（不带过冲，避免抖动感）；
+   Q 弹果冻感由下方内部元素 spring-in 承担 */
 ::view-transition-group(project-panel) {
-  animation-duration: 0.55s;
-  animation-timing-function: cubic-bezier(0.34, 1.45, 0.64, 1);
+  animation-duration: 0.42s;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0.24, 1);
 }
 
 /* ---------- 工作台内部元素错峰弹簧 ---------- */
 .studio-panel.enter .spring-el {
-  animation: spring-in 0.55s cubic-bezier(0.34, 1.45, 0.64, 1) both;
-  animation-delay: calc(var(--spring-i, 0) * 28ms);
+  animation: spring-in 0.48s cubic-bezier(0.34, 1.4, 0.5, 1) both;
+  animation-delay: calc(var(--spring-i, 0) * 22ms);
 }
 
 .studio-panel.leaving .spring-el {
-  animation: spring-out 0.26s cubic-bezier(0.55, 0, 0.8, 0.45) both;
-  animation-delay: calc(var(--spring-i, 0) * 20ms);
+  animation: spring-out 0.24s cubic-bezier(0.55, 0, 0.8, 0.45) both;
+  animation-delay: calc(var(--spring-i, 0) * 18ms);
 }
 
-/* 阻尼振荡：撑大→过冲→回落→微震→静止 */
+/* 两段回弹：入位→轻微过冲→静止（比四段振荡更稳） */
 @keyframes spring-in {
-  0% { opacity: 0; transform: scale(0.9) translateY(16px); }
-  50% { opacity: 1; transform: scale(1.03) translateY(-4px); }
-  72% { transform: scale(0.985) translateY(1.5px); }
-  88% { transform: scale(1.008) translateY(-1px); }
+  0% { opacity: 0; transform: scale(0.92) translateY(12px); }
+  60% { opacity: 1; transform: scale(1.025) translateY(-2px); }
   100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 /* 收拢：快速吸回 */
 @keyframes spring-out {
   0% { opacity: 1; transform: scale(1); }
-  100% { opacity: 0; transform: scale(0.85) translateY(10px); }
+  100% { opacity: 0; transform: scale(0.88) translateY(8px); }
 }
 
 /* 侧栏元素从左侧、对话区从右上方弹出（差异化形变原点） */

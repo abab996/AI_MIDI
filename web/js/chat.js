@@ -214,8 +214,26 @@
       var card = pid ? UI.qs('.proj-card[data-id="' + pid + '"]') : null;
 
       setTimeout(function () {
-        /* 形态动画：工作台 → 缩回卡片原位 */
-        if (card) card.style.viewTransitionName = "project-panel";
+        /* 形态动画：工作台 → 缩回卡片原位
+           预先计算方向向量并写入卡片 CSS 变量，
+           card-arrive 关键帧据此从工作台方向飞回并惯性过冲 */
+        if (card) {
+          card.style.viewTransitionName = "project-panel";
+          var cr = card.getBoundingClientRect();
+          var pr = studio.getBoundingClientRect();
+          var cx = cr.left + cr.width / 2;
+          var cy = cr.top + cr.height / 2;
+          var px = pr.left + pr.width / 2;
+          var py = pr.top + pr.height / 2;
+          var dx = cx - px;
+          var dy = cy - py;
+          /* 限制最大飞回距离，避免极端布局下位移过大 */
+          var dist = Math.hypot(dx, dy);
+          var max = 50;
+          if (dist > max) { dx = dx / dist * max; dy = dy / dist * max; }
+          card.style.setProperty("--land-dx", dx.toFixed(1) + "px");
+          card.style.setProperty("--land-dy", dy.toFixed(1) + "px");
+        }
         studio.style.viewTransitionName = "project-panel";
         var vt = startViewTransitionSafe(function () {
           studio.hidden = true;
@@ -227,9 +245,8 @@
         function finishBack() {
           if (card) {
             card.style.viewTransitionName = "";
-            /* 目标卡片惯性回弹落地（与形态动画无缝衔接） */
-            card.classList.add("landed");
-            setTimeout(function () { card.classList.remove("landed"); }, 600);
+            card.style.removeProperty("--land-dx");
+            card.style.removeProperty("--land-dy");
           }
           clearSprings();
           isTransitioning = false;

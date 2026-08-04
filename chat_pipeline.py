@@ -8,7 +8,6 @@ import json
 import logging
 import time
 
-import gradio as gr
 import httpx
 import openai
 
@@ -22,12 +21,18 @@ import chat_service as _chat_ui
 
 logger = logging.getLogger("ai_midi")
 
+# 流式展示帧的节流间隔（秒）：格式化/全量拷贝成本高，与 chat_service 的
+# SSE 节流保持一致；被节流吞掉的中间态由轮次结束前的强制 flush 兜底补发。
+_STREAM_EMIT_INTERVAL = 0.025
 
-def _sanitize_messages(messages: list[dict]) -> list[dict]:
+
+def _sanitize_messages(messages: list[dict], *, is_gemini: bool = True) -> list[dict]:
     """清理并修复消息列表，确保兼容 Gemini 等 API 的严格要求。
 
     1. 将 assistant 消息中 content 为 None 改为 ""。
     2. 确保 tool 消息包含 name 字段（基于上下文 assistant tool_calls 补充）。
+    3. Gemini 思考模型的 tool_call 需要 thought_signature（缺失时兜底补
+       bypass 串）；非 Gemini 服务商不认识 extra_content 扩展字段，剥除避免 400。
     """
     tc_id_to_name: dict[str, str] = {}
     sanitized: list[dict] = []
@@ -39,23 +44,30 @@ def _sanitize_messages(messages: list[dict]) -> list[dict]:
         if role == "assistant":
             if msg_copy.get("content") is None:
                 msg_copy["content"] = ""
+            # reasoning_content 仅用于前端展示与持久化，
+            # 发送给 API 前剥除（部分服务商会拒绝未知字段）
+            msg_copy.pop("reasoning_content", None)
             tool_calls = msg_copy.get("tool_calls") or []
             for tc in tool_calls:
                 if isinstance(tc, dict):
                     tc_id = tc.get("id")
                     func = tc.get("function") or {}
                     tc_name = func.get("name") if isinstance(func, dict) else getattr(func, "name", None)
-                    # 兜底：补上 Gemini 思考模型要求的 thought_signature（含修复前
-                    # 保存的旧历史），缺签名时用 bypass 串让 Gemini 跳过校验，避免 400。
-                    extra = tc.get("extra_content")
-                    if not isinstance(extra, dict):
-                        tc["extra_content"] = {
-                            "google": {"thought_signature": "skip_thought_signature_validator"}
-                        }
+                    if is_gemini:
+                        # 兜底：补上 Gemini 思考模型要求的 thought_signature（含修复前
+                        # 保存的旧历史），缺签名时用 bypass 串让 Gemini 跳过校验，避免 400。
+                        extra = tc.get("extra_content")
+                        if not isinstance(extra, dict):
+                            tc["extra_content"] = {
+                                "google": {"thought_signature": "skip_thought_signature_validator"}
+                            }
+                        else:
+                            g = extra.get("google")
+                            if not (isinstance(g, dict) and g.get("thought_signature")):
+                                extra["google"] = {"thought_signature": "skip_thought_signature_validator"}
                     else:
-                        g = extra.get("google")
-                        if not (isinstance(g, dict) and g.get("thought_signature")):
-                            extra["google"] = {"thought_signature": "skip_thought_signature_validator"}
+                        # 非 Gemini 服务商不认 extra_content 扩展字段，剥除避免 400
+                        tc.pop("extra_content", None)
                 else:
                     tc_id = getattr(tc, "id", None)
                     func = getattr(tc, "function", None)
@@ -101,31 +113,106 @@ def _extract_thought_signature(tc_item) -> str:
     return sig if isinstance(sig, str) and sig else ""
 
 
+def _extract_think_blocks(content: str) -> tuple[str, list[str]]:
+    """从正文中提取所有 ``<think>...</think>`` 片段。
+
+    返回 (去除标签后的正文, 思考片段列表)。支持：
+    - 多个 think 块
+    - 未闭合的 ``<think>``（其后的内容视为思考，兜底剥离标签）
+    - 返回的正文中不再残留任何字面标签
+    """
+    answer_parts: list[str] = []
+    think_parts: list[str] = []
+    rest = content
+    while True:
+        start = rest.find("<think>")
+        if start == -1:
+            answer_parts.append(rest)
+            break
+        answer_parts.append(rest[:start])
+        tail = rest[start + len("<think>"):]
+        end = tail.find("</think>")
+        if end == -1:
+            think_parts.append(tail.strip())
+            break
+        think_parts.append(tail[:end].strip())
+        rest = tail[end + len("</think>"):]
+    return "".join(answer_parts), think_parts
+
+
+def _split_content_blocks(value) -> tuple[str, str]:
+    """把 chunk 的 content 字段拆分为 (推理, 正文) 两个字符串。
+
+    字符串直接返回（推理为空）；多段结构（部分模型的 content 为
+    ``[{"type": "thinking", "thinking": "..."}, {"type": "text", "text": "..."}]``）
+    按块类型分流：thinking/reasoning 块归入推理，其余归入正文。
+    """
+    if value is None:
+        return "", ""
+    if isinstance(value, str):
+        return "", value
+    reasoning = ""
+    content = ""
+    if isinstance(value, (list, tuple)):
+        for block in value:
+            if isinstance(block, dict):
+                btype = str(block.get("type", ""))
+                if btype in ("thinking", "reasoning"):
+                    text = (
+                        block.get("thinking")
+                        or block.get("reasoning")
+                        or block.get("content")
+                        or block.get("text")
+                    )
+                    if isinstance(text, str):
+                        reasoning += text
+                else:
+                    text = block.get("text") or block.get("content") or block.get("output_text")
+                    if isinstance(text, str):
+                        content += text
+            elif isinstance(block, str):
+                content += block
+    else:
+        content = str(value)
+    return reasoning, content
+
+
 def _format_display_message(reasoning: str, content: str) -> str:
     """结合思考/推理过程和回答正文，构造前端 Markdown HTML 展示文本。
 
-    如果提供推理过程（或 content 中包含 <think> 标签），渲染为可折叠的 details 标签。
+    - reasoning_content 与正文内嵌的 ``<think>`` 片段统一合并为单个可折叠思考块
+    - 正文中不会残留任何字面 ``<think>`` 标签（多个/未闭合标签兜底处理）
+    - 思考片段与 reasoning 相同（或为其长片段子串）时不重复拼接
     """
+
+    def _clean(text: str) -> str:
+        """去掉推理内容开头的 🧠 等装饰 emoji（部分模型会自行附加）。"""
+        return text.strip().lstrip("\U0001F9E0").strip()
+
+    reasoning = str(reasoning or "")
+    content = str(content or "")
+
+    answer, think_parts = _extract_think_blocks(content)
+
+    merged = _clean(reasoning)
+    for part in think_parts:
+        part = _clean(part)
+        if not part or part == merged:
+            continue
+        # 长片段整体已存在于 reasoning 中视为重复，避免同一段思考被渲染两遍
+        if len(part) >= 20 and merged and part in merged:
+            continue
+        merged = f"{merged}\n\n{part}" if merged else part
+
     res = ""
-    if reasoning and reasoning.strip():
+    if merged:
         res += (
             f"<details>\n"
-            f"<summary>🧠 思考过程</summary>\n\n"
-            f"{reasoning.strip()}\n"
+            f"<summary>思考过程</summary>\n\n"
+            f"{merged}\n"
             f"</details>\n\n"
         )
-    elif "<think>" in content and "</think>" in content:
-        parts = content.split("</think>", 1)
-        think_part = parts[0].replace("<think>", "").strip()
-        main_part = parts[1].strip()
-        return (
-            f"<details>\n"
-            f"<summary>🧠 思考过程</summary>\n\n"
-            f"{think_part}\n"
-            f"</details>\n\n"
-            + main_part
-        )
-    res += content
+    res += answer
     return res
 
 
@@ -156,7 +243,9 @@ def _prepare_context(
     for msg in full_history:
         messages.append(msg)
     messages.append({"role": "user", "content": message})
-    messages = _sanitize_messages(messages)
+    # 仅 Gemini 需要 thought_signature 扩展字段；其他服务商一律剥除
+    is_gemini = config.is_gemini_provider(settings["base_url"])
+    messages = _sanitize_messages(messages, is_gemini=is_gemini)
     _round_start_idx = len(messages)
 
     client = ai_api.get_client(
@@ -200,6 +289,7 @@ def _prepare_context(
         "download_path": download_path,
         "tool_log": tool_log,
         "max_tool_rounds": max_tool_rounds,
+        "is_gemini": is_gemini,
     }
 
 
@@ -233,6 +323,8 @@ def _execute_tool_loop(
     download_path: str | None = ctx["download_path"]
     tool_log: list[str] = ctx["tool_log"]
     max_tool_rounds: int = ctx["max_tool_rounds"]
+    # 仅 Gemini 服务商需要 thought_signature 扩展字段（测试构造的 ctx 无此键时按 Gemini 处理）
+    is_gemini: bool = ctx.get("is_gemini", True)
 
     try:
         for round_idx in range(max_tool_rounds):
@@ -256,7 +348,7 @@ def _execute_tool_loop(
                 "role": "system",
                 "content": _chat_ui._build_system_prompt(updated_files),
             }
-            kwargs["messages"] = _sanitize_messages(messages)
+            kwargs["messages"] = _sanitize_messages(messages, is_gemini=is_gemini)
             kwargs["stream"] = True
 
             # 尝试 API 调用,逐步去除不兼容参数并重试
@@ -276,13 +368,19 @@ def _execute_tool_loop(
                         or "rate" in str(api_err).lower()
                         or "resource_exhausted" in str(api_err).lower()
                     )
-                    # 超时多为瞬时网络/服务波动，重试通常可成功
-                    is_timeout = isinstance(
+                    if is_rate_limit:
+                        err_kind = "API 限流"
+                    elif isinstance(
                         api_err, (openai.APITimeoutError, httpx.TimeoutException)
-                    ) or "timed out" in str(api_err).lower()
-                    if (is_rate_limit or is_timeout) and _attempt < max_retries:
-                        wait_sec = (2 ** _attempt) + 1
-                        err_kind = "API 限流" if is_rate_limit else "请求超时"
+                    ) or "timed out" in str(api_err).lower():
+                        err_kind = "请求超时"
+                    elif ai_api.is_upstream_transient(api_err):
+                        err_kind = "上游服务繁忙"
+                    else:
+                        err_kind = None
+                    # 上游瞬时故障：固定 5 秒间隔自动重试 3 次，3 次仍失败再返回错误码
+                    if err_kind and _attempt < max_retries:
+                        wait_sec = 5
                         logger.warning("触发 %s，等待 %d 秒后重试 (%d/%d)...", err_kind, wait_sec, _attempt + 1, max_retries)
                         time.sleep(wait_sec)
                         continue
@@ -306,6 +404,7 @@ def _execute_tool_loop(
             accumulated_reasoning = ""
             tool_calls_builder: dict[int, dict] = {}
             is_streaming = False
+            last_stream_emit = 0.0
 
             for chunk in chunks:
                 if not hasattr(chunk, "choices") or not chunk.choices:
@@ -317,18 +416,25 @@ def _execute_tool_loop(
                 if item is None:
                     continue
 
-                # 提取推理/思考片段
+                # 提取推理/思考片段（兼容字符串；非字符串兜底 str 化，避免 TypeError）
                 r_chunk = (
                     getattr(item, "reasoning_content", None)
                     or getattr(item, "reasoning", None)
                 )
                 if r_chunk:
-                    accumulated_reasoning += r_chunk
+                    accumulated_reasoning += r_chunk if isinstance(r_chunk, str) else str(r_chunk)
 
-                # 提取正文片段
+                # 提取正文片段（多段结构时 thinking 块归入推理、text 块归入正文）
                 c_chunk = getattr(item, "content", None)
                 if c_chunk:
-                    accumulated_content += c_chunk
+                    if isinstance(c_chunk, str):
+                        accumulated_content += c_chunk
+                    else:
+                        c_reasoning, c_content = _split_content_blocks(c_chunk)
+                        if c_reasoning:
+                            accumulated_reasoning += c_reasoning
+                        if c_content:
+                            accumulated_content += c_content
 
                 # 提取工具调用片段
                 tc_chunks = getattr(item, "tool_calls", None)
@@ -397,50 +503,80 @@ def _execute_tool_loop(
                         if sig:
                             tool_calls_builder[idx]["thought_signature"] = sig
 
-                # 真实流式实时 yield 给前端呈现
+                # 真实流式实时 yield 给前端呈现（25ms 节流：格式化/全量拷贝成本高，
+                # 被节流吞掉的中间态由轮次结束前的强制 flush 兜底补发）
                 if r_chunk or c_chunk:
-                    formatted_display = _format_display_message(accumulated_reasoning, accumulated_content)
-                    if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
-                        chat_display[-1] = {"role": "assistant", "content": formatted_display}
-                    else:
-                        chat_display.append({"role": "assistant", "content": formatted_display})
-                        is_streaming = True
-                    yield (
-                        list(chat_display),
-                        "",
-                        updated_files,
-                        new_undo_stack,
-                        full_history,
-                        download_path,
-                        gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
+                    now = time.time()
+                    if now - last_stream_emit >= _STREAM_EMIT_INTERVAL:
+                        last_stream_emit = now
+                        formatted_display = _format_display_message(accumulated_reasoning, accumulated_content)
+                        if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
+                            chat_display[-1] = {"role": "assistant", "content": formatted_display}
+                        else:
+                            chat_display.append({"role": "assistant", "content": formatted_display})
+                            is_streaming = True
+                        yield (
+                            list(chat_display),
+                            "",
+                            updated_files,
+                            new_undo_stack,
+                            full_history,
+                            download_path,
+                        None,
                     )
 
             msg_tool_calls_list = [
                 v for k, v in sorted(tool_calls_builder.items(), key=lambda x: x[0])
             ]
 
+            # 节流吞帧兜底：轮次结束前强制补发完整流式帧（含思考块），
+            # 保证展示内容与 accumulated_content/reasoning 始终一致
+            if is_streaming or accumulated_reasoning or accumulated_content:
+                formatted_display = _format_display_message(accumulated_reasoning, accumulated_content)
+                if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
+                    chat_display[-1] = {"role": "assistant", "content": formatted_display}
+                else:
+                    chat_display.append({"role": "assistant", "content": formatted_display})
+                    is_streaming = True
+                yield (
+                    list(chat_display),
+                    "",
+                    updated_files,
+                    new_undo_stack,
+                    full_history,
+                    download_path,
+                    None,
+                )
+
             assistant_message: dict = {
                 "role": "assistant",
                 "content": accumulated_content,
             }
+            # 推理过程随消息持久化（重开对话后仍能展示思考过程）；
+            # 发送给 API 前由 _sanitize_messages 剥除，避免未知字段被拒
+            if accumulated_reasoning:
+                assistant_message["reasoning_content"] = accumulated_reasoning
             if msg_tool_calls_list:
-                assistant_message["tool_calls"] = [
-                    {
+                tool_calls_out = []
+                for i, tc in enumerate(msg_tool_calls_list):
+                    tc_out = {
                         "id": tc.get("id") or f"call_{i}",
                         "type": tc.get("type", "function"),
                         "function": {
                             "name": tc.get("function", {}).get("name", ""),
                             "arguments": tc.get("function", {}).get("arguments", ""),
                         },
-                        "extra_content": {
+                    }
+                    if is_gemini:
+                        # thought_signature 仅 Gemini 思考模型需要，其他服务商不认扩展字段
+                        tc_out["extra_content"] = {
                             "google": {
                                 "thought_signature": tc.get("thought_signature")
                                 or "skip_thought_signature_validator"
                             }
-                        },
-                    }
-                    for i, tc in enumerate(msg_tool_calls_list)
-                ]
+                        }
+                    tool_calls_out.append(tc_out)
+                assistant_message["tool_calls"] = tool_calls_out
 
             messages.append(assistant_message)
 
@@ -462,7 +598,7 @@ def _execute_tool_loop(
                     new_undo_stack,
                     new_full_history,
                     download_path,
-                    gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
+                    None,
                 )
                 return
 
@@ -477,7 +613,7 @@ def _execute_tool_loop(
                     new_undo_stack,
                     full_history,
                     download_path,
-                    gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
+                    None,
                 )
 
             # ── 执行工具调用 ──
@@ -497,7 +633,7 @@ def _execute_tool_loop(
                     new_undo_stack,
                     full_history,
                     download_path,
-                    gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
+                    None,
                 )
 
                 try:
@@ -542,7 +678,7 @@ def _execute_tool_loop(
                     new_undo_stack,
                     full_history,
                     download_path,
-                    gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
+                    None,
                 )
 
         # ── 达到最大轮数 ──
@@ -599,7 +735,7 @@ def _execute_tool_loop(
             new_undo_stack,
             new_error_history,
             None,
-            gr.update(),
+            None,
         )
 
 
@@ -632,7 +768,7 @@ def _stream_final_reply(
             new_undo_stack,
             new_full_history,
             download_path,
-            gr.update(choices=_chat_ui._get_choices(updated_files), value=[]),
+            None,
         )
 
 

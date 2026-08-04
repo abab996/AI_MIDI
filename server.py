@@ -571,5 +571,15 @@ def _sse_response(generator) -> StreamingResponse:
 
 # ==================== 静态前端（最后挂载） ====================
 
+class NoCacheStaticFiles(StaticFiles):
+    """静态资源不缓存：pywebview 窗口无手动刷新入口，WebView2 会按
+    Cache-Control 缓存资源导致改动不生效——加 no-cache 强制每次
+    页面加载都重新校验（ETag/Last-Modified 未变时仍走 304，开销极小）"""
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 if config.WEB_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(config.WEB_DIR), html=True), name="web")
+    app.mount("/", NoCacheStaticFiles(directory=str(config.WEB_DIR), html=True), name="web")

@@ -484,6 +484,89 @@ input[type="checkbox"] {
   margin-top: 18px;
 }
 
+.confirm-text {
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---------- 自定义下拉菜单（模型选择） ---------- */
+.select-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.select-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--color-ink-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.select-toggle:hover {
+  color: var(--color-ink);
+}
+
+.select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  box-shadow: 0 6px 18px var(--color-shadow);
+  z-index: 50;
+}
+
+.select-menu.menu-in {
+  animation: menu-pop 0.22s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+}
+
+@keyframes menu-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.select-option {
+  padding: 8px 12px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.select-option:hover {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.select-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
 /* ---------- 通用布局 ---------- */
 .page {
   max-width: 1440px;
@@ -1008,7 +1091,8 @@ a.btn {
   border: 1px solid var(--color-border);
   border-radius: 2px;
   background: var(--color-bg-card);
-  padding: 20px;
+  --chat-pad-y: 20px;   /* 吸顶偏移与它保持联动 */
+  padding: var(--chat-pad-y) 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1068,6 +1152,81 @@ a.btn {
   border: 1px solid var(--color-border);
 }
 
+/* AI 三点加载动画（发送后等待首个流式事件） */
+.msg.ai.typing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---------- 流式消息（增量结构：逐字渐显期间以纯文本呈现） ---------- */
+.msg.ai.streaming details {
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  background: var(--color-bg-console);
+  margin: 2px 0 8px;
+}
+
+.msg.ai.streaming details summary {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--color-primary);
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  position: sticky;
+  top: calc(-1 * var(--chat-pad-y, 20px));
+  z-index: 2;
+  background: var(--color-bg-console);
+  border-bottom: 1px dashed var(--color-border-dashed);
+}
+
+.msg.ai.streaming details summary::-webkit-details-marker { display: none; }
+
+.msg.ai.streaming .details-body {
+  padding: 6px 12px 10px;
+}
+
+.msg.ai.streaming .stream-answer {
+  padding: 2px 2px 4px;
+  line-height: 1.75;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* ---------- AI 输出逐字渐显（仅实时流式） ---------- */
+.char-fade {
+  animation: char-fade 1s ease-out both;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes char-fade {
+  from { opacity: 0; }
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 5px;
+  padding: 4px 2px;
+}
+
+.typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ink-dim);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
 .msg.ai p:first-child { margin-top: 0; }
 .msg.ai code {
   font-family: "Cascadia Mono", Consolas, monospace;
@@ -1103,6 +1262,48 @@ a.btn {
   max-width: 100%;
 }
 
+/* 折叠块内部内容（markdown 渲染的段落/列表/表格等）与边缘留白，
+   避免文字贴边；pre 已有自己的内边距 */
+.tool-call details .details-body > :not(pre) {
+  padding: 0 12px;
+}
+
+.tool-call details .details-body > :not(pre):last-child {
+  padding-bottom: 10px;
+}
+
+.tool-call details .details-body table {
+  display: block;
+  overflow-x: auto;
+}
+
+/* 折叠块展开/收起动画：内部内容包在 .details-body 中。
+   动画由 JS 用 Web Animations API 一次性驱动（WAAPI），
+   避免 CSS 过渡在流式逐帧更新 --body-h 时反复触发导致抽搐。
+   注意：必须覆盖 UA 的 details:not([open]) > *:not(summary) { display:none }，
+   否则收起瞬间 body 变 display:none，收起动画不可见（.tool-call 与
+   流式消息 .msg.ai.streaming 两类 details 都要覆盖） */
+.tool-call details > .details-body,
+.msg.ai.streaming details > .details-body {
+  display: block;
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+}
+
+.tool-call details > .details-body.open,
+.msg.ai.streaming details > .details-body.open {
+  max-height: var(--body-h, 2000px);
+  opacity: 1;
+}
+
+/* 收起后内容跳过布局（长折叠块内部文本不再参与换行计算）：
+   首开历史对话与长流式对话的 layout 成本大幅下降，避免卡顿 */
+.tool-call details > .details-body.closed,
+.msg.ai.streaming details > .details-body.closed {
+  content-visibility: hidden;
+}
+
 .tool-call summary {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 11.5px;
@@ -1114,6 +1315,25 @@ a.btn {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 吸顶：滚动时思考标签跟随内容上移，到达聊天框顶部即悬挂，
+     直到整段内容翻出屏幕；负 top 抵消 .chat 顶部 padding，贴住顶边 */
+  position: sticky;
+  top: calc(-1 * var(--chat-pad-y, 20px));
+  z-index: 2;
+  background: var(--color-bg-console);
+  border-bottom: 1px dashed var(--color-border-dashed);
+}
+
+.tool-call summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--color-ink-faint);
+  transition: transform 0.15s ease;
+}
+
+.tool-call details[open] summary::before {
+  transform: rotate(90deg);
 }
 
 .tool-call summary::-webkit-details-marker { display: none; }
@@ -1135,7 +1355,22 @@ a.btn {
   margin-top: 12px;
 }
 
-.composer input { flex: 1; font-size: 13px; }
+.composer input,
+.composer textarea {
+  flex: 1;
+  font-size: 13px;
+  min-height: 36px;
+  max-height: 140px;
+  resize: none;
+  line-height: 1.6;
+}
+
+/* 回复期间发送按钮变为停止按钮（危险色） */
+#sendBtn.stop {
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
 
 .console-foot {
   display: flex;
@@ -1295,11 +1530,25 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
 }
 
 /* ---------- 卡片 ⇄ 工作台 形态动画（共享元素） ---------- */
-/* 几何插值用平滑 ease（不带过冲，避免抖动感）；
-   Q 弹果冻感由下方 spring-in 与新卡片的 card-arrive 承担 */
+/* 几何插值拆分为"位移"与"展开/收拢"两条独立动画：
+   vt-panel-move（位移）0.32s 先完成，vt-panel-size（尺寸）0.44s 后完成——
+   卡片"先飞到目标位置、再原地完成展开"，位移速度略快于展开。
+   --vt-x1/y1/w1/h1 = 旧快照矩形（打开=卡片、返回=工作台），由 JS 实测写入
+   根元素；新快照矩形由 UA 动态样式作为 group 基准态提供，无需测量。
+   Q 弹果冻感由 spring-in 与新卡片的 card-arrive 承担 */
 ::view-transition-group(project-panel) {
-  animation-duration: 0.42s;
-  animation-timing-function: cubic-bezier(0.32, 0.72, 0.24, 1);
+  animation-name: vt-panel-move, vt-panel-size;
+  animation-duration: 0.32s, 0.44s;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0.24, 1), cubic-bezier(0.32, 0.72, 0.24, 1);
+  animation-fill-mode: both;
+}
+
+@keyframes vt-panel-move {
+  from { transform: translate(var(--vt-x1, 0px), var(--vt-y1, 0px)); }
+}
+
+@keyframes vt-panel-size {
+  from { width: var(--vt-w1, 0px); height: var(--vt-h1, 0px); }
 }
 
 /* 旧工作台：被向卡片方向"拉过去"——强化运动方向感（由 JS 设置 --land-dx/-dy）
@@ -1438,6 +1687,116 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   100% { transform: translate(0, 0); }
 }
 
+/* ---------- 配置台模式切换：整台控件依次收拢 / 从面板底边中点起飞 ---------- */
+/* 参与控件 = .dyn-control（4 个模式字段 + BPM/拍号行 + 开始按钮）。
+   退场：从上到下依次（--dyn-delay 级联，JS 按 DOM 顺序写入）朝模式按钮
+   收拢，淡出收束后由 JS 置 hidden（常驻控件不隐藏，等待重新入场） */
+.dyn-control.dyn-out {
+  animation: dyn-out-collapse 0.2s cubic-bezier(0.55, 0, 0.85, 0.36) both;
+  animation-delay: var(--dyn-delay, 0ms);
+}
+
+@keyframes dyn-out-collapse {
+  from { transform: translate(0, 0) scale(1); opacity: 1; }
+  to {
+    transform: translate(var(--out-dx, 0px), var(--out-dy, 0px)) scale(0.9);
+    opacity: 0;
+  }
+}
+
+/* 进场：从下往上依次（--dyn-delay 级联：开始按钮 → 测量行 → 字段自下而上）
+   从面板底边中点起飞，位移先落定（0.52s）、尺寸后落定（0.6s）——
+   位移略快于展开；两者都在 75% 处惯性过冲（飞过目标 ~10%、
+   大出一圈 scale 1.07）再回位 */
+.dyn-control.dyn-in {
+  animation: dyn-in-fly 0.52s cubic-bezier(0.16, 1, 0.3, 1) both,
+             dyn-in-size 0.60s cubic-bezier(0.16, 1, 0.3, 1) both,
+             dyn-in-fade 0.50s ease-out both;
+  animation-delay: var(--dyn-delay, 0ms);
+}
+
+@keyframes dyn-in-fly {
+  0% {
+    transform: translate(var(--fly-dx, 0px), var(--fly-dy, 0px));
+  }
+  75% {
+    transform: translate(
+      calc(var(--fly-dx, 0px) * -0.10),
+      calc(var(--fly-dy, 0px) * -0.10)
+    );
+  }
+  100% { transform: translate(0, 0); }
+}
+
+@keyframes dyn-in-size {
+  0% { scale: 0.6; }
+  75% { scale: 1.07; }
+  100% { scale: 1; }
+}
+
+@keyframes dyn-in-fade {
+  0% { opacity: 0; }
+  50% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+/* 模式按钮按压 Q 弹反馈（切换的"撞击点"） */
+.fn.pressed {
+  animation: fn-press 0.4s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+}
+
+@keyframes fn-press {
+  0% { scale: 1; }
+  35% { scale: 1.07; }
+  70% { scale: 0.98; }
+  100% { scale: 1; }
+}
+
+/* ---------- 弹窗：从下往上弹出 / 向下收拢退场 ---------- */
+/* 与配置台控件同原则：位移（modal-fly 0.40s）先落定、尺寸（modal-size
+   0.50s）后落定，两者都在 75% 处惯性过冲（飞过目标 ~12%、大出一圈
+   scale 1.04）再回位；遮罩同步淡入淡出 */
+.modal-overlay.modal-in {
+  animation: modal-fade-in 0.25s ease-out both;
+}
+
+.modal-overlay.modal-out {
+  animation: modal-fade-out 0.2s ease-in both;
+}
+
+.modal-overlay.modal-in .modal {
+  animation: modal-fly 0.40s cubic-bezier(0.16, 1, 0.3, 1) both,
+             modal-size 0.50s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.modal-overlay.modal-out .modal {
+  animation: modal-drop 0.2s cubic-bezier(0.55, 0, 0.85, 0.36) both;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes modal-fade-out {
+  to { opacity: 0; }
+}
+
+@keyframes modal-fly {
+  0% { transform: translateY(90px); }
+  75% { transform: translateY(-11px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes modal-size {
+  0% { scale: 0.85; }
+  75% { scale: 1.04; }
+  100% { scale: 1; }
+}
+
+@keyframes modal-drop {
+  to { transform: translateY(28px) scale(0.94); opacity: 0; }
+}
+
 /* ---------- 无障碍：减少动态 ---------- */
 @media (prefers-reduced-motion: reduce) {
   html[data-nav]::view-transition-old(root),
@@ -1449,7 +1808,14 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   }
 
   .studio-panel .spring-el,
-  .proj-card.rippled {
+  .proj-card.rippled,
+  .dyn-control.dyn-in,
+  .dyn-control.dyn-out,
+  .fn.pressed,
+  .modal-overlay.modal-in,
+  .modal-overlay.modal-out,
+  .modal-overlay .modal,
+  .select-menu.menu-in {
     animation: none !important;
   }
 }

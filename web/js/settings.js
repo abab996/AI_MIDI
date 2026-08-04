@@ -16,6 +16,48 @@
   };
 
   var current = null;
+  var menuOpen = false;
+
+  function renderModelMenu(models) {
+    var menu = $("#modelMenu");
+    menu.innerHTML = "";
+    if (!models || !models.length) {
+      var empty = document.createElement("div");
+      empty.className = "select-empty";
+      empty.textContent = "暂无模型，点击刷新列表";
+      menu.appendChild(empty);
+      return;
+    }
+    models.forEach(function (m) {
+      var opt = document.createElement("div");
+      opt.className = "select-option";
+      opt.textContent = m;
+      opt.title = m;
+      opt.addEventListener("click", function () {
+        $("#model").value = m;
+        closeModelMenu();
+      });
+      menu.appendChild(opt);
+    });
+  }
+
+  function openModelMenu() {
+    var menu = $("#modelMenu");
+    if (menuOpen) return;
+    menu.hidden = false;
+    menu.classList.remove("menu-in");
+    void menu.offsetWidth;
+    menu.classList.add("menu-in");
+    menuOpen = true;
+  }
+
+  function closeModelMenu() {
+    var menu = $("#modelMenu");
+    if (!menuOpen) return;
+    menu.hidden = true;
+    menu.classList.remove("menu-in");
+    menuOpen = false;
+  }
 
   function fillForm(s) {
     current = s;
@@ -86,14 +128,9 @@
       ).then(function (r) { return r.json(); }).then(function (data) {
         status.textContent = data.message;
         status.className = data.models.length ? "ok" : "err";
+        /* 同步重建自定义下拉菜单 */
+        renderModelMenu(data.models);
         if (data.models.length) {
-          var dl = $("#modelList");
-          dl.innerHTML = "";
-          data.models.forEach(function (m) {
-            var opt = document.createElement("option");
-            opt.value = m;
-            dl.appendChild(opt);
-          });
           if (!s.model) $("#model").value = data.models[0];
           UI.toast("✓ 已获取 " + data.models.length + " 个模型", "ok");
         } else {
@@ -103,6 +140,17 @@
         status.textContent = "✗ 获取失败: " + e.message;
         status.className = "err";
       });
+    });
+
+    /* 自定义模型下拉 */
+    $("#modelToggle").addEventListener("click", function () {
+      if (menuOpen) closeModelMenu(); else openModelMenu();
+    });
+    document.addEventListener("click", function (e) {
+      if (!e.target.closest(".select-wrap")) closeModelMenu();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeModelMenu();
     });
 
     /* 保存 */

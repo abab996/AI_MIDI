@@ -6,6 +6,9 @@
   var noteTable = [];
   var busy = false;
   var currentFunc = "配和弦";
+  var funcToken = 0;
+  var reducedMotion = typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function funcFields(func) {
     var map = {
@@ -17,15 +20,105 @@
     return (map[func] || "fReq").split(/\s+/);
   }
 
+  function clearDynField(f) {
+    f.classList.remove("dyn-in", "dyn-out");
+    f.style.removeProperty("--dyn-delay");
+    f.style.removeProperty("--out-dx");
+    f.style.removeProperty("--out-dy");
+    f.style.removeProperty("--fly-dx");
+    f.style.removeProperty("--fly-dy");
+  }
+
   function applyFunc(btn) {
+    var name = btn.textContent.trim();
+    if (name === currentFunc) return;
+    funcToken++;
+    var token = funcToken;
+
     UI.qsa(".fn", $("#funcSelector")).forEach(function (b) {
       b.classList.toggle("active", b === btn);
     });
-    currentFunc = btn.textContent.trim();
+    currentFunc = name;
     var show = funcFields(currentFunc);
-    UI.qsa(".dyn-field").forEach(function (f) {
-      f.hidden = show.indexOf(f.id) === -1;
+
+    /* 全部控件（.dyn-control：4 字段 + BPM/拍号行 + 开始按钮）每次切换都
+       完整参与"收拢 → 弹出"，包括切换前后都存在的元素；
+       切换后不再显示的字段在收拢完成后置 hidden */
+    var controls = UI.qsa(".dyn-control");
+    var persistent = controls.filter(function (f) {
+      return f.id === "measureRow" || f.id === "startBtn";
     });
+    var fields = controls.filter(function (f) {
+      return f.id !== "measureRow" && f.id !== "startBtn";
+    });
+
+    if (reducedMotion) {
+      fields.forEach(function (f) { f.hidden = show.indexOf(f.id) === -1; });
+      return;
+    }
+
+    /* 按钮 Q 弹按压反馈（切换的"撞击点"） */
+    btn.classList.add("pressed");
+    setTimeout(function () {
+      if (token === funcToken) btn.classList.remove("pressed");
+    }, 420);
+
+    /* 退场：当前可见的全部控件从下往上依次朝按钮中心收拢
+       （级联间隔 60ms：最下面的开始按钮先收、依次向上，隐藏中的字段不参与） */
+    var br = btn.getBoundingClientRect();
+    var ox = br.left + br.width / 2;
+    var oy = br.top + br.height / 2;
+    var outList = controls.filter(function (f) { return !f.hidden; });
+    outList.forEach(function (f, i) {
+      clearDynField(f);
+      var r = f.getBoundingClientRect();
+      var fx = r.left + r.width / 2;
+      var fy = r.top + r.height / 2;
+      var dx = ox - fx;
+      var dy = oy - fy;
+      var d = Math.hypot(dx, dy);
+      if (d < 1) { dx = 0; dy = 1; d = 1; }
+      var pull = 14;
+      f.style.setProperty("--out-dx", (dx / d * pull).toFixed(1) + "px");
+      f.style.setProperty("--out-dy", (dy / d * pull).toFixed(1) + "px");
+      f.style.setProperty("--dyn-delay", ((outList.length - 1 - i) * 60) + "ms");
+      f.classList.add("dyn-out");
+    });
+    var hideMs = outList.length ? (outList.length - 1) * 60 + 240 : 0;
+
+    setTimeout(function () {
+      if (token !== funcToken) return;
+      /* 切换后不再显示的字段收束完成，置 hidden；常驻控件与保留字段不动 */
+      fields.forEach(function (f) { f.hidden = show.indexOf(f.id) === -1; });
+      startShow(token);
+    }, hideMs);
+
+    /* 进场：全部控件从下往上（开始按钮 → BPM/拍号行 → 保留字段自下而上）
+       从面板底边中点起飞（级联间隔 90ms），惯性过冲后落定；
+       先完成最终布局再测量，确保起飞点与最终位置一致 */
+    function startShow(tok) {
+      var station = btn.closest(".station");
+      var sr = station.getBoundingClientRect();
+      var lx = sr.left + sr.width / 2;
+      var ly = sr.bottom;
+      var inList = persistent.slice().reverse().concat(
+        fields.filter(function (f) { return show.indexOf(f.id) !== -1; }).slice().reverse()
+      );
+      inList.forEach(function (f, i) {
+        clearDynField(f);
+        var r = f.getBoundingClientRect();
+        var fx = r.left + r.width / 2;
+        var fy = r.top + r.height / 2;
+        f.style.setProperty("--fly-dx", (fx - lx).toFixed(1) + "px");
+        f.style.setProperty("--fly-dy", (fy - ly).toFixed(1) + "px");
+        f.style.setProperty("--dyn-delay", (i * 90) + "ms");
+        f.classList.add("dyn-in");
+        setTimeout(function () {
+          if (tok !== funcToken) return;
+          clearDynField(f);
+        }, i * 90 + 700);
+      });
+    }
   }
 
   function consoleLine(text, cls) {

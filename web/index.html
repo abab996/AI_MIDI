@@ -62,12 +62,12 @@
         <button class="fn" data-show="fLyrics fNote fReq">其他要求</button>
       </div>
 
-      <div class="card draft dyn-field" id="fLyrics" hidden>
+      <div class="card draft dyn-field dyn-control" id="fLyrics" hidden>
         <label class="field-label" for="lyricsBox">歌词 · Lyrics</label>
         <textarea id="lyricsBox" rows="3" placeholder="粘贴歌词文本…"></textarea>
       </div>
 
-      <div class="card draft dyn-field" id="fLang" hidden>
+      <div class="card draft dyn-field dyn-control" id="fLang" hidden>
         <label class="field-label">语言 · Language</label>
         <div style="display:flex; gap:10px">
           <input type="text" id="origLang" placeholder="原语言 · 如 日语">
@@ -75,17 +75,17 @@
         </div>
       </div>
 
-      <label class="switch-row dyn-field" id="fNote" hidden>
+      <label class="switch-row dyn-field dyn-control" id="fNote" hidden>
         <input type="checkbox" id="noteOutput">
         <span>输出音符数据 (MIDI)</span>
       </label>
 
-      <div class="card draft dyn-field" id="fReq">
+      <div class="card draft dyn-field dyn-control" id="fReq">
         <label class="field-label" for="reqBox">具体要求 · Requirements</label>
         <textarea id="reqBox" rows="3" placeholder="如：使用 1-6-4-5 进行，力度柔和…"></textarea>
       </div>
 
-      <div class="measure-row">
+      <div class="measure-row dyn-control" id="measureRow">
         <div class="measure-cell">
           <div class="measure-label">BPM <span class="measure-tick">▮▮▮▮▮</span></div>
           <div class="measure-value"><input type="number" id="bpmInput" value="120" min="1" max="600"></div>
@@ -96,7 +96,7 @@
         </div>
       </div>
 
-      <button class="btn btn-primary btn-block btn-lg" id="startBtn">▶ 开始</button>
+      <button class="btn btn-primary btn-block btn-lg dyn-control" id="startBtn">▶ 开始</button>
     </section>
 
     <!-- ③ 结果控制台 -->

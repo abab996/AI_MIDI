@@ -117,7 +117,7 @@
         <div class="chat" id="chat"></div>
 
         <div class="composer">
-          <input type="text" id="msgInput" placeholder="输入你的要求…">
+          <textarea id="msgInput" rows="1" placeholder="输入你的要求…（Enter 发送 / Shift+Enter 换行）"></textarea>
           <button class="btn btn-primary" id="sendBtn">▶ 发送</button>
         </div>
 
@@ -143,6 +143,19 @@
   </div>
 </div>
 
+<!-- 删除确认弹窗 -->
+<div class="modal-overlay" id="confirmOverlay" hidden>
+  <div class="modal card brackets">
+    <div class="modal-title" id="confirmTitle">删除档案</div>
+    <div class="confirm-text" id="confirmText"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="confirmCancel">取消</button>
+      <button class="btn btn-danger" id="confirmOk">删除</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/vendor/marked.min.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/theme.js"></script>
 <script src="/js/chat.js"></script>

@@ -1,8 +1,46 @@
 ﻿from __future__ import annotations
 
+import io
+import time
 from unittest.mock import patch
 
 import chat_service
+
+
+class _FakeMCPProc:
+    """最小可用的 MCP 进程桩：stdout 立即 EOF（用于 reader 线程测试）。"""
+
+    def __init__(self):
+        self.stdout = io.StringIO("")
+
+    def poll(self):
+        return None
+
+
+def _reset_reader_state():
+    chat_service._mcp_reader_state["proc"] = None
+    chat_service._mcp_reader_state["thread"] = None
+    chat_service._mcp_reader_state["queue"] = None
+
+
+def test_ensure_mcp_reader_starts_without_name_error():
+    """回归：_ensure_mcp_reader 启动 reader 线程不得因缺少 queue import 崩溃。"""
+    proc = _FakeMCPProc()
+    try:
+        assert chat_service._ensure_mcp_reader(proc) is True
+        # 同一进程再次调用应复用现有线程
+        assert chat_service._ensure_mcp_reader(proc) is True
+    finally:
+        _reset_reader_state()
+
+
+def test_mcp_recv_returns_none_on_eof():
+    """stdout EOF（进程已关闭/崩溃）时 _mcp_recv 返回 None 而非抛异常。"""
+    proc = _FakeMCPProc()
+    try:
+        assert chat_service._mcp_recv(proc, timeout=2) is None
+    finally:
+        _reset_reader_state()
 
 
 def test_duplicate_project_names_keep_distinct_id_values():
@@ -16,6 +54,41 @@ def test_duplicate_project_names_keep_distinct_id_values():
     assert choices == [("同名项目", "project-a"), ("同名项目", "project-b")]
     assert ids == ["project-a", "project-b"]
     assert chat_service._resolve_project_id("project-b", ids) == "project-b"
+
+
+def test_rebuild_display_preserves_reasoning_process():
+    history = [
+        {"role": "user", "content": "配个和弦"},
+        {
+            "role": "assistant",
+            "content": "好的，以下是和弦：",
+            "reasoning_content": "先分析调性……",
+        },
+        {
+            "role": "assistant",
+            "content": "工具调用前的说明",
+            "reasoning_content": "需要读取知识库……",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_library_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "知识库内容"},
+    ]
+
+    display = chat_service._rebuild_display_from_history(history)
+
+    assert "<details>" in display[1]["content"]
+    assert "<summary>思考过程</summary>" in display[1]["content"]
+    assert "先分析调性……" in display[1]["content"]
+    assert "好的，以下是和弦：" in display[1]["content"]
+    # 工具调用轮的推理过程同样保留
+    assert "需要读取知识库……" in display[2]["content"]
+    # 无推理过程的普通消息原样保留
+    assert "<details>" not in display[0]["content"]
 
 
 def test_duplicate_file_labels_are_selected_by_path():

@@ -10,6 +10,7 @@ import copy
 import json
 import logging
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -48,6 +49,14 @@ _mcp_process: subprocess.Popen | None = None
 _mcp_lock = threading.Lock()
 _mcp_request_id = 0
 _mcp_initialized = False
+
+# MCP 后台 reader 单例：进程级唯一读线程 + 队列，避免每次读响应都新建线程、
+# 超时留下永久阻塞的孤儿线程
+_mcp_reader_state: dict = {"proc": None, "thread": None, "queue": None}
+_MCP_EOF = object()  # 队列哨兵：reader 已读到 EOF
+
+# MCP 工具列表缓存（进程存活期间复用，进程重启/关闭时失效）
+_mcp_tools_cache: list[dict] | None = None
 
 # 当前打开的项目 ID（None 表示在项目浏览器）
 _current_project_id: str | None = None
@@ -234,7 +243,7 @@ def _settings_summary() -> dict:
 
 def _ensure_mcp_process() -> subprocess.Popen | None:
     """确保 MCP 子进程正在运行，返回 Popen 对象或 None。"""
-    global _mcp_process, _mcp_initialized
+    global _mcp_process, _mcp_initialized, _mcp_tools_cache
 
     with _mcp_lock:
         if _mcp_process and _mcp_process.poll() is None:
@@ -260,6 +269,8 @@ def _ensure_mcp_process() -> subprocess.Popen | None:
                 env=env,
             )
             _mcp_initialized = False
+            # 新进程的工具列表缓存失效（reader 状态由 _mcp_recv 懒重建）
+            _mcp_tools_cache = None
             # 等待进程就绪
             time.sleep(config.MCP_STARTUP_SLEEP)
             if _mcp_process.poll() is not None:
@@ -309,35 +320,62 @@ def _mcp_send(proc: subprocess.Popen, message: dict) -> None:
     proc.stdin.flush()
 
 
-def _mcp_recv(proc: subprocess.Popen, timeout: float = config.MCP_RESPONSE_TIMEOUT) -> dict | None:
-    """从 MCP 进程读取一条 JSON-RPC 响应（带超时）。"""
-    import queue
+def _ensure_mcp_reader(proc: subprocess.Popen | None) -> bool:
+    """确保为当前 MCP 进程启动唯一的后台 reader 线程。
 
+    进程切换后旧线程自然退出（daemon + 旧 stdout EOF），新进程启动新线程。
+    """
+    st = _mcp_reader_state
+    if st["proc"] is proc and st["thread"] and st["thread"].is_alive():
+        return True
+    if proc is None or proc.poll() is not None:
+        return False
     q: queue.Queue = queue.Queue()
+    st["proc"] = proc
+    st["queue"] = q
 
-    def _read():
+    def _read_loop():
+        # 闭包捕获当前 q：旧进程的线程只写旧队列，不会污染新进程的队列
         try:
-            line = proc.stdout.readline()
-            q.put(line)
+            while True:
+                line = proc.stdout.readline()
+                if not line:  # EOF（进程关闭/崩溃）
+                    q.put(_MCP_EOF)
+                    return
+                q.put(line)
         except (OSError, ValueError):
-            q.put(None)
+            q.put(_MCP_EOF)
 
-    t = threading.Thread(target=_read, daemon=True)
+    t = threading.Thread(target=_read_loop, daemon=True, name="mcp-reader")
     t.start()
-    t.join(timeout)
+    st["thread"] = t
+    return True
 
-    if t.is_alive():
-        # 超时：让孤儿线程继续运行，下次调用可能会读到这条响应
-        # （_mcp_call_tool 会按 id 匹配，未匹配的会被忽略）
-        return None
 
-    line = q.get()
-    if not line:
+def _mcp_recv(proc: subprocess.Popen, timeout: float = config.MCP_RESPONSE_TIMEOUT) -> dict | None:
+    """从 MCP 进程读取一条 JSON-RPC 响应（带超时）。
+
+    由进程级单例 reader 线程负责 readline，本函数只做队列轮询；
+    超时直接返回 None，不会留下阻塞线程。
+    """
+    if not _ensure_mcp_reader(proc):
         return None
-    try:
-        return json.loads(line.strip())
-    except json.JSONDecodeError:
-        return None
+    q = _mcp_reader_state["queue"]
+    deadline = time.time() + timeout
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None
+        try:
+            item = q.get(timeout=remaining)
+        except queue.Empty:
+            return None
+        if item is _MCP_EOF:
+            return None
+        try:
+            return json.loads(item.strip())
+        except json.JSONDecodeError:
+            continue  # 跳过坏行，继续等待下一条
 
 
 def _mcp_call_tool(name: str, arguments: dict) -> str:
@@ -362,7 +400,7 @@ def _mcp_call_tool(name: str, arguments: dict) -> str:
     # 读取响应（可能有中间通知，需要找到匹配 id 的响应）
     deadline = time.time() + config.MCP_RESPONSE_TIMEOUT
     while time.time() < deadline:
-        response = _mcp_recv(proc)
+        response = _mcp_recv(proc, timeout=deadline - time.time())
         if response is None:
             break
         if response.get("id") == req_id:
@@ -379,12 +417,19 @@ def _mcp_call_tool(name: str, arguments: dict) -> str:
 
 
 def _mcp_list_tools() -> list[dict]:
-    """获取 MCP Server 的工具列表，转换为 OpenAI function definitions。"""
+    """获取 MCP Server 的工具列表，转换为 OpenAI function definitions。
+
+    结果在进程存活期间缓存（工具列表是静态的），进程重启时由
+    _close_mcp_process / _ensure_mcp_process 清空。
+    """
+    global _mcp_request_id, _mcp_tools_cache
+    if _mcp_tools_cache is not None:
+        return _mcp_tools_cache
+
     proc = _ensure_mcp_process()
     if not proc:
         return []
 
-    global _mcp_request_id
     with _mcp_lock:
         _mcp_request_id += 1
         req_id = _mcp_request_id
@@ -399,7 +444,7 @@ def _mcp_list_tools() -> list[dict]:
 
     deadline = time.time() + config.MCP_LIST_TIMEOUT
     while time.time() < deadline:
-        response = _mcp_recv(proc)
+        response = _mcp_recv(proc, timeout=deadline - time.time())
         if response is None:
             break
         if response.get("id") == req_id:
@@ -420,13 +465,14 @@ def _mcp_list_tools() -> list[dict]:
                     },
                 }
                 openai_tools.append(func)
+            _mcp_tools_cache = openai_tools
             return openai_tools
     return []
 
 
 def _close_mcp_process() -> None:
     """关闭 MCP 子进程。"""
-    global _mcp_process
+    global _mcp_process, _mcp_tools_cache
     with _mcp_lock:
         if _mcp_process:
             try:
@@ -444,8 +490,14 @@ def _close_mcp_process() -> None:
                         _mcp_process.wait(timeout=2)
                     except (OSError, subprocess.TimeoutExpired):
                         logger.warning("MCP 进程 kill 后未能 wait 退出")
-            _mcp_process = None
-            _mcp_initialized = False
+        _mcp_process = None
+        _mcp_initialized = False
+        # 进程关闭：工具缓存与 reader 单例状态一并失效
+        # （旧 reader 线程是 daemon，读到 EOF 后自行退出）
+        _mcp_tools_cache = None
+        _mcp_reader_state["proc"] = None
+        _mcp_reader_state["thread"] = None
+        _mcp_reader_state["queue"] = None
 
 
 # ==================== 文件工具 ====================
@@ -931,6 +983,8 @@ def chat_stream(project_id: str, message: str):
 
     # ── 执行工具循环（SSE 节流：每事件间隔 <25ms 的丢弃，因事件携带全量状态）──
     last_emit = 0.0
+    last_files_payload: str | None = None
+    last_download_url: str | None = None
     try:
         for gradio_tuple in _execute_tool_loop(
             ctx, session["undo_stack"], session["full_history"], message
@@ -941,15 +995,26 @@ def chat_stream(project_id: str, message: str):
             session["midi_files"] = updated_files
             session["chat_display"] = display
 
+            # download 事件不参与 25ms 节流：若携带新下载路径的帧被节流吞掉，
+            # 前端会收不到下载链接提示（生成 MIDI 后"没有下载链接"）
+            if download_path:
+                url = download_url(download_path)
+                if url != last_download_url:
+                    last_download_url = url
+                    yield _sse_event({"type": "download", "url": url})
+
             now = time.time()
             if now - last_emit < 0.025:
                 continue
             last_emit = now
 
             yield _sse_event({"type": "chat", "messages": display})
-            yield _sse_event({"type": "files", "files": _public_files(updated_files)})
-            if download_path:
-                yield _sse_event({"type": "download", "url": download_url(download_path)})
+            # files 仅在内容变化时发送，避免每帧重复推送相同状态
+            pub_files = _public_files(updated_files)
+            files_payload = json.dumps(pub_files, ensure_ascii=False)
+            if files_payload != last_files_payload:
+                last_files_payload = files_payload
+                yield _sse_event({"type": "files", "files": pub_files})
     except GeneratorExit:
         raise
     except Exception:  # noqa: BLE001
@@ -979,6 +1044,8 @@ def _restart_mcp_for_project(project_id: str) -> None:
 
 def _rebuild_display_from_history(all_messages: list[dict]) -> list[dict]:
     """从完整 API 历史（含 tool 调用）重建聊天显示列表。"""
+    from chat_pipeline import _format_display_message
+
     # 建立 tool_call_id -> 结果文本 映射
     tool_results: dict[str, str] = {}
     for m in all_messages:
@@ -997,9 +1064,18 @@ def _rebuild_display_from_history(all_messages: list[dict]) -> list[dict]:
             if content:
                 display.append({"role": "user", "content": content})
         elif role == "assistant":
-            # 工具调用前的说明文字（若存在且非空）
+            # 持久化的推理过程（reasoning_content）重建为可折叠思考过程
+            reasoning = m.get("reasoning_content") or ""
             if content and content.strip():
-                display.append({"role": "assistant", "content": content})
+                display.append({
+                    "role": "assistant",
+                    "content": _format_display_message(reasoning, content),
+                })
+            elif reasoning and reasoning.strip():
+                display.append({
+                    "role": "assistant",
+                    "content": _format_display_message(reasoning, ""),
+                })
             # 把每个工具调用重新格式化为可折叠标签
             for tc in tool_calls:
                 tc_id = tc.get("id", "")

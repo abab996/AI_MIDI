@@ -60,8 +60,11 @@
       <div class="field">
         <label class="field-label" for="model">模型 · Model</label>
         <div class="row">
-          <input type="text" id="model" list="modelList" placeholder="输入或从列表选择…">
-          <datalist id="modelList"></datalist>
+          <div class="select-wrap">
+            <input type="text" id="model" placeholder="输入或从列表选择…">
+            <button type="button" class="select-toggle" id="modelToggle" title="从列表选择">▾</button>
+            <div class="select-menu" id="modelMenu" hidden></div>
+          </div>
           <button class="btn btn-secondary btn-sm" id="refreshModelsBtn">刷新列表</button>
         </div>
         <div class="stat-line"><span class="dim" id="modelStatus">点击刷新按钮从 API 获取模型列表</span></div>

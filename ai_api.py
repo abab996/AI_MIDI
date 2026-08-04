@@ -7,6 +7,7 @@
 各自只负责拼装对应的 user content。
 """
 import logging
+import time
 
 import httpx
 import openai
@@ -15,6 +16,37 @@ from openai import OpenAI
 import config
 
 logger = logging.getLogger("ai_midi")
+
+
+def is_upstream_transient(err) -> bool:
+    """判断异常是否为上游瞬时故障（限流 / 超时 / 5xx / 连接失败），可自动重试。
+
+    上游服务繁忙、网关抖动、连接中断等重试通常能成功；
+    4xx（参数、鉴权等）与本地错误不属于此类，直接返回错误码。
+    """
+    status = getattr(err, "status_code", None)
+    if status in (429, 500, 502, 503, 504):
+        return True
+    if isinstance(
+        err,
+        (
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+        ),
+    ):
+        return True
+    text = str(err).lower()
+    return (
+        any(code in text for code in ("429", "500", "502", "503", "504"))
+        or "rate" in text
+        or "resource_exhausted" in text
+        or "timed out" in text
+        or "connection" in text
+        or "service unavailable" in text
+    )
 
 # ===== 共享 system prompt =====
 # 把模型设定为乐理专家,并定义 note_table 文本格式。
@@ -119,11 +151,15 @@ def _chat(
 
     # 尝试 API 调用;部分服务商不认识 thinking/reasoning_effort 等扩展参数,
     # 遇到 400 时按序剥除不兼容参数并重试（不依赖错误文本猜测,更健壮）。
+    # 上游瞬时故障（限流/超时/5xx/连接失败）自动指数退避重试 3 次,
+    # 3 次仍失败才返回错误码。
     _strippable = [
         ("extra_body", "thinking"),
         ("reasoning_effort", "reasoning_effort"),
     ]
-    for _attempt in range(len(_strippable) + 1):
+    max_upstream_retries = 3
+    response = None
+    for _attempt in range(max_upstream_retries + len(_strippable) + 1):
         try:
             response = client.chat.completions.create(**kwargs)
             break
@@ -139,6 +175,14 @@ def _chat(
                 logger.error("调用 AI API 时发生错误: HTTP 400")
                 return ""
         except (openai.APIError, openai.OpenAIError, TypeError) as e:
+            if is_upstream_transient(e) and _attempt < max_upstream_retries:
+                wait_sec = 5  # 每次重试固定间隔 5 秒
+                logger.warning(
+                    "上游瞬时故障 %s，等待 %d 秒后重试 (%d/%d)...",
+                    type(e).__name__, wait_sec, _attempt + 1, max_upstream_retries,
+                )
+                time.sleep(wait_sec)
+                continue
             stripped = False
             for param_key, error_kw in _strippable:
                 if param_key in kwargs and error_kw in str(e).lower():

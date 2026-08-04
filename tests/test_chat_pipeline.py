@@ -15,8 +15,12 @@ class _Completions:
         return next(self._responses)
 
 
-def _response(*, content=None, tool_call=None):
-    message = SimpleNamespace(content=content, tool_calls=[tool_call] if tool_call else [])
+def _response(*, content=None, tool_call=None, reasoning=None):
+    message = SimpleNamespace(
+        content=content,
+        tool_calls=[tool_call] if tool_call else [],
+        reasoning_content=reasoning,
+    )
     return SimpleNamespace(
         choices=[SimpleNamespace(finish_reason="tool_calls" if tool_call else "stop", message=message)],
     )
@@ -82,6 +86,24 @@ def test_max_tool_rounds_returns_explicit_message():
     assert outputs[-1][4][-1] == {"role": "assistant", "content": final_text}
 
 
+def test_reasoning_content_persisted_in_final_history():
+    ctx = _context([_response(content="最终回答", reasoning="思考过程内容")])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), patch.object(
+        chat_pipeline._chat_ui, "_build_system_prompt", return_value="system",
+    ), patch.object(
+        chat_pipeline._chat_ui, "_should_compact", return_value=False,
+    ):
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    # 展示中包含可折叠思考过程
+    assert "<summary>思考过程</summary>" in outputs[-1][0][-1]["content"]
+    assert "思考过程内容" in outputs[-1][0][-1]["content"]
+    # 落盘历史中 assistant 消息携带推理过程，重开对话后可重建展示
+    final_msg = outputs[-1][4][-1]
+    assert final_msg["reasoning_content"] == "思考过程内容"
+    assert final_msg["content"] == "最终回答"
+
+
 def test_sanitize_messages_fixes_none_content_and_missing_tool_name():
     raw_messages = [
         {"role": "user", "content": "hello"},
@@ -109,10 +131,22 @@ def test_sanitize_messages_fixes_none_content_and_missing_tool_name():
     assert sanitized[2]["name"] == "read_library_file"
 
 
+def test_sanitize_strips_reasoning_content_before_api_send():
+    raw = [
+        {"role": "assistant", "content": "回答", "reasoning_content": "思考中……"},
+    ]
+
+    sanitized = chat_pipeline._sanitize_messages(raw)
+
+    assert "reasoning_content" not in sanitized[0]
+    # 原消息不被修改（持久化仍保留推理过程）
+    assert raw[0]["reasoning_content"] == "思考中……"
+
+
 def test_format_display_message_with_reasoning():
     msg = chat_pipeline._format_display_message("思考如何和弦配理...", "和弦数据如下:")
     assert "<details>" in msg
-    assert "<summary>🧠 思考过程</summary>" in msg
+    assert "<summary>思考过程</summary>" in msg
     assert "思考如何和弦配理..." in msg
     assert "和弦数据如下:" in msg
 
@@ -120,6 +154,141 @@ def test_format_display_message_with_reasoning():
     assert "<details>" in msg_think_tag
     assert "内置思考内容" in msg_think_tag
     assert "最终回复" in msg_think_tag
+
+
+def test_format_display_message_merges_reasoning_and_think_blocks():
+    """双通道：reasoning_content 与 content 内嵌 <think> 同时存在时只展示一次思考区。"""
+    msg = chat_pipeline._format_display_message("推理A", "<think>推理B</think>正文")
+    assert msg.count("<summary>思考过程</summary>") == 1
+    assert "推理A" in msg
+    assert "推理B" in msg
+    assert "<think>" not in msg
+    assert msg.rstrip().endswith("正文")
+
+
+def test_format_display_message_handles_unclosed_think_tag():
+    """未闭合的 <think> 兜底剥离标签，内容并入思考区。"""
+    msg = chat_pipeline._format_display_message("", "前半<think>未闭合思考")
+    assert "<think>" not in msg
+    assert "未闭合思考" in msg
+    assert "前半" in msg
+
+
+def test_format_display_message_handles_multiple_think_blocks():
+    msg = chat_pipeline._format_display_message("", "a<think>一</think>b<think>二</think>c")
+    assert "一" in msg and "二" in msg
+    assert "<think>" not in msg
+    assert msg.rstrip().endswith("c")
+
+
+def test_format_display_message_does_not_duplicate_same_thinking():
+    """think 片段与 reasoning 相同 → 不重复拼接。"""
+    msg = chat_pipeline._format_display_message("思考内容", "<think>思考内容</think>正文")
+    assert msg.count("思考内容") == 1
+
+
+def test_split_content_blocks():
+    """多段 content 结构：thinking 块归推理，text 块归正文。"""
+    assert chat_pipeline._split_content_blocks("plain") == ("", "plain")
+    assert chat_pipeline._split_content_blocks(None) == ("", "")
+    assert chat_pipeline._split_content_blocks(123) == ("", "123")
+
+    reasoning, content = chat_pipeline._split_content_blocks([
+        {"type": "thinking", "thinking": "T1"},
+        {"type": "text", "text": "X1"},
+        {"type": "reasoning", "reasoning": "T2"},
+        "X2",
+        {"type": "text"},  # 无 text 字段的块跳过
+    ])
+    assert reasoning == "T1T2"
+    assert content == "X1X2"
+
+
+def test_sanitize_messages_non_gemini_strips_extra_content():
+    """非 Gemini 服务商：剥除 tool_calls 上的 extra_content，避免未知字段 400。"""
+    raw = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "read_library_file", "arguments": "{}"},
+                    "extra_content": {"google": {"thought_signature": "SIG"}},
+                }
+            ],
+        },
+    ]
+    sanitized = chat_pipeline._sanitize_messages(raw, is_gemini=False)
+    assert "extra_content" not in sanitized[0]["tool_calls"][0]
+
+
+def test_sanitize_messages_gemini_preserves_extra_content():
+    raw = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "read_library_file", "arguments": "{}"},
+                    "extra_content": {"google": {"thought_signature": "REAL_SIG"}},
+                }
+            ],
+        },
+    ]
+    sanitized = chat_pipeline._sanitize_messages(raw, is_gemini=True)
+    assert sanitized[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "REAL_SIG"
+
+
+def test_non_gemini_tool_calls_have_no_extra_content():
+    """非 Gemini 项目：落盘历史中的 tool_call 不带 extra_content。"""
+    ctx = _context([_response(tool_call=_tool_call("song.mid")), _response(content="done")])
+    ctx["is_gemini"] = False
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), patch.object(
+        chat_pipeline._chat_ui, "_build_system_prompt", return_value="system",
+    ), patch.object(
+        chat_pipeline._chat_ui, "_should_compact", return_value=False,
+    ), patch.object(
+        chat_pipeline._chat_ui, "_execute_tool_call", return_value=("ok", []),
+    ), patch.object(
+        chat_pipeline._chat_ui, "_resolve_created_midi_path",
+        return_value=__import__("pathlib").Path("missing.mid"),
+    ):
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    assistant_msgs = [
+        msg for msg in outputs[-1][4]
+        if msg.get("role") == "assistant" and "tool_calls" in msg
+    ]
+    assert len(assistant_msgs) == 1
+    assert "extra_content" not in assistant_msgs[0]["tool_calls"][0]
+
+
+def test_streaming_chunk_content_list_blocks_dont_crash():
+    """部分模型 content 为多段结构：thinking 块归入推理、text 块归入正文，不崩溃。"""
+    chunks = [
+        SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+            content=[
+                {"type": "thinking", "thinking": "推理片段"},
+                {"type": "text", "text": "正文片段"},
+            ]
+        ))]),
+    ]
+    ctx = _context([chunks, [_response(content="done")]])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), patch.object(
+        chat_pipeline._chat_ui, "_build_system_prompt", return_value="system",
+    ), patch.object(
+        chat_pipeline._chat_ui, "_should_compact", return_value=False,
+    ):
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    last = outputs[-1][0][-1]
+    assert "<summary>思考过程</summary>" in last["content"]
+    assert "推理片段" in last["content"]
+    assert "正文片段" in last["content"]
 
 
 def test_streaming_duplicate_tool_name_deduplication():

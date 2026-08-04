@@ -96,12 +96,14 @@
     });
   }
 
-  /* ---- SSE 消费：POST body，逐事件回调 onEvent(obj)，结束 resolve ---- */
-  function ssePost(url, body, onEvent) {
+  /* ---- SSE 消费：POST body，逐事件回调 onEvent(obj)，结束 resolve ----
+     opts.signal 可传入 AbortSignal 用于主动停止 */
+  function ssePost(url, body, onEvent, opts) {
     return fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
+      signal: opts && opts.signal,
     }).then(function (resp) {
       if (!resp.ok) {
         return resp.json().then(function (j) { throw new Error(j.detail || ("HTTP " + resp.status)); });
@@ -142,8 +144,38 @@
     });
   }
 
-  /* ---- 迷你 Markdown 渲染（输入先 esc，输出安全 HTML） ---- */
+  /* ---- Markdown 渲染（marked 优先，失败回退迷你解析） ---- */
+  /* marked 安全配置：AI 输出中的原始 HTML 一律转义，防止注入 */
+  if (window.marked && window.marked.use && window.marked.Renderer) {
+    try {
+      var _mdRenderer = new window.marked.Renderer();
+      _mdRenderer.html = function (token) {
+        var raw = (token && token.text != null) ? token.text : String(token);
+        return esc(raw);
+      };
+      window.marked.use({ renderer: _mdRenderer });
+    } catch (e) { /* marked 配置失败时按默认行为渲染 */ }
+  }
+
   function md(text) {
+    var s = String(text == null ? "" : text);
+    if (window.marked && typeof window.marked.parse === "function") {
+      try {
+        var out = window.marked.parse(s, { breaks: true, gfm: true });
+        /* 外链新窗口打开（与旧迷你解析行为一致） */
+        return out.replace(/<a href="/g, '<a target="_blank" rel="noopener" href="');
+      } catch (e) { /* 渲染失败回退到迷你解析 */ }
+    }
+    return mdMini(s);
+  }
+
+  /* 行内渲染：剥掉段落包裹（用于 <summary> 等单行场景） */
+  function mdInline(text) {
+    return md(text).trim().replace(/^<p>/, "").replace(/<\/p>$/, "");
+  }
+
+  /* 迷你 Markdown 渲染（输入先 esc，输出安全 HTML；无 marked 时的回退） */
+  function mdMini(text) {
     var s = esc(text);
     /* 代码块 */
     s = s.split("```").map(function (part, i) {
@@ -203,7 +235,7 @@
     qs: qs, qsa: qsa, toast: toast, esc: esc,
     fmtSize: fmtSize, fmtDate: fmtDate,
     getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
-    ssePost: ssePost, md: md, projectCard: projectCard,
+    ssePost: ssePost, md: md, mdInline: mdInline, projectCard: projectCard,
   };
 
   document.addEventListener("DOMContentLoaded", initNavDirections);

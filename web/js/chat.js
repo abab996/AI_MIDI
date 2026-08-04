@@ -707,7 +707,23 @@
           updateStreamingMessage(streamTrack, content);
         } else {
           /* 新消息（新一轮思考/工具块/首帧）：重建全部，最后一条用流式结构。
-             重建前记录已展开的 details，重建后恢复（避免每帧把用户
+             若聊天内有正在播放动画的 details（如上一轮思考块自动收起动画
+             尚未播完、工具块消息就到了），先等动画播完再重建——
+             否则整表重建会销毁动画，思考块表现为瞬间收起/展开 */
+          if (hasRunningDetailsAnim(chat)) {
+            if (!rebuildDeferred) {
+              rebuildDeferred = true;
+              var epochAtRebuild = chatEpoch;
+              setTimeout(function () {
+                rebuildDeferred = false;
+                if (chatEpoch !== epochAtRebuild) return; /* 延迟期间已开始新会话，放弃旧重建 */
+                renderMessages(lastMessages.length ? lastMessages : messages);
+              }, DETAILS_CLOSE_DELAY_MS);
+            }
+            return;
+          }
+          rebuildDeferred = false;
+          /* 重建前记录已展开的 details，重建后恢复（避免每帧把用户
              展开的思考块/工具块重新收起） */
           var openIdx = [];
           chat.querySelectorAll("details").forEach(function (d, i) {
@@ -830,6 +846,31 @@
       if (!body.classList.contains("open")) body.classList.add("closed");
     }, DETAILS_CLOSE_DELAY_MS);
   }
+
+  /* 检测聊天内是否有正在播放展开/收起动画的 details。
+     结构变化整表重建会销毁旧元素上正在播放的动画（表现为思考块
+     "啪"地瞬间收起/展开），重建前用它判断是否需要等动画播完。
+     注意：WAAPI 动画在 .details-body 上（animateBody 用 body.animate），
+     必须查 body.getAnimations()，details 元素自身没有动画 */
+  function hasRunningDetailsAnim(root) {
+    var found = false;
+    root.querySelectorAll("details").forEach(function (d) {
+      if (found) return;
+      var body = d.querySelector(":scope > .details-body");
+      if (!body) return;
+      if (body.dataset.collapsing) { found = true; return; }
+      if (body.getAnimations && body.getAnimations().some(function (a) {
+        return a.playState === "running";
+      })) {
+        found = true;
+      }
+    });
+    return found;
+  }
+
+  /* 结构变化重建延迟标志：动画播放期间只延迟一次，期间的新消息
+     由延迟回调用 lastMessages 一次性渲染（不丢帧） */
+  var rebuildDeferred = false;
 
   function syncDetailsBodies(root) {
     root.querySelectorAll("details").forEach(function (d) {
@@ -1022,21 +1063,10 @@
     var pending = lastMessages;
     lastMessages = [];
     if (pending.length && chat.lastElementChild === streamTrack.el) {
-      /* 若流式消息的思考块收起动画仍在播放（推理结束自动收起或手动收起后
-         立刻结束），先等动画播完再整表重建——否则重建会销毁正在播放的
-         收起动画，表现为思考块瞬间消失（折叠无动画） */
-      var closing = false;
-      var det = streamTrack.el.querySelector("details");
-      if (det) {
-        var body = det.querySelector(":scope > .details-body");
-        closing = !!(body && body.dataset.collapsing);
-        if (!closing && det.getAnimations) {
-          closing = det.getAnimations().some(function (a) {
-            return a.playState === "running";
-          });
-        }
-      }
-      if (closing) {
+      /* 若聊天内仍有正在播放的动画（思考块自动收起/手动收起尚未播完），
+         先等动画播完再整表重建——否则重建会销毁正在播放的动画，
+         表现为思考块瞬间消失（折叠无动画） */
+      if (hasRunningDetailsAnim(chat)) {
         var epochAtDone = chatEpoch;
         setTimeout(function () {
           if (chatEpoch !== epochAtDone) return; /* 延迟期间已开始新会话，放弃旧重建 */

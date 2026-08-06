@@ -651,9 +651,20 @@ def _execute_tool_loop(
                 tc_name = tc.get("function", {}).get("name", "")
                 tc_args_raw = tc.get("function", {}).get("arguments", "")
 
+                try:
+                    tc_args = (
+                        json.loads(tc_args_raw)
+                        if isinstance(tc_args_raw, str)
+                        else tc_args_raw
+                    )
+                except json.JSONDecodeError:
+                    tc_args = {}
+
+                # 执行前先推送「执行中」占位块：标签与完成块一致（含参数），
+                # ⏳ 标记实时进度；完成后由完成块整体替换
                 chat_display.append({
                     "role": "assistant",
-                    "content": f"🔧 正在调用 `{tc_name}`...",
+                    "content": _chat_ui._format_pending_tool_entry(tc_name, tc_args),
                 })
                 yield (
                     list(chat_display),
@@ -666,21 +677,12 @@ def _execute_tool_loop(
                 )
 
                 try:
-                    tc_args = (
-                        json.loads(tc_args_raw)
-                        if isinstance(tc_args_raw, str)
-                        else tc_args_raw
-                    )
-                except json.JSONDecodeError:
-                    tc_args = {}
-
-                try:
                     result_text, updated_files = _chat_ui._execute_tool_call(
                         {"function": {"name": tc_name, "arguments": tc_args}},
                         updated_files,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    # 工具执行抛错时生成失败结果块，避免「🔧 正在调用」占位符悬空
+                    # 工具执行抛错时生成失败结果块，避免「正在执行」占位块悬空
                     logger.exception("工具执行失败: %s", tc_name)
                     result_text = f"错误：工具执行失败 — {type(exc).__name__}"
 

@@ -569,6 +569,41 @@ def test_tool_execution_error_produces_failure_block():
     assert "错误：工具执行失败" in tool_blocks[0]["content"]
 
 
+def test_pending_tool_block_shown_before_execution():
+    """工具执行前先推送「执行中」占位块（标签 + ⏳），完成后被完成块替换。"""
+    ctx = _context([_response(tool_call=_tool_call("song.mid")), _response(content="done")])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), \
+         patch.object(chat_pipeline._chat_ui, "_build_system_prompt", return_value="system"), \
+         patch.object(chat_pipeline._chat_ui, "_should_compact", return_value=False), \
+         patch.object(chat_pipeline._chat_ui, "_execute_tool_call",
+                      return_value=("ok", [])), \
+         patch.object(chat_pipeline._chat_ui, "_resolve_created_midi_path",
+                      return_value=__import__("pathlib").Path("missing.mid")):
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    # 执行中占位帧：标签与完成块一致（含工具名/参数摘要）+ tool-pending 标记
+    pending_frames = [
+        o for o in outputs if "tool-pending" in (o[0][-1].get("content") or "")
+    ]
+    assert pending_frames
+    pending = pending_frames[0][0][-1]["content"]
+    assert "🔧 调用" in pending and "⏳" in pending
+    assert "create_midi" in pending and "song.mid" in pending
+    # 占位帧先于完成帧出现
+    assert outputs.index(pending_frames[0]) < len(outputs) - 1
+    # 完成块帧存在且无占位标记（占位块被完成块整体替换）
+    done_frames = [
+        o for o in outputs
+        if "🔧 调用" in (o[0][-1].get("content") or "")
+        and "tool-pending" not in (o[0][-1].get("content") or "")
+    ]
+    assert done_frames
+    assert "```\nok\n```" in done_frames[0][0][-1]["content"]
+    # 最终帧为模型收尾回复，全量展示中无悬空占位
+    assert outputs[-1][0][-1]["content"] == "done"
+    assert not any("tool-pending" in (m.get("content") or "") for m in outputs[-1][0])
+
+
 def test_stream_non_transient_error_no_retry():
     """流式迭代中的非瞬态错误不触发重试，转为「调用失败」提示（原有行为）。"""
     class _BrokenStream:

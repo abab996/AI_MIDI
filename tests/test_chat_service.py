@@ -451,6 +451,55 @@ def test_chat_stream_normal_send_abandons_pending_edit():
         chat_service._sessions.pop(pid, None)
 
 
+def test_chat_stream_pending_tool_frame_bypasses_throttle():
+    """「执行中」占位帧跳过 25ms 节流：快工具也要把标签帧送达前端。"""
+    pid = "pid-throttle-1"
+    pending_msg = {
+        "role": "assistant",
+        "content": '<details><summary>🔧 调用 `x()` ⏳</summary>\n'
+                   '<div class="tool-pending">⏳ 正在执行…</div></details>',
+    }
+    entry_msg = {
+        "role": "assistant",
+        "content": '<details><summary>🔧 调用 `x()`</summary>```\nok\n```</details>',
+    }
+
+    def fake_prepare(message, history_for_ai, midi_files, settings, history):
+        return {
+            "kwargs": {}, "client": None, "messages": [], "system_prompt": "",
+            "_round_start_idx": 0,
+            "chat_display": list(history) + [{"role": "user", "content": message}],
+            "updated_files": [], "download_path": None, "tool_log": [],
+            "max_tool_rounds": 3, "is_gemini": True,
+        }
+
+    def fake_loop(ctx, new_undo_stack, history_for_ai, message):
+        # 两帧间隔 <25ms：占位帧携带 tool-pending 标记必须绕过节流送达
+        base = [{"role": "user", "content": message}]
+        yield (base + [pending_msg], "", [], new_undo_stack, [], None, None)
+        yield (base + [entry_msg], "", [], new_undo_stack, [], None, None)
+
+    try:
+        _seed_session(pid, [], [])
+        with patch.object(chat_service, "_load_settings", return_value={"api_key": "test-key"}), \
+             patch.object(chat_service.project_manager, "get_workspace_dir", return_value=None), \
+             patch.object(chat_service.project_manager, "save_draft"), \
+             patch("chat_pipeline._prepare_context", fake_prepare), \
+             patch("chat_pipeline._execute_tool_loop", fake_loop):
+            events = list(chat_service.chat_stream(pid, "问题", edit=False))
+
+        chat_frames = [e for e in events if '"type": "chat"' in e]
+        # 至少两帧：占位帧（tool-pending）+ 完成帧
+        assert len(chat_frames) >= 2, chat_frames
+        first = chat_frames[0]
+        assert "tool-pending" in first
+        assert "🔧 调用" in first
+        # 完成帧无占位标记
+        assert "tool-pending" not in chat_frames[1]
+    finally:
+        chat_service._sessions.pop(pid, None)
+
+
 # ==================== 文件夹与移动 ====================
 
 def test_create_folder_validates_and_mirrors(tmp_path, monkeypatch):

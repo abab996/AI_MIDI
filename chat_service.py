@@ -1354,6 +1354,25 @@ def _format_single_tool_entry(tc_name: str, tc_args, result_text: str) -> str:
     )
 
 
+def _format_pending_tool_entry(tc_name: str, tc_args) -> str:
+    """工具「执行中」占位块：summary 与完成块完全一致（用户第一时间看到
+    同样的工具标签 + ⏳ 进度标记），正文显示执行状态；完成后被完成块替换。"""
+    if isinstance(tc_args, dict):
+        short_parts = ", ".join(
+            f"{k}={_truncate_arg_value(v)}" for k, v in tc_args.items()
+        )
+    else:
+        # 向后兼容：直接传字符串的情况
+        short_parts = str(tc_args)
+
+    return (
+        f"<details>\n"
+        f"<summary>🔧 调用 `{tc_name}({short_parts})` ⏳</summary>\n\n"
+        f'<div class="tool-pending">⏳ 正在执行 `{tc_name}`…</div>\n'
+        f"</details>"
+    )
+
+
 def _make_tool_result_message(tool_call_id: str, result: str, name: str | None = None) -> dict:
     """构造 tool 角色的消息（OpenAI API 格式）。"""
     msg = {
@@ -1473,7 +1492,10 @@ def chat_stream(project_id: str, message: str, edit: bool = False):
                     yield _sse_event({"type": "download", "url": url})
 
             now = time.time()
-            if now - last_emit < 0.025:
+            # 工具「执行中」占位帧跳过 25ms 节流：快工具瞬间完成时占位帧
+            # 也要送达前端（用户要求调用开始即显示工具标签与 ⏳ 进度）
+            last_content = display[-1].get("content", "") if display else ""
+            if now - last_emit < 0.025 and "tool-pending" not in last_content:
                 continue
             last_emit = now
 

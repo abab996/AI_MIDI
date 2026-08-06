@@ -968,7 +968,8 @@ a.btn {
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.proj-card:hover .proj-actions {
+.proj-card:hover .proj-actions,
+.proj-card:focus-within .proj-actions {
   opacity: 1;
   transform: translateY(0);
 }
@@ -1303,7 +1304,8 @@ a.btn {
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.msg:hover .msg-actions {
+.msg:hover .msg-actions,
+.msg:focus-within .msg-actions {
   opacity: 1;
   transform: translateY(0);
 }
@@ -2003,5 +2005,17 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
   .msg.ai.streaming details > .details-body {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* ---------- 触屏设备（无 hover）：操作按钮常显 ----------
+   仅靠 :hover 浮现的按钮在触屏上不可达（没有悬停概念），
+   focus-within 只能覆盖键盘导航路径，触屏点击也不产生 focus；
+   触屏环境直接常显 */
+@media (hover: none) {
+  .proj-actions,
+  .msg-actions {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

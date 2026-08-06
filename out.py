@@ -237,8 +237,3 @@ def txt_to_midi(source, output_midi_path=None, bpm=config.DEFAULT_BPM):
 def out_note(note_table, bpm, output_path=None):
     """把 AI 返回的 note_table 文本写成 MIDI。供 main.py 调用。"""
     txt_to_midi(note_table, output_path, bpm)
-
-
-if __name__ == "__main__":
-    # 独立测试入口:从 1.txt 解析并生成 output.mid。
-    txt_to_midi("1.txt", "output.mid", bpm=90)

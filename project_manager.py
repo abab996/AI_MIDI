@@ -565,7 +565,8 @@ def save_history(project_id: str, messages: list[dict], midi_files: list[dict]) 
     pdir = project_dir(project_id)
     pdir.mkdir(parents=True, exist_ok=True)
 
-    # 过滤 midi_files 中的 note_table（太大，不存历史，由 MIDI 文件本身保存）
+    # note_table 一并写入 history.json：重启后重建 system prompt
+    # （_build_system_prompt）依赖它——"不存历史"的旧注释与实际行为不符
     midi_meta = []
     for f in midi_files:
         midi_meta.append({

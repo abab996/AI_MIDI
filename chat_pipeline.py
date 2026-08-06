@@ -368,6 +368,8 @@ def _execute_tool_loop(
             _strippable = [
                 ("extra_body", "thinking"),
                 ("reasoning_effort", "reasoning_effort"),
+                ("max_tokens", "max_tokens"),
+                ("max_completion_tokens", "max_completion_tokens"),
             ]
             max_retries = 3
             accumulated_content = ""
@@ -741,8 +743,6 @@ def _execute_tool_loop(
     # intentional: broad catch for API/MCP/file errors in user-facing generator
     except Exception as e:
         logger.exception("send_message 调用失败")
-        if isinstance(e, GeneratorExit):
-            raise
         # 不直接 str(e) 暴露给 UI，避免 API 异常可能包含敏感请求信息
         status_code = getattr(e, "status_code", None)
         err_str = str(e).lower()

@@ -136,8 +136,3 @@ def get_note(file_path=None, save_to_file: bool = True) -> list[str]:
         logger.info("结果已保存到 %s", config.DOING_OUTPUT_TXT)
 
     return output_list
-
-
-if __name__ == "__main__":
-    # 独立测试入口:解析默认输入 MIDI 并打印/保存结果。
-    get_note()

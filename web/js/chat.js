@@ -43,7 +43,9 @@
       });
       card.querySelector(".action-rename").addEventListener("click", function () {
         showModal("重命名档案", p.name, function (name) {
-          return UI.putJSON("/api/projects/" + p.id, { name: name }).then(reloadProjects);
+          /* 不内嵌 reloadProjects：modalOk 对任意成功的 modalAction
+             统一调用 reloadProjects，避免每次重命名发两个重复请求 */
+          return UI.putJSON("/api/projects/" + p.id, { name: name });
         });
       });
       card.querySelector(".action-copy").addEventListener("click", function () {
@@ -71,18 +73,24 @@
       var card = document.createElement("article");
       card.className = "card draft brackets proj-card";
       card.dataset.id = ids[i];
+      var id = ids[i];
+      /* 无结果占位卡（id 为 __none__）：不渲染"打开"按钮、不绑定点击——
+         否则点击会 openProject("__none__") → 404 报错 */
+      var isPlaceholder = id === "__none__";
       card.innerHTML =
         '<div class="proj-name">' + UI.esc(row[0]) + "</div>" +
         '<div class="proj-meta"><span class="stamp">匹配内容</span></div>' +
         '<div style="font-size:12px;color:var(--color-ink-dim);line-height:1.7">' + UI.esc(row[1]) + "</div>" +
-        '<div class="proj-actions"><button class="btn btn-primary btn-sm action-open">打开</button></div>';
-      card.querySelector(".action-open").addEventListener("click", function () {
-        openProject(ids[i]);
-      });
-      card.addEventListener("click", function (e) {
-        if (e.target.closest("button")) return;
-        openProject(ids[i]);
-      });
+        (isPlaceholder ? "" : '<div class="proj-actions"><button class="btn btn-primary btn-sm action-open">打开</button></div>');
+      if (!isPlaceholder) {
+        card.querySelector(".action-open").addEventListener("click", function () {
+          openProject(id);
+        });
+        card.addEventListener("click", function (e) {
+          if (e.target.closest("button")) return;
+          openProject(id);
+        });
+      }
       grid.appendChild(card);
     });
   }
@@ -187,6 +195,13 @@
   /* 面板缩回卡片矩形（返回流程），动画结束后回调切换视图 */
   function panelShrinkTo(studio, cardRect, done) {
     if (reducedMotion || !cardRect) { done(); return; }
+    /* grow 动画 500ms 窗口内点返回时，studio 上残留 grow 的 inline
+       transform——直接测量会得到带缩放/平移的矩形，FLIP 收拢起点错位；
+       先清除残留 transform 并强制 reflow 再测量真实矩形 */
+    studio.style.transition = "";
+    studio.style.transform = "";
+    studio.style.transformOrigin = "";
+    void studio.offsetWidth;
     var pr = studio.getBoundingClientRect();
     var sx = cardRect.width / pr.width;
     var sy = cardRect.height / pr.height;
@@ -284,6 +299,40 @@
       UI.toast("✗ 打开项目失败: " + e.message, "err");
       isTransitioning = false;
     });
+  }
+
+  /* 新建项目进入工作台：无卡片来源，直接切换视图 + 面板内容弹入。
+     与 openProject 不同：不捕获卡片矩形做 FLIP，springIn 无来源点。
+     视图过渡进行中时延迟重试，避免"项目已创建但界面没反应" */
+  function enterProject(payload) {
+    if (isTransitioning) {
+      setTimeout(function () { enterProject(payload); }, 650);
+      return;
+    }
+    currentProjectId = null; /* 防止保存旧草稿 */
+    currentProjectId = payload.meta.id;
+    currentName = payload.meta.name || "未命名";
+    files = payload.midi_files || [];
+    $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
+    $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
+    renderFiles();
+    renderMessages(payload.display_messages || []);
+    resetEditUI();
+    dirsList = payload.dirs || [];
+    renderFiles();
+    renderWorkspace(payload.workspace || { bound: false, path: "" });
+    $("#msgInput").value = payload.draft || "";
+    $("#sendBtn").disabled = false;
+    $("#newMidiLink").hidden = true;
+
+    /* 无卡片来源：直接切换视图 + 面板内容弹入（无 VT，立即播放） */
+    isTransitioning = true;
+    $("#archiveView").hidden = true;
+    $("#studioView").hidden = false;
+    setTimeout(function () { springIn(null, null); }, 60);
+    setTimeout(function () { $("#msgInput").focus(); }, 60);
+    window.scrollTo(0, 0);
+    setTimeout(function () { isTransitioning = false; }, 600);
   }
 
   function backToArchive() {
@@ -456,7 +505,8 @@
       count += child.count;
       var isOpen = !!expandedDirs[childPath];
       var row = document.createElement("div");
-      row.className = "file-dir" + (isOpen ? " open" : "");
+      row.className = "file-dir" + (isOpen ? " open" : "") +
+        (selectedDir === childPath ? " selected" : "");
       row.dataset.path = childPath;
       row.innerHTML =
         '<span class="file-dir-arrow">' + (isOpen ? "▾" : "▸") + "</span>" +
@@ -767,6 +817,12 @@
      避免长对话积累数千个动画元素导致卡死 */
   function appendFadeChars(container, text) {
     if (!text) return;
+    if (reducedMotion) {
+      /* 降动态模式：CSS 禁用动画后 animationend 永不触发，span 会滞留
+         DOM（长对话积累大量节点）；直接追加纯文本节点 */
+      container.appendChild(document.createTextNode(text));
+      return;
+    }
     var frag = document.createDocumentFragment();
     var added = 0;
     var groupIdx = 0;
@@ -854,6 +910,11 @@
       det.appendChild(body);
       el.insertBefore(det, answerEl);
       appendFadeChars(txt, b.body);
+    }
+    /* 块数减少（内容形态变化）：移除尾部多余的旧块，避免陈旧内容残留 */
+    var blockDets = el.querySelectorAll("details");
+    for (var i = parsed.blocks.length; i < blockDets.length; i++) {
+      blockDets[i].remove();
     }
     var texts = el.querySelectorAll(".details-body .stream-text");
     for (var i = 0; i < parsed.blocks.length; i++) {
@@ -1070,10 +1131,11 @@
      不再用 WAAPI + max-height（每帧测量 scrollHeight 强制重排是开合卡顿根源）；
      grid 过渡无需测量高度。流式内容增长时已展开的块自然撑开、无动画 */
   var DETAILS_ANIM_MS = 300;
-  /* 思考块自动收起前的推理静默期：正文/工具帧交错时推理会短暂不变，
-     立即收起会在推理恢复时立刻展开（反复动画 = 聊天框抽搐）；
-     静默超过该时长才判定思考真正结束并收起 */
-  var THINK_SETTLE_MS = 1200;
+  /* 思考块自动收起前的推理静默期：为 0 表示推理停止增长的下一帧立即收起
+     （用户要求"思考完毕立刻收起，干脆利落"）。
+     代价：推理中途短暂停顿（如模型组装下一段推理）会触发收起-展开动画；
+     收起方向动画检测（hasRunningDetailsAnim）会等动画播完再重建，避免闪断 */
+  var THINK_SETTLE_MS = 0;
   /* 开合动画结束后的重建等待时长（grid 过渡 300ms + 余量） */
   var DETAILS_CLOSE_DELAY_MS = DETAILS_ANIM_MS + 100;
 
@@ -1321,6 +1383,7 @@
     if (!msgEl) return;
     var actions = msgEl.querySelector(".msg-actions");
     if (!actions) return;
+    actions.classList.remove("edit-menu");   /* 退出三选项菜单：不再错落浮现 */
     swapActions(actions, buildDefaultActions());
   }
 
@@ -1341,6 +1404,7 @@
         var actions = msgEl.querySelector(".msg-actions");
         if (!actions) return;
         editMenuIndex = idx;
+        actions.classList.add("edit-menu");   /* 三选项错落浮现（CSS 按 nth-child 延迟） */
         swapActions(actions, buildEditMenu(data.has_edit_history));
       })
       .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
@@ -1625,33 +1689,7 @@
     /* 新建档案 */
     $("#newProjectBtn").addEventListener("click", function () {
       showModal("＋ 新建档案", "", function (name) {
-        return UI.postJSON("/api/projects", { name: name }).then(function (payload) {
-          if (isTransitioning) return;
-          currentProjectId = null; /* 防止保存旧草稿 */
-          currentProjectId = payload.meta.id;
-          currentName = payload.meta.name || "未命名";
-          files = payload.midi_files || [];
-          $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
-          $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
-          renderFiles();
-          renderMessages(payload.display_messages || []);
-          resetEditUI();
-          dirsList = payload.dirs || [];
-          renderFiles();
-          renderWorkspace(payload.workspace || { bound: false, path: "" });
-          $("#msgInput").value = payload.draft || "";
-          $("#sendBtn").disabled = false;
-          $("#newMidiLink").hidden = true;
-
-          /* 无卡片来源：直接切换视图 + 面板内容弹入（无 VT，立即播放） */
-          isTransitioning = true;
-          $("#archiveView").hidden = true;
-          $("#studioView").hidden = false;
-          setTimeout(function () { springIn(null, null); }, 60);
-          setTimeout(function () { $("#msgInput").focus(); }, 60);
-          window.scrollTo(0, 0);
-          setTimeout(function () { isTransitioning = false; }, 600);
-        });
+        return UI.postJSON("/api/projects", { name: name }).then(enterProject);
       });
     });
 

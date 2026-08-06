@@ -87,7 +87,10 @@ def put_settings(body: SettingsIn) -> dict:
         if value is None or value == "":
             return None
         try:
-            return int(value)
+            v = int(value)
+            # 0 与"未设置"同义（运行时各处把 falsy 当未设置），
+            # 存 None 避免设置页显示 0 却不生效的误导
+            return v or None
         except (ValueError, TypeError):
             return None
 

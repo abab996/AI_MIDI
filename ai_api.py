@@ -149,13 +149,15 @@ def _chat(
     if extra_body is not None:
         kwargs["extra_body"] = extra_body
 
-    # 尝试 API 调用;部分服务商不认识 thinking/reasoning_effort 等扩展参数,
-    # 遇到 400 时按序剥除不兼容参数并重试（不依赖错误文本猜测,更健壮）。
+    # 尝试 API 调用;部分服务商不认识 thinking/reasoning_effort/max_tokens
+    # 等扩展参数,遇到 400 时按序剥除不兼容参数并重试（不依赖错误文本猜测,更健壮）。
     # 上游瞬时故障（限流/超时/5xx/连接失败）自动指数退避重试 3 次,
     # 3 次仍失败才返回错误码。
     _strippable = [
         ("extra_body", "thinking"),
         ("reasoning_effort", "reasoning_effort"),
+        ("max_tokens", "max_tokens"),
+        ("max_completion_tokens", "max_completion_tokens"),
     ]
     max_upstream_retries = 3
     response = None

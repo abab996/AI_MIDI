@@ -1155,18 +1155,6 @@ def _get_choices(files: list[dict]) -> list[tuple[str, str]]:
     return [(_file_label(file_info), _file_choice_value(file_info)) for file_info in files]
 
 
-def _download_path_for_names(project_id: str, names: list[str]) -> str | None:
-    """按文件名（含子目录）解析项目内文件绝对路径。"""
-    session = _get_session(project_id)
-    name_set = set(names)
-    for f in session["midi_files"]:
-        if f.get("name") in name_set or os.path.basename(f.get("name", "")) in name_set:
-            path = f.get("path")
-            if path and os.path.isfile(path):
-                return str(path)
-    return None
-
-
 def _download_files(project_id: str, names: list[str]) -> str | None:
     """下载勾选的文件；未勾选则下载全部。返回文件路径或 zip 路径。"""
     session = _get_session(project_id)
@@ -1719,13 +1707,6 @@ def undo_edit(project_id: str, index: int) -> dict:
 
 # ==================== 项目生命周期 ====================
 
-def _restart_mcp_for_project(project_id: str) -> None:
-    """关闭现有 MCP 子进程，下次 _ensure_mcp_process() 将以新项目目录重启。"""
-    global _current_project_id
-    _current_project_id = project_id
-    _close_mcp_process()
-
-
 def _rebuild_display_from_history(all_messages: list[dict]) -> list[dict]:
     """从完整 API 历史（含 tool 调用）重建聊天显示列表。"""
     from chat_pipeline import _format_display_message
@@ -1839,7 +1820,7 @@ def refresh_project_list() -> list[dict]:
 
 
 def _refresh_project_list() -> tuple[list[tuple[str, str]], list[str]]:
-    """兼容旧接口：返回 (下拉选项列表, 项目ID列表)。"""
+    """兼容旧接口：返回 (下拉选项列表, 项目ID列表)。有测试契约，保留。"""
     projects = project_manager.list_projects()
     choices = []
     ids = []
@@ -1853,7 +1834,7 @@ def _refresh_project_list() -> tuple[list[tuple[str, str]], list[str]]:
 
 
 def _resolve_project_id(selected_project: str, project_ids: list[str]) -> str | None:
-    """兼容旧接口：根据选中值解析稳定的项目 ID。"""
+    """兼容旧接口：根据选中值解析稳定的项目 ID。有测试契约，保留。"""
     if not selected_project or not project_ids:
         return None
     if selected_project in project_ids:

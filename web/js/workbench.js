@@ -260,7 +260,7 @@
           link.href = ev.download_url;
           link.hidden = false;
         }
-        setStatus(ev.status ? "DONE" : "DONE", "ok");
+        setStatus("DONE", "ok");
         consoleLine("> _", "dim");
         finish();
       }

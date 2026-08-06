@@ -80,13 +80,21 @@
     UI.qsa(".fn.active", $("#effortSelector")).forEach(function (b) {
       effort = b.dataset.effort;
     });
+    /* 数值字段：空串或 0 都按"未设置"处理（0 在运行时被当作未设置，
+       若存 0 设置页会显示 0 但实际不生效——误导用户） */
+    function numOrNull(input) {
+      var v = input.value;
+      if (v === "") return null;
+      var n = Number(v);
+      return n === 0 ? null : n;
+    }
     return {
       api_key: $("#apiKey").value,
       base_url: $("#baseUrl").value,
       api_path: $("#apiPath").value,
       model: $("#model").value,
-      max_tokens: $("#maxTokens").value === "" ? null : Number($("#maxTokens").value),
-      max_completion_tokens: $("#maxCompletion").value === "" ? null : Number($("#maxCompletion").value),
+      max_tokens: numOrNull($("#maxTokens")),
+      max_completion_tokens: numOrNull($("#maxCompletion")),
       reasoning_effort: effort,
       thinking_enabled: $("#thinkingEnabled").checked,
     };
@@ -125,7 +133,14 @@
         "/api/models?api_key=" + encodeURIComponent(s.api_key) +
         "&base_url=" + encodeURIComponent(s.base_url) +
         "&api_path=" + encodeURIComponent(s.api_path)
-      ).then(function (r) { return r.json(); }).then(function (data) {
+      ).then(function (r) {
+        /* 先检查 HTTP 状态：4xx/5xx 时 body 是 {"detail": ...}，
+           直接解析会因缺 models 字段显示 "获取失败: undefined" */
+        return r.json().then(function (j) {
+          if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+          return j;
+        });
+      }).then(function (data) {
         status.textContent = data.message;
         status.className = data.models.length ? "ok" : "err";
         /* 同步重建自定义下拉菜单 */

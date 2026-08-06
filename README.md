@@ -47,6 +47,8 @@ python main.py
 python main.py --scale 0.9   # 调整窗口占屏幕比例
 ```
 
+> 旧启动命令 `python run.py` 与 `python main.py` 完全等效（参数原样透传），仅为兼容历史习惯保留。
+
 - 三个页面通过页头按钮互相跳转（`主工作台 / 多轮对话 / 设置`），每次跳转都是整页刷新，内容从服务器重新加载。
 - 右上角可切换**暖纸 / 暗蓝**双主题（默认暖纸，localStorage 记忆，含切换动画）。
 - `config.py` 的 `validate_base_url` 仅强制 https 与 443 端口，不限制域名，任意 OpenAI 兼容服务商均可接入；`api_path`（如 `/v1beta/openai`）仅对 Gemini 服务商生效，其他服务商按标准 OpenAI 格式直接使用 base_url 原路径。
@@ -75,11 +77,15 @@ python main.py --scale 0.9   # 调整窗口占屏幕比例
 ```bash
 pyinstaller --onedir --noconsole --icon=app_icon.ico \
   --collect-all fastapi --collect-all uvicorn --collect-all multipart \
+  --collect-all pythonnet \
   --add-data "input;input" --add-data "samples;samples" \
   --add-data "web;web" --add-data "Library;Library" \
   --add-data "splash.png;." --add-data "splash.ico;." \
   --name AI_MIDI main.py
 ```
+
+> `--collect-all pythonnet` 不可省略：`pythonnet` 依赖 `clr_loader` 的运行时
+> 探测，不收集会导致打包后的 exe 在导入 `webview` 时崩溃。
 
 打包结果位于 `dist\AI_MIDI\AI_MIDI.exe`。
 
@@ -101,6 +107,7 @@ pyinstaller --onedir --noconsole --icon=app_icon.ico \
 ```
 AI_MIDI/
 ├── main.py              # 唯一活跃入口：FastAPI 服务 + pywebview 窗口
+├── run.py               # 兼容旧命令的启动器（等效 python main.py，参数透传）
 ├── server.py            # FastAPI 后端：REST + SSE 路由、静态前端挂载
 ├── chat_service.py      # 多轮对话服务层（MCP 子进程 / 会话 / 草稿 / 工作区）
 ├── config.py            # 路径、默认值与 base_url 校验
@@ -116,11 +123,17 @@ AI_MIDI/
 │   ├── settings.html    # 设置页
 │   ├── style.css        # 设计令牌与全部组件样式（暖纸 / 暗蓝双主题）
 │   └── js/              # theme.js / app.js / workbench.js / chat.js / settings.js
+├── Library/             # 乐理知识库（AI 通过 MCP 工具读取）
+├── tests/               # pytest 测试（chat_service / chat_pipeline / ai_api / config 等）
 ├── input/in.mid         # 默认输入 MIDI
 ├── samples/             # 示例 MIDI / 文本
 ├── docs/prompts.md      # 提示词参考文档
 ├── app_icon.ico         # 应用图标
 ├── splash.png / splash.ico  # 启动图
+├── requirements.txt     # Python 依赖
+├── RUN.bat              # Windows 一键启动脚本
+├── .env.example         # 环境变量示例（API Key 走 settings.json，无需环境变量）
+├── LICENSE              # Apache 2.0
 └── settings.json        # 用户设置（API key 等，已 git 忽略）
 ```
 

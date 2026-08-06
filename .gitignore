@@ -39,3 +39,6 @@ projects/
 .codegraph/
 .coverage
 .pytest_cache/
+
+# GUI 测试截图（本地验证证据，含界面画面，不应入库）
+gui-test-screenshots/

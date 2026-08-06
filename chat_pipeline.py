@@ -307,6 +307,7 @@ def _execute_tool_loop(
     new_undo_stack: list,
     full_history: list[dict],
     message: str,
+    project_id: str | None = None,
 ):
     """Core multi-round tool-calling loop. Generator yielding intermediate states.
 
@@ -317,6 +318,9 @@ def _execute_tool_loop(
     - Tool execution with display updates
     - Max-rounds fallback
     - Error handling
+
+    project_id: 会话所属项目（错误落盘用）。显式传参，避免依赖
+    chat_service 的全局 _current_project_id（并发对话会互相覆盖）。
     """
     kwargs: dict = ctx["kwargs"]
     client = ctx["client"]
@@ -612,7 +616,7 @@ def _execute_tool_loop(
             # ── 无工具调用 → 最终回复完成 ──
             if not msg_tool_calls_list:
                 new_full_history = _finalize_response(
-                    messages, full_history, message, _round_start_idx, updated_files,
+                    messages, full_history, message, _round_start_idx, updated_files, project_id,
                 )
                 formatted_final = _format_display_message(accumulated_reasoning, accumulated_content)
                 if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
@@ -725,7 +729,7 @@ def _execute_tool_loop(
         messages.append({"role": "assistant", "content": final_content})
 
         new_full_history = _finalize_response(
-            messages, full_history, message, _round_start_idx, updated_files,
+            messages, full_history, message, _round_start_idx, updated_files, project_id,
         )
 
         full_display = final_content
@@ -760,9 +764,9 @@ def _execute_tool_loop(
         for api_msg in messages[_round_start_idx:]:
             if api_msg.get("role") in ("assistant", "tool"):
                 new_error_history.append(api_msg)
-        if _chat_ui._current_project_id:
+        if project_id:
             project_manager.save_history(
-                _chat_ui._current_project_id, new_error_history, updated_files,
+                project_id, new_error_history, updated_files,
             )
         yield (
             list(chat_display),
@@ -818,6 +822,7 @@ def _finalize_response(
     message: str,
     _round_start_idx: int,
     updated_files: list[dict],
+    project_id: str | None = None,
 ) -> list[dict]:
     """Build new_full_history from messages and save to project manager.
 
@@ -828,9 +833,9 @@ def _finalize_response(
         if api_msg.get("role") in ("assistant", "tool"):
             new_full_history.append(api_msg)
 
-    if _chat_ui._current_project_id:
+    if project_id:
         project_manager.save_history(
-            _chat_ui._current_project_id, new_full_history, updated_files,
+            project_id, new_full_history, updated_files,
         )
 
     return new_full_history

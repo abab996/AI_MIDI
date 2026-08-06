@@ -8,7 +8,11 @@
   var currentName = "";
   var files = [];                /* 当前项目文件列表 */
   var chatBusy = false;
+  var streamEnded = false;       /* 本次回复是否已收尾（chatDone 幂等标志） */
   var draftDirty = false;
+  /* 滚动位置是否贴近底部（<40px）：流式输出只在贴近底部时自动滚到底，
+     用户上翻阅读时不被每帧滚动拽回 */
+  var nearBottom = true;
 
   /* 流式逐字渐显与思考块自动展开/收起状态 */
   var liveStreaming = false;             /* 是否处于实时流式输出（仅此时做逐字动画） */
@@ -20,6 +24,7 @@
   var currentMessages = [];              /* 最近一次渲染的完整消息列表（消息操作按钮按索引取数） */
   var editingIndex = -1;                 /* 修改模式：正在编辑的用户消息索引（-1 = 未编辑） */
   var editMenuIndex = -1;                /* 修改菜单：当前显示「取消/撤回修改/撤回消息」的消息索引 */
+  var editMenuToken = 0;                 /* 修改菜单请求令牌：连点时丢弃过期响应，防止菜单落错消息 */
   var inputBeforeEdit = "";              /* 进入修改模式前的输入框内容（撤回时还原） */
 
   /* ═══════════ 档案库 ═══════════ */
@@ -917,11 +922,21 @@
           var isNewAiMsg = !streamTrack.el ||
             streamTrack.el.dataset.index !== String(aiIndex);
           /* 重建前记录已展开的 details，重建后恢复（避免每帧把用户
-             展开的思考块/工具块重新收起） */
+             展开的思考块/工具块重新收起）。历史消息按下标恢复；
+             本条流式消息的块内容随流变化（下标不可靠），用 summary
+             文本匹配恢复——否则同消息重建后思考块/工具块会悄悄合拢 */
           var openIdx = [];
           chat.querySelectorAll("details").forEach(function (d, i) {
             if (d.open) openIdx.push(i);
           });
+          var streamOpenSummaries = [];
+          if (streamTrack.el) {
+            streamTrack.el.querySelectorAll("details").forEach(function (d) {
+              if (!d.open) return;
+              var s = d.querySelector("summary");
+              if (s) streamOpenSummaries.push(s.textContent);
+            });
+          }
           chat.innerHTML = "";
           for (var i = 0; i < list.length - 1; i++) {
             var mEl = renderMessageCached(list[i]);
@@ -939,6 +954,17 @@
           streamTrack.norm = norm;
           streamTrack.el.dataset.index = aiIndex;
           chat.appendChild(streamTrack.el);
+          /* 恢复本条流式消息内仍存在的已展开块（summary 文本匹配） */
+          if (streamOpenSummaries.length) {
+            streamTrack.el.querySelectorAll("details").forEach(function (d) {
+              var s = d.querySelector("summary");
+              if (s && streamOpenSummaries.indexOf(s.textContent) !== -1) {
+                d.open = true;
+                var b = d.querySelector(":scope > .details-body");
+                if (b) b.classList.add("open");
+              }
+            });
+          }
           /* AI 消息入场动画：从下往上渐显飞入（仅首次出现时） */
           if (isNewAiMsg) animateMsgEnter(streamTrack.el, false);
           userToggledStream = false;
@@ -989,7 +1015,7 @@
 
         /* 折叠块展开/收起动画同步（自动展开/收起与手动点击后都生效） */
         syncDetailsBodies(chat);
-        chat.scrollTop = chat.scrollHeight;
+        if (nearBottom) chat.scrollTop = chat.scrollHeight;
         return;
       }
     }
@@ -1021,7 +1047,7 @@
     /* 折叠块展开/收起动画同步 */
     syncDetailsBodies(chat);
 
-    chat.scrollTop = chat.scrollHeight;
+    if (nearBottom) chat.scrollTop = chat.scrollHeight;
   }
 
   /* 服务端展示文本 = <details> 折叠块（受信任 HTML）+ markdown 正文。
@@ -1054,10 +1080,13 @@
   /* 检测聊天内是否有正在播放展开/收起过渡的 details。
      结构变化整表重建会销毁旧元素上正在播放的动画（表现为思考块
      "啪"地瞬间收起/展开），重建前用它判断是否需要等动画播完。
-     注意：CSS 过渡也出现在 getAnimations() 中（Chromium） */
+     注意：CSS 过渡也出现在 getAnimations() 中（Chromium）。
+     必须查所有 .details-body 而不只是 .open——收起方向动画发生时
+     .open 类已被 syncDetailsBodies 立即移除，只查 .open 会漏检，
+     重建仍会掐断收起动画（表现为思考块瞬间收起） */
   function hasRunningDetailsAnim(root) {
     var found = false;
-    root.querySelectorAll("details > .details-body.open").forEach(function (body) {
+    root.querySelectorAll("details > .details-body").forEach(function (body) {
       if (found) return;
       if (body.getAnimations && body.getAnimations().some(function (a) {
         return a.playState === "running";
@@ -1301,8 +1330,12 @@
     if (chatBusy) { UI.toast("回复进行中，请稍候再修改", "warn"); return; }
     if (!currentProjectId) return;
     restoreEditMenu();
+    /* 令牌校验：连续点击两条消息时 edit-info 响应可能乱序返回，
+       后点击的消息会被先返回的旧响应覆盖——过期响应直接丢弃 */
+    var token = ++editMenuToken;
     UI.postJSON("/api/projects/" + currentProjectId + "/messages/edit-info", { index: idx })
       .then(function (data) {
+        if (token !== editMenuToken) return;
         var msgEl = $("#chat").querySelector('.msg[data-index="' + idx + '"]');
         if (!msgEl) return;
         var actions = msgEl.querySelector(".msg-actions");
@@ -1395,6 +1428,7 @@
     draftDirty = false;
 
     chatBusy = true;
+    streamEnded = false;
     chatEpoch++;
     abortController = new AbortController();
     /* 回复期间发送按钮变为停止按钮（保持可点击） */
@@ -1448,10 +1482,15 @@
       } else if (ev.type === "error") {
         removeTyping();
         appendSysLine("⚠ " + ev.message);
+        chatDone();
       } else if (ev.type === "done") {
         chatDone();
       }
-    }, { signal: abortController.signal }).catch(function (e) {
+    }, { signal: abortController.signal }).then(function () {
+      /* 流结束兜底：正常路径 done 事件已调 chatDone（幂等）；
+         后端异常提前断流/未发 done 时，这里保证界面不卡死 */
+      chatDone();
+    }).catch(function (e) {
       if (e && e.name === "AbortError") {
         /* 用户主动停止：静默收尾，保留已输出的内容 */
         removeTyping();
@@ -1465,6 +1504,8 @@
   }
 
   function chatDone() {
+    if (streamEnded) return;   /* 幂等：error/done/兜底/catch 可能多次触发收尾 */
+    streamEnded = true;
     chatBusy = false;
     liveStreaming = false;
     abortController = null;
@@ -1925,6 +1966,12 @@
         syncDetailsBodies($("#chat"));
       }
     }, true);
+    /* 手动滚动位置跟踪：离开底部 40px 以上时停止自动滚动（流式输出
+       不再把用户拽回底部），滚回底部后恢复跟随 */
+    $("#chat").addEventListener("scroll", function () {
+      var c = $("#chat");
+      nearBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
+    });
     /* 渐显完成后的 span 还原为纯文本节点（事件委托，避免长文本积累动画元素卡死） */
     $("#chat").addEventListener("animationend", function (e) {
       var t = e.target;

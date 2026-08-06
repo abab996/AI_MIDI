@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,13 @@ _mcp_tools_cache: list[dict] | None = None
 
 # 当前打开的项目 ID（None 表示在项目浏览器）
 _current_project_id: str | None = None
+
+# 对话串行锁：chat_stream 整体持锁执行，避免两个并发对话互相覆盖
+# 全局 _current_project_id / 会话状态 / MCP 响应队列（数据串号）。
+# StreamingResponse 对同步生成器逐 next() 调度，可能落在不同线程；
+# threading.Lock 无属主限制（非 RLock），跨线程 release 是安全的，
+# GeneratorExit（客户端断开/主动停止）也会走 finally 释放。
+_chat_lock = threading.Lock()
 
 
 # ==================== 会话状态 ====================
@@ -650,13 +658,21 @@ def _restore_from_trash(project_id: str, trash_rels: list[str]) -> None:
             pass
 
 
+# 撤销栈上限：快照深拷贝整个 midi_files（含 note_table 文本），
+# 不设上限长期对话内存无界增长。超限时丢弃最旧快照
+_UNDO_STACK_LIMIT = 20
+
+
 def _push_undo(project_id: str, undo_stack: list, files: list[dict], trash_rels: list[str] | None = None) -> list:
     """入栈撤销快照（新格式 {"files", "trash"}），并作废旧回收站内容。
 
     兼容旧格式：旧条目为纯清单快照列表，_on_undo 弹出时按类型区分。
     """
     _clear_trash(project_id)
-    return undo_stack + [{"files": copy.deepcopy(files), "trash": trash_rels or []}]
+    new_stack = undo_stack + [{"files": copy.deepcopy(files), "trash": trash_rels or []}]
+    if len(new_stack) > _UNDO_STACK_LIMIT:
+        new_stack = new_stack[-_UNDO_STACK_LIMIT:]
+    return new_stack
 
 
 def _on_upload(files, current_list, undo_stack, project_id, full_history, names=None):
@@ -694,15 +710,9 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history, names=
         except OSError:
             logger.exception("复制 MIDI 文件失败: %s -> %s", src_path, dest_path)
             continue
-        # 镜像双写（绑定工作区时同步到 projects/<id>/midi）
-        if mirror_dir is not None:
-            try:
-                mp = mirror_dir / dest_path.relative_to(dest_dir)
-                mp.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dest_path, mp)
-            except OSError:
-                logger.exception("镜像同步上传文件失败: %s", dest_path)
-        # 验证文件是合法 MIDI：mido 解析失败的文件直接拒绝
+        # 验证文件是合法 MIDI：mido 解析失败的文件直接拒绝。
+        # 校验必须在镜像写之前——否则失败时只删了主副本，
+        # 镜像副本残留（镜像与主目录不一致）
         try:
             mido.MidiFile(str(dest_path))
         except (OSError, ValueError, EOFError):
@@ -712,6 +722,14 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history, names=
             except OSError:
                 pass
             continue
+        # 镜像双写（绑定工作区时同步到 projects/<id>/midi）
+        if mirror_dir is not None:
+            try:
+                mp = mirror_dir / dest_path.relative_to(dest_dir)
+                mp.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dest_path, mp)
+            except OSError:
+                logger.exception("镜像同步上传文件失败: %s", dest_path)
         try:
             note_table = get.get_note(str(dest_path), save_to_file=False)
         except OSError:
@@ -941,7 +959,10 @@ def _on_delete_folder(project_id: str, folder_rel: str, current_list,
         if f.get("name", "").startswith(prefix):
             rel = _move_to_trash(project_id, f)
             if not rel:
-                # 文件被占用等：整体中止，保留文件夹与全部文件
+                # 文件被占用：回滚已移入回收站的文件（移回原路径），
+                # 兑现"失败时文件夹与全部文件原样保留"的契约——否则
+                # 前 N-1 个文件已离开磁盘，前端清单却仍显示它们（幽灵文件）
+                _restore_from_trash(project_id, trash_rels)
                 return current_list, undo_stack, f"无法删除被占用的文件: {f.get('name')}"
             trash_rels.append(rel)
 
@@ -1046,6 +1067,12 @@ def _on_move(project_id: str, moves: list[dict], current_list, undo_stack, full_
         if not info:
             failed.append(old_name)
             continue
+        # 目标目录防穿越：任意路径段含 ..（含反斜杠形式）一律拒绝。
+        # 与 rename 的校验（1052 行）同规则；另外下方 resolve 后还有
+        # containment 兜底（防绝对路径/盘符覆盖等 pathlib 拼接逃逸）
+        if any(seg == ".." for seg in re.split(r"[/\\]", target)):
+            failed.append(old_name)
+            continue
         if rename is not None:
             # 重命名：新文件名来自 rename（同目录改名或移动并改名）
             rename = str(rename).strip().strip("/")
@@ -1062,8 +1089,15 @@ def _on_move(project_id: str, moves: list[dict], current_list, undo_stack, full_
         if any(f.get("name") == new_name for f in updated):
             failed.append(old_name)
             continue
-        src = base / old_name
-        dst = base / new_name
+        src = (base / old_name).resolve()
+        dst = (base / new_name).resolve()
+        base_resolved = base.resolve()
+        # 兜底防穿越：源/目标都必须落在项目主目录内（pathlib 拼接
+        # 遇到绝对路径段/盘符会整体覆盖 base，strip 校验挡不住）
+        if src == base_resolved or not src.is_relative_to(base_resolved) \
+                or dst == base_resolved or not dst.is_relative_to(base_resolved):
+            failed.append(old_name)
+            continue
         if dst.exists():
             failed.append(old_name)
             continue
@@ -1407,11 +1441,10 @@ def chat_stream(project_id: str, message: str, edit: bool = False):
     - {"type": "error", "message": "..."}      致命错误
     - {"type": "done"}                         结束
     """
-    global _current_project_id
-
     # ── 早期返回：空消息 ──
     if not message.strip():
         yield _sse_event({"type": "error", "message": "消息不能为空"})
+        yield _sse_event({"type": "done"})
         return
 
     # ── 早期返回：未配置 API Key ──
@@ -1421,8 +1454,25 @@ def chat_stream(project_id: str, message: str, edit: bool = False):
             "type": "error",
             "message": "⚠ 请先在设置页填写并保存 API Key。",
         })
+        yield _sse_event({"type": "done"})
         return
 
+    # 并发对话串行化：持锁期间，任何其他 chat_stream 的首次 next() 阻塞，
+    # 直到本流结束/断开（finally 释放，GeneratorExit 同样生效）
+    _chat_lock.acquire()
+    try:
+        yield from _chat_stream_locked(project_id, message, edit)
+    finally:
+        _chat_lock.release()
+
+
+def _chat_stream_locked(project_id: str, message: str, edit: bool = False):
+    """chat_stream 的锁内主体（事件类型见 chat_stream 文档）。"""
+    global _current_project_id
+
+    # 重新读取设置（包装器只校验了 api_key 存在性；主体需要完整设置
+    # 传给 _prepare_context 构造请求）
+    settings = _load_settings()
     session = _get_session(project_id)
     _current_project_id = project_id
 
@@ -1478,7 +1528,7 @@ def chat_stream(project_id: str, message: str, edit: bool = False):
     last_download_url: str | None = None
     try:
         for gradio_tuple in _execute_tool_loop(
-            ctx, session["undo_stack"], session["full_history"], message
+            ctx, session["undo_stack"], session["full_history"], message, project_id
         ):
             display, _, updated_files, undo_stack, full_history, download_path, _ = gradio_tuple
             session["undo_stack"] = undo_stack

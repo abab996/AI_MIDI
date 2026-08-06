@@ -22,6 +22,7 @@ from pydantic import BaseModel
 import ai_api
 import chat_service
 import config
+import project_manager
 import get
 import out
 from out import EmptyNoteTableError
@@ -482,6 +483,10 @@ def undo_edit(project_id: str, body: MessageEditIn) -> dict:
 @app.post("/api/projects/{project_id}/files")
 async def upload_files(project_id: str, files: list[UploadFile] = File(...)) -> dict:
     """上传 MIDI 文件到项目。"""
+    # 入口校验项目存在：否则 _get_session/_on_upload 会在磁盘创建
+    # projects/<id>/midi 幽灵目录（无索引条目，档案库搜索会扫到孤立目录）
+    if not any(p.get("id") == project_id for p in project_manager._load_index()):
+        raise HTTPException(status_code=404, detail="项目不存在")
     temp_paths: list[str] = []
     orig_names: list[str] = []
     try:
@@ -500,24 +505,27 @@ async def upload_files(project_id: str, files: list[UploadFile] = File(...)) -> 
         logger.exception("接收上传文件失败")
         raise HTTPException(status_code=500, detail="文件保存失败")
 
-    session = chat_service._get_session(project_id)
-    prev_count = len(session["midi_files"])
-    updated, undo_stack, _ = chat_service._on_upload(
-        temp_paths,
-        session["midi_files"],
-        session["undo_stack"],
-        project_id,
-        session["full_history"],
-        names=orig_names,
-    )
-    session["midi_files"] = updated
-    session["undo_stack"] = undo_stack
-
-    for tmp in temp_paths:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+    try:
+        session = chat_service._get_session(project_id)
+        prev_count = len(session["midi_files"])
+        updated, undo_stack, _ = chat_service._on_upload(
+            temp_paths,
+            session["midi_files"],
+            session["undo_stack"],
+            project_id,
+            session["full_history"],
+            names=orig_names,
+        )
+        session["midi_files"] = updated
+        session["undo_stack"] = undo_stack
+    finally:
+        # 无论 _get_session/_on_upload 是否抛异常，都清理临时文件
+        # （原先只在成功后清理，异常路径会残留）
+        for tmp in temp_paths:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     return {
         "files": chat_service._public_files(updated),

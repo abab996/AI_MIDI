@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import copy
 import io
 import time
 from unittest.mock import patch
@@ -193,10 +194,13 @@ def test_delete_all_failed_no_change():
 def test_undo_legacy_plain_list_entry():
     """旧格式撤销条目（纯清单快照）仍可恢复，不触碰回收站。"""
     expected = [{"name": "a.mid", "path": "A/a.mid", "size": 10}]
-    legacy_stack = [expected]  # pop 会原地修改传入列表，先保存期望值
+    # 用深拷贝构造栈：若未来 _on_undo 改为原地修改内层列表，
+    # expected 与被测返回值是同一对象会"自证其真"，掩盖回归
+    legacy_stack = [copy.deepcopy(expected)]
     with patch.object(chat_service, "_persist_project_state") as persist:
         restored, stack, _ = chat_service._on_undo(legacy_stack, [], "pid-x", [])
     assert restored == expected
+    assert restored is not expected
     assert stack == []
     persist.assert_called_once_with("pid-x", [], restored)
 
@@ -579,7 +583,7 @@ def test_chat_stream_edit_replaces_last_user_message():
             "max_tool_rounds": 3, "is_gemini": True,
         }
 
-    def fake_loop(ctx, new_undo_stack, history_for_ai, message):
+    def fake_loop(ctx, new_undo_stack, history_for_ai, message, project_id=None):
         final_history = history_for_ai + [
             {"role": "user", "content": message},
             {"role": "assistant", "content": "新回复"},
@@ -648,7 +652,7 @@ def test_chat_stream_normal_send_abandons_pending_edit():
             "max_tool_rounds": 3, "is_gemini": True,
         }
 
-    def fake_loop(ctx, new_undo_stack, history_for_ai, message):
+    def fake_loop(ctx, new_undo_stack, history_for_ai, message, project_id=None):
         yield (
             ctx["chat_display"] + [{"role": "assistant", "content": "新回复"}],
             "", [], new_undo_stack,
@@ -697,7 +701,7 @@ def test_chat_stream_pending_tool_frame_bypasses_throttle():
             "max_tool_rounds": 3, "is_gemini": True,
         }
 
-    def fake_loop(ctx, new_undo_stack, history_for_ai, message):
+    def fake_loop(ctx, new_undo_stack, history_for_ai, message, project_id=None):
         # 两帧间隔 <25ms：占位帧携带 tool-pending 标记必须绕过节流送达
         base = [{"role": "user", "content": message}]
         yield (base + [pending_msg], "", [], new_undo_stack, [], None, None)
@@ -902,6 +906,77 @@ def test_move_rename_field_renames_and_undo(tmp_path, monkeypatch):
             files2, undo_stack, history,
         )
     assert failed == ["drums/b.mid"]
+
+
+def test_move_target_traversal_rejected(tmp_path, monkeypatch):
+    """_on_move 的 target 防穿越：.. 路径段/绝对路径一律拒绝，文件原地不动。
+
+    回归：修复前 target 只做 strip 不做 ".." 校验（rename 有校验唯独
+    target 漏了），构造 target="../../.." 可把项目文件真实移到目录外。
+    """
+    import project_manager
+
+    pid = "pid-move-trav"
+    base = tmp_path / "base"
+    base.mkdir()
+    f = base / "a.mid"
+    f.write_bytes(b"data")
+    files = [{"name": "a.mid", "path": str(f), "size": 4}]
+    history = []
+
+    monkeypatch.setattr(project_manager, "get_midi_base_dir", lambda pid_: base)
+    monkeypatch.setattr(project_manager, "get_midi_mirror_dir", lambda pid_: None)
+
+    evil_targets = [
+        "../..",            # 常规 .. 逃逸
+        "..",               # 单段 ..
+        "a/../../..",       # 中段 ..
+        "..\\..",           # Windows 反斜杠形式
+        str(tmp_path / "escape"),  # 绝对路径（pathlib 拼接会整体覆盖 base）
+    ]
+    for target in evil_targets:
+        with patch.object(chat_service, "_persist_project_state") as persist:
+            updated, undo_stack, failed = chat_service._on_move(
+                pid, [{"name": "a.mid", "target": target}], files, [], history,
+            )
+        assert failed == ["a.mid"], target
+        assert updated == files
+        assert undo_stack == []
+        persist.assert_not_called()
+        # 磁盘文件未被移出项目目录
+        assert (base / "a.mid").is_file()
+    assert not (tmp_path / "escape").exists()
+
+
+def test_chat_stream_early_returns_send_done_event():
+    """空消息/未配置 API Key 的早期返回也补发 done 事件。
+
+    回归：修复前这两条路径只发 error 直接 return，前端 error 分支不
+    收尾、ssePost 正常 resolve 不触发 catch → 界面永久卡死。
+    """
+    # 空消息（在设置加载之前返回）
+    events = list(chat_service.chat_stream("pid-x", "   "))
+    assert events[0].startswith('data: {"type": "error"')
+    assert events[-1].startswith('data: {"type": "done"}')
+
+    # 未配置 API Key
+    with patch.object(chat_service, "_load_settings", return_value={"api_key": ""}):
+        events = list(chat_service.chat_stream("pid-x", "你好"))
+    assert events[0].startswith('data: {"type": "error"')
+    assert events[-1].startswith('data: {"type": "done"}')
+
+
+def test_push_undo_caps_stack():
+    """撤销栈有上限：超限丢弃最旧快照（内存保护，避免长期对话无界增长）。"""
+    with patch.object(chat_service, "_clear_trash"):
+        stack = []
+        for i in range(chat_service._UNDO_STACK_LIMIT + 5):
+            stack = chat_service._push_undo(
+                "pid-x", stack, [{"name": f"f{i}.mid", "size": 1}],
+            )
+    assert len(stack) == chat_service._UNDO_STACK_LIMIT
+    assert stack[0]["files"][0]["name"] == "f5.mid"      # 最旧 5 个被丢弃
+    assert stack[-1]["files"][0]["name"] == f"f{chat_service._UNDO_STACK_LIMIT + 4}.mid"
 
 
 def test_rename_folder_updates_listing_and_undo(tmp_path, monkeypatch):

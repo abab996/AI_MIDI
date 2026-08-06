@@ -97,15 +97,47 @@
   }
 
   /* ---- SSE 消费：POST body，逐事件回调 onEvent(obj)，结束 resolve ----
-     opts.signal 可传入 AbortSignal 用于主动停止 */
+     opts.signal 可传入 AbortSignal 用于主动停止；
+     opts.timeoutMs 可覆盖挂起保护时长（默认 5 分钟无帧视为断线，
+     报「连接超时」而非永久挂起——否则界面会一直卡在忙碌状态） */
+  var SSE_TIMEOUT_MS = 300000;
+
   function ssePost(url, body, onEvent, opts) {
+    opts = opts || {};
+    var externalSignal = opts.signal || null;
+    var timeoutMs = opts.timeoutMs || SSE_TIMEOUT_MS;
+    /* 内部控制器：与外部 signal 联动（外部中止 → 内部中止），
+       超时中止也走这里；用 timedOut 区分「用户停止」与「断线」 */
+    var internal = new AbortController();
+    var timedOut = false;
+    var timer = null;
+
+    function clearTimer() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+    function touchTimer() {
+      clearTimer();
+      timer = setTimeout(function () {
+        timedOut = true;
+        internal.abort();
+      }, timeoutMs);
+    }
+    touchTimer();
+    if (externalSignal) {
+      if (externalSignal.aborted) internal.abort();
+      else externalSignal.addEventListener("abort", function () {
+        internal.abort();
+      }, { once: true });
+    }
+
     return fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
-      signal: opts && opts.signal,
+      signal: internal.signal,
     }).then(function (resp) {
       if (!resp.ok) {
+        clearTimer();
         return resp.json().then(function (j) { throw new Error(j.detail || ("HTTP " + resp.status)); });
       }
       var reader = resp.body.getReader();
@@ -114,7 +146,8 @@
 
       function pump() {
         return reader.read().then(function (result) {
-          if (result.done) return;
+          if (result.done) { clearTimer(); return; }
+          touchTimer();   /* 收到数据帧：重置挂起计时 */
           buffer += decoder.decode(result.value, { stream: true });
           var lines = buffer.split("\n");
           buffer = lines.pop();
@@ -130,6 +163,10 @@
       }
 
       return pump();
+    }).catch(function (e) {
+      clearTimer();
+      if (timedOut) throw new Error("连接超时（长时间无响应，请重试）");
+      throw e;
     });
   }
 

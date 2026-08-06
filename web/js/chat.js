@@ -13,7 +13,7 @@
   /* 流式逐字渐显与思考块自动展开/收起状态 */
   var liveStreaming = false;             /* 是否处于实时流式输出（仅此时做逐字动画） */
   var streamTrack = { el: null, norm: "", parsed: null };  /* 流式消息元素 + 归一化内容 + 解析结构 */
-  var thinkingTrack = { reasoning: "" };      /* 推理增长跟踪 */
+  var thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };  /* 推理增长跟踪（文本长度/块元素/末次增长时间） */
   var userToggledStream = false;         /* 用户手动操作过思考块后，自动逻辑让位 */
   var lastMessages = [];                 /* 最近一次 SSE chat 事件的完整消息列表（结束时重渲染用） */
   var chatEpoch = 0;                     /* 会话代数：延迟重建等异步回调据此判断是否过期 */
@@ -1030,9 +1030,10 @@
         } else {
           /* 新消息（新一轮思考/工具块/首帧）：重建全部，最后一条用流式结构。
              若聊天内有正在播放动画的 details（如上一轮思考块自动收起动画
-             尚未播完、工具块消息就到了），先等动画播完再重建——
-             否则整表重建会销毁动画，思考块表现为瞬间收起/展开 */
-          if (hasRunningDetailsAnim(chat)) {
+             尚未播完、工具块消息就到了）或消息入场动画（用户消息滑入
+             尚未播完），先等动画播完再重建——否则整表重建会销毁动画，
+             思考块表现为瞬间收起/展开、用户消息滑入被掐断 */
+          if (hasRunningDetailsAnim(chat) || hasRunningMsgEnter(chat)) {
             if (!rebuildDeferred) {
               rebuildDeferred = true;
               var epochAtRebuild = chatEpoch;
@@ -1045,6 +1046,11 @@
             return;
           }
           rebuildDeferred = false;
+          /* 本条 AI 消息是否首次出现（首帧）：是 → 播放入场动画；
+             工具块/新思考块触发的同消息重建 → 跳过（已入场过） */
+          var aiIndex = list.length - 1;
+          var isNewAiMsg = !streamTrack.el ||
+            streamTrack.el.dataset.index !== String(aiIndex);
           /* 重建前记录已展开的 details，重建后恢复（避免每帧把用户
              展开的思考块/工具块重新收起） */
           var openIdx = [];
@@ -1066,14 +1072,18 @@
           });
           streamTrack = buildStreamingMessage(content);
           streamTrack.norm = norm;
-          streamTrack.el.dataset.index = list.length - 1;
+          streamTrack.el.dataset.index = aiIndex;
           chat.appendChild(streamTrack.el);
+          /* AI 消息入场动画：从下往上渐显飞入（仅首次出现时） */
+          if (isNewAiMsg) animateMsgEnter(streamTrack.el, false);
           userToggledStream = false;
         }
 
         /* 思考块自动展开/收起：仅针对「思考过程」块（工具调用块保持折叠、
-           不参与自动逻辑）；推理增长 → 展开，推理停止 → 收起（手动操作优先）。
-           跟踪最后一个思考块的文本 */
+           不参与自动逻辑）；推理增长 → 展开；推理停顿超过 THINK_SETTLE_MS
+           才收起——「思考→正文→再思考」交错流式时推理会在帧间短暂不变，
+           立即收起会在推理恢复时立刻展开，反复展开/收起动画 = 聊天框抽搐。
+           跟踪最后一个思考块：元素引用（区分同段重建/新段落）+ 文本长度 */
         var thinkDet = null;
         var dets = streamTrack.el.querySelectorAll("details");
         for (var di = dets.length - 1; di >= 0; di--) {
@@ -1086,14 +1096,30 @@
         if (thinkDet) {
           var st = thinkDet.querySelector(".stream-text");
           var reasoning = (st ? st.textContent : "").trim();
-          if (reasoning.length > thinkingTrack.reasoning.length) {
+          if (thinkDet !== thinkingTrack.det) {
+            /* 思考块元素变化：整表重建（同段，推理未断）或多段思考的新段落。
+               同段重建沿用原基线不强行展开；新段落重置基线并展开跟随 */
+            var sameSegment = thinkingTrack.reasoning.length > 0 &&
+              reasoning.length >= thinkingTrack.reasoning.length &&
+              reasoning.indexOf(thinkingTrack.reasoning.slice(0, 40)) === 0;
+            thinkingTrack.det = thinkDet;
+            thinkingTrack.reasoning = reasoning;
+            thinkingTrack.lastGrowAt = Date.now();
+            if (!sameSegment && !userToggledStream) thinkDet.open = true;
+          } else if (reasoning.length > thinkingTrack.reasoning.length) {
+            thinkingTrack.reasoning = reasoning;
+            thinkingTrack.lastGrowAt = Date.now();
             if (!userToggledStream) thinkDet.open = true;
           } else if (reasoning.length && reasoning.length === thinkingTrack.reasoning.length && !userToggledStream) {
-            thinkDet.open = false;
+            /* 推理停顿：静默超过 THINK_SETTLE_MS 才收起 */
+            if (Date.now() - thinkingTrack.lastGrowAt >= THINK_SETTLE_MS) {
+              thinkDet.open = false;
+            }
           }
-          thinkingTrack.reasoning = reasoning;
         } else {
+          thinkingTrack.det = null;
           thinkingTrack.reasoning = "";
+          thinkingTrack.lastGrowAt = 0;
         }
 
         /* 折叠块展开/收起动画同步（自动展开/收起与手动点击后都生效） */
@@ -1160,6 +1186,10 @@
 
   /* 折叠块展开/收起动画时长：450ms，让思考块/工具块的展开与收起过程清晰可见 */
   var DETAILS_ANIM_MS = 450;
+  /* 思考块自动收起前的推理静默期：正文/工具帧交错时推理会短暂不变，
+     立即收起会在推理恢复时立刻展开（反复动画 = 聊天框抽搐）；
+     静默超过该时长才判定思考真正结束并收起 */
+  var THINK_SETTLE_MS = 1200;
   /* 收起动画结束后再把内容标记为跳过布局（content-visibility: hidden）；
      动画播放期间标记 collapsing，防止下一帧 sync 提前掐断动画 */
   var DETAILS_CLOSE_DELAY_MS = DETAILS_ANIM_MS + 100;
@@ -1200,6 +1230,34 @@
       if (!body) return;
       if (body.dataset.collapsing) { found = true; return; }
       if (body.getAnimations && body.getAnimations().some(function (a) {
+        return a.playState === "running";
+      })) {
+        found = true;
+      }
+    });
+    return found;
+  }
+
+  /* 消息入场动画：用户消息从输入框位置滑入（fromInput=true 时按实测
+     位移注入 --enter-dy），AI 消息从下往上渐显飞入。整表重建会销毁
+     正在播放的动画，hasRunningMsgEnter 供重建前判断是否需等待 */
+  function animateMsgEnter(el, fromInput) {
+    if (reducedMotion) return;
+    if (fromInput) {
+      var inputRect = $("#msgInput").getBoundingClientRect();
+      var elRect = el.getBoundingClientRect();
+      el.style.setProperty("--enter-dy",
+        Math.max(24, inputRect.top - elRect.top) + "px");
+    }
+    el.classList.add("msg-enter");
+  }
+
+  /* 检测聊天内是否有正在播放的消息入场动画（.msg-enter 的 WAAPI 动画） */
+  function hasRunningMsgEnter(root) {
+    var found = false;
+    root.querySelectorAll(".msg-enter").forEach(function (el) {
+      if (found) return;
+      if (el.getAnimations && el.getAnimations().some(function (a) {
         return a.playState === "running";
       })) {
         found = true;
@@ -1455,7 +1513,7 @@
     /* 进入实时流式模式：重置逐字渐显与思考块跟踪 */
     liveStreaming = true;
     streamTrack = { el: null, norm: "", parsed: null };
-    thinkingTrack = { reasoning: "" };
+    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };
     userToggledStream = false;
     lastMessages = [];
 
@@ -1470,6 +1528,8 @@
     userDiv.innerHTML = '<div class="msg-label">你 · You</div><p>' +
       UI.esc(message).replace(/\n/g, "<br>") + "</p>";
     chat.appendChild(userDiv);
+    /* 用户消息入场动画：从输入框位置丝滑滑入聊天区（位移量按实测注入） */
+    animateMsgEnter(userDiv, true);
     var typingEl = document.createElement("div");
     typingEl.className = "msg ai typing";
     typingEl.innerHTML = '<div class="msg-label">AI · 乐理专家</div>' +
@@ -1521,10 +1581,10 @@
     var pending = lastMessages;
     lastMessages = [];
     if (pending.length && chat.lastElementChild === streamTrack.el) {
-      /* 若聊天内仍有正在播放的动画（思考块自动收起/手动收起尚未播完），
-         先等动画播完再整表重建——否则重建会销毁正在播放的动画，
-         表现为思考块瞬间消失（折叠无动画） */
-      if (hasRunningDetailsAnim(chat)) {
+      /* 若聊天内仍有正在播放的动画（思考块自动收起/手动收起、消息入场
+         动画尚未播完），先等动画播完再整表重建——否则重建会销毁正在
+         播放的动画，表现为思考块瞬间消失（折叠无动画）/消息入场被掐断 */
+      if (hasRunningDetailsAnim(chat) || hasRunningMsgEnter(chat)) {
         var epochAtDone = chatEpoch;
         setTimeout(function () {
           if (chatEpoch !== epochAtDone) return; /* 延迟期间已开始新会话，放弃旧重建 */

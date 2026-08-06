@@ -1264,6 +1264,40 @@ a.btn {
   border: 1px solid var(--color-border);
 }
 
+/* ---------- 消息入场动画 ---------- */
+/* 用户消息：从输入框位置丝滑滑入聊天区（位移量 --enter-dy 由 JS
+   按输入框实测注入；过冲曲线营造"丝滑"感） */
+.msg.user.msg-enter {
+  animation: user-msg-in 0.42s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+}
+
+@keyframes user-msg-in {
+  0% {
+    opacity: 0;
+    transform: translateY(var(--enter-dy, 64px)) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* AI 消息：从下往上渐显飞入（平缓 ease-out，克制不抢戏） */
+.msg.ai.msg-enter {
+  animation: ai-msg-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes ai-msg-in {
+  0% {
+    opacity: 0;
+    transform: translateY(26px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* ---------- 消息操作按钮（复制 / 修改）：hover 消息时浮现 ---------- */
 .msg-actions {
   display: flex;
@@ -2018,7 +2052,9 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   .modal-overlay.modal-out,
   .modal-overlay .modal,
   .select-menu.menu-in,
-  .ctx-menu.menu-in {
+  .ctx-menu.menu-in,
+  .msg.user.msg-enter,
+  .msg.ai.msg-enter {
     animation: none !important;
   }
 }

@@ -95,14 +95,6 @@
       .catch(function () {});
   }
 
-  function startViewTransitionSafe(callback) {
-    if (document.startViewTransition) {
-      try { return document.startViewTransition(callback); } catch (e) {}
-    }
-    callback();
-    return null;
-  }
-
   function springEls() {
     return UI.qsa(".sidebar > *", $("#studioView")).concat(
       UI.qsa(".console-wrap > *", $("#studioView"))
@@ -111,26 +103,6 @@
 
   var reducedMotion = typeof window.matchMedia === "function"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  /* 形态动画几何参数：--vt-x1/y1/w1/h1 = 旧快照矩形
-     （打开流程=卡片，返回流程=工作台面板）。
-     必须在对应视图可见、且与 VT 快照相同的滚动位置下测量；
-     新快照矩形由浏览器作为 group 基准态提供，无需测量 */
-  function writeMorphVars(rect) {
-    var s = document.documentElement.style;
-    s.setProperty("--vt-x1", rect.left + "px");
-    s.setProperty("--vt-y1", rect.top + "px");
-    s.setProperty("--vt-w1", rect.width + "px");
-    s.setProperty("--vt-h1", rect.height + "px");
-  }
-
-  function clearMorphVars() {
-    var s = document.documentElement.style;
-    s.removeProperty("--vt-x1");
-    s.removeProperty("--vt-y1");
-    s.removeProperty("--vt-w1");
-    s.removeProperty("--vt-h1");
-  }
 
   /* 按"距原点的方向"依次浮现（涟漪）：
      originX/originY = 涟漪中心（通常是点击的卡片中心）；
@@ -145,7 +117,8 @@
     if (els.length) {
       var ox = (originX == null) ? 0 : originX;
       var oy = (originY == null) ? 0 : originY;
-      var push = 12;
+      /* 受卡片惯性推出 24px，再弹簧回位（位移够大才看得出"飞出一段"） */
+      var push = 24;
       els.forEach(function (el) {
         var r = el.getBoundingClientRect();
         var ex = r.left + r.width / 2;
@@ -157,21 +130,17 @@
         if (dist < 1) { dx = 0; dy = 1; dist = 1; }
         var dirX = dx / dist;
         var dirY = dy / dist;
-        /* reduced-motion：忽略距离延迟，避免内容长时间不可见 */
-        var delay = reducedMotion ? 0 : Math.round(dist * 0.5);
+        /* reduced-motion：忽略距离延迟；普通模式延迟很小（涟漪扩散感），
+           封顶 120ms——惯性动画必须立即响应，不能"等一会儿才播" */
+        var delay = reducedMotion ? 0 : Math.min(Math.round(dist * 0.15), 120);
         if (delay > maxDelay) maxDelay = delay;
         el.style.setProperty("--spring-tx", (dirX * push).toFixed(1) + "px");
         el.style.setProperty("--spring-ty", (dirY * push).toFixed(1) + "px");
         el.style.setProperty("--spring-delay", delay + "ms");
-        el.classList.add("spring-el", "pre-reveal");
+        el.classList.add("spring-el");
       });
     }
     studio.classList.add("enter");
-    /* 涟漪启动一帧后移除 pre-reveal，动画从 opacity 0 接管（防止内容卡透明） */
-    requestAnimationFrame(function () {
-      if (springToken !== token) return;
-      els.forEach(function (el) { el.classList.remove("pre-reveal"); });
-    });
     setTimeout(function () {
       if (springToken !== token) return;
       els.forEach(function (el) {
@@ -184,71 +153,62 @@
     }, maxDelay + 550);
   }
 
-  /* 返回档案库前：内部元素朝卡片方向"吸气"汇聚——
-     --spring-ltx/lty 指向卡片（径向单位向量反向 × 8px）；
-     延迟 --spring-leave-delay 按距离反向：远的先收（delay 小）、
-     近的后收（delay 大），形成向卡片坍缩的视觉 */
-  function springOut(targetX, targetY) {
-    springToken++;
-    var studio = $("#studioView");
-    var els = springEls();
-    if (els.length && targetX != null && targetY != null) {
-      var maxDelay = 0;
-      var maxDist = 0;
-      els.forEach(function (el) {
-        var r = el.getBoundingClientRect();
-        var dx = (r.left + r.width / 2) - targetX;
-        var dy = (r.top + r.height / 2) - targetY;
-        var dist = Math.hypot(dx, dy);
-        if (dist > maxDist) maxDist = dist;
-      });
-      els.forEach(function (el) {
-        var r = el.getBoundingClientRect();
-        var ex = r.left + r.width / 2;
-        var ey = r.top + r.height / 2;
-        var dx = ex - targetX;
-        var dy = ey - targetY;
-        var dist = Math.hypot(dx, dy);
-        /* 指向卡片的单位向量 */
-        var pull = 8;
-        var dirX = dist < 1 ? 0 : dx / dist;
-        var dirY = dist < 1 ? 0 : dy / dist;
-        /* 远的先收：delay = (1 - dist/maxDist) × 120ms */
-        var delay = reducedMotion ? 0 : Math.round((1 - (maxDist ? dist / maxDist : 0)) * 120);
-        if (delay > maxDelay) maxDelay = delay;
-        el.style.setProperty("--spring-ltx", (-dirX * pull).toFixed(1) + "px");
-        el.style.setProperty("--spring-lty", (-dirY * pull).toFixed(1) + "px");
-        el.style.setProperty("--spring-leave-delay", delay + "ms");
-        el.classList.add("spring-el");
-      });
-      /* 留出收拢完成的时间再清理 */
-      setTimeout(function () {
-        springToken++;
-        studio.classList.remove("leaving", "enter");
-        els.forEach(function (el) {
-          el.classList.remove("spring-el");
-          el.style.removeProperty("--spring-leave-delay");
-          el.style.removeProperty("--spring-ltx");
-          el.style.removeProperty("--spring-lty");
-        });
-      }, maxDelay + 260);
-    } else {
-      studio.classList.add("leaving");
-    }
+  /* 面板形态动画（DOM FLIP，替代 View Transition——VT 在 WebView2
+     掉帧/阻塞）：transform-origin 左上角 + translate/scale 把面板对齐
+     到卡片矩形，再过渡回自然态 = "卡片放大成面板"；反向 = 面板缩回卡片。
+     纯合成层 transform，不经过 VT，流畅且保留形态动画效果 */
+  function panelGrowFrom(studio, cardRect) {
+    if (reducedMotion || !cardRect) return;
+    var pr = studio.getBoundingClientRect();
+    var sx = cardRect.width / pr.width;
+    var sy = cardRect.height / pr.height;
+    var tx = cardRect.left - pr.left;
+    var ty = cardRect.top - pr.top;
+    studio.style.transformOrigin = "top left";
+    studio.style.transition = "none";
+    studio.style.transform =
+      "translate(" + tx.toFixed(1) + "px, " + ty.toFixed(1) + "px) scale(" +
+      sx.toFixed(4) + ", " + sy.toFixed(4) + ")";
+    void studio.offsetWidth;   /* 强制应用初始态后播放过渡 */
+    studio.style.transition = "transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)";
+    studio.style.transform = "";
+    setTimeout(function () {
+      studio.style.transition = "";
+      studio.style.transform = "";
+      studio.style.transformOrigin = "";
+    }, 500);
+  }
+
+  /* 面板缩回卡片矩形（返回流程），动画结束后回调切换视图 */
+  function panelShrinkTo(studio, cardRect, done) {
+    if (reducedMotion || !cardRect) { done(); return; }
+    var pr = studio.getBoundingClientRect();
+    var sx = cardRect.width / pr.width;
+    var sy = cardRect.height / pr.height;
+    var tx = cardRect.left - pr.left;
+    var ty = cardRect.top - pr.top;
+    studio.style.transformOrigin = "top left";
+    studio.style.transition = "transform 0.32s cubic-bezier(0.4, 0, 0.6, 1)";
+    studio.style.transform =
+      "translate(" + tx.toFixed(1) + "px, " + ty.toFixed(1) + "px) scale(" +
+      sx.toFixed(4) + ", " + sy.toFixed(4) + ")";
+    setTimeout(function () {
+      studio.style.transition = "";
+      studio.style.transform = "";
+      studio.style.transformOrigin = "";
+      done();
+    }, 340);
   }
 
   function clearSprings() {
     springToken++;
     var studio = $("#studioView");
-    studio.classList.remove("enter", "leaving");
+    studio.classList.remove("enter");
     springEls().forEach(function (el) {
-      el.classList.remove("spring-el", "pre-reveal");
+      el.classList.remove("spring-el");
       el.style.removeProperty("--spring-delay");
       el.style.removeProperty("--spring-tx");
       el.style.removeProperty("--spring-ty");
-      el.style.removeProperty("--spring-leave-delay");
-      el.style.removeProperty("--spring-ltx");
-      el.style.removeProperty("--spring-lty");
     });
   }
 
@@ -277,66 +237,44 @@
       chatBusy = false;
       $("#newMidiLink").hidden = true;
 
-      /* 形态动画：项目卡片 → 整面板展开 */
+      /* 打开项目：不用 View Transition（VT 在 WebView2 掉帧/阻塞，是
+         "惯性动画要等一会儿才播"与卡顿的根源）——直接切换视图：
+         面板 FLIP 从卡片矩形放大成整页工作台 + spring-in 立即播放 */
       var studio = $("#studioView");
       var archive = $("#archiveView");
       var card = UI.qs('.proj-card[data-id="' + projectId + '"]');
       isTransitioning = true;
-      /* 安全兜底：若 VT 异常卡住，1.5 秒后强制释放（避免按钮永久不可点） */
+      /* 安全兜底：异常时 1.5 秒后强制释放（避免按钮永久不可点） */
       var morphGuard = setTimeout(function () { isTransitioning = false; }, 1500);
 
-      /* 打开流程：确保 data-vt-flow 不为 "back"（否则 card-arrive 会套到
-         新快照工作台面板上，导致面板额外缩放与旧卡片内容重叠） */
-      delete document.documentElement.dataset.vtFlow;
-
-      /* 捕获卡片中心（涟漪原点）+ 形态动画几何（旧快照矩形）——
-         必须在 archive 可见时取 rect，隐藏后 getBoundingClientRect 返回 0；
-         保存为绝对值（不随滚动变化） */
+      /* archive 可见时捕获卡片矩形 + 中心（FLIP 起点 / 惯性推开原点） */
+      var cardRect = null;
       var origin = null;
       if (card) {
         var cr = card.getBoundingClientRect();
+        cardRect = { left: cr.left, top: cr.top, width: cr.width, height: cr.height };
         origin = { x: cr.left + cr.width / 2, y: cr.top + cr.height / 2 };
-        writeMorphVars(cr);
       }
 
-      if (card) card.style.viewTransitionName = "project-panel";
-      var vt = startViewTransitionSafe(function () {
-        archive.hidden = true;
-        studio.hidden = false;
-        if (card) card.style.viewTransitionName = "";
-        studio.style.viewTransitionName = "project-panel";
-        /* VT 快照前隐藏内容——防止"先出现→又重影浮现"——
-           springIn 启动一帧后会自动移除该 class */
-        if (!reducedMotion) {
-          springEls().forEach(function (el) { el.classList.add("pre-reveal"); });
-        }
+      archive.hidden = true;
+      studio.hidden = false;
+      window.scrollTo(0, 0);
+
+      /* 卡片放大成面板（FLIP 0.4s，合成层 transform 流畅） */
+      panelGrowFrom(studio, cardRect);
+
+      /* 组件惯性动画立即播放（60ms 启动，无 VT 等待）：
+         面板生长途中组件受卡片惯性推出再弹性回位 */
+      setTimeout(function () {
+        springIn(origin ? origin.x : null, origin ? origin.y : null);
+      }, 60);
+
+      /* 形态动画结束后释放过渡锁（morphGuard 兜底防卡死） */
+      setTimeout(function () {
         clearTimeout(morphGuard);
         isTransitioning = false;
-      });
-
-      /* spring-in 与 VT 形态动画在时间上重叠（VT 走到中段时 springIn 已开始），
-         避免"VT 结束→停顿→springIn 开始"的换场断裂 */
-      var springStarted = false;
-      function startSpringOnce() {
-        if (springStarted) return;
-        springStarted = true;
-        springIn(origin ? origin.x : null, origin ? origin.y : null);
-      }
-      setTimeout(startSpringOnce, 200);
-
-      function finishOpen() {
-        studio.style.viewTransitionName = "";
-        clearMorphVars();
-        /* 若 VT 未触发（如不支持或异常），回退为直接启动 spring-in */
-        startSpringOnce();
-        setTimeout(function () { input.focus(); }, 60);
-        window.scrollTo(0, 0);
-      }
-      if (vt && vt.finished) {
-        vt.finished.then(finishOpen, finishOpen);
-      } else {
-        finishOpen();
-      }
+      }, 550);
+      setTimeout(function () { input.focus(); }, 60);
     }).catch(function (e) {
       UI.toast("✗ 打开项目失败: " + e.message, "err");
       isTransitioning = false;
@@ -365,139 +303,38 @@
       renderProjects(projects);
       var card = pid ? UI.qs('.proj-card[data-id="' + pid + '"]') : null;
 
-      /* 返回流程旧快照 = 工作台面板：在 archive 隐藏、studio 可见的当前布局下
-         测量（与 VT 旧快照一致），写入形态动画几何 */
-      var sr = studio.getBoundingClientRect();
-      writeMorphVars(sr);
-
-      /* 波纹几何（注入 VT 层）：邻居卡片在 archive 可见的同一同步窗口内测量。
-         VT 运行期间真实 DOM 被快照层覆盖，真实 DOM 波纹无论如何提前触发都
-         要等 VT 结束才可见——所以波纹改由 VT 伪元素播放，从 card-arrive 的
-         首次撞击点（0.5s × 40% + 0.02s ≈ 220ms）起可见 */
-      var waveData = null;
+      /* 返回不用 View Transition（VT 在 WebView2 掉帧/阻塞）——
+         面板 FLIP 缩小回卡片矩形（合成层 transform），随后切换视图，
+         邻居卡片涟漪与落点弹跳在真实 DOM 播放（流畅） */
+      var cardRect = null;
       if (card) {
-        /* 关键：archive 隐藏时 getBoundingClientRect 返回 0。
-           同步任务内短暂显示 archive 以触发布局并测量卡片真实位置，
-           再立刻隐藏——浏览器未在两次赋值间渲染，无闪烁。
-           studio 仍可见（springOut 即将作用其上） */
+        /* archive 隐藏时 getBoundingClientRect 返回 0：
+           同步窗口内短暂显示 archive 测量卡片真实矩形再隐藏（无闪烁） */
         archive.hidden = false;
-        var cr = card.getBoundingClientRect();
-        var cx = cr.left + cr.width / 2;
-        var cy = cr.top + cr.height / 2;
-        var pr = studio.getBoundingClientRect();
-        var dx = cx - (pr.left + pr.width / 2);
-        var dy = cy - (pr.top + pr.height / 2);
-        /* 限制最大飞回距离，避免极端布局下位移过大 */
-        var dist = Math.hypot(dx, dy);
-        var max = 130;
-        if (dist > max) { dx = dx / dist * max; dy = dy / dist * max; }
-        card.style.setProperty("--land-dx", dx.toFixed(1) + "px");
-        card.style.setProperty("--land-dy", dy.toFixed(1) + "px");
-
-        if (!reducedMotion) {
-          var list = [];
-          /* 邻居矩形必须在 archive 仍可见的同一同步窗口内测量（隐藏后为 0） */
-          UI.qsa(".proj-card", archive).forEach(function (n) {
-            if (n === card) return;
-            var nr = n.getBoundingClientRect();
-            var nx = nr.left + nr.width / 2 - cx;
-            var ny = nr.top + nr.height / 2 - cy;
-            var d = Math.hypot(nx, ny);
-            if (d < 1) { nx = 0; ny = 1; d = 1; }
-            var push = 12;
-            list.push({
-              el: n,
-              px: (nx / d * push).toFixed(1),
-              py: (ny / d * push).toFixed(1),
-              /* 延迟 = 撞击点基准 220ms + 距离 × 0.35ms/px（近的先推） */
-              delay: Math.round(220 + d * 0.35)
-            });
-          });
-          if (list.length) {
-            var maxDelay = 0;
-            list.forEach(function (w) { if (w.delay > maxDelay) maxDelay = w.delay; });
-            /* 波纹最晚在 maxDelay+450ms 播完；vt-hold 把 VT 生命期延长到该时刻，
-               保证波纹全程在 VT 层内可见、结束时真实 DOM 已静止 */
-            waveData = { list: list, holdMs: maxDelay + 450 + 60 };
-          }
-        }
+        cardRect = card.getBoundingClientRect();
         archive.hidden = true;
       }
 
-      /* 工作台朝卡片方向"吸气"汇聚（用真实卡片中心算距离延迟） */
-      springOut(card ? cx : null, card ? cy : null);
-
-      setTimeout(function () {
-        if (!card) {
-          /* 无目标卡片时直接收拢再开始 VT */
-          studio.classList.add("leaving");
+      /* 面板缩回卡片（0.32s），动画结束后切换视图 + 涟漪 */
+      panelShrinkTo(studio, cardRect, function () {
+        studio.hidden = true;
+        archive.hidden = false;
+        window.scrollTo(0, 0);
+        if (card && !reducedMotion) {
+          /* 邻居卡片温柔涟漪（真实 DOM：推出→回弹振荡→归位）——
+             作用在开头已渲染的卡片 DOM 上，不再重复加载列表（会重建
+             卡片导致涟漪动画被销毁） */
+          applyNeighborRipple(card, archive);
+          /* 落点卡片弹性落位 */
+          applyLandPop(card);
         }
-        /* 形态动画：工作台 → 缩回卡片原位（弹弓轨迹 + 邻居波纹在撞击时刻触发） */
-        if (card) card.style.viewTransitionName = "project-panel";
-        studio.style.viewTransitionName = "project-panel";
-        document.documentElement.dataset.vtFlow = "back";
-        var vt = startViewTransitionSafe(function () {
-          studio.hidden = true;
-          archive.hidden = false;
-          studio.style.viewTransitionName = "";
-          /* 快照前把滚动归零：VT 期间展示的 archive 即为顶部视图，
-             避免 VT 结束时滚动位置跳变 */
-          window.scrollTo(0, 0);
-          if (waveData) {
-            var css = "";
-            waveData.list.forEach(function (w, i) {
-              w.el.style.viewTransitionName = "vt-wave-" + i;
-              css += "@keyframes vt-wave-" + i +
-                " { 0% { transform: translate(0,0); }" +
-                " 30% { transform: translate(" + w.px + "px," + w.py + "px); }" +
-                " 100% { transform: translate(0,0); } }";
-              css += "html[data-vt-flow='back']::view-transition-new(vt-wave-" + i + ")" +
-                " { animation: vt-wave-" + i + " 0.45s cubic-bezier(0.18,1.1,0.3,1) both;" +
-                " animation-delay: " + w.delay + "ms; }";
-            });
-            var holdS = (waveData.holdMs / 1000).toFixed(3);
-            css += "@keyframes vt-hold { from { translate: 0 0; } to { translate: 0 0; } }";
-            css += "html[data-vt-flow='back']::view-transition-new(project-panel)" +
-              " { animation: card-arrive 0.5s cubic-bezier(0.34,1.45,0.64,1) 0.02s both," +
-              " vt-hold " + holdS + "s linear 0.02s both; }";
-            var st = document.createElement("style");
-            st.id = "vt-wave-styles";
-            st.textContent = css;
-            document.head.appendChild(st);
-          }
-          clearTimeout(morphGuard);
-          isTransitioning = false;
-        });
-
-        function finishBack() {
-          if (card) {
-            card.style.viewTransitionName = "";
-            card.style.removeProperty("--land-dx");
-            card.style.removeProperty("--land-dy");
-          }
-          if (waveData) {
-            waveData.list.forEach(function (w) { w.el.style.viewTransitionName = ""; });
-            var st = document.getElementById("vt-wave-styles");
-            if (st) st.remove();
-          }
-          clearSprings();
-          delete document.documentElement.dataset.vtFlow;
-          isTransitioning = false;
-          window.scrollTo(0, 0);
-          /* 无 VT 支持的浏览器：退回真实 DOM 涟漪 */
-          if (!vt && card && !reducedMotion) applyNeighborRipple(card, archive);
-          clearMorphVars();
-        }
-        if (vt && vt.finished) {
-          vt.finished.then(finishBack, finishBack);
-        } else {
-          finishBack();
-        }
-      }, 220);
+        clearSprings();
+        clearTimeout(morphGuard);
+        isTransitioning = false;
+      });
     }).catch(function (e) {
       UI.toast("✗ 返回档案库失败: " + e.message, "err");
       clearSprings();
-      delete document.documentElement.dataset.vtFlow;
       studio.hidden = true;
       archive.hidden = false;
       isTransitioning = false;
@@ -505,9 +342,17 @@
     });
   }
 
-  /* 邻居卡片波纹（真实 DOM 回退）：仅在浏览器不支持 View Transitions 时使用。
-     支持 VT 时波纹由 VT 层内的 vt-wave-* 伪元素动画承担（见 backToArchive），
-     因为 VT 运行期间真实 DOM 被快照层覆盖，真实 DOM 波纹不可见 */
+  /* 落点卡片弹性落位：返回档案库时卡片从缩回状态弹回自然大小 */
+  function applyLandPop(card) {
+    card.classList.remove("land-pop");
+    void card.offsetWidth;   /* 重新触发动画 */
+    card.classList.add("land-pop");
+    setTimeout(function () { card.classList.remove("land-pop"); }, 600);
+  }
+
+  /* 邻居卡片涟漪（真实 DOM 动画）：以落点卡片为中心向外推开，
+     带回弹振荡（推出→反向回弹→归位），合成层 transform 流畅。
+     动画完成后清理 class 与变量 */
   function applyNeighborRipple(landingCard, archive) {
     var lr = landingCard.getBoundingClientRect();
     var lx = lr.left + lr.width / 2;
@@ -522,12 +367,12 @@
       var dy = ny - ly;
       var d = Math.hypot(dx, dy);
       if (d === 0) d = 1;
-      /* 推开 12px 沿远离落点方向归一化 */
-      var push = 12;
+      /* 推开 14px 沿远离落点方向归一化（温柔力度） */
+      var push = 14;
       n.style.setProperty("--push-x", (dx / d * push).toFixed(1) + "px");
       n.style.setProperty("--push-y", (dy / d * push).toFixed(1) + "px");
-      /* 距离越远延迟越大：~0.35ms/px，波纹更快扩散（最远 ~400ms） */
-      n.style.setProperty("--ripple-delay", Math.round(d * 0.35) + "ms");
+      /* 距离越远延迟越大：~0.2ms/px，波纹从中心温柔扩散（最远 ~250ms） */
+      n.style.setProperty("--ripple-delay", Math.round(d * 0.2) + "ms");
       neighbors.push(n);
     });
     if (!neighbors.length) return;
@@ -897,8 +742,20 @@
   /* 单帧渐显动画的最大字符数：超过部分直接以纯文本追加（不建动画节点），
      避免大块文本一次性创建数千个动画元素卡死浏览器 */
   var FADE_CHAR_CAP = 200;
+  /* 渐显分组大小：每 FADE_GROUP 个字符一组（一个 span 一个动画）。
+     逐字建 span 在长回复时会累积上千个并发 CSS 动画导致卡顿；
+     分组后每帧最多 20 个动画，视觉仍保留「打字渐显」感 */
+  var FADE_GROUP = 10;
 
-  /* 把文本逐字追加为渐显 span（流式期间以纯文本呈现，结束后整体走 markdown 重渲染）。
+  function makeFadeSpan(text, groupIdx) {
+    var span = document.createElement("span");
+    span.className = "char-fade";
+    span.style.setProperty("--d", Math.min(groupIdx * 40, 400) + "ms");
+    span.textContent = text;
+    return span;
+  }
+
+  /* 把文本分组追加为渐显 span（流式期间以纯文本呈现，结束后整体走 markdown 重渲染）。
      按码点迭代，避免 emoji 等代理对字符被拆成两个坏字；单帧超过 FADE_CHAR_CAP
      后剩余部分整体作为纯文本追加。
      动画完成后由 #chat 上的 animationend 委托把 span 还原为纯文本节点，
@@ -907,23 +764,27 @@
     if (!text) return;
     var frag = document.createDocumentFragment();
     var added = 0;
+    var groupIdx = 0;
+    var group = "";
     var remaining = text;
     while (remaining.length) {
       if (added >= FADE_CHAR_CAP) {
-        /* 超限：剩余部分整体作为纯文本追加，不做逐字动画 */
+        if (group) frag.appendChild(makeFadeSpan(group, groupIdx++));
+        /* 超限：剩余部分整体作为纯文本追加，不做渐显动画 */
         frag.appendChild(document.createTextNode(remaining));
         break;
       }
       var cp = remaining.codePointAt(0);
       var ch = String.fromCodePoint(cp);
       remaining = remaining.slice(ch.length);
-      var span = document.createElement("span");
-      span.className = "char-fade";
-      span.style.setProperty("--d", Math.min(added * 7, 500) + "ms");
-      span.textContent = ch;
-      frag.appendChild(span);
+      group += ch;
       added++;
+      if (group.length >= FADE_GROUP) {
+        frag.appendChild(makeFadeSpan(group, groupIdx++));
+        group = "";
+      }
     }
+    if (group) frag.appendChild(makeFadeSpan(group, groupIdx));
     container.appendChild(frag);
   }
 
@@ -945,9 +806,12 @@
       det.appendChild(sum);
       var body = document.createElement("div");
       body.className = "details-body";
+      var inner = document.createElement("div");
+      inner.className = "details-inner";
       var txt = document.createElement("div");
       txt.className = "stream-text";
-      body.appendChild(txt);
+      inner.appendChild(txt);
+      body.appendChild(inner);
       det.appendChild(body);
       el.appendChild(det);
       appendFadeChars(txt, b.body);
@@ -976,9 +840,12 @@
       det.appendChild(sum);
       var body = document.createElement("div");
       body.className = "details-body";
+      var inner = document.createElement("div");
+      inner.className = "details-inner";
       var txt = document.createElement("div");
       txt.className = "stream-text";
-      body.appendChild(txt);
+      inner.appendChild(txt);
+      body.appendChild(inner);
       det.appendChild(body);
       el.insertBefore(det, answerEl);
       appendFadeChars(txt, b.body);
@@ -1168,65 +1035,30 @@
       var m = /^<details>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>$/.exec(part);
       if (!m) return UI.esc(part);
       return "<details><summary>" + UI.mdInline(m[1]) + "</summary>" +
-        '<div class="details-body">' + UI.md(m[2]) + "</div></details>";
+        '<div class="details-body"><div class="details-inner">' + UI.md(m[2]) +
+        "</div></div></details>";
     }).join("\n");
   }
 
-  /* 折叠块展开/收起动画：open → 展开到内容高度；收起 → 折叠。
-     由 toggle 事件（点击/键盘/程序化改变 open 属性后触发）与每次渲染后调用。
-     动画用 Web Animations API 一次性驱动：状态切换才播动画；
-     已展开且内容在增长（流式）时取消动画即时跟随，避免面板逐帧脉动抽搐 */
-  function cancelBodyAnim(body) {
-    if (body.getAnimations) {
-      body.getAnimations().forEach(function (a) { a.cancel(); });
-    }
-  }
-
-  /* 折叠块展开/收起动画时长：450ms，让思考块/工具块的展开与收起过程清晰可见 */
-  var DETAILS_ANIM_MS = 450;
+  /* 折叠块展开/收起：CSS grid-template-rows 0fr↔1fr 原生过渡（.open 类驱动）。
+     不再用 WAAPI + max-height（每帧测量 scrollHeight 强制重排是开合卡顿根源）；
+     grid 过渡无需测量高度。流式内容增长时已展开的块自然撑开、无动画 */
+  var DETAILS_ANIM_MS = 300;
   /* 思考块自动收起前的推理静默期：正文/工具帧交错时推理会短暂不变，
      立即收起会在推理恢复时立刻展开（反复动画 = 聊天框抽搐）；
      静默超过该时长才判定思考真正结束并收起 */
   var THINK_SETTLE_MS = 1200;
-  /* 收起动画结束后再把内容标记为跳过布局（content-visibility: hidden）；
-     动画播放期间标记 collapsing，防止下一帧 sync 提前掐断动画 */
+  /* 开合动画结束后的重建等待时长（grid 过渡 300ms + 余量） */
   var DETAILS_CLOSE_DELAY_MS = DETAILS_ANIM_MS + 100;
 
-  function animateBody(body, fromH, toH, fromOp, toOp) {
-    if (!body.animate) return;
-    cancelBodyAnim(body);
-    body.animate(
-      [
-        { maxHeight: fromH, opacity: fromOp },
-        { maxHeight: toH, opacity: toOp },
-      ],
-      { duration: DETAILS_ANIM_MS, easing: "cubic-bezier(0.4, 0, 0.2, 1)", fill: "both" }
-    );
-  }
-
-  /* 收起动画结束后再把内容标记为跳过布局（content-visibility: hidden）；
-     动画播放期间标记 collapsing，防止下一帧 sync 提前掐断动画 */
-  function scheduleClose(body) {
-    if (body.dataset.collapsing) return;
-    body.dataset.collapsing = "1";
-    setTimeout(function () {
-      delete body.dataset.collapsing;
-      if (!body.classList.contains("open")) body.classList.add("closed");
-    }, DETAILS_CLOSE_DELAY_MS);
-  }
-
-  /* 检测聊天内是否有正在播放展开/收起动画的 details。
+  /* 检测聊天内是否有正在播放展开/收起过渡的 details。
      结构变化整表重建会销毁旧元素上正在播放的动画（表现为思考块
      "啪"地瞬间收起/展开），重建前用它判断是否需要等动画播完。
-     注意：WAAPI 动画在 .details-body 上（animateBody 用 body.animate），
-     必须查 body.getAnimations()，details 元素自身没有动画 */
+     注意：CSS 过渡也出现在 getAnimations() 中（Chromium） */
   function hasRunningDetailsAnim(root) {
     var found = false;
-    root.querySelectorAll("details").forEach(function (d) {
+    root.querySelectorAll("details > .details-body.open").forEach(function (body) {
       if (found) return;
-      var body = d.querySelector(":scope > .details-body");
-      if (!body) return;
-      if (body.dataset.collapsing) { found = true; return; }
       if (body.getAnimations && body.getAnimations().some(function (a) {
         return a.playState === "running";
       })) {
@@ -1268,46 +1100,14 @@
      由延迟回调用 lastMessages 一次性渲染（不丢帧） */
   var rebuildDeferred = false;
 
+  /* 折叠块展开/收起状态同步：.open 类 ↔ details.open 属性。
+     CSS 的 grid-template-rows 过渡负责动画（无 JS 测量/强制布局）。
+     由渲染后的调用与 details 的 toggle 事件委托共同驱动 */
   function syncDetailsBodies(root) {
     root.querySelectorAll("details").forEach(function (d) {
       var body = d.querySelector(":scope > .details-body");
       if (!body) return;
-      var wasOpen = body.classList.contains("open");
-      if (d.open) {
-        /* 展开前恢复布局参与（content-visibility 生效期间测量无效） */
-        body.classList.remove("closed");
-        /* 仅在展开时测量（关闭态测量会触发无效布局，且值不可靠） */
-        var h = body.scrollHeight;
-        var prev = parseFloat(body.style.getPropertyValue("--body-h")) || 0;
-        body.style.setProperty("--body-h", h + "px");
-        body.classList.add("open");
-        if (!wasOpen) {
-          /* 收起 → 展开：一次性过渡动画 */
-          animateBody(body, "0px", h + "px", 0, 1);
-        } else if (Math.abs(h - prev) > 2) {
-          /* 已展开且内容增长（流式）：仅在无运行中动画时才取消旧动画并即时跟随。
-             否则流式帧（25ms 一帧）会在展开动画刚启动时就把它掐断，
-             导致后续展开/收起全部"啪"地跳变、看不到动画 */
-          var hasRunning = body.getAnimations().some(function (a) {
-            return a.playState === "running";
-          });
-          if (!hasRunning) cancelBodyAnim(body);
-        }
-      } else {
-        if (wasOpen) {
-          /* 展开 → 收起：一次性过渡动画（动画结束前不跳过布局） */
-          animateBody(
-            body,
-            (parseFloat(body.style.getPropertyValue("--body-h")) || 0) + "px",
-            "0px", 1, 0
-          );
-          scheduleClose(body);
-        } else if (!body.dataset.collapsing) {
-          /* 早已收起（且无收起动画在播）：直接跳过布局 */
-          body.classList.add("closed");
-        }
-        body.classList.remove("open");
-      }
+      body.classList.toggle("open", d.open);
     });
   }
 
@@ -1802,28 +1602,14 @@
           $("#sendBtn").disabled = false;
           $("#newMidiLink").hidden = true;
 
-          /* 无卡片来源：默认交叉过渡 + 面板内容弹入 */
+          /* 无卡片来源：直接切换视图 + 面板内容弹入（无 VT，立即播放） */
           isTransitioning = true;
-          delete document.documentElement.dataset.vtFlow;
-          var vt = startViewTransitionSafe(function () {
-            $("#archiveView").hidden = true;
-            $("#studioView").hidden = false;
-            /* VT 快照前隐藏内容（无卡片时 origin 为面板左上角，涟漪从那里扩散） */
-            if (!reducedMotion) {
-              springEls().forEach(function (el) { el.classList.add("pre-reveal"); });
-            }
-          });
-          function fin() {
-            isTransitioning = false;
-            /* 与打开流程同样的 200ms 重叠启动 + fallback */
-            var started = false;
-            function once() { if (!started) { started = true; springIn(null, null); } }
-            setTimeout(once, 200);
-            setTimeout(function () { $("#msgInput").focus(); }, 60);
-            window.scrollTo(0, 0);
-          }
-          if (vt && vt.finished) vt.finished.then(fin, fin);
-          else fin();
+          $("#archiveView").hidden = true;
+          $("#studioView").hidden = false;
+          setTimeout(function () { springIn(null, null); }, 60);
+          setTimeout(function () { $("#msgInput").focus(); }, 60);
+          window.scrollTo(0, 0);
+          setTimeout(function () { isTransitioning = false; }, 600);
         });
       });
     });

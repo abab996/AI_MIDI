@@ -1413,7 +1413,7 @@ a.btn {
 
 .msg.ai details summary::-webkit-details-marker { display: none; }
 
-.msg.ai details .details-body {
+.msg.ai details .details-inner {
   padding: 6px 12px 10px;
 }
 
@@ -1441,7 +1441,7 @@ a.btn {
 
 .msg.ai.streaming details summary::-webkit-details-marker { display: none; }
 
-.msg.ai.streaming .details-body {
+.msg.ai.streaming .details-inner {
   padding: 6px 12px 10px;
 }
 
@@ -1452,9 +1452,10 @@ a.btn {
   word-break: break-word;
 }
 
-/* ---------- AI 输出逐字渐显（仅实时流式） ---------- */
+/* ---------- AI 输出分组渐显（仅实时流式）：每 10 字符一组一个动画，
+   避免逐字建 span 导致上千个并发动画卡顿 ---------- */
 .char-fade {
-  animation: char-fade 1s ease-out both;
+  animation: char-fade 0.45s ease-out both;
   animation-delay: var(--d, 0ms);
 }
 
@@ -1521,44 +1522,44 @@ a.btn {
 
 /* 折叠块内部内容（markdown 渲染的段落/列表/表格等）与边缘留白，
    避免文字贴边；pre 已有自己的内边距 */
-.tool-call details .details-body > :not(pre) {
+.tool-call details .details-inner > :not(pre) {
   padding: 0 12px;
 }
 
-.tool-call details .details-body > :not(pre):last-child {
+.tool-call details .details-inner > :not(pre):last-child {
   padding-bottom: 10px;
 }
 
-.tool-call details .details-body table {
+.tool-call details .details-inner table {
   display: block;
   overflow-x: auto;
 }
 
-/* 折叠块展开/收起动画：内部内容包在 .details-body 中。
-   动画由 JS 用 Web Animations API 一次性驱动（WAAPI），
-   避免 CSS 过渡在流式逐帧更新 --body-h 时反复触发导致抽搐。
+/* 折叠块展开/收起动画：grid-template-rows 0fr↔1fr 原生过渡（.open 类驱动），
+   无需测量高度、无 JS 强制布局（替代原 max-height + WAAPI 方案，
+   消除大内容开合时的每帧重排卡顿）。
    注意：必须覆盖 UA 的 details:not([open]) > *:not(summary) { display:none }，
-   否则收起瞬间 body 变 display:none，收起动画不可见（.tool-call 与
-   流式消息 .msg.ai.streaming 两类 details 都要覆盖） */
+   否则收起瞬间 body 变 display:none，收起过渡不可见 */
 .tool-call details > .details-body,
+.msg.ai details > .details-body,
 .msg.ai.streaming details > .details-body {
-  display: block;
+  display: grid;
+  grid-template-rows: 0fr;
   overflow: hidden;
-  max-height: 0;
-  opacity: 0;
+  transition: grid-template-rows 0.3s ease;
 }
 
 .tool-call details > .details-body.open,
+.msg.ai details > .details-body.open,
 .msg.ai.streaming details > .details-body.open {
-  max-height: var(--body-h, 2000px);
-  opacity: 1;
+  grid-template-rows: 1fr;
 }
 
-/* 收起后内容跳过布局（长折叠块内部文本不再参与换行计算）：
-   首开历史对话与长流式对话的 layout 成本大幅下降，避免卡顿 */
-.tool-call details > .details-body.closed,
-.msg.ai.streaming details > .details-body.closed {
-  content-visibility: hidden;
+/* 内部内容容器：min-height:0 允许 0fr 行收起；留白移到这里
+   （grid 容器收起时行高为 0，padding 会残留） */
+.details-inner {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .tool-call summary {
@@ -1810,142 +1811,28 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
   100% { transform: translateX(24%); opacity: 0.4; }
 }
 
-/* ---------- 卡片 ⇄ 工作台 形态动画（共享元素） ---------- */
-/* 几何插值拆分为"位移"与"展开/收拢"两条独立动画：
-   vt-panel-move（位移）0.32s 先完成，vt-panel-size（尺寸）0.44s 后完成——
-   卡片"先飞到目标位置、再原地完成展开"，位移速度略快于展开。
-   --vt-x1/y1/w1/h1 = 旧快照矩形（打开=卡片、返回=工作台），由 JS 实测写入
-   根元素；新快照矩形由 UA 动态样式作为 group 基准态提供，无需测量。
-   Q 弹果冻感由 spring-in 与新卡片的 card-arrive 承担 */
-::view-transition-group(project-panel) {
-  animation-name: vt-panel-move, vt-panel-size;
-  animation-duration: 0.32s, 0.44s;
-  animation-timing-function: cubic-bezier(0.32, 0.72, 0.24, 1), cubic-bezier(0.32, 0.72, 0.24, 1);
-  animation-fill-mode: both;
-}
-
-@keyframes vt-panel-move {
-  from { transform: translate(var(--vt-x1, 0px), var(--vt-y1, 0px)); }
-}
-
-@keyframes vt-panel-size {
-  from { width: var(--vt-w1, 0px); height: var(--vt-h1, 0px); }
-}
-
-/* 旧工作台：被向卡片方向"拉过去"——强化运动方向感（由 JS 设置 --land-dx/-dy）
-   仅返回流程（html[data-vt-flow="back"]）生效；
-   打开流程新快照是工作台，套上此动画会导致面板额外缩放与旧卡片内容重叠 */
-html[data-vt-flow="back"]::view-transition-old(project-panel) {
-  animation: panel-depart 0.42s cubic-bezier(0.4, 0, 0.6, 1) both;
-}
-
-/* 新卡片：从工作台方向飞回，沿该方向多移动一段距离后回到原位
-   （惯性过冲；--land-dx/-dy 由 JS 在 VT 启动前计算并写入卡片元素）
-   仅返回流程生效 */
-html[data-vt-flow="back"]::view-transition-new(project-panel) {
-  animation: card-arrive 0.5s cubic-bezier(0.34, 1.45, 0.64, 1) both;
-  animation-delay: 0.02s;
-}
+/* ---------- 卡片 ⇄ 工作台 形态动画（共享元素） ----------
+   已弃用 View Transition（WebView2 掉帧/阻塞），改为 JS DOM FLIP：
+   panelGrowFrom / panelShrinkTo（transform-origin 左上角 +
+   translate/scale 对齐卡片矩形），见 chat.js。
+   返回时的邻居卡片涟漪（card-push）与落点弹跳（card-land）见下方 */
 
 /* ---------- 工作台内部元素按展开方向依次浮现（涟漪） ---------- */
-/* 入场：每个元素从"背离卡片原位"的径向方向浮现——
-   0%   透明 + 沿径向偏移 --spring-tx/ty（JS 按元素相对卡片的方向写入）
-   55%  显现 + 反向过冲 25%（Q弹：先外推再轻微回拉）
-   100% 严格回到自然态（无残留跳变）
-   延迟 --spring-delay（距卡片越近越先浮现），VT 启动后 200ms 触发
-   与形态动画重叠 */
+/* 入场：每个元素从"背离卡片原位"的径向方向飞出（受卡片惯性推出）——
+   0%  沿径向偏移 --spring-tx/ty（JS 按元素相对卡片的方向写入，24px）
+   100% 弹性回弹落位（easing y>1 自带柔和过冲，无生硬机械反向）
+   延迟 --spring-delay（距卡片越近越先浮现），与面板 FLIP 生长同时播放 */
 .studio-panel.enter .spring-el {
-  animation: spring-in 0.45s cubic-bezier(0.22, 1.1, 0.3, 1) both;
+  animation: spring-in 0.5s cubic-bezier(0.34, 1.45, 0.64, 1) both;
   animation-delay: var(--spring-delay, 0ms);
-}
-
-/* 离场：朝卡片方向"吸气"汇聚——
-   --spring-ltx/lty 指向卡片（JS 写入），延迟 --spring-leave-delay
-   远的先收、近的后收（JS 按距离反向计算） */
-.studio-panel.leaving .spring-el {
-  animation: spring-out 0.24s cubic-bezier(0.4, 0, 0.6, 1) both;
-  animation-delay: var(--spring-leave-delay, 0ms);
 }
 
 @keyframes spring-in {
   0% {
-    opacity: 0;
     transform: translate(var(--spring-tx, 0px), var(--spring-ty, 0px));
   }
-  55% {
-    opacity: 1;
-    transform: translate(
-      calc(var(--spring-tx, 0px) * -0.25),
-      calc(var(--spring-ty, 0px) * -0.25)
-    );
-  }
   100% {
-    opacity: 1;
     transform: translate(0, 0);
-  }
-}
-
-@keyframes spring-out {
-  0% { opacity: 1; transform: translate(0, 0) scale(1); }
-  100% {
-    opacity: 0.7;
-    transform: translate(var(--spring-ltx, 0px), var(--spring-lty, 0px)) scale(0.95);
-  }
-}
-
-/* VT 快照前隐藏内容（防止"内容先出现→又重影浮现"），
-   springIn 启动一帧后移除此 class，动画接管 opacity。
-   独立选择器，不依赖 .spring-el（VT 快照时元素还没有 spring-el） */
-.studio-panel .pre-reveal {
-  opacity: 0 !important;
-}
-
-/* ---------- 卡片飞回弹弓（VT 新快照动画） ---------- */
-/* 旧工作台：朝卡片方向明显被拉过去——强化离开的"拉力" */
-@keyframes panel-depart {
-  0% { transform: translate(0, 0); }
-  100% {
-    transform: translate(
-      calc(var(--land-dx, 0px) * 0.55),
-      calc(var(--land-dy, 0px) * 0.55)
-    );
-    opacity: 0.7;
-  }
-}
-
-/* 新卡片：弹弓轨迹（Q弹）——
-   0%  在原工作台位置（飞过来中）
-   40% 越过原位 22% 方向 + scale 1.1（明显过冲）
-   65% 反向回弹 -16% 方向（弹回）
-   85% 微震 +5%（二次小回弹）
-   100% 落定原位 */
-@keyframes card-arrive {
-  0% {
-    transform: translate(var(--land-dx, 0px), var(--land-dy, 0px)) scale(0.7);
-    opacity: 0.25;
-  }
-  40% {
-    transform: translate(
-      calc(var(--land-dx, 0px) * 0.22),
-      calc(var(--land-dy, 0px) * 0.22)
-    ) scale(1.1);
-    opacity: 1;
-  }
-  65% {
-    transform: translate(
-      calc(var(--land-dx, 0px) * -0.16),
-      calc(var(--land-dy, 0px) * -0.16)
-    ) scale(0.97);
-  }
-  85% {
-    transform: translate(
-      calc(var(--land-dx, 0px) * 0.05),
-      calc(var(--land-dy, 0px) * 0.05)
-    ) scale(1.01);
-  }
-  100% {
-    transform: translate(0, 0) scale(1);
-    opacity: 1;
   }
 }
 
@@ -1953,19 +1840,37 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
    在卡片首次撞击原位（VT 启动 ~250ms）时由 JS 触发，
    水波从落点向四周扩散，与卡片自身的弹弓回弹同时进行 */
 .proj-card.rippled {
-  animation: card-push 0.45s cubic-bezier(0.18, 1.1, 0.3, 1) both;
+  animation: card-push 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: var(--ripple-delay, 0ms);
 }
 
+/* 温柔涟漪：推出 → 反向回弹振荡 → 归位（真实水波感，非单调滑动） */
 @keyframes card-push {
   0% { transform: translate(0, 0); }
-  30% {
+  35% {
     transform: translate(
       var(--push-x, 0px),
       var(--push-y, 0px)
     );
   }
+  70% {
+    transform: translate(
+      calc(var(--push-x, 0px) * -0.28),
+      calc(var(--push-y, 0px) * -0.28)
+    );
+  }
   100% { transform: translate(0, 0); }
+}
+
+/* 落点卡片弹性落位：返回档案库时从缩回状态弹回 */
+.proj-card.land-pop {
+  animation: card-land 0.5s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+}
+
+@keyframes card-land {
+  0% { transform: scale(0.9); }
+  55% { transform: scale(1.035); }
+  100% { transform: scale(1); }
 }
 
 /* ---------- 配置台模式切换：整台控件依次收拢 / 从面板底边中点起飞 ---------- */
@@ -2080,16 +1985,9 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
 
 /* ---------- 无障碍：减少动态 ---------- */
 @media (prefers-reduced-motion: reduce) {
-  html[data-nav]::view-transition-old(root),
-  html[data-nav]::view-transition-new(root),
-  ::view-transition-group(project-panel),
-  html[data-vt-flow="back"]::view-transition-old(project-panel),
-  html[data-vt-flow="back"]::view-transition-new(project-panel) {
-    animation-duration: 0.01ms !important;
-  }
-
   .studio-panel .spring-el,
   .proj-card.rippled,
+  .proj-card.land-pop,
   .dyn-control.dyn-in,
   .dyn-control.dyn-out,
   .fn.pressed,
@@ -2099,7 +1997,11 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   .select-menu.menu-in,
   .ctx-menu.menu-in,
   .msg.user.msg-enter,
-  .msg.ai.msg-enter {
+  .msg.ai.msg-enter,
+  .tool-call details > .details-body,
+  .msg.ai details > .details-body,
+  .msg.ai.streaming details > .details-body {
     animation: none !important;
+    transition: none !important;
   }
 }

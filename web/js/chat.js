@@ -17,6 +17,9 @@
   var userToggledStream = false;         /* 用户手动操作过思考块后，自动逻辑让位 */
   var lastMessages = [];                 /* 最近一次 SSE chat 事件的完整消息列表（结束时重渲染用） */
   var chatEpoch = 0;                     /* 会话代数：延迟重建等异步回调据此判断是否过期 */
+  var currentMessages = [];              /* 最近一次渲染的完整消息列表（消息操作按钮按索引取数） */
+  var editingIndex = -1;                 /* 修改模式：正在编辑的用户消息索引（-1 = 未编辑） */
+  var inputBeforeEdit = "";              /* 进入修改模式前的输入框内容（撤回时还原） */
 
   /* ═══════════ 档案库 ═══════════ */
 
@@ -264,8 +267,10 @@
       $("#kvModel").textContent = payload.settings.model || "--";
       $("#kvEffort").textContent = payload.settings.reasoning_effort || "--";
 
-      renderFiles();
       renderMessages(payload.display_messages || []);
+      resetEditUI();
+      dirsList = payload.dirs || [];
+      renderFiles();
       renderWorkspace(payload.workspace || { bound: false, path: "" });
 
       var input = $("#msgInput");
@@ -343,6 +348,13 @@
 
   function backToArchive() {
     /* 返回按钮始终可点：不检查 isTransitioning，避免动画卡住时无法返回 */
+    /* 修改模式离开：尽力恢复被截断的对话（异步、不阻塞返回动画），
+       避免下次打开同一项目时内存会话仍是截断态 */
+    if (editingIndex >= 0 && currentProjectId) {
+      UI.postJSON("/api/projects/" + currentProjectId + "/messages/recall", {})
+        .catch(function () {});
+    }
+    resetEditUI();
     if (currentProjectId) saveDraft();
     var pid = currentProjectId;
     currentProjectId = null;
@@ -543,32 +555,311 @@
 
   /* ═══════════ 文件管理 ═══════════ */
 
+  /* 文件清单目录树展开状态（跨渲染记忆：文件变更重建后保持展开） */
+  var expandedDirs = {};
+  /* 当前选中的文件夹层级（新建文件夹的目标位置；"" = 根目录） */
+  var selectedDir = "";
+  /* 空文件夹相对路径列表（后端扫描主目录得到，文件树合并显示） */
+  var dirsList = [];
+  /* 拖拽移动中的文件名（dragstart 记录，drop 消费） */
+  var dragFileName = null;
+
+  /* 构建目录树：按 name 的路径段组织，并合并 dirsList 中的空文件夹。
+     树结构：{ 目录名: {子节点...}, 文件名: {file: 文件信息} } */
+  function buildFileTree(fileList) {
+    var tree = {};
+    fileList.forEach(function (f) {
+      var parts = f.name.split("/");
+      var node = tree;
+      for (var i = 0; i < parts.length - 1; i++) {
+        var dir = parts[i];
+        if (!node[dir]) node[dir] = {};
+        node = node[dir];
+      }
+      node[parts[parts.length - 1]] = { file: f };
+    });
+    /* 空文件夹（无 midi 文件的目录）也要显示 */
+    dirsList.forEach(function (d) {
+      var parts = d.split("/");
+      var node = tree;
+      for (var i = 0; i < parts.length; i++) {
+        if (!node[parts[i]]) node[parts[i]] = {};
+        node = node[parts[i]];
+      }
+    });
+    return tree;
+  }
+
+  /* 递归渲染树节点：文件夹在前、文件在后，各自字母序（与后端
+     list_project_structure 的树一致）。返回 {frag, count}，count 为
+     子树内的文件总数 */
+  function renderTreeNode(node, path) {
+    var frag = document.createDocumentFragment();
+    var count = 0;
+    var dirs = [];
+    var leafs = [];
+    Object.keys(node).forEach(function (k) {
+      (node[k].file ? leafs : dirs).push(k);
+    });
+    dirs.sort();
+    leafs.sort();
+    dirs.forEach(function (d) {
+      var childPath = path ? path + "/" + d : d;
+      var child = renderTreeNode(node[d], childPath);
+      count += child.count;
+      var isOpen = !!expandedDirs[childPath];
+      var row = document.createElement("div");
+      row.className = "file-dir" + (isOpen ? " open" : "");
+      row.dataset.path = childPath;
+      row.innerHTML =
+        '<span class="file-dir-arrow">' + (isOpen ? "▾" : "▸") + "</span>" +
+        '<input type="checkbox" class="file-check file-dir-check" title="勾选 ' + UI.esc(childPath) + " 下的全部文件\">" +
+        '<span class="file-dir-name" title="' + UI.esc(childPath) + '">📁 ' + UI.esc(d) + "</span>" +
+        '<span class="file-size">' + child.count + "</span>";
+      var body = document.createElement("div");
+      body.className = "file-dir-children";
+      body.hidden = !isOpen;
+      body.appendChild(child.frag);
+      frag.appendChild(row);
+      frag.appendChild(body);
+    });
+    leafs.forEach(function (name) {
+      var f = node[name].file;
+      count++;
+      var label = document.createElement("label");
+      label.className = "file-item";
+      label.draggable = true;   /* 拖拽移动层级 */
+      label.title = "拖动可移动到其他文件夹";
+      label.innerHTML =
+        '<input type="checkbox" class="file-check" value="' + UI.esc(f.name) + '">' +
+        '<span class="file-name" title="' + UI.esc(f.name) + '">' + UI.esc(name) + "</span>" +
+        '<span class="file-size">' + UI.fmtSize(f.size) + "</span>";
+      frag.appendChild(label);
+    });
+    return { frag: frag, count: count };
+  }
+
+  /* 勾选/取消文件夹下全部文件复选框（含子文件夹；程序化设置不触发 change） */
+  function setDirChecked(body, checked) {
+    body.querySelectorAll(".file-check").forEach(function (c) {
+      c.checked = checked;
+      c.indeterminate = false;
+    });
+  }
+
+  /* 由子文件勾选态向上刷新祖先文件夹的 勾选/半选 状态。
+     子容器（.file-dir-children）是文件夹行的相邻兄弟节点 */
+  function syncDirChecks(dirRow) {
+    var self = dirRow.querySelector(":scope > .file-dir-check");
+    if (!self) return;
+    var body = dirRow.nextElementSibling;
+    var subChecks = body ? body.querySelectorAll(".file-check") : [];
+    var total = subChecks.length;
+    var checked = 0;
+    subChecks.forEach(function (c) {
+      if (c.checked) checked++;
+    });
+    self.checked = total > 0 && checked === total;
+    self.indeterminate = checked > 0 && checked < total;
+    /* 向上递归：父文件夹行 = 本行所在子容器的前一个兄弟（行与子容器
+       是相邻兄弟节点） */
+    var container = dirRow.parentElement;
+    var parent = container && container.classList.contains("file-dir-children")
+      ? container.previousElementSibling : null;
+    if (parent && parent.classList.contains("file-dir")) syncDirChecks(parent);
+  }
+
   function renderFiles() {
     var list = $("#fileList");
     list.innerHTML = "";
     $("#fileStamp").textContent = files.length + " FILES";
-    if (!files.length) {
+    /* 文件与空文件夹都为空才显示占位；只有空文件夹时照常渲染目录树 */
+    if (!files.length && !dirsList.length) {
       list.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-ink-faint);text-align:center">（暂无文件）</div>';
       return;
     }
-    files.forEach(function (f) {
-      var label = document.createElement("label");
-      label.className = "file-item";
-      label.innerHTML =
-        '<input type="checkbox" class="file-check" value="' + UI.esc(f.name) + '">' +
-        '<span class="file-name" title="' + UI.esc(f.name) + '">' + UI.esc(f.name) + "</span>" +
-        '<span class="file-size">' + UI.fmtSize(f.size) + "</span>";
-      list.appendChild(label);
+    var root = renderTreeNode(buildFileTree(files), "");
+    /* 根目录行：固定渲染在顶部——目录只有文件夹时仍可把文件拖回根目录，
+       也可点击选中"根目录"层级（新建文件夹的默认位置） */
+    var rootRow = document.createElement("div");
+    rootRow.className = "file-dir root-row" + (selectedDir === "" ? " selected" : "");
+    rootRow.dataset.path = "";
+    rootRow.title = "根目录（拖拽文件到这里移回根目录）";
+    rootRow.innerHTML =
+      '<span class="file-dir-arrow">·</span>' +
+      '<span class="file-dir-name">📂 根目录</span>' +
+      '<span class="file-size">' + files.length + "</span>";
+    list.appendChild(rootRow);
+    list.appendChild(root.frag);
+  }
+
+  /* 应用文件清单变化：同步刷新空文件夹列表（dirs），保持目录树一致 */
+  function applyFiles(newFiles, dirs) {
+    files = newFiles || [];
+    if (dirs) dirsList = dirs;
+    renderFiles();
+  }
+
+  /* 记录当前选中的文件夹层级（新建文件夹的目标位置）并高亮；
+     path="" 时高亮固定的根目录行（无行参数表示点击空白区域回到根层级） */
+  function selectDir(path, row) {
+    if (selectedDir === path) return;
+    selectedDir = path;
+    UI.qsa(".file-dir.selected", $("#fileList")).forEach(function (el) {
+      el.classList.remove("selected");
     });
+    if (row) row.classList.add("selected");
+    else if (path === "") {
+      var rr = $("#fileList .root-row");
+      if (rr) rr.classList.add("selected");
+    }
+  }
+
+  /* 拖拽移动：把文件移到目标文件夹（"" = 根目录） */
+  function moveFile(name, target) {
+    if (!currentProjectId) return;
+    /* 目标就是当前位置：跳过 */
+    var parts = name.split("/");
+    var curDir = parts.slice(0, -1).join("/");
+    if (curDir === target) {
+      UI.toast("文件已在该位置", "warn");
+      return;
+    }
+    UI.postJSON("/api/projects/" + currentProjectId + "/files/move", {
+      moves: [{ name: name, target: target }],
+    }).then(function (data) {
+      applyFiles(data.files, data.dirs);
+      if (data.failed && data.failed.length) {
+        UI.toast("✗ 移动失败: " + data.failed.join(", "), "err");
+      } else {
+        UI.toast("✓ 已移动到" + (target ? "「" + target + "」" : "根目录"), "ok");
+      }
+    }).catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+  }
+
+  /* ═══════════ 右键菜单（文件 / 文件夹） ═══════════ */
+
+  /* 重命名文件：同目录改名（可带路径，与移动共用 /files/move 接口） */
+  function renameFile(name) {
+    var curDir = name.split("/").slice(0, -1).join("/");
+    var basename = name.split("/").pop();
+    showModal("✏ 重命名文件", basename, function (newName) {
+      return UI.postJSON("/api/projects/" + currentProjectId + "/files/move", {
+        moves: [{ name: name, target: curDir, rename: newName }],
+      }).then(function (data) {
+        applyFiles(data.files, data.dirs);
+        if (data.failed && data.failed.length) {
+          throw new Error("重命名失败: " + data.failed.join(", "));
+        }
+        UI.toast("✓ 已重命名", "ok");
+      });
+    });
+  }
+
+  /* 删除文件：直接删除（无确认，可撤销），与删除按钮同一接口 */
+  function deleteFileByName(name) {
+    UI.delJSON("/api/projects/" + currentProjectId + "/files", { names: [name] })
+      .then(function (data) {
+        applyFiles(data.files, data.dirs);
+        if (data.failed && data.failed.length) {
+          UI.toast("✗ 删除失败（可能被占用）", "err");
+        } else {
+          UI.toast("✓ 已删除（可撤销）", "ok");
+        }
+      })
+      .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+  }
+
+  /* 重命名文件夹：目录级重命名，清单内文件前缀同步更新 */
+  function renameFolder(path) {
+    showModal("✏ 重命名文件夹", path.split("/").pop(), function (newName) {
+      return UI.postJSON("/api/projects/" + currentProjectId + "/folders/rename", {
+        old: path,
+        name: newName,
+      }).then(function (data) {
+        applyFiles(data.files, data.dirs);
+        /* 重命名的是当前选中层级：选中态跟随新路径 */
+        if (selectedDir === path) {
+          var parentDir = path.split("/").slice(0, -1).join("/");
+          selectDir(parentDir ? parentDir + "/" + newName : newName, null);
+          renderFiles();
+        }
+        UI.toast("✓ 已重命名文件夹", "ok");
+      });
+    });
+  }
+
+  /* 删除文件夹：内部文件全部入回收站，目录删除，可撤销 */
+  function deleteFolder(path) {
+    UI.postJSON("/api/projects/" + currentProjectId + "/folders/delete", { folder: path })
+      .then(function (data) {
+        applyFiles(data.files, data.dirs);
+        if (selectedDir === path) selectDir("", null);
+        UI.toast("✓ 已删除文件夹（可撤销）", "ok");
+      })
+      .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+  }
+
+  /* 下载：文件单文件 / 文件夹内全部文件（多文件后端自动打包 zip） */
+  function downloadByNames(names) {
+    if (!names.length) { UI.toast("文件夹内没有文件", "warn"); return; }
+    window.location.href = "/api/projects/" + currentProjectId + "/download?names=" +
+      encodeURIComponent(names.join(","));
+  }
+  function downloadFileByName(name) { downloadByNames([name]); }
+  function downloadFolder(path) {
+    var prefix = path + "/";
+    var names = files.filter(function (f) {
+      return f.name.indexOf(prefix) === 0;
+    }).map(function (f) { return f.name; });
+    downloadByNames(names);
+  }
+
+  /* 当前右键菜单 DOM（body 下动态创建，点击外部 / Esc 关闭） */
+  var ctxMenu = null;
+
+  function closeCtxMenu() {
+    if (ctxMenu) {
+      ctxMenu.remove();
+      ctxMenu = null;
+    }
+  }
+
+  /* 在鼠标位置打开右键菜单：视口边缘自动翻转（菜单在 body 下，
+     菜单内点击已在 capture 阶段被跳过，不会被外部点击关闭） */
+  function openCtxMenu(e, actions) {
+    e.preventDefault();
+    closeCtxMenu();
+    var menu = document.createElement("div");
+    menu.className = "ctx-menu menu-in";
+    actions.forEach(function (a) {
+      if (a === "-") {
+        var sep = document.createElement("div");
+        sep.className = "ctx-sep";
+        menu.appendChild(sep);
+        return;
+      }
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ctx-item" + (a.danger ? " danger" : "");
+      btn.textContent = a.label;
+      btn.addEventListener("click", function () {
+        closeCtxMenu();
+        a.run();
+      });
+      menu.appendChild(btn);
+    });
+    document.body.appendChild(menu);
+    ctxMenu = menu;
+    var w = menu.offsetWidth, h = menu.offsetHeight;
+    var x = Math.min(e.clientX, window.innerWidth - w - 8);
+    var y = Math.min(e.clientY, window.innerHeight - h - 8);
+    menu.style.left = Math.max(8, x) + "px";
+    menu.style.top = Math.max(8, y) + "px";
   }
 
   function selectedNames() {
     return UI.qsa(".file-check:checked", $("#fileList")).map(function (c) { return c.value; });
-  }
-
-  function applyFiles(newFiles) {
-    files = newFiles || [];
-    renderFiles();
   }
 
   /* ═══════════ 工作区 ═══════════ */
@@ -591,11 +882,19 @@
 
   /* ═══════════ 对话渲染 ═══════════ */
 
-  /* 解析服务端格式化内容：<details> 思考块（摘要+推理）+ 正文 */
+  /* 解析服务端格式化内容：多个 <details> 折叠块（思考过程/工具调用）+ 正文。
+     返回 { blocks: [{summary, body}], answer }；summary 文本用于区分
+     思考块（自动展开）与工具调用块（保持折叠） */
   function parseStreamContent(content) {
-    var m = /^<details>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>([\s\S]*)$/.exec(content);
-    if (m) return { summary: m[1], reasoning: m[2], answer: m[3] };
-    return { summary: null, reasoning: null, answer: content };
+    var blocks = [];
+    var rest = content || "";
+    var re = /<details>\s*<summary>([\s\S]*?)<\/summary>([\s\S]*?)<\/details>/;
+    var m;
+    while ((m = re.exec(rest))) {
+      blocks.push({ summary: m[1], body: m[2] });
+      rest = rest.slice(0, m.index) + rest.slice(m.index + m[0].length);
+    }
+    return { blocks: blocks, answer: rest };
   }
 
   /* 单帧渐显动画的最大字符数：超过部分直接以纯文本追加（不建动画节点），
@@ -632,6 +931,7 @@
   }
 
   /* 构建流式消息元素：结构只建一次，字符逐字渐显；
+     每个 <details> 折叠块独立成块（默认折叠），正文独立；
      返回 { el, parsed }，后续帧用 updateStreamingMessage 追加增量 */
   function buildStreamingMessage(content) {
     var parsed = parseStreamContent(content);
@@ -641,10 +941,10 @@
     label.className = "msg-label";
     label.textContent = "AI · 乐理专家";
     el.appendChild(label);
-    if (parsed.reasoning != null) {
+    parsed.blocks.forEach(function (b) {
       var det = document.createElement("details");
       var sum = document.createElement("summary");
-      sum.textContent = "思考过程";
+      sum.textContent = b.summary;
       det.appendChild(sum);
       var body = document.createElement("div");
       body.className = "details-body";
@@ -653,8 +953,8 @@
       body.appendChild(txt);
       det.appendChild(body);
       el.appendChild(det);
-      appendFadeChars(txt, parsed.reasoning);
-    }
+      appendFadeChars(txt, b.body);
+    });
     var ans = document.createElement("div");
     ans.className = "stream-answer";
     el.appendChild(ans);
@@ -662,20 +962,41 @@
     return { el: el, parsed: parsed };
   }
 
-  /* 流式消息增量更新：只追加新增的推理/正文字符（渐显 span 得以存活，
-     不会被整表重渲染打断——上游一次返回大量内容时逐字渐显依然生效） */
+  /* 流式消息增量更新：按块索引追加新增的推理/正文字符（渐显 span 得以存活，
+     不会被整表重渲染打断——上游一次返回大量内容时逐字渐显依然生效）；
+     折叠块数量增长时新建对应块 */
   function updateStreamingMessage(entry, content) {
     var parsed = parseStreamContent(content);
     var el = entry.el;
-    if (parsed.reasoning != null && entry.parsed.reasoning != null) {
-      var txt = el.querySelector(".details-body .stream-text");
-      if (txt && parsed.reasoning.length > entry.parsed.reasoning.length) {
-        appendFadeChars(txt, parsed.reasoning.slice(entry.parsed.reasoning.length));
+    var answerEl = el.querySelector(".stream-answer");
+    /* 块数增长：在正文前插入新块 */
+    while (el.querySelectorAll(".details-body .stream-text").length < parsed.blocks.length) {
+      var idx = el.querySelectorAll(".details-body .stream-text").length;
+      var b = parsed.blocks[idx];
+      var det = document.createElement("details");
+      var sum = document.createElement("summary");
+      sum.textContent = b.summary;
+      det.appendChild(sum);
+      var body = document.createElement("div");
+      body.className = "details-body";
+      var txt = document.createElement("div");
+      txt.className = "stream-text";
+      body.appendChild(txt);
+      det.appendChild(body);
+      el.insertBefore(det, answerEl);
+      appendFadeChars(txt, b.body);
+    }
+    var texts = el.querySelectorAll(".details-body .stream-text");
+    for (var i = 0; i < parsed.blocks.length; i++) {
+      var old = entry.parsed.blocks[i];
+      if (!old) continue;
+      var txt = texts[i];
+      if (txt && parsed.blocks[i].body.length > old.body.length) {
+        appendFadeChars(txt, parsed.blocks[i].body.slice(old.body.length));
       }
     }
-    var ans = el.querySelector(".stream-answer");
-    if (ans && parsed.answer.length > entry.parsed.answer.length) {
-      appendFadeChars(ans, parsed.answer.slice(entry.parsed.answer.length));
+    if (answerEl && parsed.answer.length > entry.parsed.answer.length) {
+      appendFadeChars(answerEl, parsed.answer.slice(entry.parsed.answer.length));
     }
     entry.parsed = parsed;
   }
@@ -692,6 +1013,7 @@
   function renderMessages(messages) {
     var chat = $("#chat");
     var list = messages || [];
+    currentMessages = list;
 
     /* ── 实时流式：最后一条消息用增量结构（逐字渐显不被打断） ── */
     if (liveStreaming && list.length) {
@@ -731,7 +1053,9 @@
           });
           chat.innerHTML = "";
           for (var i = 0; i < list.length - 1; i++) {
-            chat.appendChild(renderMessageCached(list[i]));
+            var mEl = renderMessageCached(list[i]);
+            mEl.dataset.index = i;
+            chat.appendChild(mEl);
           }
           chat.querySelectorAll("details").forEach(function (d, i) {
             if (openIdx.indexOf(i) !== -1) {
@@ -742,20 +1066,34 @@
           });
           streamTrack = buildStreamingMessage(content);
           streamTrack.norm = norm;
+          streamTrack.el.dataset.index = list.length - 1;
           chat.appendChild(streamTrack.el);
           userToggledStream = false;
         }
 
-        /* 思考块自动展开/收起：推理增长 → 展开；推理停止且正文增长 → 收起（手动操作优先） */
-        var det = streamTrack.el.querySelector("details");
-        if (det) {
-          var reasoning = (streamTrack.parsed.reasoning || "").trim();
+        /* 思考块自动展开/收起：仅针对「思考过程」块（工具调用块保持折叠、
+           不参与自动逻辑）；推理增长 → 展开，推理停止 → 收起（手动操作优先）。
+           跟踪最后一个思考块的文本 */
+        var thinkDet = null;
+        var dets = streamTrack.el.querySelectorAll("details");
+        for (var di = dets.length - 1; di >= 0; di--) {
+          var sum = dets[di].querySelector("summary");
+          if (sum && sum.textContent.indexOf("思考过程") !== -1) {
+            thinkDet = dets[di];
+            break;
+          }
+        }
+        if (thinkDet) {
+          var st = thinkDet.querySelector(".stream-text");
+          var reasoning = (st ? st.textContent : "").trim();
           if (reasoning.length > thinkingTrack.reasoning.length) {
-            if (!userToggledStream) det.open = true;
+            if (!userToggledStream) thinkDet.open = true;
           } else if (reasoning.length && reasoning.length === thinkingTrack.reasoning.length && !userToggledStream) {
-            det.open = false;
+            thinkDet.open = false;
           }
           thinkingTrack.reasoning = reasoning;
+        } else {
+          thinkingTrack.reasoning = "";
         }
 
         /* 折叠块展开/收起动画同步（自动展开/收起与手动点击后都生效） */
@@ -772,9 +1110,11 @@
       if (d.open) openIdx.push(i);
     });
     chat.innerHTML = "";
-    list.forEach(function (m) {
-      chat.appendChild(renderMessageCached(m));
-    });
+    for (var i = 0; i < list.length; i++) {
+      var mEl = renderMessageCached(list[i]);
+      mEl.dataset.index = i;
+      chat.appendChild(mEl);
+    }
     /* 恢复上一帧的展开态：details 的 open 属性 + body 的 .open 类都要恢复，
        否则重渲染后 sync 会把每个展开块误判为"刚展开"而重播动画 */
     chat.querySelectorAll("details").forEach(function (d, i) {
@@ -940,8 +1280,21 @@
   function renderMessage(m) {
     var content = m.content || "";
     if (content.indexOf("<details>") === 0) {
-      /* 服务端生成的折叠标签（受信任 HTML）：思考块与工具调用块统一
-         渲染为卡片样式的折叠块（.tool-call，虚线边框 + 控制台底色） */
+      /* 服务端生成的折叠标签（受信任 HTML）。「思考过程」开头的折叠块
+         是带思考的 AI 回复（.msg.ai，含复制按钮）；其余为工具调用日志
+         （.tool-call，日志性质不设操作按钮） */
+      var isThink = /^<details>\s*<summary>思考过程<\/summary>/.test(content);
+      if (isThink) {
+        var think = document.createElement("div");
+        think.className = "msg ai";
+        think.innerHTML =
+          '<div class="msg-label">AI · 乐理专家</div>' +
+          renderDetailsContent(content) +
+          '<div class="msg-actions">' +
+          '<button class="msg-action" data-action="copy" title="复制消息">⧉ 复制</button>' +
+          "</div>";
+        return think;
+      }
       var tool = document.createElement("div");
       tool.className = "tool-call";
       tool.innerHTML = renderDetailsContent(content);
@@ -950,13 +1303,113 @@
     if (m.role === "user") {
       var u = document.createElement("div");
       u.className = "msg user";
-      u.innerHTML = '<div class="msg-label">你 · You</div><p>' + UI.esc(content).replace(/\n/g, "<br>") + "</p>";
+      u.innerHTML =
+        '<div class="msg-label">你 · You</div>' +
+        "<p>" + UI.esc(content).replace(/\n/g, "<br>") + "</p>" +
+        '<div class="msg-actions">' +
+        '<button class="msg-action" data-action="copy" title="复制消息">⧉ 复制</button>' +
+        '<button class="msg-action" data-action="edit" title="修改后重新发送">✎ 修改</button>' +
+        "</div>";
       return u;
     }
     var a = document.createElement("div");
     a.className = "msg ai";
-    a.innerHTML = '<div class="msg-label">AI · 乐理专家</div>' + UI.md(content);
+    a.innerHTML =
+      '<div class="msg-label">AI · 乐理专家</div>' +
+      UI.md(content) +
+      '<div class="msg-actions">' +
+      '<button class="msg-action" data-action="copy" title="复制消息">⧉ 复制</button>' +
+      "</div>";
     return a;
+  }
+
+  /* ═══════════ 消息操作（复制 / 修改 / 撤回） ═══════════ */
+
+  /* 输入框随内容自动增高（最多 140px），换行后不至于挤在单行里 */
+  function autoGrowInput(ta) {
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 140) + "px";
+  }
+
+  /* 退出修改模式（仅重置前端状态，不回滚后端截断） */
+  function resetEditUI() {
+    editingIndex = -1;
+    inputBeforeEdit = "";
+    var bar = $("#editBar");
+    if (bar) bar.hidden = true;
+  }
+
+  /* 复制文本：AI 消息去掉思考/工具折叠块，markdown 渲染后取纯文本；
+     用户消息复制原文 */
+  function messageCopyText(m) {
+    var content = (m.content || "").replace(/<details>[\s\S]*?<\/details>/g, "");
+    if (m.role === "user") return content;
+    var tmp = document.createElement("div");
+    tmp.innerHTML = UI.md(content);
+    return (tmp.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  /* clipboard API 不可用（如非安全上下文）时的兜底复制 */
+  function copyTextFallback(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    ta.remove();
+  }
+
+  function copyMessage(m) {
+    var text = messageCopyText(m);
+    function done() { UI.toast("✓ 已复制到剪贴板", "ok"); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function () {
+        copyTextFallback(text);
+        done();
+      });
+    } else {
+      copyTextFallback(text);
+      done();
+    }
+  }
+
+  /* 修改模式：截断该消息之后的对话，原文填入输入框待重发；
+     发送前可点输入框上方的撤回按钮恢复被截断的对话 */
+  function startEdit(idx, m) {
+    if (chatBusy) { UI.toast("回复进行中，请稍候再修改", "warn"); return; }
+    if (!currentProjectId) return;
+    UI.postJSON("/api/projects/" + currentProjectId + "/messages/edit", { index: idx })
+      .then(function (data) {
+        inputBeforeEdit = $("#msgInput").value;
+        renderMessages(data.messages);
+        editingIndex = idx;
+        $("#editBar").hidden = false;
+        var input = $("#msgInput");
+        input.value = data.text || "";
+        autoGrowInput(input);
+        draftDirty = true;
+        input.focus();
+      })
+      .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+  }
+
+  /* 撤回修改：恢复被截断的对话与进入编辑前的输入框内容 */
+  function recallEdit() {
+    if (!currentProjectId || editingIndex < 0) return;
+    UI.postJSON("/api/projects/" + currentProjectId + "/messages/recall", {})
+      .then(function (data) {
+        renderMessages(data.messages);
+        editingIndex = -1;
+        $("#editBar").hidden = true;
+        var input = $("#msgInput");
+        input.value = inputBeforeEdit;
+        autoGrowInput(input);
+        draftDirty = true;
+        input.focus();
+      })
+      .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
   }
 
   function appendSysLine(text) {
@@ -981,6 +1434,11 @@
     var input = $("#msgInput");
     var message = input.value.trim();
     if (!message) return;
+    /* 修改模式发送：替换被编辑的消息（AI 上下文止于截断点），
+       发送瞬间退出编辑态，撤回条随之隐藏 */
+    var isEdit = editingIndex >= 0;
+    editingIndex = -1;
+    $("#editBar").hidden = true;
     /* 消息发出后立即清空输入框（不等回复结束） */
     input.value = "";
     draftDirty = false;
@@ -1023,13 +1481,13 @@
       if (typingEl.parentNode) typingEl.remove();
     }
 
-    UI.ssePost("/api/chat", { project_id: currentProjectId, message: message }, function (ev) {
+    UI.ssePost("/api/chat", { project_id: currentProjectId, message: message, edit: isEdit }, function (ev) {
       if (ev.type === "chat") {
         messages = ev.messages || [];
         lastMessages = messages;
         renderMessages(messages);
       } else if (ev.type === "files") {
-        applyFiles(ev.files);
+        applyFiles(ev.files, ev.dirs);
       } else if (ev.type === "download") {
         var link = $("#newMidiLink");
         link.href = ev.url;
@@ -1185,6 +1643,9 @@
           $("#kvEffort").textContent = payload.settings.reasoning_effort || "--";
           renderFiles();
           renderMessages(payload.display_messages || []);
+          resetEditUI();
+          dirsList = payload.dirs || [];
+          renderFiles();
           renderWorkspace(payload.workspace || { bound: false, path: "" });
           $("#msgInput").value = payload.draft || "";
           $("#sendBtn").disabled = false;
@@ -1251,6 +1712,140 @@
     $("#backBtn").addEventListener("click", backToArchive);
 
     /* 文件操作 */
+    /* 文件清单：文件夹行点击展开/收起（复选框区域除外），并记录为
+       当前选中层级（新建文件夹的目标位置）；点击空白区域回到根层级——
+       事件委托，DOM 重建后依然生效 */
+    $("#fileList").addEventListener("click", function (e) {
+      if (e.target.closest("input")) return;
+      var row = e.target.closest(".file-dir");
+      if (!row) { selectDir("", null); return; }
+      /* 根目录行：仅选中（不展开收起），作为拖回根目录的投放目标 */
+      if (row.classList.contains("root-row")) { selectDir("", row); return; }
+      var path = row.dataset.path;
+      var body = row.nextElementSibling;
+      if (!body || !body.classList.contains("file-dir-children")) return;
+      expandedDirs[path] = !expandedDirs[path];
+      row.classList.toggle("open", !!expandedDirs[path]);
+      var arrow = row.querySelector(".file-dir-arrow");
+      if (arrow) arrow.textContent = expandedDirs[path] ? "▾" : "▸";
+      body.hidden = !expandedDirs[path];
+      selectDir(path, row);
+    });
+    /* 新建文件夹：在当前选中的层级下创建 */
+    $("#newFolderBtn").addEventListener("click", function () {
+      if (!currentProjectId) return;
+      var hint = selectedDir ? "（当前层级: " + selectedDir + "）" : "（当前层级: 根目录）";
+      showModal("＋ 新建文件夹 " + hint, "", function (name) {
+        return UI.postJSON("/api/projects/" + currentProjectId + "/folders", {
+          name: name,
+          parent: selectedDir,
+        }).then(function (data) {
+          dirsList = data.dirs || [];
+          renderFiles();
+          UI.toast("✓ 已创建文件夹", "ok");
+        });
+      });
+    });
+    /* 拖拽移动：文件行拖到文件夹行（或空白区域=根目录） */
+    $("#fileList").addEventListener("dragstart", function (e) {
+      var item = e.target.closest(".file-item");
+      if (!item) return;
+      var check = item.querySelector(".file-check");
+      if (!check) return;
+      dragFileName = check.value;
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", check.value); } catch (err) {}
+      item.classList.add("dragging");
+    });
+    $("#fileList").addEventListener("dragend", function () {
+      dragFileName = null;
+      UI.qsa(".drop-target", $("#fileList")).forEach(function (el) {
+        el.classList.remove("drop-target");
+      });
+      $("#fileList").classList.remove("drop-root");
+      var it = $("#fileList .file-item.dragging");
+      if (it) it.classList.remove("dragging");
+    });
+    $("#fileList").addEventListener("dragover", function (e) {
+      if (!dragFileName) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      var row = e.target.closest(".file-dir");
+      UI.qsa(".drop-target", $("#fileList")).forEach(function (el) {
+        el.classList.remove("drop-target");
+      });
+      $("#fileList").classList.remove("drop-root");
+      if (row) row.classList.add("drop-target");
+      else $("#fileList").classList.add("drop-root");
+    });
+    $("#fileList").addEventListener("drop", function (e) {
+      if (!dragFileName) return;
+      e.preventDefault();
+      var row = e.target.closest(".file-dir");
+      var target = row ? row.dataset.path : "";
+      var name = dragFileName;
+      dragFileName = null;
+      UI.qsa(".drop-target", $("#fileList")).forEach(function (el) {
+        el.classList.remove("drop-target");
+      });
+      $("#fileList").classList.remove("drop-root");
+      moveFile(name, target);
+    });
+    /* 文件清单：文件夹勾选 = 全选其下文件；文件勾选后刷新祖先半选态 */
+    $("#fileList").addEventListener("change", function (e) {
+      var target = e.target;
+      if (!target || !target.classList || !target.classList.contains("file-check")) return;
+      var dirRow = null;
+      if (target.classList.contains("file-dir-check")) {
+        /* 文件夹自身：行内 checkbox，直接定位所在行 */
+        dirRow = target.closest(".file-dir");
+      } else {
+        /* 文件 checkbox：所在子容器（.file-dir-children）的前一个兄弟是文件夹行 */
+        var container = target.closest(".file-dir-children");
+        if (container) dirRow = container.previousElementSibling;
+      }
+      if (dirRow) {
+        if (target.classList.contains("file-dir-check")) {
+          var body = dirRow.nextElementSibling;
+          if (body) setDirChecked(body, target.checked);
+        }
+        syncDirChecks(dirRow);
+      }
+    });
+
+    /* 右键菜单：文件行 → 重命名/删除/下载；文件夹行（根目录行除外）→
+       重命名/删除/下载全部。菜单项直接执行（删除走回收站，可撤销） */
+    $("#fileList").addEventListener("contextmenu", function (e) {
+      var fileItem = e.target.closest(".file-item");
+      if (fileItem) {
+        var check = fileItem.querySelector(".file-check");
+        var fname = check ? check.value : "";
+        if (!fname) return;
+        openCtxMenu(e, [
+          { label: "✏ 重命名", run: function () { renameFile(fname); } },
+          { label: "🗑 删除", danger: true, run: function () { deleteFileByName(fname); } },
+          { label: "↓ 下载", run: function () { downloadFileByName(fname); } },
+        ]);
+        return;
+      }
+      var dirRow = e.target.closest(".file-dir");
+      if (dirRow && !dirRow.classList.contains("root-row")) {
+        var path = dirRow.dataset.path;
+        openCtxMenu(e, [
+          { label: "✏ 重命名", run: function () { renameFolder(path); } },
+          { label: "🗑 删除", danger: true, run: function () { deleteFolder(path); } },
+          { label: "↓ 下载全部", run: function () { downloadFolder(path); } },
+        ]);
+      }
+    });
+    /* 点击菜单外部 / Esc 关闭（capture 阶段：菜单内点击不会触发关闭） */
+    document.addEventListener("click", function (e) {
+      if (ctxMenu && !ctxMenu.contains(e.target)) closeCtxMenu();
+    }, true);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && ctxMenu) closeCtxMenu();
+    });
+
     $("#uploadBtn").addEventListener("click", function () { $("#uploadInput").click(); });
     $("#uploadInput").addEventListener("change", function () {
       var input = this;
@@ -1264,7 +1859,7 @@
           return r.json();
         })
         .then(function (data) {
-          applyFiles(data.files);
+          applyFiles(data.files, data.dirs);
           UI.toast("✓ 已上传 " + data.added + " 个文件", "ok");
         })
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); })
@@ -1275,7 +1870,12 @@
       var names = selectedNames();
       if (!names.length) { UI.toast("请先勾选要删除的文件", "warn"); return; }
       UI.delJSON("/api/projects/" + currentProjectId + "/files", { names: names })
-        .then(function (data) { applyFiles(data.files); })
+        .then(function (data) {
+          applyFiles(data.files, data.dirs);
+          if (data.failed && data.failed.length) {
+            UI.toast("✗ " + data.failed.length + " 个文件删除失败（可能被占用）", "err");
+          }
+        })
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
     });
 
@@ -1288,12 +1888,20 @@
 
     $("#undoBtn").addEventListener("click", function () {
       UI.postJSON("/api/projects/" + currentProjectId + "/undo").then(function (data) {
-        applyFiles(data.files);
+        applyFiles(data.files, data.dirs);
         UI.toast("↩ 已撤销上一步操作", "");
       }).catch(function (e) { UI.toast("✗ " + e.message, "err"); });
     });
 
     /* 工作区 */
+    $("#openWsBtn").addEventListener("click", function () {
+      if (!currentProjectId) return;
+      UI.postJSON("/api/projects/" + currentProjectId + "/workspace/open")
+        .then(function (data) {
+          UI.toast("✓ 已打开: " + data.path, "ok");
+        })
+        .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+    });
     $("#pickFolderBtn").addEventListener("click", function () {
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/pick-folder", {})
         .then(function (data) {
@@ -1306,7 +1914,7 @@
       if (!path) { UI.toast("请输入工作区目录路径", "warn"); return; }
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/bind", { path: path })
         .then(function (data) {
-          applyFiles(data.midi_files);
+          applyFiles(data.midi_files, data.dirs);
           renderWorkspace({ bound: true, path: data.path });
           $("#wsPathInput").value = "";
           if (data.renamed && data.renamed.length) {
@@ -1320,7 +1928,7 @@
     $("#unbindBtn").addEventListener("click", function () {
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/unbind")
         .then(function (data) {
-          applyFiles(data.midi_files);
+          applyFiles(data.midi_files, data.dirs);
           renderWorkspace({ bound: false, path: "" });
           UI.toast("已解绑工作区", "");
         })
@@ -1329,7 +1937,7 @@
     $("#refreshWsBtn").addEventListener("click", function () {
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/refresh")
         .then(function (data) {
-          applyFiles(data.midi_files);
+          applyFiles(data.midi_files, data.dirs);
           UI.toast("✓ 已刷新工作区文件", "ok");
         })
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
@@ -1348,6 +1956,25 @@
         userToggledStream = true;
       }
     });
+    /* 消息操作按钮（复制 / 修改）——事件委托，随整表重建存活。
+       data-index 由 renderMessages 渲染时写入，据此取 currentMessages 中
+       对应的消息数据（内容寻址缓存克隆不携带按钮监听器） */
+    $("#chat").addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-action]");
+      if (!btn) return;
+      var msgEl = btn.closest(".msg");
+      if (!msgEl) return;
+      var idx = parseInt(msgEl.dataset.index, 10);
+      var m = currentMessages[idx];
+      if (!m) return;
+      if (btn.dataset.action === "copy") {
+        copyMessage(m);
+      } else if (btn.dataset.action === "edit") {
+        startEdit(idx, m);
+      }
+    });
+    /* 撤回修改：恢复被截断的对话与输入框内容 */
+    $("#recallEditBtn").addEventListener("click", recallEdit);
     /* 折叠块 open 属性翻转后（点击/键盘/程序化）同步展开/收起动画。
        toggle 事件不冒泡，需用捕获阶段监听 */
     $("#chat").addEventListener("toggle", function (e) {
@@ -1373,13 +2000,11 @@
     });
     $("#msgInput").addEventListener("input", function () {
       draftDirty = true;
-      /* 输入框随内容自动增高（最多 140px），换行后不至于挤在单行里 */
-      var ta = this;
-      ta.style.height = "auto";
-      ta.style.height = Math.min(ta.scrollHeight, 140) + "px";
+      autoGrowInput(this);
     });
     $("#clearBtn").addEventListener("click", function () {
       if (!confirm("确定清空当前项目的全部对话？")) return;
+      resetEditUI();
       UI.postJSON("/api/projects/" + currentProjectId + "/clear").then(function () {
         renderMessages([]);
         UI.toast("✓ 对话已清空", "ok");

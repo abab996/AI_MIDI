@@ -225,7 +225,11 @@ def run_task_stream(body: RunIn):
         yield _sse({"type": "error", "message": _elapsed("⚠ 请先解析 MIDI 文件。")})
         return
 
-    yield _sse({"type": "progress", "value": 0.2, "desc": "解析 MIDI"})
+    # 其他要求无需解析 MIDI：进度文案与实际步骤对应，避免误导
+    if body.func == FUNC_OTHER:
+        yield _sse({"type": "progress", "value": 0.2, "desc": "准备请求"})
+    else:
+        yield _sse({"type": "progress", "value": 0.2, "desc": "解析 MIDI"})
 
     settings = chat_service._load_settings()
     if not settings["api_key"]:
@@ -436,12 +440,32 @@ def clear_chat(project_id: str) -> dict:
     return chat_service.clear_chat(project_id)
 
 
+class MessageEditIn(BaseModel):
+    index: int = -1
+
+
+@app.post("/api/projects/{project_id}/messages/edit")
+def edit_message(project_id: str, body: MessageEditIn) -> dict:
+    """修改模式：截断第 index 条用户消息之后的对话，返回截断列表与原文。"""
+    try:
+        return chat_service.edit_message(project_id, body.index)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/projects/{project_id}/messages/recall")
+def recall_edit(project_id: str) -> dict:
+    """撤回修改：恢复被截断的对话。"""
+    return chat_service.recall_edit(project_id)
+
+
 # ==================== 项目文件管理 ====================
 
 @app.post("/api/projects/{project_id}/files")
 async def upload_files(project_id: str, files: list[UploadFile] = File(...)) -> dict:
     """上传 MIDI 文件到项目。"""
     temp_paths: list[str] = []
+    orig_names: list[str] = []
     try:
         for f in files:
             suffix = Path(f.filename or "in.mid").suffix.lower()
@@ -452,6 +476,8 @@ async def upload_files(project_id: str, files: list[UploadFile] = File(...)) -> 
             with open(tmp, "wb") as out_f:
                 shutil.copyfileobj(f.file, out_f)
             temp_paths.append(tmp)
+            # 保留原始文件名（mkstemp 临时名不能作为最终文件名）
+            orig_names.append(Path(f.filename or "upload.mid").name)
     except OSError:
         logger.exception("接收上传文件失败")
         raise HTTPException(status_code=500, detail="文件保存失败")
@@ -464,6 +490,7 @@ async def upload_files(project_id: str, files: list[UploadFile] = File(...)) -> 
         session["undo_stack"],
         project_id,
         session["full_history"],
+        names=orig_names,
     )
     session["midi_files"] = updated
     session["undo_stack"] = undo_stack
@@ -474,22 +501,110 @@ async def upload_files(project_id: str, files: list[UploadFile] = File(...)) -> 
         except OSError:
             pass
 
-    return {"files": chat_service._public_files(updated), "added": len(updated) - prev_count}
+    return {
+        "files": chat_service._public_files(updated),
+        "added": len(updated) - prev_count,
+        "dirs": chat_service._dirs_for(project_id),
+    }
 
 
 class FilesIn(BaseModel):
     names: list[str] = []
 
 
+class FolderIn(BaseModel):
+    name: str = ""
+    parent: str = ""
+
+
+@app.post("/api/projects/{project_id}/folders")
+def create_folder(project_id: str, body: FolderIn) -> dict:
+    """在当前选中层级下新建文件夹（主目录 + 镜像双写）。"""
+    try:
+        return chat_service._on_create_folder(project_id, body.name, body.parent)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class FolderRenameIn(BaseModel):
+    old: str = ""
+    name: str = ""
+
+
+@app.post("/api/projects/{project_id}/folders/rename")
+def rename_folder(project_id: str, body: FolderRenameIn) -> dict:
+    """重命名文件夹（主目录 + 镜像目录级 move，清单前缀同步替换）。"""
+    session = chat_service._get_session(project_id)
+    updated, undo_stack, error = chat_service._on_rename_folder(
+        project_id, body.old, body.name, session["midi_files"],
+        session["undo_stack"], session["full_history"],
+    )
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    session["midi_files"] = updated
+    session["undo_stack"] = undo_stack
+    return {
+        "files": chat_service._public_files(updated),
+        "dirs": chat_service._dirs_for(project_id),
+    }
+
+
+class FolderDeleteIn(BaseModel):
+    folder: str = ""
+
+
+@app.post("/api/projects/{project_id}/folders/delete")
+def delete_folder(project_id: str, body: FolderDeleteIn) -> dict:
+    """删除文件夹（显式操作）：内部文件入回收站 + 空目录删除，可撤销。"""
+    session = chat_service._get_session(project_id)
+    updated, undo_stack, error = chat_service._on_delete_folder(
+        project_id, body.folder, session["midi_files"],
+        session["undo_stack"], session["full_history"],
+    )
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    session["midi_files"] = updated
+    session["undo_stack"] = undo_stack
+    return {
+        "files": chat_service._public_files(updated),
+        "dirs": chat_service._dirs_for(project_id),
+    }
+
+
+class MoveIn(BaseModel):
+    moves: list[dict] = []
+
+
+@app.post("/api/projects/{project_id}/files/move")
+def move_files(project_id: str, body: MoveIn) -> dict:
+    """移动文件到其他文件夹（target 为空串表示根目录）。"""
+    session = chat_service._get_session(project_id)
+    updated, undo_stack, failed = chat_service._on_move(
+        project_id, body.moves, session["midi_files"],
+        session["undo_stack"], session["full_history"],
+    )
+    session["midi_files"] = updated
+    session["undo_stack"] = undo_stack
+    return {
+        "files": chat_service._public_files(updated),
+        "failed": failed,
+        "dirs": chat_service._dirs_for(project_id),
+    }
+
+
 @app.delete("/api/projects/{project_id}/files")
 def delete_files(project_id: str, body: FilesIn) -> dict:
     session = chat_service._get_session(project_id)
-    updated, undo_stack, _ = chat_service._on_delete(
+    updated, undo_stack, _, failed = chat_service._on_delete(
         session["midi_files"], body.names, session["undo_stack"], project_id, session["full_history"],
     )
     session["midi_files"] = updated
     session["undo_stack"] = undo_stack
-    return {"files": chat_service._public_files(updated)}
+    return {
+        "files": chat_service._public_files(updated),
+        "failed": failed,
+        "dirs": chat_service._dirs_for(project_id),
+    }
 
 
 @app.get("/api/projects/{project_id}/download")
@@ -510,7 +625,10 @@ def undo_files(project_id: str) -> dict:
     )
     session["midi_files"] = restored
     session["undo_stack"] = undo_stack
-    return {"files": chat_service._public_files(restored)}
+    return {
+        "files": chat_service._public_files(restored),
+        "dirs": chat_service._dirs_for(project_id),
+    }
 
 
 # ==================== 工作区绑定 ====================
@@ -546,16 +664,27 @@ def refresh_workspace(project_id: str) -> dict:
     return chat_service.refresh_workspace(project_id)
 
 
+@app.post("/api/projects/{project_id}/workspace/open")
+def open_workspace(project_id: str) -> dict:
+    """在系统文件管理器中打开工作区（未绑定则打开默认项目 midi 目录）。"""
+    try:
+        return chat_service.open_workspace(project_id)
+    except OSError as exc:
+        logger.exception("打开工作区失败")
+        raise HTTPException(status_code=400, detail=f"打开工作区失败: {exc}")
+
+
 # ==================== 对话（SSE） ====================
 
 class ChatIn(BaseModel):
     project_id: str
     message: str = ""
+    edit: bool = False
 
 
 @app.post("/api/chat")
 def chat(body: ChatIn) -> StreamingResponse:
-    return _sse_response(chat_service.chat_stream(body.project_id, body.message))
+    return _sse_response(chat_service.chat_stream(body.project_id, body.message, edit=body.edit))
 
 
 def _sse_response(generator) -> StreamingResponse:

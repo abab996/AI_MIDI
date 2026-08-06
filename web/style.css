@@ -998,6 +998,67 @@ a.btn {
 
 .file-item:hover { background: var(--color-primary-soft); }
 
+/* ---------- 文件清单目录树（文件夹层级） ---------- */
+.file-dir {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+
+.file-dir:hover { background: var(--color-primary-soft); }
+
+.file-dir-arrow {
+  font-size: 10px;
+  color: var(--color-ink-dim);
+  width: 10px;
+  flex: none;
+  transition: transform 0.15s ease;
+}
+
+.file-dir.open .file-dir-arrow { transform: rotate(90deg); }
+
+.file-dir-name {
+  flex: 1;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-dir-children {
+  margin-left: 20px;
+  padding-left: 12px;
+  border-left: 1px dashed var(--color-border-dashed);
+}
+
+/* 当前选中的文件夹层级（新建文件夹的目标位置） */
+.file-dir.selected {
+  background: var(--color-primary-soft);
+  box-shadow: inset 2px 0 0 var(--color-primary);
+}
+
+/* 拖拽移动：目标文件夹行 / 根区域 高亮 */
+.file-dir.drop-target {
+  background: var(--color-primary-soft);
+  outline: 1px dashed var(--color-primary);
+}
+
+#fileList.drop-root {
+  outline: 1px dashed var(--color-primary);
+}
+
+.file-item[draggable="true"] { cursor: grab; }
+
+.file-item.dragging { opacity: 0.5; }
+
 .file-name {
   flex: 1;
   font-family: "Cascadia Mono", Consolas, monospace;
@@ -1012,6 +1073,57 @@ a.btn {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 10px;
   color: var(--color-ink-faint);
+}
+
+/* 根目录行：固定在文件树顶部，作为"移回根目录"的投放目标 */
+.file-dir.root-row .file-dir-name {
+  color: var(--color-ink-dim);
+}
+
+/* ---------- 右键菜单（文件 / 文件夹） ---------- */
+.ctx-menu {
+  position: fixed;
+  min-width: 148px;
+  padding: 4px 0;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  box-shadow: 0 6px 18px var(--color-shadow);
+  z-index: 90;
+}
+
+.ctx-menu.menu-in {
+  animation: menu-pop 0.22s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 14px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-ink);
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ctx-item:hover { background: var(--color-primary-soft); }
+
+.ctx-item.danger { color: var(--color-danger); }
+
+.ctx-item.danger:hover {
+  background: var(--color-danger-soft);
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--color-border);
 }
 
 .btn-grid {
@@ -1152,6 +1264,45 @@ a.btn {
   border: 1px solid var(--color-border);
 }
 
+/* ---------- 消息操作按钮（复制 / 修改）：hover 消息时浮现 ---------- */
+.msg-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.msg:hover .msg-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.msg.user .msg-actions {
+  justify-content: flex-end;
+}
+
+.msg-action {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--color-ink-dim);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.msg-action:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
 /* AI 三点加载动画（发送后等待首个流式事件） */
 .msg.ai.typing {
   display: flex;
@@ -1160,6 +1311,37 @@ a.btn {
 }
 
 /* ---------- 流式消息（增量结构：逐字渐显期间以纯文本呈现） ---------- */
+/* 非流式 AI 消息内的思考过程折叠块与流式同款卡片（重渲染后保持一致）；
+   summary 吸顶与 .tool-call 一致：滚动时标签跟随内容上移，到达聊天框
+   顶部即悬挂（负 top 抵消 .chat 顶部 padding） */
+.msg.ai details {
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  background: var(--color-bg-console);
+  margin: 2px 0 8px;
+}
+
+.msg.ai details summary {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--color-primary);
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  position: sticky;
+  top: calc(-1 * var(--chat-pad-y, 20px));
+  z-index: 2;
+  background: var(--color-bg-console);
+  border-bottom: 1px dashed var(--color-border-dashed);
+}
+
+.msg.ai details summary::-webkit-details-marker { display: none; }
+
+.msg.ai details .details-body {
+  padding: 6px 12px 10px;
+}
+
 .msg.ai.streaming details {
   border: 1px dashed var(--color-border-dashed);
   border-radius: 2px;
@@ -1370,6 +1552,26 @@ a.btn {
   background: var(--color-danger-soft);
   border-color: var(--color-danger);
   color: var(--color-danger);
+}
+
+/* 修改模式撤回条：编辑消息未发送前可一键恢复被截断的对话 */
+.edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 6px 10px;
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  background: var(--color-bg-console);
+}
+
+.edit-hint {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--color-primary);
+  flex: 1;
 }
 
 .console-foot {
@@ -1815,7 +2017,8 @@ html[data-vt-flow="back"]::view-transition-new(project-panel) {
   .modal-overlay.modal-in,
   .modal-overlay.modal-out,
   .modal-overlay .modal,
-  .select-menu.menu-in {
+  .select-menu.menu-in,
+  .ctx-menu.menu-in {
     animation: none !important;
   }
 }

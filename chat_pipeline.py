@@ -180,9 +180,10 @@ def _split_content_blocks(value) -> tuple[str, str]:
 def _format_display_message(reasoning: str, content: str) -> str:
     """结合思考/推理过程和回答正文，构造前端 Markdown HTML 展示文本。
 
-    - reasoning_content 与正文内嵌的 ``<think>`` 片段统一合并为单个可折叠思考块
+    - reasoning_content 与正文内嵌的 ``<think>`` 片段统一为思考片段列表，
+      **每个片段生成独立的可折叠思考块**（不同轮次的思考不合并到一个块）
     - 正文中不会残留任何字面 ``<think>`` 标签（多个/未闭合标签兜底处理）
-    - 思考片段与 reasoning 相同（或为其长片段子串）时不重复拼接
+    - 思考片段与 reasoning 相同（或为其长片段子串）时不重复生成
     """
 
     def _clean(text: str) -> str:
@@ -194,22 +195,26 @@ def _format_display_message(reasoning: str, content: str) -> str:
 
     answer, think_parts = _extract_think_blocks(content)
 
+    # 思考片段列表：reasoning_content 为第一个片段，其余来自 <think> 块
+    parts: list[str] = []
     merged = _clean(reasoning)
+    if merged:
+        parts.append(merged)
     for part in think_parts:
         part = _clean(part)
-        if not part or part == merged:
+        if not part or part in parts:
             continue
-        # 长片段整体已存在于 reasoning 中视为重复，避免同一段思考被渲染两遍
-        if len(part) >= 20 and merged and part in merged:
+        # 长片段整体已存在于某个片段中视为重复，避免同一段思考被渲染两遍
+        if len(part) >= 20 and any(part in p for p in parts):
             continue
-        merged = f"{merged}\n\n{part}" if merged else part
+        parts.append(part)
 
     res = ""
-    if merged:
+    for part in parts:
         res += (
             f"<details>\n"
             f"<summary>思考过程</summary>\n\n"
-            f"{merged}\n"
+            f"{part}\n"
             f"</details>\n\n"
         )
     res += answer
@@ -351,17 +356,171 @@ def _execute_tool_loop(
             kwargs["messages"] = _sanitize_messages(messages, is_gemini=is_gemini)
             kwargs["stream"] = True
 
-            # 尝试 API 调用,逐步去除不兼容参数并重试
+            # 尝试 API 调用,逐步去除不兼容参数并重试。
+            # 重试范围覆盖整个流式迭代：上游在流式中途断连（如
+            # RemoteProtocolError，连接 200 但 chunked 传输被掐断）同样
+            # 判定为瞬态故障并重新发起请求；断连轮次已累积/已展示的
+            # 内容整体回滚作废（SSE 每帧携带全量展示列表，前端会重建）。
             _strippable = [
                 ("extra_body", "thinking"),
                 ("reasoning_effort", "reasoning_effort"),
             ]
             max_retries = 3
+            accumulated_content = ""
+            accumulated_reasoning = ""
+            tool_calls_builder: dict[int, dict] = {}
+            is_streaming = False
+            last_stream_emit = 0.0
+            display_len_before = len(chat_display)  # 断连重试时回滚本轮已展示的 assistant 消息
+
             for _attempt in range(max_retries + 1):
                 try:
                     stream_response = client.chat.completions.create(**kwargs)
+                    if not hasattr(stream_response, "__iter__") or isinstance(stream_response, dict):
+                        chunks = [stream_response]
+                    else:
+                        chunks = stream_response
+
+                    for chunk in chunks:
+                        if not hasattr(chunk, "choices") or not chunk.choices:
+                            continue
+                        choice = chunk.choices[0]
+                        delta = getattr(choice, "delta", None)
+                        msg_obj = getattr(choice, "message", None)
+                        if delta is None and msg_obj is None:
+                            continue
+
+                        # 推理/正文/工具调用分别从 delta 与 message 提取：
+                        # 兼容末 chunk 把 tool_calls 放在 message 而 delta 是
+                        # 非 None 空对象的情况（此前 item 取到空 delta，
+                        # 工具调用被静默丢弃）
+                        r_chunk = (
+                            getattr(delta, "reasoning_content", None)
+                            or getattr(delta, "reasoning", None)
+                            or getattr(msg_obj, "reasoning_content", None)
+                            or getattr(msg_obj, "reasoning", None)
+                        )
+                        if r_chunk:
+                            accumulated_reasoning += r_chunk if isinstance(r_chunk, str) else str(r_chunk)
+
+                        # 提取正文片段（多段结构时 thinking 块归入推理、text 块归入正文）
+                        c_chunk = (
+                            getattr(delta, "content", None)
+                            or getattr(msg_obj, "content", None)
+                        )
+                        if c_chunk:
+                            if isinstance(c_chunk, str):
+                                accumulated_content += c_chunk
+                            else:
+                                c_reasoning, c_content = _split_content_blocks(c_chunk)
+                                if c_reasoning:
+                                    accumulated_reasoning += c_reasoning
+                                if c_content:
+                                    accumulated_content += c_content
+
+                        # 提取工具调用片段
+                        tc_chunks = (
+                            getattr(delta, "tool_calls", None)
+                            or getattr(msg_obj, "tool_calls", None)
+                        )
+                        if tc_chunks:
+                            for tc_item in tc_chunks:
+                                idx = getattr(tc_item, "index", 0)
+                                if idx not in tool_calls_builder:
+                                    tool_calls_builder[idx] = {
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                        "thought_signature": "",
+                                    }
+                                tc_id = getattr(tc_item, "id", None)
+                                if tc_id:
+                                    curr_id = tool_calls_builder[idx]["id"]
+                                    if not curr_id:
+                                        tool_calls_builder[idx]["id"] = tc_id
+                                    elif curr_id != tc_id and tc_id not in curr_id:
+                                        tool_calls_builder[idx]["id"] += tc_id
+
+                                if isinstance(tc_item, dict):
+                                    func_obj = tc_item.get("function", {})
+                                    f_name = func_obj.get("name", "")
+                                    f_args = func_obj.get("arguments", "")
+                                else:
+                                    func_obj = getattr(tc_item, "function", None)
+                                    f_name = getattr(func_obj, "name", "") if func_obj else ""
+                                    f_args = getattr(func_obj, "arguments", "") if func_obj else ""
+
+                                if f_name:
+                                    curr_name = tool_calls_builder[idx]["function"]["name"]
+                                    if not curr_name:
+                                        tool_calls_builder[idx]["function"]["name"] = f_name
+                                    elif curr_name != f_name:
+                                        known_tools = [
+                                            "read_library_file", "list_midi_files",
+                                            "parse_midi", "create_midi", "delete_midi",
+                                            "create_folder", "list_project_structure"
+                                        ]
+                                        if f_name in known_tools:
+                                            tool_calls_builder[idx]["function"]["name"] = f_name
+                                        elif curr_name not in known_tools and f_name not in curr_name:
+                                            tool_calls_builder[idx]["function"]["name"] += f_name
+
+                                if f_args:
+                                    if isinstance(f_args, dict):
+                                        f_args = json.dumps(f_args, ensure_ascii=False)
+                                    curr_args = tool_calls_builder[idx]["function"]["arguments"]
+                                    if not curr_args:
+                                        tool_calls_builder[idx]["function"]["arguments"] = f_args
+                                    elif curr_args != f_args:
+                                        try:
+                                            json.loads(curr_args)
+                                            try:
+                                                json.loads(f_args)
+                                                if len(f_args) > len(curr_args):
+                                                    tool_calls_builder[idx]["function"]["arguments"] = f_args
+                                            except json.JSONDecodeError:
+                                                pass
+                                        except json.JSONDecodeError:
+                                            tool_calls_builder[idx]["function"]["arguments"] += f_args
+
+                                # 提取 Gemini 思考模型的 thought_signature（回传时需原样带回）
+                                sig = _extract_thought_signature(tc_item)
+                                if sig:
+                                    tool_calls_builder[idx]["thought_signature"] = sig
+
+                        # 真实流式实时 yield 给前端呈现（25ms 节流：格式化/全量拷贝成本高，
+                        # 被节流吞掉的中间态由轮次结束前的强制 flush 兜底补发）
+                        if r_chunk or c_chunk:
+                            now = time.time()
+                            if now - last_stream_emit >= _STREAM_EMIT_INTERVAL:
+                                last_stream_emit = now
+                                formatted_display = _format_display_message(accumulated_reasoning, accumulated_content)
+                                if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
+                                    chat_display[-1] = {"role": "assistant", "content": formatted_display}
+                                else:
+                                    chat_display.append({"role": "assistant", "content": formatted_display})
+                                    is_streaming = True
+                                yield (
+                                    list(chat_display),
+                                    "",
+                                    updated_files,
+                                    new_undo_stack,
+                                    full_history,
+                                    download_path,
+                                None,
+                            )
+
+                    # 流式迭代正常结束：本轮完成，退出重试循环
                     break
                 except Exception as api_err:
+                    # 重试前回滚断连/失败轮次：丢弃已累积内容与已展示的
+                    # assistant 消息（SSE 每帧携带全量展示列表，前端会重建）
+                    accumulated_content = ""
+                    accumulated_reasoning = ""
+                    tool_calls_builder = {}
+                    is_streaming = False
+                    del chat_display[display_len_before:]
+
                     is_rate_limit = (
                         getattr(api_err, "status_code", None) == 429
                         or "429" in str(api_err)
@@ -394,136 +553,6 @@ def _execute_tool_loop(
                             break
                     if not stripped:
                         raise
-
-            if not hasattr(stream_response, "__iter__") or isinstance(stream_response, dict):
-                chunks = [stream_response]
-            else:
-                chunks = stream_response
-
-            accumulated_content = ""
-            accumulated_reasoning = ""
-            tool_calls_builder: dict[int, dict] = {}
-            is_streaming = False
-            last_stream_emit = 0.0
-
-            for chunk in chunks:
-                if not hasattr(chunk, "choices") or not chunk.choices:
-                    continue
-                choice = chunk.choices[0]
-                delta = getattr(choice, "delta", None)
-                msg_obj = getattr(choice, "message", None)
-                item = delta if delta is not None else msg_obj
-                if item is None:
-                    continue
-
-                # 提取推理/思考片段（兼容字符串；非字符串兜底 str 化，避免 TypeError）
-                r_chunk = (
-                    getattr(item, "reasoning_content", None)
-                    or getattr(item, "reasoning", None)
-                )
-                if r_chunk:
-                    accumulated_reasoning += r_chunk if isinstance(r_chunk, str) else str(r_chunk)
-
-                # 提取正文片段（多段结构时 thinking 块归入推理、text 块归入正文）
-                c_chunk = getattr(item, "content", None)
-                if c_chunk:
-                    if isinstance(c_chunk, str):
-                        accumulated_content += c_chunk
-                    else:
-                        c_reasoning, c_content = _split_content_blocks(c_chunk)
-                        if c_reasoning:
-                            accumulated_reasoning += c_reasoning
-                        if c_content:
-                            accumulated_content += c_content
-
-                # 提取工具调用片段
-                tc_chunks = getattr(item, "tool_calls", None)
-                if tc_chunks:
-                    for tc_item in tc_chunks:
-                        idx = getattr(tc_item, "index", 0)
-                        if idx not in tool_calls_builder:
-                            tool_calls_builder[idx] = {
-                                "id": "",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                                "thought_signature": "",
-                            }
-                        tc_id = getattr(tc_item, "id", None)
-                        if tc_id:
-                            curr_id = tool_calls_builder[idx]["id"]
-                            if not curr_id:
-                                tool_calls_builder[idx]["id"] = tc_id
-                            elif curr_id != tc_id and tc_id not in curr_id:
-                                tool_calls_builder[idx]["id"] += tc_id
-
-                        if isinstance(tc_item, dict):
-                            func_obj = tc_item.get("function", {})
-                            f_name = func_obj.get("name", "")
-                            f_args = func_obj.get("arguments", "")
-                        else:
-                            func_obj = getattr(tc_item, "function", None)
-                            f_name = getattr(func_obj, "name", "") if func_obj else ""
-                            f_args = getattr(func_obj, "arguments", "") if func_obj else ""
-
-                        if f_name:
-                            curr_name = tool_calls_builder[idx]["function"]["name"]
-                            if not curr_name:
-                                tool_calls_builder[idx]["function"]["name"] = f_name
-                            elif curr_name != f_name:
-                                known_tools = [
-                                    "read_library_file", "list_midi_files",
-                                    "parse_midi", "create_midi", "delete_midi",
-                                    "create_folder", "list_project_structure"
-                                ]
-                                if f_name in known_tools:
-                                    tool_calls_builder[idx]["function"]["name"] = f_name
-                                elif curr_name not in known_tools and f_name not in curr_name:
-                                    tool_calls_builder[idx]["function"]["name"] += f_name
-
-                        if f_args:
-                            if isinstance(f_args, dict):
-                                f_args = json.dumps(f_args, ensure_ascii=False)
-                            curr_args = tool_calls_builder[idx]["function"]["arguments"]
-                            if not curr_args:
-                                tool_calls_builder[idx]["function"]["arguments"] = f_args
-                            elif curr_args != f_args:
-                                try:
-                                    json.loads(curr_args)
-                                    try:
-                                        json.loads(f_args)
-                                        if len(f_args) > len(curr_args):
-                                            tool_calls_builder[idx]["function"]["arguments"] = f_args
-                                    except json.JSONDecodeError:
-                                        pass
-                                except json.JSONDecodeError:
-                                    tool_calls_builder[idx]["function"]["arguments"] += f_args
-
-                        # 提取 Gemini 思考模型的 thought_signature（回传时需原样带回）
-                        sig = _extract_thought_signature(tc_item)
-                        if sig:
-                            tool_calls_builder[idx]["thought_signature"] = sig
-
-                # 真实流式实时 yield 给前端呈现（25ms 节流：格式化/全量拷贝成本高，
-                # 被节流吞掉的中间态由轮次结束前的强制 flush 兜底补发）
-                if r_chunk or c_chunk:
-                    now = time.time()
-                    if now - last_stream_emit >= _STREAM_EMIT_INTERVAL:
-                        last_stream_emit = now
-                        formatted_display = _format_display_message(accumulated_reasoning, accumulated_content)
-                        if is_streaming and chat_display and chat_display[-1].get("role") == "assistant":
-                            chat_display[-1] = {"role": "assistant", "content": formatted_display}
-                        else:
-                            chat_display.append({"role": "assistant", "content": formatted_display})
-                            is_streaming = True
-                        yield (
-                            list(chat_display),
-                            "",
-                            updated_files,
-                            new_undo_stack,
-                            full_history,
-                            download_path,
-                        None,
-                    )
 
             msg_tool_calls_list = [
                 v for k, v in sorted(tool_calls_builder.items(), key=lambda x: x[0])
@@ -645,10 +674,15 @@ def _execute_tool_loop(
                 except json.JSONDecodeError:
                     tc_args = {}
 
-                result_text, updated_files = _chat_ui._execute_tool_call(
-                    {"function": {"name": tc_name, "arguments": tc_args}},
-                    updated_files,
-                )
+                try:
+                    result_text, updated_files = _chat_ui._execute_tool_call(
+                        {"function": {"name": tc_name, "arguments": tc_args}},
+                        updated_files,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # 工具执行抛错时生成失败结果块，避免「🔧 正在调用」占位符悬空
+                    logger.exception("工具执行失败: %s", tc_name)
+                    result_text = f"错误：工具执行失败 — {type(exc).__name__}"
 
                 entry = _chat_ui._format_single_tool_entry(tc_name, tc_args, result_text)
                 tool_log.append(entry)

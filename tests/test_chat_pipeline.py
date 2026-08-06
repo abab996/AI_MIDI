@@ -157,9 +157,9 @@ def test_format_display_message_with_reasoning():
 
 
 def test_format_display_message_merges_reasoning_and_think_blocks():
-    """双通道：reasoning_content 与 content 内嵌 <think> 同时存在时只展示一次思考区。"""
+    """reasoning 与 content 内嵌 think 分别成块（不同思考不合并到一个块）。"""
     msg = chat_pipeline._format_display_message("推理A", "<think>推理B</think>正文")
-    assert msg.count("<summary>思考过程</summary>") == 1
+    assert msg.count("<summary>思考过程</summary>") == 2
     assert "推理A" in msg
     assert "推理B" in msg
     assert "<think>" not in msg
@@ -479,6 +479,111 @@ def test_sanitize_messages_preserves_existing_thought_signature():
     ]
     sanitized = chat_pipeline._sanitize_messages(raw_messages)
     assert sanitized[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "REAL_SIG"
+
+
+def test_stream_disconnect_retries_and_rolls_back_display():
+    """上游流式中途断连（RemoteProtocolError）→ 自动重试，断连轮次内容回滚。
+
+    回归：重试范围必须覆盖流式迭代——连接 200 后 chunked 传输被掐断
+    时，丢弃已生成/已展示的内容重新请求，而非直接报错。
+    """
+    import httpx
+
+    class _BrokenStream:
+        """create() 返回后迭代中途抛 RemoteProtocolError（模拟网关掐断流）。"""
+
+        def __iter__(self):
+            yield _streaming_chunk(content="部分内容")
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body (incomplete chunked read)"
+            )
+
+    ctx = _context([_BrokenStream(), [_response(content="重试成功")]])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), \
+         patch.object(chat_pipeline._chat_ui, "_build_system_prompt", return_value="system"), \
+         patch.object(chat_pipeline._chat_ui, "_should_compact", return_value=False), \
+         patch.object(chat_pipeline.time, "sleep") as sleep_mock:
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    # 断连轮次的残留内容被回滚，不进入最终展示与落盘历史
+    final_display = outputs[-1][0]
+    assert not any("部分内容" in m.get("content", "") for m in final_display)
+    assert final_display[-1]["content"] == "重试成功"
+    assert outputs[-1][4][-1] == {"role": "assistant", "content": "重试成功"}
+    # 重试确实等待了 5 秒间隔（time.sleep 被调用）
+    sleep_mock.assert_called()
+
+
+def test_stream_tool_calls_read_from_message_when_delta_empty():
+    """末 chunk 把 tool_calls 放在 message、delta 为非空空对象时，工具调用不丢失。"""
+    chunks = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(),  # 非 None 的空 delta（OpenAI 兼容端点常见）
+                message=SimpleNamespace(
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=0,
+                            id="call-1",
+                            function=SimpleNamespace(
+                                name="read_library_file",
+                                arguments='{"filename": "01.md"}',
+                            ),
+                        )
+                    ],
+                ),
+            )],
+        ),
+        [_response(content="done")],
+    ]
+    ctx = _context(chunks)
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), \
+         patch.object(chat_pipeline._chat_ui, "_build_system_prompt", return_value="system"), \
+         patch.object(chat_pipeline._chat_ui, "_should_compact", return_value=False), \
+         patch.object(chat_pipeline._chat_ui, "_execute_tool_call", return_value=("文件内容", [])):
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    assistant_msgs = [
+        msg for msg in outputs[-1][4]
+        if msg.get("role") == "assistant" and "tool_calls" in msg
+    ]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0]["tool_calls"][0]["function"]["name"] == "read_library_file"
+
+
+def test_tool_execution_error_produces_failure_block():
+    """工具执行抛错时生成失败结果块，而非悬空的「正在调用」占位符。"""
+    ctx = _context([_response(tool_call=_tool_call("song.mid")), _response(content="done")])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), \
+         patch.object(chat_pipeline._chat_ui, "_build_system_prompt", return_value="system"), \
+         patch.object(chat_pipeline._chat_ui, "_should_compact", return_value=False), \
+         patch.object(chat_pipeline._chat_ui, "_execute_tool_call",
+                      side_effect=RuntimeError("boom")), \
+         patch.object(chat_pipeline._chat_ui, "_resolve_created_midi_path",
+                      return_value=__import__("pathlib").Path("missing.mid")):
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    display = outputs[-1][0]
+    tool_blocks = [m for m in display if "🔧 调用" in m.get("content", "")]
+    assert len(tool_blocks) == 1
+    assert "错误：工具执行失败" in tool_blocks[0]["content"]
+
+
+def test_stream_non_transient_error_no_retry():
+    """流式迭代中的非瞬态错误不触发重试，转为「调用失败」提示（原有行为）。"""
+    class _BrokenStream:
+        def __iter__(self):
+            raise ValueError("本地错误")
+
+    ctx = _context([_BrokenStream()])
+    with patch.object(chat_pipeline._chat_ui, "_current_project_id", None), \
+         patch.object(chat_pipeline._chat_ui, "_build_system_prompt", return_value="system"), \
+         patch.object(chat_pipeline._chat_ui, "_should_compact", return_value=False), \
+         patch.object(chat_pipeline.time, "sleep") as sleep_mock:
+        outputs = list(chat_pipeline._execute_tool_loop(ctx, [], [], "go"))
+
+    assert "⚠ 调用失败" in outputs[-1][0][-1]["content"]
+    sleep_mock.assert_not_called()
 
 
 def test_execute_tool_call_create_midi_uses_relpath(tmp_path, monkeypatch):

@@ -197,6 +197,26 @@ def scan_midi_files(base_dir: Path) -> list[dict]:
     return result
 
 
+def scan_dirs(base_dir: Path) -> list[str]:
+    """递归扫描 base_dir 下的所有子目录，返回相对 posix 路径列表（排序）。
+
+    用于前端文件树显示空文件夹（文件树由 midi 文件构建，空目录
+    不会出现在文件列表中）。
+    """
+    base = Path(base_dir)
+    if not base.exists():
+        return []
+    result: list[str] = []
+    for p in sorted(base.rglob("*")):
+        if p.is_dir():
+            try:
+                rel = p.relative_to(base).as_posix()
+            except ValueError:
+                continue
+            result.append(rel)
+    return result
+
+
 def _merge_note_table(scanned: list[dict], prev: list[dict]) -> list[dict]:
     """把 prev 中的 note_table 按 name(relpath) 合并到 scanned 结果。"""
     prev_nt = {f.get("name"): f.get("note_table", "") for f in prev}
@@ -291,7 +311,8 @@ def sync_workspace_to_projects(project_id: str, prev_midi_files: list[dict]) -> 
             if not same:
                 shutil.copy2(src, mp)
 
-    # projects 有、工作区无 -> 删除镜像文件及空父目录
+    # projects 有、工作区无 -> 删除镜像文件（保留目录结构——
+    # 文件夹与文件完全独立，不清理空父目录）
     for rel, mf in mirror_files.items():
         if rel not in ws_files:
             mp = Path(mf["path"])
@@ -299,13 +320,6 @@ def sync_workspace_to_projects(project_id: str, prev_midi_files: list[dict]) -> 
                 mp.unlink()
             except OSError:
                 pass
-            parent = mp.parent
-            while parent != mirror and parent.is_dir():
-                try:
-                    parent.rmdir()
-                    parent = parent.parent
-                except OSError:
-                    break
 
     return _merge_note_table(scan_midi_files(ws_dir), prev_midi_files)
 

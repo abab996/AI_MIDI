@@ -72,6 +72,7 @@
         <div class="btn-grid">
           <button class="btn btn-secondary" id="uploadBtn">上传</button>
           <button class="btn btn-secondary" id="downloadBtn">下载</button>
+          <button class="btn btn-secondary" id="newFolderBtn">＋ 文件夹</button>
           <button class="btn btn-danger" id="deleteBtn">删除</button>
           <button class="btn btn-secondary" id="undoBtn">撤销</button>
         </div>
@@ -83,7 +84,10 @@
 
         <div class="sec-head">
           <span class="sec-name">工作区</span>
-          <span class="stamp" id="wsStateStamp">UNBOUND</span>
+          <span style="display:flex; gap:8px; align-items:center">
+            <span class="stamp" id="wsStateStamp">UNBOUND</span>
+            <button class="btn btn-secondary btn-sm" id="openWsBtn" title="打开工作区文件夹">打开</button>
+          </span>
         </div>
 
         <div id="wsBindBox">
@@ -115,6 +119,12 @@
       <!-- 右侧：对话控制台 -->
       <main class="console-wrap">
         <div class="chat" id="chat"></div>
+
+        <!-- 修改模式撤回条：编辑消息未发送前可一键恢复被截断的对话 -->
+        <div class="edit-bar" id="editBar" hidden>
+          <span class="edit-hint" id="editHint">✎ 正在编辑消息</span>
+          <button class="btn btn-secondary btn-sm" id="recallEditBtn">↩ 撤回</button>
+        </div>
 
         <div class="composer">
           <textarea id="msgInput" rows="1" placeholder="输入你的要求…（Enter 发送 / Shift+Enter 换行）"></textarea>

@@ -65,7 +65,8 @@ _current_project_id: str | None = None
 # ==================== 会话状态 ====================
 
 # project_id -> {"full_history": [...], "midi_files": [...],
-#                "undo_stack": [...], "chat_display": [...]}
+#                "undo_stack": [...], "chat_display": [...],
+#                "pending_edit": {...} | None}
 _sessions: dict[str, dict] = {}
 
 
@@ -79,6 +80,7 @@ def _get_session(project_id: str) -> dict:
             "midi_files": midi_files,
             "undo_stack": [],
             "chat_display": _rebuild_display_from_history(full_history),
+            "pending_edit": None,
         }
         _sessions[project_id] = session
     return session
@@ -564,10 +566,103 @@ def _filepath_relpath(filepath) -> str:
 
 # ==================== MIDI 文件管理 ====================
 
-def _on_upload(files, current_list, undo_stack, project_id, full_history):
+# 项目回收站目录名（删除的文件移入此处，撤销时移回）
+_TRASH_DIRNAME = ".trash"
+
+
+def _trash_dir(project_id: str) -> Path:
+    """项目回收站目录：projects/<id>/.trash。"""
+    return project_manager.project_dir(project_id) / _TRASH_DIRNAME
+
+
+def _clear_trash(project_id: str) -> None:
+    """清空项目回收站。
+
+    每次 push 新撤销快照时调用：撤销只回退最近一次操作，
+    旧快照对应的回收站内容随即作废。
+    """
+    trash = _trash_dir(project_id)
+    if trash.is_dir():
+        shutil.rmtree(trash, ignore_errors=True)
+
+
+def _cleanup_empty_parents(dirpath: Path, stop: Path) -> None:
+    """自 dirpath 向上删除空目录，直到 stop 为止（含 stop 自身不删）。"""
+    p = Path(dirpath)
+    stop = Path(stop)
+    while p != stop and p.is_dir():
+        try:
+            p.rmdir()
+        except OSError:
+            break
+        p = p.parent
+
+
+def _move_to_trash(project_id: str, file_info: dict) -> str | None:
+    """把文件移入项目回收站（保留相对路径）。
+
+    绑定工作区时主文件即工作区文件；镜像由同步机制自动清理
+    （工作区无该文件 -> 同步删除镜像）。移动失败（如文件被占用）
+    返回 None，调用方应保留该文件在清单中。
+    """
+    src = file_info.get("path")
+    name = file_info.get("name", "")
+    if not src or not name or not os.path.isfile(src):
+        return None
+    trash = _trash_dir(project_id)
+    dst = trash / name
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(src, dst)
+    except OSError:
+        logger.exception("移入回收站失败: %s", src)
+        return None
+    # 注意：不清理源空父目录——文件夹与文件完全独立，
+    # 删除文件不影响文件夹（空文件夹保留）
+    return name
+
+
+def _restore_from_trash(project_id: str, trash_rels: list[str]) -> None:
+    """把回收站中的文件移回主目录（撤销删除时调用）。
+
+    绑定工作区时主目录即工作区，镜像由下次同步自动复制回来。
+    """
+    base = project_manager.get_midi_base_dir(project_id)
+    trash = _trash_dir(project_id)
+    for rel in trash_rels or []:
+        src = trash / rel
+        if not src.is_file():
+            continue
+        dst = base / rel
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        except OSError:
+            logger.exception("回收站恢复失败: %s", rel)
+        # 清理该文件在回收站中的空父目录（逐级向上到回收站根）
+        _cleanup_empty_parents(src.parent, trash)
+    # 回收站根目录若已空则一并删除（恢复失败的文件保留其中，rmdir 失败跳过）
+    if trash.is_dir():
+        try:
+            trash.rmdir()
+        except OSError:
+            pass
+
+
+def _push_undo(project_id: str, undo_stack: list, files: list[dict], trash_rels: list[str] | None = None) -> list:
+    """入栈撤销快照（新格式 {"files", "trash"}），并作废旧回收站内容。
+
+    兼容旧格式：旧条目为纯清单快照列表，_on_undo 弹出时按类型区分。
+    """
+    _clear_trash(project_id)
+    return undo_stack + [{"files": copy.deepcopy(files), "trash": trash_rels or []}]
+
+
+def _on_upload(files, current_list, undo_stack, project_id, full_history, names=None):
     """上传文件，解析为 note_table 并追加到列表。文件复制到项目 midi 目录。
 
     兼容旧接口签名；files 为带 .name 路径的文件对象列表（server 端已转临时路径）。
+    names 为与 files 一一对应的原始文件名（mkstemp 临时名不能作为最终文件名）。
     """
     current_list = current_list or []
     undo_stack = undo_stack or []
@@ -584,9 +679,9 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history):
         dest_dir.mkdir(exist_ok=True)
         mirror_dir = None
 
-    for f in files:
+    for i, f in enumerate(files):
         src_path = f.name if hasattr(f, "name") else str(f)
-        basename = os.path.basename(src_path)
+        basename = os.path.basename(names[i]) if names and i < len(names) else os.path.basename(src_path)
         # 仅接受 .mid/.midi 扩展名（防止用户绕过前端 file_types 限制）
         if not basename.lower().endswith((".mid", ".midi")):
             logger.warning("跳过非 MIDI 文件: %s", basename)
@@ -630,34 +725,387 @@ def _on_upload(files, current_list, undo_stack, project_id, full_history):
             "note_table": note_table_str,
         })
     updated = current_list + new_files
-    new_undo_stack = undo_stack + [copy.deepcopy(current_list)] if new_files else undo_stack
+    new_undo_stack = _push_undo(project_id, undo_stack, current_list) if new_files else undo_stack
     _persist_project_state(project_id, full_history, updated)
     return updated, new_undo_stack, _get_choices(updated)
 
 
 def _on_delete(current_list, selected, undo_stack, project_id, full_history):
-    """删除勾选的文件。"""
+    """删除勾选的文件（磁盘上移入项目回收站，撤销时移回）。
+
+    返回 (updated, undo_stack, choices, failed)：failed 为磁盘删除失败
+    （如文件被占用）仍保留在清单中的文件名列表。
+    """
     current_list = current_list or []
     undo_stack = undo_stack or []
     selected_file_list = _selected_files(current_list, selected)
     if not current_list or not selected_file_list:
-        return current_list, undo_stack, _get_choices(current_list)
+        return current_list, undo_stack, _get_choices(current_list), []
     selected_values = {_file_choice_value(file_info) for file_info in selected_file_list}
-    updated = [f for f in current_list if _file_choice_value(f) not in selected_values]
-    new_undo_stack = undo_stack + [copy.deepcopy(current_list)]
+
+    # 磁盘删除：移入回收站；失败（被占用等）的文件保留在清单
+    _clear_trash(project_id)
+    trash_rels = []
+    kept = []
+    failed = []
+    for file_info in current_list:
+        if _file_choice_value(file_info) in selected_values:
+            rel = _move_to_trash(project_id, file_info)
+            if rel:
+                trash_rels.append(rel)
+            else:
+                kept.append(file_info)
+                failed.append(file_info.get("name", ""))
+        else:
+            kept.append(file_info)
+
+    if not trash_rels:
+        # 全部删除失败：不做任何变更，不产生撤销条目
+        return current_list, undo_stack, _get_choices(current_list), failed
+
+    updated = kept
+    new_undo_stack = undo_stack + [{
+        "files": copy.deepcopy(current_list),
+        "trash": trash_rels,
+    }]
     _persist_project_state(project_id, full_history, updated)
-    return updated, new_undo_stack, _get_choices(updated)
+    return updated, new_undo_stack, _get_choices(updated), failed
 
 
 def _on_undo(undo_stack, current_files, project_id, full_history):
-    """撤销最近一次操作。"""
+    """撤销最近一次操作（上传/删除/移动/发送快照）。
+
+    删除类条目（新格式 dict）会同时把回收站中的文件移回磁盘、
+    把移动过的文件移回原位；旧格式条目（纯清单快照）仅恢复清单，
+    保持兼容。
+    """
     current_files = current_files or []
     undo_stack = undo_stack or []
     if not undo_stack:
         return current_files, [], _get_choices(current_files)
-    restored = undo_stack.pop()
+    entry = undo_stack.pop()
+    if isinstance(entry, dict):
+        restored = entry.get("files", current_files)
+        _restore_from_trash(project_id, entry.get("trash") or [])
+        _undo_moves(
+            project_id,
+            entry.get("moves") or [],
+            entry.get("dir_moves") or [],
+        )
+        # 重建被删文件夹的空子目录（含文件夹本身；trash 恢复已重建含文件的层级）
+        for rel in entry.get("mkdirs") or []:
+            for root in (project_manager.get_midi_base_dir(project_id),
+                         project_manager.get_midi_mirror_dir(project_id)):
+                if root is None:
+                    continue
+                try:
+                    (root / rel).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    logger.exception("撤销时重建文件夹失败: %s", rel)
+    else:
+        restored = entry
     _persist_project_state(project_id, full_history, restored)
     return restored, undo_stack, _get_choices(restored)
+
+
+# ==================== 文件夹与移动 ====================
+
+def _dirs_for(project_id: str) -> list[str]:
+    """当前主目录下的全部子目录相对路径（前端文件树显示空文件夹用）。"""
+    return project_manager.scan_dirs(project_manager.get_midi_base_dir(project_id))
+
+
+def _on_create_folder(project_id: str, name: str, parent: str = "") -> dict:
+    """在当前选中层级下新建文件夹（主目录 + 镜像双写）。
+
+    返回 {"dirs": [...]}；名称非法或路径已存在时抛 ValueError。
+    """
+    name = (name or "").strip().strip("/")
+    if not name:
+        raise ValueError("文件夹名不能为空")
+    if ".." in name or "/" in name or "\\" in name:
+        raise ValueError("文件夹名不能包含路径分隔符或 ..")
+    parent = (parent or "").strip().strip("/")
+    rel = f"{parent}/{name}" if parent else name
+
+    base = project_manager.get_midi_base_dir(project_id)
+    target = (base / rel).resolve()
+    if target != base and not target.is_relative_to(base):
+        raise ValueError("文件夹路径非法")
+    if target.exists():
+        if target.is_dir():
+            raise ValueError(f"文件夹已存在: {rel}")
+        raise ValueError(f"路径已存在且不是文件夹: {rel}")
+
+    target.mkdir(parents=True, exist_ok=True)
+    mirror = project_manager.get_midi_mirror_dir(project_id)
+    if mirror is not None:
+        try:
+            (mirror / rel).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.exception("镜像创建文件夹失败: %s", rel)
+    return {"dirs": _dirs_for(project_id)}
+
+
+def _on_rename_folder(project_id: str, old_rel: str, new_name: str,
+                      current_list, undo_stack, full_history):
+    """重命名文件夹（主目录 + 镜像目录级 move，清单 name/path 前缀同步替换）。
+
+    old_rel 为文件夹相对项目根目录的路径（如 "drums" 或 "a/b"），new_name
+    只允许单个名字（不含路径分隔符/..）。返回 (updated, undo_stack, error)，
+    error 非空表示校验/执行失败（此时无任何变更）。
+    """
+    current_list = current_list or []
+    undo_stack = undo_stack or []
+    old_rel = (old_rel or "").strip().strip("/")
+    new_name = (new_name or "").strip().strip("/")
+    if not old_rel:
+        return current_list, undo_stack, "文件夹路径为空"
+    if not new_name or "/" in new_name or "\\" in new_name or ".." in new_name:
+        return current_list, undo_stack, "文件夹名不能为空或包含路径分隔符/.."
+    base = project_manager.get_midi_base_dir(project_id)
+    src = base / old_rel
+    if not src.is_dir():
+        return current_list, undo_stack, f"文件夹不存在: {old_rel}"
+    parent_rel = os.path.dirname(old_rel)
+    new_rel = f"{parent_rel}/{new_name}" if parent_rel else new_name
+    if new_rel == old_rel:
+        return current_list, undo_stack, ""
+    dst = base / new_rel
+    if dst.exists():
+        return current_list, undo_stack, f"目标已存在: {new_rel}"
+
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))
+    except OSError:
+        logger.exception("重命名文件夹失败: %s -> %s", old_rel, new_rel)
+        return current_list, undo_stack, f"重命名失败: {old_rel}"
+
+    # 镜像同步重命名（存在才移动；不存在则由工作区同步补齐）
+    mirror = project_manager.get_midi_mirror_dir(project_id)
+    if mirror is not None:
+        m_src = mirror / old_rel
+        m_dst = mirror / new_rel
+        if m_src.is_dir() and not m_dst.exists():
+            try:
+                shutil.move(str(m_src), str(m_dst))
+            except OSError:
+                logger.exception("镜像重命名文件夹失败: %s -> %s", old_rel, new_rel)
+
+    # 清单前缀替换：old_rel/xxx.mid -> new_rel/xxx.mid（path 同步指向新位置）
+    prefix = old_rel + "/"
+    updated = [dict(f) for f in current_list]
+    for f in updated:
+        fname = f.get("name", "")
+        if fname.startswith(prefix):
+            f["name"] = new_rel + fname[len(old_rel):]
+            f["path"] = str(base / f["name"])
+
+    new_undo_stack = undo_stack + [{
+        "files": copy.deepcopy(current_list),
+        "trash": [],
+        "moves": [],
+        "dir_moves": [{"from": old_rel, "to": new_rel}],
+    }]
+    _persist_project_state(project_id, full_history, updated)
+    return updated, new_undo_stack, ""
+
+
+def _on_delete_folder(project_id: str, folder_rel: str, current_list,
+                      undo_stack, full_history):
+    """删除文件夹（显式操作）：其中文件逐个移入回收站（保留相对路径），
+    空目录（含子目录）rmdir 删除；撤销时 trash 恢复自动重建整个层级。
+
+    返回 (updated, undo_stack, error)：error 非空表示有文件被占用无法删除，
+    此时保留文件夹及全部文件，不产生撤销条目。
+    """
+    current_list = current_list or []
+    undo_stack = undo_stack or []
+    folder_rel = (folder_rel or "").strip().strip("/")
+    if not folder_rel:
+        return current_list, undo_stack, "文件夹路径为空"
+    base = project_manager.get_midi_base_dir(project_id)
+    folder = base / folder_rel
+    if not folder.is_dir():
+        return current_list, undo_stack, f"文件夹不存在: {folder_rel}"
+
+    prefix = folder_rel + "/"
+    outside = [f for f in current_list if not f.get("name", "").startswith(prefix)]
+
+    # 文件夹内全部文件移入回收站（trash 保留相对路径，撤销时自动重建文件夹）
+    _clear_trash(project_id)
+    trash_rels = []
+    for f in current_list:
+        if f.get("name", "").startswith(prefix):
+            rel = _move_to_trash(project_id, f)
+            if not rel:
+                # 文件被占用等：整体中止，保留文件夹与全部文件
+                return current_list, undo_stack, f"无法删除被占用的文件: {f.get('name')}"
+            trash_rels.append(rel)
+
+    # 记录全部子目录（含空目录），撤销时逐级重建（统一正斜杠相对路径）
+    sub_dirs = [str(p.relative_to(base)).replace(os.sep, "/")
+                for p in folder.rglob("*") if p.is_dir()]
+    if folder.is_dir():
+        try:
+            shutil.rmtree(folder)
+        except OSError:
+            logger.exception("删除文件夹失败: %s", folder_rel)
+            # 目录删不掉（残留空目录）不影响撤销：文件已在回收站，
+            # 恢复时自动重建整个层级
+
+    # 镜像同步删除（不存在则跳过，由工作区同步补齐）
+    mirror = project_manager.get_midi_mirror_dir(project_id)
+    if mirror is not None:
+        mf = mirror / folder_rel
+        if mf.is_dir():
+            try:
+                shutil.rmtree(mf)
+            except OSError:
+                logger.exception("镜像删除文件夹失败: %s", folder_rel)
+
+    new_undo_stack = undo_stack + [{
+        "files": copy.deepcopy(current_list),
+        "trash": trash_rels,
+        "mkdirs": [folder_rel] + sub_dirs,
+    }]
+    _persist_project_state(project_id, full_history, outside)
+    return outside, new_undo_stack, ""
+
+
+def _undo_moves(project_id: str, moves: list[dict], dir_moves: list[dict] | None = None) -> None:
+    """撤销移动：把文件从目标位置移回原位（磁盘，主目录 + 镜像）；
+    目录级撤销（文件夹重命名）：目录整体移回。"""
+    base = project_manager.get_midi_base_dir(project_id)
+    mirror = project_manager.get_midi_mirror_dir(project_id)
+    for mv in moves or []:
+        from_name = mv.get("from", "")
+        to_name = mv.get("to", "")
+        if not from_name or not to_name:
+            continue
+        for root in (base, mirror):
+            if root is None:
+                continue
+            src = root / to_name
+            dst = root / from_name
+            if not src.is_file():
+                continue
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+            except OSError:
+                logger.exception("撤销移动失败: %s -> %s", to_name, from_name)
+    # 目录级撤销（文件夹重命名）：目录整体移回
+    for dmv in dir_moves or []:
+        d_from = dmv.get("from", "")
+        d_to = dmv.get("to", "")
+        if not d_from or not d_to:
+            continue
+        for root in (base, mirror):
+            if root is None:
+                continue
+            src = root / d_to
+            dst = root / d_from
+            if not src.is_dir():
+                continue
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+            except OSError:
+                logger.exception("撤销文件夹重命名失败: %s -> %s", d_to, d_from)
+
+
+def _on_move(project_id: str, moves: list[dict], current_list, undo_stack, full_history):
+    """移动/重命名文件（磁盘主目录 + 镜像，清单 name/path 同步更新）。
+
+    moves: [{"name": "drums/a.mid", "target": "sectionA"}]，target 为空串
+    表示移到根目录；可选 "rename" 字段提供新文件名（重命名，
+    与 target 组合可实现"移动并改名"）。
+    返回 (updated, undo_stack, failed)：failed 为失败仍保留原位置的文件名列表。
+    """
+    current_list = current_list or []
+    undo_stack = undo_stack or []
+    if not moves:
+        return current_list, undo_stack, []
+    base = project_manager.get_midi_base_dir(project_id)
+    mirror = project_manager.get_midi_mirror_dir(project_id)
+    by_name = {f.get("name"): f for f in current_list}
+
+    updated = [dict(f) for f in current_list]
+    undo_moves = []
+    failed = []
+    changed = False
+
+    for mv in moves:
+        old_name = mv.get("name", "")
+        target = (mv.get("target") or "").strip().strip("/")
+        rename = mv.get("rename")
+        info = by_name.get(old_name)
+        if not info:
+            failed.append(old_name)
+            continue
+        if rename is not None:
+            # 重命名：新文件名来自 rename（同目录改名或移动并改名）
+            rename = str(rename).strip().strip("/")
+            if not rename or "/" in rename or "\\" in rename or ".." in rename:
+                failed.append(old_name)
+                continue
+            new_name = f"{target}/{rename}" if target else rename
+        else:
+            basename = os.path.basename(old_name)
+            new_name = f"{target}/{basename}" if target else basename
+        if new_name == old_name:
+            continue  # 目标就是当前位置
+        # 目标冲突检查（磁盘与清单）
+        if any(f.get("name") == new_name for f in updated):
+            failed.append(old_name)
+            continue
+        src = base / old_name
+        dst = base / new_name
+        if dst.exists():
+            failed.append(old_name)
+            continue
+        if not src.is_file():
+            failed.append(old_name)
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        except OSError:
+            logger.exception("移动文件失败: %s -> %s", old_name, new_name)
+            failed.append(old_name)
+            continue
+        # 注意：不清理源空父目录——文件夹与文件完全独立，
+        # 移动文件不影响文件夹（源空文件夹保留）
+        # 镜像同步移动（存在才移动；不存在则跳过，由工作区同步补齐）
+        if mirror is not None:
+            m_src = mirror / old_name
+            m_dst = mirror / new_name
+            if m_src.is_file() and not m_dst.exists():
+                try:
+                    m_dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(m_src), str(m_dst))
+                except OSError:
+                    logger.exception("镜像移动失败: %s", old_name)
+        # 更新清单条目（note_table 保留）
+        for f in updated:
+            if f.get("name") == old_name:
+                f["name"] = new_name
+                f["path"] = str(dst)
+                break
+        undo_moves.append({"from": old_name, "to": new_name})
+        changed = True
+
+    if not changed:
+        return current_list, undo_stack, failed
+    new_undo_stack = undo_stack + [{
+        "files": copy.deepcopy(current_list),
+        "trash": [],
+        "moves": undo_moves,
+    }]
+    _persist_project_state(project_id, full_history, updated)
+    return updated, new_undo_stack, failed
 
 
 def _on_clear_chat(project_id: str | None, midi_files: list[dict]) -> tuple[list, list]:
@@ -925,8 +1373,12 @@ def _sse_event(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def chat_stream(project_id: str, message: str):
+def chat_stream(project_id: str, message: str, edit: bool = False):
     """多轮对话 SSE 事件流（生成器）。
+
+    edit=True 且会话处于修改模式（pending_edit 存在）时，被编辑的
+    用户消息（截断后会话末尾的那条）被新消息替换；否则清空修改状态
+    后按正常消息追加。
 
     事件类型：
     - {"type": "chat", "messages": [...]}      完整对话显示列表
@@ -964,13 +1416,28 @@ def chat_stream(project_id: str, message: str):
             logger.exception("发送消息前工作区同步失败")
 
     # ── 快照（用于撤销）──
-    session["undo_stack"].append(copy.deepcopy(session["midi_files"]))
+    # 新格式条目（含 trash 字段）；入栈前作废旧回收站内容
+    session["undo_stack"] = _push_undo(project_id, session["undo_stack"], session["midi_files"])
 
     # ── 消息已发送，草稿清除 ──
     project_manager.save_draft(project_id, "")
 
     # Lazy import to avoid circular dependency at module level
     from chat_pipeline import _execute_tool_loop, _prepare_context  # noqa: E402
+
+    # ── 编辑发送：替换被编辑的用户消息 ──
+    # 修改模式下 full_history / chat_display 已截断到该消息（含）。
+    # 去掉最后一条被编辑的 user 消息后再追加新消息 = 替换语义，
+    # 后续 _prepare_context / _finalize_response 自动以截断点为界
+    # 重建 API 上下文并落盘（AI 不会看到该消息之后的内容）。
+    # 快照 tail 仅在撤回时需要，发送后作废丢弃。
+    # 放在早期返回（空消息/未配置 API Key）之后：发送失败不消费编辑状态。
+    if edit and session.get("pending_edit"):
+        if session["full_history"] and session["full_history"][-1].get("role") == "user":
+            session["full_history"] = session["full_history"][:-1]
+        if session["chat_display"] and session["chat_display"][-1].get("role") == "user":
+            session["chat_display"] = session["chat_display"][:-1]
+    session.pop("pending_edit", None)
 
     # ── 准备上下文 ──
     ctx = _prepare_context(
@@ -983,6 +1450,7 @@ def chat_stream(project_id: str, message: str):
 
     # ── 执行工具循环（SSE 节流：每事件间隔 <25ms 的丢弃，因事件携带全量状态）──
     last_emit = 0.0
+    last_chat_display = None    # 最近一次 chat 帧（节流吞帧时最后补发）
     last_files_payload: str | None = None
     last_download_url: str | None = None
     try:
@@ -994,6 +1462,7 @@ def chat_stream(project_id: str, message: str):
             session["full_history"] = full_history
             session["midi_files"] = updated_files
             session["chat_display"] = display
+            last_chat_display = display
 
             # download 事件不参与 25ms 节流：若携带新下载路径的帧被节流吞掉，
             # 前端会收不到下载链接提示（生成 MIDI 后"没有下载链接"）
@@ -1009,17 +1478,25 @@ def chat_stream(project_id: str, message: str):
             last_emit = now
 
             yield _sse_event({"type": "chat", "messages": display})
-            # files 仅在内容变化时发送，避免每帧重复推送相同状态
+            # files 事件在文件列表或目录结构（dirs）任一变化时发送——
+            # AI 用 create_folder 创建空文件夹（文件列表不变）也能即时刷新
             pub_files = _public_files(updated_files)
-            files_payload = json.dumps(pub_files, ensure_ascii=False)
+            dirs = _dirs_for(project_id)
+            files_payload = json.dumps({"files": pub_files, "dirs": dirs}, ensure_ascii=False)
             if files_payload != last_files_payload:
                 last_files_payload = files_payload
-                yield _sse_event({"type": "files", "files": pub_files})
+                yield _sse_event({"type": "files", "files": pub_files, "dirs": dirs})
     except GeneratorExit:
         raise
     except Exception:  # noqa: BLE001
         logger.exception("chat_stream 异常")
         yield _sse_event({"type": "error", "message": "对话处理发生内部错误"})
+
+    # 节流吞帧兜底：工具轮/收尾帧连发间隔 <25ms 时最后几帧会被吞掉，
+    # 前端 chatDone 用 lastMessages 重渲染将丢失工具块/最终内容——
+    # 循环结束后补发最新一帧（全量状态，幂等）
+    if last_chat_display is not None:
+        yield _sse_event({"type": "chat", "messages": last_chat_display})
 
     yield _sse_event({"type": "done"})
 
@@ -1031,6 +1508,57 @@ def download_url(filepath: str | Path) -> str:
     p = Path(filepath)
     rel = str(p.resolve().relative_to(config.PROJECT_ROOT.resolve()))
     return f"/api/files/download?path={quote(rel)}"
+
+
+# ==================== 消息编辑（修改 / 撤回） ====================
+
+def edit_message(project_id: str, index: int) -> dict:
+    """修改模式：截断第 index 条用户消息之后的所有对话。
+
+    - 显示列表与 full_history 中的 user 消息一一对应，故以显示列表的
+      index 定位 full_history 中同一条 user 消息，截断到该消息（含）。
+    - 截断仅作用于内存中的会话（不落盘），原尾部快照存入 pending_edit
+      供撤回恢复；未发送/未撤回时磁盘保持原状，中途关闭窗口 = 编辑
+      自然放弃，重开仍是完整对话。
+    - 返回截断后的显示列表与被编辑消息原文，供前端渲染并填入输入框。
+    """
+    session = _get_session(project_id)
+    display = session["chat_display"]
+    if index < 0 or index >= len(display) or display[index].get("role") != "user":
+        raise ValueError("消息位置无效")
+
+    # 显示列表与 full_history 中的 user 消息按顺序一一对应（AI 消息/
+    # 工具块在显示列表占位，两者下标不同）。先数出该消息是第几个
+    # user 消息，再定位 full_history 中同一条。
+    ordinal = sum(1 for m in display[: index + 1] if m.get("role") == "user")
+    user_positions = [
+        i for i, m in enumerate(session["full_history"]) if m.get("role") == "user"
+    ]
+    if ordinal - 1 >= len(user_positions):
+        raise ValueError("消息位置无效")
+    hist_idx = user_positions[ordinal - 1]
+
+    session["pending_edit"] = {
+        "index": index,
+        "text": display[index].get("content", ""),
+        "history_tail": copy.deepcopy(session["full_history"][hist_idx + 1:]),
+        "display_tail": copy.deepcopy(display[index + 1:]),
+    }
+    session["full_history"] = session["full_history"][:hist_idx + 1]
+    session["chat_display"] = display[:index + 1]
+    return {"messages": session["chat_display"], "text": session["pending_edit"]["text"]}
+
+
+def recall_edit(project_id: str) -> dict:
+    """撤回修改：恢复被截断的对话并落盘。无进行中的修改时幂等返回当前列表。"""
+    session = _get_session(project_id)
+    pending = session.pop("pending_edit", None)
+    if not pending:
+        return {"messages": session["chat_display"]}
+    session["full_history"] = session["full_history"] + pending["history_tail"]
+    session["chat_display"] = session["chat_display"] + pending["display_tail"]
+    _persist_project_state(project_id, session["full_history"], session["midi_files"])
+    return {"messages": session["chat_display"]}
 
 
 # ==================== 项目生命周期 ====================
@@ -1120,6 +1648,7 @@ def open_project(project_id: str) -> dict:
         "meta": meta,
         "display_messages": session["chat_display"],
         "midi_files": _public_files(session["midi_files"]),
+        "dirs": _dirs_for(project_id),
         "workspace": {
             "bound": bool(ws),
             "path": ws or "",
@@ -1342,6 +1871,7 @@ def bind_workspace(project_id: str, path: str) -> dict:
         "midi_files": _public_files(session["midi_files"]),
         "renamed": result["renamed"],
         "path": project_manager.get_workspace_dir(project_id) or "",
+        "dirs": _dirs_for(project_id),
     }
 
 
@@ -1351,7 +1881,7 @@ def unbind_workspace(project_id: str) -> dict:
     session["midi_files"] = project_manager.unbind_workspace(project_id)
     _close_mcp_process()
     _persist_project_state(project_id, session["full_history"], session["midi_files"])
-    return {"midi_files": _public_files(session["midi_files"])}
+    return {"midi_files": _public_files(session["midi_files"]), "dirs": _dirs_for(project_id)}
 
 
 def refresh_workspace(project_id: str) -> dict:
@@ -1361,7 +1891,18 @@ def refresh_workspace(project_id: str) -> dict:
         project_id, session["midi_files"] or []
     )
     _persist_project_state(project_id, session["full_history"], session["midi_files"])
-    return {"midi_files": _public_files(session["midi_files"])}
+    return {"midi_files": _public_files(session["midi_files"]), "dirs": _dirs_for(project_id)}
+
+
+def open_workspace(project_id: str) -> dict:
+    """在系统文件管理器中打开工作区（绑定=工作区目录；未绑定=项目默认 midi 目录）。
+
+    目录不存在则先创建。返回 {"ok": True, "path": ...}；打开失败抛 OSError。
+    """
+    path = project_manager.get_midi_base_dir(project_id)
+    path.mkdir(parents=True, exist_ok=True)
+    os.startfile(str(path))  # noqa: S606 - Windows 专属，打开目录由系统决定关联程序
+    return {"ok": True, "path": str(path)}
 
 
 def clear_chat(project_id: str) -> dict:
@@ -1370,5 +1911,6 @@ def clear_chat(project_id: str) -> dict:
     session["full_history"] = []
     session["chat_display"] = []
     session["undo_stack"] = []
+    session.pop("pending_edit", None)
     project_manager.save_history(project_id, [], session["midi_files"] or [])
     return {"messages": []}

@@ -1,0 +1,10 @@
+{
+  "api_key": "",
+  "base_url": "https://api.deepseek.com",
+  "api_path": "",
+  "model": "deepseek-v4-pro",
+  "max_tokens": null,
+  "max_completion_tokens": null,
+  "reasoning_effort": "max",
+  "thinking_enabled": true
+}

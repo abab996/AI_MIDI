@@ -12,10 +12,16 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 # Windows 下 stdout 可能为 GBK，提前切 UTF-8 避免 emoji/中文打印崩溃
 if sys.platform == "win32":
+    # PyInstaller windowed(无控制台)打包下 stdout/stderr 为 None，需先替换为 devnull
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8")

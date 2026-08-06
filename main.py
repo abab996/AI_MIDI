@@ -10,10 +10,20 @@
 """
 import argparse
 import logging
+import os
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
+
+# PyInstaller windowed(无控制台)打包下 stdout/stderr 为 None，
+# uvicorn/logging 等库调用时抛 AttributeError 导致服务线程静默失败。
+# 替换为丢弃输出的 devnull 流（无控制台本就无处显示，丢失输出无害）。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 import config
 

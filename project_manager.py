@@ -617,6 +617,44 @@ def load_history(project_id: str) -> tuple[list[dict], list[dict]]:
         return [], []
 
 
+# ==================== 修改历史持久化 ====================
+
+def save_edit_history(project_id: str, history: list[dict]) -> None:
+    """持久化修改历史快照到 edit_history.json。
+
+    修改历史是「撤回修改」的依据（记录每条消息编辑发送前的完整状态），
+    仅存内存会在服务重启后丢失——落盘后重启仍可撤回修改。
+    """
+    pdir = project_dir(project_id)
+    pdir.mkdir(parents=True, exist_ok=True)
+    history_file = pdir / "edit_history.json"
+    tmp = history_file.with_suffix(".tmp")
+    try:
+        tmp.write_text(
+            json.dumps({"edit_history": history}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(history_file)
+    except OSError:
+        logger.exception("保存修改历史失败: %s", project_id)
+        if tmp.exists():
+            tmp.unlink()
+
+
+def load_edit_history(project_id: str) -> list[dict]:
+    """加载项目的修改历史快照；文件不存在或损坏时返回空列表。"""
+    history_file = project_dir(project_id) / "edit_history.json"
+    if not history_file.exists():
+        return []
+    try:
+        data = json.loads(history_file.read_text(encoding="utf-8"))
+        history = data.get("edit_history", [])
+        return history if isinstance(history, list) else []
+    except (OSError, json.JSONDecodeError):
+        logger.exception("读取修改历史失败: %s", project_id)
+        return []
+
+
 # ==================== 对话草稿 ====================
 
 def save_draft(project_id: str, text: str) -> None:

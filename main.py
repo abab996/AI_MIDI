@@ -328,7 +328,7 @@ def main() -> None:
     if args.browser:
         import webbrowser
 
-        webbrowser.open(SERVER_URL)
+        webbrowser.open(f"{SERVER_URL}/chat.html")   # 默认启动页：档案库
         # 浏览器模式下主线程保持存活（后台线程为 daemon，直接返回会退出进程）
         while True:
             time.sleep(3600)
@@ -354,7 +354,7 @@ def main() -> None:
 
     webview.create_window(
         WINDOW_TITLE,
-        SERVER_URL,
+        f"{SERVER_URL}/chat.html",   # 默认启动页：档案库
         width=width,
         height=height,
         min_size=(min_w, min_h),

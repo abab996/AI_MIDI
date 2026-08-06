@@ -72,7 +72,7 @@ body {
   background: var(--color-bg);
   color: var(--color-ink);
   font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
@@ -124,54 +124,28 @@ code {
   color: var(--color-primary);
 }
 
-/* ---------- 图签页头 (Title Block) ---------- */
-.title-block {
+/* ---------- 顶部导航固定条（无品牌标题，按钮右对齐） ----------
+   sticky + 不透明背景：页面滚动时固定在视口顶部，不随滚轮移动 */
+.top-nav {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 20px 24px 14px;
-  border-bottom: 1px solid var(--color-border-strong);
-  position: relative;
+  gap: 12px;
+  padding: 10px 24px;
+  margin: 0 -24px;
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
 }
 
-.title-block::after {
-  content: "";
-  position: absolute;
-  left: 24px;
-  right: 24px;
-  bottom: -5px;
-  height: 1px;
-  background: var(--color-border-dashed);
-}
-
-.brand {
-  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--color-ink);
-}
-
-.brand .accent {
-  color: var(--color-primary);
-}
-
-.brand-sub {
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--color-ink-dim);
-  margin-top: 2px;
-}
-
-.stamp-row {
+.nav-right {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 /* ---------- 技术印章 [ TAG ] ---------- */
@@ -180,7 +154,7 @@ code {
   align-items: center;
   gap: 6px;
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--color-ink-dim);
@@ -213,7 +187,7 @@ code {
   justify-content: center;
   gap: 6px;
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-ink);
@@ -278,12 +252,12 @@ code {
 }
 
 .btn-sm {
-  font-size: 10px;
+  font-size: 11px;
   padding: 4px 10px;
 }
 
 .btn-lg {
-  font-size: 14px;
+  font-size: 15px;
   padding: 12px 24px;
 }
 
@@ -354,8 +328,9 @@ code {
 .divider-measure {
   height: 1px;
   background: var(--color-border);
-  margin: 14px 0;
+  margin: 8px 0;
   position: relative;
+  flex: none;
 }
 
 .divider-measure::before,
@@ -382,7 +357,7 @@ code {
 
 .sec-name {
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--color-ink);
@@ -571,7 +546,11 @@ input[type="checkbox"] {
 .page {
   max-width: 1440px;
   margin: 0 auto;
-  padding: 0 24px 48px;
+  padding: 0 24px;
+  min-height: 100vh;      /* 兼容旧浏览器回退 */
+  min-height: 100dvh;     /* 内容不足一屏时撑满视口；超出一屏时页面自然滚动 */
+  display: flex;
+  flex-direction: column;
 }
 
 [hidden] {
@@ -599,11 +578,8 @@ html.theme-switching *::after {
 }
 
 /* ---------- 响应式 ---------- */
-@media (max-width: 1000px) {
-  .title-block {
-    flex-direction: column;
-    align-items: flex-start;
-  }
+@media (max-width: 900px) {
+  .nav-right { flex-wrap: wrap; }
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -670,8 +646,9 @@ a.btn {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 20px;
-  margin-top: 20px;
+  margin-top: 16px;
   align-items: start;
+  padding-bottom: 24px;   /* 内容超出一屏时页面自然滚动 */
 }
 
 .station {
@@ -707,7 +684,7 @@ a.btn {
 
 .dz-sub {
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--color-ink-faint);
@@ -778,7 +755,7 @@ a.btn {
 
 .measure-label {
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--color-ink-faint);
@@ -825,7 +802,7 @@ a.btn {
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border);
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--color-ink-dim);
@@ -871,11 +848,62 @@ a.btn {
 /* ════════════════════════════════════════════════════════════════
    对话页（chat.html）
    ════════════════════════════════════════════════════════════════ */
+/* 档案库 / 工作台两个视图都撑满 .page 剩余高度（flex 列），
+   内部滚动各自负责，整页保持一屏 */
+#archiveView {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 工作台视图：固定一屏高度，聊天区内部滚动（页面不滚动） */
+.studio-panel {
+  flex: none;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
 .toolbar {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 -24px 12px;
+  padding: 10px 24px;
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* 档案库导航第一行：页面名称 + 右侧按钮 */
+.nav-line {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  margin: 20px 0;
+}
+
+/* 第二行：搜索 + 新建 */
+.toolbar-row {
+  display: flex;
+  gap: 12px;
   align-items: stretch;
+}
+
+/* 页面名称（导航栏左侧） */
+.nav-title {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 17px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink);
+  padding-left: 10px;
+  border-left: 2px solid var(--color-primary);
+  white-space: nowrap;
 }
 
 .search-box {
@@ -901,12 +929,15 @@ a.btn {
   border: none;
   background: transparent;
   box-shadow: none !important;
+  font-size: 14px;
 }
 
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 20px;
+  align-content: start;
+  padding-bottom: 24px;   /* 卡片多时页面自然滚动，顶部导航条固定不动 */
 }
 
 .proj-card {
@@ -915,7 +946,7 @@ a.btn {
 }
 
 .proj-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   margin-bottom: 10px;
   color: var(--color-ink);
@@ -946,11 +977,12 @@ a.btn {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 16px 0;
+  padding: 12px 0;
   flex-wrap: wrap;
   position: relative;
   z-index: 2;
   pointer-events: auto;
+  flex: none;
 }
 
 .studio-title {
@@ -966,7 +998,10 @@ a.btn {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 20px;
-  align-items: start;
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);   /* 两列等高撑满剩余高度 */
+  flex: 1;
+  min-height: 0;
 }
 
 .sidebar {
@@ -974,6 +1009,7 @@ a.btn {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  min-height: 0;
 }
 
 .file-list {
@@ -981,7 +1017,10 @@ a.btn {
   border-radius: 2px;
   background: var(--color-bg-card);
   margin-bottom: 12px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;    /* 文件多时内部滚动，不再撑高页面 */
+  flex: 1;
+  min-height: 0;
 }
 
 .file-item {
@@ -1025,7 +1064,7 @@ a.btn {
 .file-dir-name {
   flex: 1;
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--color-ink);
   overflow: hidden;
@@ -1062,7 +1101,7 @@ a.btn {
 .file-name {
   flex: 1;
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--color-ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1071,7 +1110,7 @@ a.btn {
 
 .file-size {
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-ink-faint);
 }
 
@@ -1147,54 +1186,10 @@ a.btn {
   white-space: nowrap;
 }
 
-.settings-box {
-  border: 1px solid var(--color-border);
-  border-radius: 2px;
-  background: var(--color-bg-card);
-  margin-top: 6px;
-}
-
-.settings-box summary {
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-ink-dim);
-  padding: 10px 12px;
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.settings-box summary::-webkit-details-marker { display: none; }
-
-.settings-box summary::before {
-  content: "\25B8";
-  color: var(--color-primary);
-  transition: transform 0.15s ease;
-}
-
-.settings-box[open] summary::before { transform: rotate(90deg); }
-.settings-box[open] summary { border-bottom: 1px solid var(--color-border); color: var(--color-ink); }
-
-.kv {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--color-ink-dim);
-}
-
-.kv .mono { color: var(--color-ink); font-size: 11px; }
-
 .console-wrap {
   display: flex;
   flex-direction: column;
-  min-height: 560px;
+  min-height: 0;      /* 一屏：高度由网格行撑满，不再有 560px 硬下限 */
   min-width: 0;
 }
 
@@ -1209,8 +1204,7 @@ a.btn {
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
-  min-height: 420px;
-  max-height: 62vh;
+  min-height: 0;      /* 一屏：去掉 420px 下限与 62vh 上限，随容器伸缩 */
   min-width: 0;
 }
 
@@ -1232,7 +1226,7 @@ a.btn {
   min-width: 0;
   padding: 12px 14px;
   border-radius: 2px;
-  font-size: 13.5px;
+  font-size: 14.5px;
   line-height: 1.7;
   overflow-wrap: break-word;
   word-break: break-word;
@@ -1242,7 +1236,7 @@ a.btn {
 
 .msg-label {
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--color-ink-faint);
@@ -1335,6 +1329,53 @@ a.btn {
   color: var(--color-primary);
   border-color: var(--color-primary);
   background: var(--color-primary-soft);
+}
+
+/* ---------- 修改菜单（取消 / 撤回修改 / 撤回消息）与按钮组切换动画 ---------- */
+/* 按钮切换：旧按钮淡出下移 → 新按钮逐个淡入上移（.enter 类控制 stagger）。
+   .msg-action 原有 color/border 过渡之上叠加 opacity/transform，切换不突兀 */
+.msg-actions .msg-action {
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease,
+    opacity 0.17s ease, transform 0.17s ease;
+}
+
+.msg-actions.swapping .msg-action {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.msg-action.enter {
+  animation: msgActionIn 0.24s ease backwards;
+}
+
+@keyframes msgActionIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 三选项错落浮现：第 2 / 3 个按钮依次延迟 0.05s */
+.msg-actions.edit-menu .msg-action:nth-child(2) {
+  animation-delay: 0.05s;
+}
+
+.msg-actions.edit-menu .msg-action:nth-child(3) {
+  animation-delay: 0.1s;
+}
+
+/* 无修改历史时「撤回修改」禁用态 */
+.msg-action.disabled,
+.msg-action.disabled:hover {
+  color: var(--color-ink-dim);
+  border-color: var(--color-border);
+  background: transparent;
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* AI 三点加载动画（发送后等待首个流式事件） */
@@ -1626,10 +1667,11 @@ a.btn {
    ════════════════════════════════════════════════════════════════ */
 .settings-wrap {
   max-width: 900px;
-  margin: 20px auto 0;
+  margin: 16px auto 0;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  padding-bottom: 24px;   /* 内容超出一屏时页面自然滚动 */
 }
 
 .settings-card {
@@ -1707,7 +1749,10 @@ a.btn {
 
 @media (max-width: 900px) {
   .studio-grid { grid-template-columns: 1fr; }
-  .chat { max-height: 50vh; }
+  /* 单列堆叠：网格内部整体滚动（工作台仍是固定一屏，页面不滚） */
+  .studio-grid { overflow-y: auto; }
+  .sidebar { max-height: none; }
+  .console-wrap { max-height: none; }
 }
 
 @media (max-width: 720px) {

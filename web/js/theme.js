@@ -6,6 +6,11 @@
   var THEME_KEY = "ai-midi-blueprint-theme";
   var switchTimer = null;
 
+  /* 页面上可能有多个主题按钮（档案库/工作台各一个），统一按 class 查找 */
+  function themeButtons() {
+    return Array.prototype.slice.call(document.querySelectorAll(".theme-btn"));
+  }
+
   function applyTheme(t) {
     var target = root.dataset.theme === t ? null : t;
     try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
@@ -37,11 +42,10 @@
       }
     }
 
-    var btn = document.getElementById("themeBtn");
-    if (btn) {
+    themeButtons().forEach(function (btn) {
       btn.textContent = t === "dark" ? "\u2600 \u6696\u7EB8" : "\u263E \u6697\u84DD";
       btn.title = t === "dark" ? "切换到暖纸主题" : "切换到暗蓝主题";
-    }
+    });
   }
 
   function initTheme() {
@@ -51,12 +55,11 @@
     root.dataset.theme = saved === "dark" ? "dark" : "parchment";
     applyTheme(root.dataset.theme);
 
-    var btn = document.getElementById("themeBtn");
-    if (btn) {
+    themeButtons().forEach(function (btn) {
       btn.addEventListener("click", function () {
         applyTheme(root.dataset.theme === "dark" ? "parchment" : "dark");
       });
-    }
+    });
   }
 
   document.addEventListener("DOMContentLoaded", initTheme);

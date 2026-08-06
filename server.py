@@ -455,8 +455,26 @@ def edit_message(project_id: str, body: MessageEditIn) -> dict:
 
 @app.post("/api/projects/{project_id}/messages/recall")
 def recall_edit(project_id: str) -> dict:
-    """撤回修改：恢复被截断的对话。"""
+    """撤回修改：恢复进入编辑模式前的对话。"""
     return chat_service.recall_edit(project_id)
+
+
+@app.post("/api/projects/{project_id}/messages/edit-info")
+def message_edit_info(project_id: str, body: MessageEditIn) -> dict:
+    """查询该条消息是否有可撤回的修改历史（前端据此启用「撤回修改」选项）。"""
+    try:
+        return chat_service.edit_info(project_id, body.index)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/projects/{project_id}/messages/undo-edit")
+def undo_edit(project_id: str, body: MessageEditIn) -> dict:
+    """撤回修改：把所有内容退回到这条消息发送之前，再进入修改模式。"""
+    try:
+        return chat_service.undo_edit(project_id, body.index)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ==================== 项目文件管理 ====================

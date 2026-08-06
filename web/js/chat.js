@@ -19,6 +19,7 @@
   var chatEpoch = 0;                     /* 会话代数：延迟重建等异步回调据此判断是否过期 */
   var currentMessages = [];              /* 最近一次渲染的完整消息列表（消息操作按钮按索引取数） */
   var editingIndex = -1;                 /* 修改模式：正在编辑的用户消息索引（-1 = 未编辑） */
+  var editMenuIndex = -1;                /* 修改菜单：当前显示「取消/撤回修改/撤回消息」的消息索引 */
   var inputBeforeEdit = "";              /* 进入修改模式前的输入框内容（撤回时还原） */
 
   /* ═══════════ 档案库 ═══════════ */
@@ -26,7 +27,6 @@
   function renderProjects(projects) {
     var grid = $("#projectGrid");
     grid.innerHTML = "";
-    $("#countStamp").textContent = "ARCHIVE: " + projects.length;
     projects.forEach(function (p) {
       var card = UI.projectCard(p);
       card.addEventListener("click", function (e) {
@@ -62,7 +62,6 @@
   function renderSearch(rows, ids) {
     var grid = $("#projectGrid");
     grid.innerHTML = "";
-    $("#countStamp").textContent = "SEARCH: " + rows.length;
     rows.forEach(function (row, i) {
       var card = document.createElement("article");
       card.className = "card draft brackets proj-card";
@@ -264,8 +263,6 @@
 
       $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
       $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
-      $("#kvModel").textContent = payload.settings.model || "--";
-      $("#kvEffort").textContent = payload.settings.reasoning_effort || "--";
 
       renderMessages(payload.display_messages || []);
       resetEditUI();
@@ -1014,6 +1011,7 @@
     var chat = $("#chat");
     var list = messages || [];
     currentMessages = list;
+    editMenuIndex = -1;   /* 整表重建：修改菜单随之销毁，状态复位 */
 
     /* ── 实时流式：最后一条消息用增量结构（逐字渐显不被打断） ── */
     if (liveStreaming && list.length) {
@@ -1433,24 +1431,119 @@
     }
   }
 
-  /* 修改模式：截断该消息之后的对话，原文填入输入框待重发；
+  /* ── 修改菜单 ──
+     点击「✎ 修改」不再直接截断：气泡下按钮原位变为
+     取消 / 撤回修改 / 撤回消息 三选项（带切换动画），选择后再执行。 */
+
+  /* 按钮组原位切换：旧按钮淡出下移，新按钮逐个淡入上移（.enter 类控制 stagger） */
+  function swapActions(actions, buttons) {
+    actions.classList.add("swapping");
+    setTimeout(function () {
+      actions.innerHTML = "";
+      buttons.forEach(function (b) { actions.appendChild(b); });
+      actions.classList.remove("swapping");
+    }, 170);
+  }
+
+  /* 默认按钮组：复制 / 修改（与 renderMessage 一致） */
+  function buildDefaultActions() {
+    var copy = document.createElement("button");
+    copy.className = "msg-action enter";
+    copy.dataset.action = "copy";
+    copy.title = "复制消息";
+    copy.textContent = "⧉ 复制";
+    var edit = document.createElement("button");
+    edit.className = "msg-action enter";
+    edit.dataset.action = "edit";
+    edit.title = "修改后重新发送";
+    edit.textContent = "✎ 修改";
+    return [copy, edit];
+  }
+
+  /* 修改菜单三选项：取消 / 撤回修改 / 撤回消息。
+     无修改历史时「撤回修改」禁用（不可用且给出原因提示） */
+  function buildEditMenu(hasHistory) {
+    var cancel = document.createElement("button");
+    cancel.className = "msg-action enter";
+    cancel.dataset.action = "edit-cancel";
+    cancel.title = "不做任何修改，恢复按钮";
+    cancel.textContent = "取消";
+    var undoAll = document.createElement("button");
+    undoAll.className = "msg-action enter" + (hasHistory ? "" : " disabled");
+    undoAll.dataset.action = "edit-undo-all";
+    undoAll.title = hasHistory
+      ? "把所有内容退回到这条消息发送之前"
+      : "该消息没有可撤回的修改";
+    undoAll.textContent = "撤回修改";
+    var onlyMsg = document.createElement("button");
+    onlyMsg.className = "msg-action enter";
+    onlyMsg.dataset.action = "edit-message";
+    onlyMsg.title = "只撤回上下文，进入修改（不撤回修改）";
+    onlyMsg.textContent = "撤回消息";
+    return [cancel, undoAll, onlyMsg];
+  }
+
+  /* 恢复默认按钮组（复制/修改）：点击「取消」或切换其他消息时调用 */
+  function restoreEditMenu() {
+    if (editMenuIndex < 0) return;
+    var idx = editMenuIndex;
+    editMenuIndex = -1;
+    var msgEl = $("#chat").querySelector('.msg[data-index="' + idx + '"]');
+    if (!msgEl) return;
+    var actions = msgEl.querySelector(".msg-actions");
+    if (!actions) return;
+    swapActions(actions, buildDefaultActions());
+  }
+
+  /* 点击「✎ 修改」：先查询该消息是否有可撤回的修改历史，
+     再原位显示三选项（不截断、不进入编辑） */
+  function showEditMenu(idx) {
+    if (chatBusy) { UI.toast("回复进行中，请稍候再修改", "warn"); return; }
+    if (!currentProjectId) return;
+    restoreEditMenu();
+    UI.postJSON("/api/projects/" + currentProjectId + "/messages/edit-info", { index: idx })
+      .then(function (data) {
+        var msgEl = $("#chat").querySelector('.msg[data-index="' + idx + '"]');
+        if (!msgEl) return;
+        var actions = msgEl.querySelector(".msg-actions");
+        if (!actions) return;
+        editMenuIndex = idx;
+        swapActions(actions, buildEditMenu(data.has_edit_history));
+      })
+      .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+  }
+
+  /* 修改模式（撤回消息）：截断该消息之后的对话，原文填入输入框待重发；
      发送前可点输入框上方的撤回按钮恢复被截断的对话 */
-  function startEdit(idx, m) {
+  function startEdit(idx) {
     if (chatBusy) { UI.toast("回复进行中，请稍候再修改", "warn"); return; }
     if (!currentProjectId) return;
     UI.postJSON("/api/projects/" + currentProjectId + "/messages/edit", { index: idx })
-      .then(function (data) {
-        inputBeforeEdit = $("#msgInput").value;
-        renderMessages(data.messages);
-        editingIndex = idx;
-        $("#editBar").hidden = false;
-        var input = $("#msgInput");
-        input.value = data.text || "";
-        autoGrowInput(input);
-        draftDirty = true;
-        input.focus();
-      })
+      .then(function (data) { enterEditMode(idx, data); })
       .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+  }
+
+  /* 撤回修改：把所有内容退回到这条消息发送之前，再进入修改模式；
+     编辑条「↩ 撤回」可撤回这次撤回（恢复执行前状态） */
+  function undoEdit(idx) {
+    if (!currentProjectId) return;
+    UI.postJSON("/api/projects/" + currentProjectId + "/messages/undo-edit", { index: idx })
+      .then(function (data) { enterEditMode(idx, data); })
+      .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+  }
+
+  /* 进入修改模式（共用）：重渲染截断列表 + 显示编辑条 + 原文填入输入框 */
+  function enterEditMode(idx, data) {
+    inputBeforeEdit = $("#msgInput").value;
+    renderMessages(data.messages);
+    editingIndex = idx;
+    editMenuIndex = -1;
+    $("#editBar").hidden = false;
+    var input = $("#msgInput");
+    input.value = data.text || "";
+    autoGrowInput(input);
+    draftDirty = true;
+    input.focus();
   }
 
   /* 撤回修改：恢复被截断的对话与进入编辑前的输入框内容 */
@@ -1699,8 +1792,6 @@
           files = payload.midi_files || [];
           $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
           $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
-          $("#kvModel").textContent = payload.settings.model || "--";
-          $("#kvEffort").textContent = payload.settings.reasoning_effort || "--";
           renderFiles();
           renderMessages(payload.display_messages || []);
           resetEditUI();
@@ -2016,7 +2107,7 @@
         userToggledStream = true;
       }
     });
-    /* 消息操作按钮（复制 / 修改）——事件委托，随整表重建存活。
+    /* 消息操作按钮（复制 / 修改 / 修改菜单三选项）——事件委托，随整表重建存活。
        data-index 由 renderMessages 渲染时写入，据此取 currentMessages 中
        对应的消息数据（内容寻址缓存克隆不携带按钮监听器） */
     $("#chat").addEventListener("click", function (e) {
@@ -2030,7 +2121,13 @@
       if (btn.dataset.action === "copy") {
         copyMessage(m);
       } else if (btn.dataset.action === "edit") {
-        startEdit(idx, m);
+        showEditMenu(idx);
+      } else if (btn.dataset.action === "edit-cancel") {
+        restoreEditMenu();
+      } else if (btn.dataset.action === "edit-message") {
+        startEdit(idx);
+      } else if (btn.dataset.action === "edit-undo-all") {
+        undoEdit(idx);
       }
     });
     /* 撤回修改：恢复被截断的对话与输入框内容 */

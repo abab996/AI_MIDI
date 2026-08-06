@@ -19,30 +19,26 @@
 <body>
 
 <div class="page">
-  <header class="title-block">
-    <div>
-      <div class="brand">AI_MIDI <span class="accent">·</span> 多轮对话</div>
-      <div class="brand-sub">Multi-turn Composition Studio / Project Archive</div>
-    </div>
-    <div class="stamp-row">
-      <span class="stamp ok">SYS: READY</span>
-      <span class="stamp" id="countStamp">ARCHIVE: 0</span>
-      <a class="btn btn-secondary btn-sm" href="/" data-dir="back">主工作台</a>
-      <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
-      <button class="btn btn-secondary btn-sm" id="themeBtn" title="切换主题">☀ 暖纸</button>
-    </div>
-  </header>
-
-  <div class="divider-measure"></div>
-
   <!-- ===================== 视图 1：档案库 ===================== -->
   <section id="archiveView">
     <div class="toolbar">
-      <div class="search-box">
-        <span class="stamp">SEARCH</span>
-        <input type="search" id="searchInput" placeholder="搜索对话内容…">
+      <!-- 第一行：页面名称 + 导航按钮 -->
+      <div class="nav-line">
+        <span class="nav-title">档案库</span>
+        <div class="nav-right">
+          <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
+          <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
+          <button class="btn btn-secondary btn-sm theme-btn" type="button" title="切换主题">☀ 暖纸</button>
+        </div>
       </div>
-      <button class="btn btn-primary" id="newProjectBtn">＋ 新建档案</button>
+      <!-- 第二行：搜索 + 新建 -->
+      <div class="toolbar-row">
+        <div class="search-box">
+          <span class="stamp">SEARCH</span>
+          <input type="search" id="searchInput" placeholder="搜索对话内容…">
+        </div>
+        <button class="btn btn-primary" id="newProjectBtn">＋ 新建档案</button>
+      </div>
     </div>
 
     <div class="card-grid" id="projectGrid"></div>
@@ -55,6 +51,11 @@
       <div class="studio-title" id="studioProjectName">[PROJECT: --]</div>
       <span class="stamp warn" id="wsStamp">WS: --</span>
       <span class="stamp" id="modelStamp">MODEL: --</span>
+      <div class="nav-right">
+        <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
+        <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
+        <button class="btn btn-secondary btn-sm theme-btn" type="button" title="切换主题">☀ 暖纸</button>
+      </div>
     </div>
 
     <div class="divider-measure"></div>
@@ -105,15 +106,6 @@
             <button class="btn btn-danger" id="unbindBtn">解绑</button>
           </div>
         </div>
-
-        <div class="divider-measure"></div>
-
-        <details class="settings-box">
-          <summary>对话设置</summary>
-          <div class="kv"><span>模型</span><span class="mono" id="kvModel">--</span></div>
-          <div class="kv"><span>思考强度</span><span class="mono" id="kvEffort">--</span></div>
-          <div class="kv"><span>上下文</span><span class="mono">auto</span></div>
-        </details>
       </aside>
 
       <!-- 右侧：对话控制台 -->

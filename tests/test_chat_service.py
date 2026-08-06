@@ -230,6 +230,7 @@ def _seed_session(project_id, display, full_history, midi_files=None):
         "undo_stack": [],
         "chat_display": display,
         "pending_edit": None,
+        "edit_history": [],
     }
 
 
@@ -257,12 +258,12 @@ def test_edit_message_truncates_display_and_history():
         assert result["messages"] == display[:3]
         # 内存历史截断到第 3 条 user 消息（含），其后全部移除
         assert chat_service._get_session(pid)["full_history"] == full_history[:3]
-        # 快照保存尾部，供撤回恢复
+        # 快照保存进入编辑前的完整状态，供撤回恢复
         pending = chat_service._get_session(pid)["pending_edit"]
         assert pending["index"] == 2
         assert pending["text"] == "问题B"
-        assert pending["history_tail"] == full_history[3:]
-        assert pending["display_tail"] == display[3:]
+        assert pending["full_history"] == full_history
+        assert pending["chat_display"] == display
     finally:
         chat_service._sessions.pop(pid, None)
 
@@ -332,6 +333,224 @@ def test_recall_edit_without_pending_is_idempotent():
         chat_service._sessions.pop(pid, None)
 
 
+@patch.object(chat_service.project_manager, "save_edit_history")
+def test_edit_history_dedup_and_limit(_save):
+    """修改历史栈：同一条消息只保留最近快照，且限长防膨胀。"""
+    pid = "pid-history-1"
+    try:
+        _seed_session(pid, [], [])
+        session = chat_service._get_session(pid)
+        # 同 index 循环压栈：去重后各 index 仅剩最近一条
+        for i in range(15):
+            chat_service._push_edit_history(pid, session, {
+                "index": i % 3, "text": str(i),
+                "full_history": [], "chat_display": [],
+            })
+        history = session["edit_history"]
+        assert sorted(h["index"] for h in history) == [0, 1, 2]
+        assert history[-1]["text"] == "14"  # index 2 的最近记录
+        # 不同 index 压栈超过限长：最旧的被挤出
+        session["edit_history"] = []
+        for i in range(15):
+            chat_service._push_edit_history(pid, session, {
+                "index": 100 + i, "text": str(i),
+                "full_history": [], "chat_display": [],
+            })
+        history = session["edit_history"]
+        assert len(history) == chat_service._EDIT_HISTORY_LIMIT
+        assert history[0]["text"] == "5"
+        assert history[-1]["text"] == "14"
+    finally:
+        chat_service._sessions.pop(pid, None)
+
+
+@patch.object(chat_service.project_manager, "save_edit_history")
+def test_undo_edit_restores_state_before_send(_save):
+    """撤回修改：把所有内容退回到这条消息发送之前，再进入修改模式。"""
+    pid = "pid-undo-1"
+    display = [
+        {"role": "user", "content": "问题A"},
+        {"role": "assistant", "content": "回答A"},
+        {"role": "user", "content": "问题B"},
+        {"role": "assistant", "content": "回答B"},
+        {"role": "user", "content": "问题C"},
+        {"role": "assistant", "content": "回答C"},
+    ]
+    full_history = [
+        {"role": "user", "content": "问题A"},
+        {"role": "assistant", "content": "回答A"},
+        {"role": "user", "content": "问题B"},
+        {"role": "assistant", "content": "回答B"},
+        {"role": "user", "content": "问题C"},
+    ]
+    try:
+        _seed_session(pid, display, full_history)
+        # 用户修改「问题B」并发送：进入编辑前的完整状态移入修改历史
+        chat_service.edit_message(pid, 2)
+        session = chat_service._get_session(pid)
+        chat_service._push_edit_history(pid, session, session.pop("pending_edit"))
+        assert len(session["chat_display"]) == 3  # 发送后对话截断在「问题B」
+
+        # 撤回修改：恢复到「问题B」发送前的完整对话，并进入修改模式
+        result = chat_service.undo_edit(pid, 2)
+        assert result["text"] == "问题B"
+        assert result["messages"] == display[:3]
+        session = chat_service._get_session(pid)
+        assert session["full_history"] == full_history[:3]
+
+        # 编辑条「↩ 撤回」可撤回这次撤回：恢复执行「撤回修改」前的状态
+        pending = session["pending_edit"]
+        assert pending["index"] == 2
+        assert pending["chat_display"] == display[:3]
+        with patch.object(chat_service, "_persist_project_state") as persist:
+            recalled = chat_service.recall_edit(pid)
+        assert recalled["messages"] == display[:3]
+        assert chat_service._get_session(pid).get("pending_edit") is None
+        persist.assert_called_once()
+    finally:
+        chat_service._sessions.pop(pid, None)
+
+
+@patch.object(chat_service.project_manager, "save_edit_history")
+def test_undo_edit_restores_later_user_edits_too(_save):
+    """修改 B 发送后再修改 C 发送——撤回 B 的修改时，C 的修改一并还原。"""
+    pid = "pid-undo-2"
+    display = [
+        {"role": "user", "content": "问题A"},
+        {"role": "assistant", "content": "回答A"},
+        {"role": "user", "content": "问题B"},
+        {"role": "assistant", "content": "回答B"},
+        {"role": "user", "content": "问题C"},
+        {"role": "assistant", "content": "回答C"},
+    ]
+    full_history = [
+        {"role": "user", "content": "问题A"},
+        {"role": "assistant", "content": "回答A"},
+        {"role": "user", "content": "问题B"},
+        {"role": "assistant", "content": "回答B"},
+        {"role": "user", "content": "问题C"},
+    ]
+    try:
+        _seed_session(pid, display, full_history)
+        session = chat_service._get_session(pid)
+        # 修改「问题B」并发送：历史1 = 初始完整状态
+        chat_service.edit_message(pid, 2)
+        chat_service._push_edit_history(pid, session, session.pop("pending_edit"))
+        # 继续修改「问题C」并发送：历史2 = 「问题B」修改后的完整状态
+        display2 = [
+            {"role": "user", "content": "问题A"},
+            {"role": "assistant", "content": "回答A"},
+            {"role": "user", "content": "问题B改"},
+            {"role": "assistant", "content": "回答B改"},
+            {"role": "user", "content": "问题C"},
+            {"role": "assistant", "content": "回答C"},
+        ]
+        full2 = [
+            {"role": "user", "content": "问题A"},
+            {"role": "assistant", "content": "回答A"},
+            {"role": "user", "content": "问题B改"},
+            {"role": "assistant", "content": "回答B改"},
+            {"role": "user", "content": "问题C"},
+        ]
+        session["chat_display"] = display2
+        session["full_history"] = full2
+        chat_service.edit_message(pid, 4)
+        chat_service._push_edit_history(pid, session, session.pop("pending_edit"))
+
+        # 撤回「问题B」的修改：恢复到 B 发送前的完整对话，C 的修改一并还原
+        result = chat_service.undo_edit(pid, 2)
+        assert result["text"] == "问题B"
+        assert result["messages"] == display[:3]
+        assert chat_service._get_session(pid)["full_history"] == full_history[:3]
+    finally:
+        chat_service._sessions.pop(pid, None)
+
+
+@patch.object(chat_service.project_manager, "save_edit_history")
+def test_edit_info_flags_history(_save):
+    """edit_info：无历史返回 False，编辑发送后该消息返回 True。"""
+    pid = "pid-info-1"
+    display = [
+        {"role": "user", "content": "问题A"},
+        {"role": "assistant", "content": "回答A"},
+        {"role": "user", "content": "问题B"},
+    ]
+    try:
+        _seed_session(pid, display, list(display))
+        assert chat_service.edit_info(pid, 0)["has_edit_history"] is False
+        assert chat_service.edit_info(pid, 2)["has_edit_history"] is False
+        # 编辑发送后，该消息有可撤回的修改
+        session = chat_service._get_session(pid)
+        chat_service.edit_message(pid, 2)
+        chat_service._push_edit_history(pid, session, session.pop("pending_edit"))
+        assert chat_service.edit_info(pid, 2)["has_edit_history"] is True
+        assert chat_service.edit_info(pid, 0)["has_edit_history"] is False
+    finally:
+        chat_service._sessions.pop(pid, None)
+
+
+def test_undo_edit_without_history_rejects():
+    """从未修改过的消息：撤回修改被拒绝，且不得改动任何状态。"""
+    pid = "pid-undo-3"
+    display = [
+        {"role": "user", "content": "问题A"},
+        {"role": "assistant", "content": "回答A"},
+        {"role": "user", "content": "问题B"},
+    ]
+    try:
+        _seed_session(pid, display, list(display))
+        try:
+            chat_service.undo_edit(pid, 2)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("无历史时撤回修改应被拒绝")
+        session = chat_service._get_session(pid)
+        assert session["pending_edit"] is None
+        assert session["chat_display"] == display
+    finally:
+        chat_service._sessions.pop(pid, None)
+
+
+def test_edit_history_persists_across_session_reload(tmp_path, monkeypatch):
+    """修改历史落盘：模拟服务重启（session 重建水合）后「撤回修改」仍可用。"""
+    monkeypatch.setattr(chat_service.project_manager, "PROJECTS_DIR", tmp_path / "projects")
+    pid = "pid-persist-1"
+    display = [
+        {"role": "user", "content": "问题A"},
+        {"role": "assistant", "content": "回答A"},
+        {"role": "user", "content": "问题B"},
+        {"role": "assistant", "content": "回答B"},
+    ]
+    try:
+        _seed_session(pid, display, list(display))
+        # 编辑发送：快照入历史并落盘；发送后对话也落盘
+        chat_service.edit_message(pid, 2)
+        session = chat_service._get_session(pid)
+        chat_service._push_edit_history(pid, session, session.pop("pending_edit"))
+        sent_display = [
+            {"role": "user", "content": "问题A"},
+            {"role": "assistant", "content": "回答A"},
+            {"role": "user", "content": "问题B改"},
+            {"role": "assistant", "content": "回答B改"},
+        ]
+        chat_service.project_manager.save_history(pid, sent_display, [])
+
+        # 模拟服务重启：丢弃内存会话，从磁盘重新水合
+        chat_service._sessions.pop(pid, None)
+        reloaded = chat_service._get_session(pid)
+        assert reloaded["edit_history"]
+        assert reloaded["edit_history"][0]["index"] == 2
+        assert chat_service.edit_info(pid, 2)["has_edit_history"] is True
+
+        # 撤回修改仍能退回这条消息发送之前
+        result = chat_service.undo_edit(pid, 2)
+        assert result["text"] == "问题B"
+        assert result["messages"] == display[:3]
+    finally:
+        chat_service._sessions.pop(pid, None)
+
+
 def test_chat_stream_edit_replaces_last_user_message():
     """编辑发送：被编辑消息被新消息替换，AI 上下文止于截断点。"""
     pid = "pid-edit-5"
@@ -377,6 +596,7 @@ def test_chat_stream_edit_replaces_last_user_message():
         with patch.object(chat_service, "_load_settings", return_value={"api_key": "test-key"}), \
              patch.object(chat_service.project_manager, "get_workspace_dir", return_value=None), \
              patch.object(chat_service.project_manager, "save_draft"), \
+             patch.object(chat_service.project_manager, "save_edit_history"), \
              patch("chat_pipeline._prepare_context", fake_prepare), \
              patch("chat_pipeline._execute_tool_loop", fake_loop):
             events = list(chat_service.chat_stream(pid, "问题B改", edit=True))
@@ -393,8 +613,12 @@ def test_chat_stream_edit_replaces_last_user_message():
         # AI 上下文不含被编辑消息（截断点之后的内容已剔除）
         assert captured["history_for_ai"] == full_history[:2]
         assert captured["display_for_ai"] == display[:2]
-        # 发送后修改快照作废
+        # 发送后修改快照移入修改历史（供「撤回修改」还原），当前编辑态清空
         assert session.get("pending_edit") is None
+        assert len(session["edit_history"]) == 1
+        assert session["edit_history"][0]["index"] == 2
+        assert session["edit_history"][0]["text"] == "问题B"
+        assert session["edit_history"][0]["full_history"] == full_history
         # 事件流以 done 收尾
         assert events[-1].startswith('data: {"type": "done"}')
     finally:

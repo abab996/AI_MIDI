@@ -19,21 +19,15 @@
 <body>
 
 <div class="page">
-  <header class="title-block">
-    <div>
-      <div class="brand">AI_MIDI <span class="accent">·</span> AI 编曲助手</div>
-      <div class="brand-sub">Single-shot Composer / Input → Process → Output</div>
-    </div>
-    <div class="stamp-row">
-      <span class="stamp ok" id="stampSys">SYS: READY</span>
-      <span class="stamp ok" id="stampApi">API: --</span>
+  <div class="top-nav">
+    <span class="nav-title">快捷操作</span>
+    <span class="stamp ok" id="stampApi">API: --</span>
+    <div class="nav-right">
       <a class="btn btn-secondary btn-sm" href="/chat.html" data-dir="forward">多轮对话</a>
       <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
-      <button class="btn btn-secondary btn-sm" id="themeBtn" title="切换主题">☀ 暖纸</button>
+      <button class="btn btn-secondary btn-sm theme-btn" type="button" title="切换主题">☀ 暖纸</button>
     </div>
-  </header>
-
-  <div class="divider-measure"></div>
+  </div>
 
   <main class="workbench">
     <!-- ① 输入站 -->

@@ -66,7 +66,7 @@ _current_project_id: str | None = None
 
 # project_id -> {"full_history": [...], "midi_files": [...],
 #                "undo_stack": [...], "chat_display": [...],
-#                "pending_edit": {...} | None}
+#                "pending_edit": {...} | None, "edit_history": [...]}
 _sessions: dict[str, dict] = {}
 
 
@@ -81,6 +81,7 @@ def _get_session(project_id: str) -> dict:
             "undo_stack": [],
             "chat_display": _rebuild_display_from_history(full_history),
             "pending_edit": None,
+            "edit_history": project_manager.load_edit_history(project_id),
         }
         _sessions[project_id] = session
     return session
@@ -1449,14 +1450,17 @@ def chat_stream(project_id: str, message: str, edit: bool = False):
     # 去掉最后一条被编辑的 user 消息后再追加新消息 = 替换语义，
     # 后续 _prepare_context / _finalize_response 自动以截断点为界
     # 重建 API 上下文并落盘（AI 不会看到该消息之后的内容）。
-    # 快照 tail 仅在撤回时需要，发送后作废丢弃。
+    # 进入编辑前的完整状态快照移入修改历史并落盘（不再丢弃）：
+    # 供「撤回修改」把所有内容退回到这条消息发送之前（重启后仍可用）。
     # 放在早期返回（空消息/未配置 API Key）之后：发送失败不消费编辑状态。
     if edit and session.get("pending_edit"):
         if session["full_history"] and session["full_history"][-1].get("role") == "user":
             session["full_history"] = session["full_history"][:-1]
         if session["chat_display"] and session["chat_display"][-1].get("role") == "user":
             session["chat_display"] = session["chat_display"][:-1]
-    session.pop("pending_edit", None)
+        _push_edit_history(project_id, session, session.pop("pending_edit", None))
+    else:
+        session.pop("pending_edit", None)
 
     # ── 准备上下文 ──
     ctx = _prepare_context(
@@ -1534,14 +1538,57 @@ def download_url(filepath: str | Path) -> str:
 
 # ==================== 消息编辑（修改 / 撤回） ====================
 
+# 修改历史栈限长：只保留最近 N 次编辑发送前的快照，防止长期对话内存膨胀
+_EDIT_HISTORY_LIMIT = 10
+
+
+def _locate_user_in_history(session: dict, index: int) -> int:
+    """由显示列表 index 定位 full_history 中同一条 user 消息的下标。
+
+    显示列表与 full_history 中的 user 消息按顺序一一对应（AI 消息/
+    工具块在显示列表占位，两者下标不同）。先数出该消息是第几个
+    user 消息，再定位 full_history 中同一条。
+    """
+    display = session["chat_display"]
+    ordinal = sum(1 for m in display[: index + 1] if m.get("role") == "user")
+    user_positions = [
+        i for i, m in enumerate(session["full_history"]) if m.get("role") == "user"
+    ]
+    if ordinal - 1 >= len(user_positions):
+        raise ValueError("消息位置无效")
+    return user_positions[ordinal - 1]
+
+
+def _push_edit_history(project_id: str, session: dict, pending: dict | None) -> None:
+    """编辑发送成功后把「进入编辑前」完整状态快照压入修改历史栈并落盘。
+
+    - 同一条用户消息只保留最近一次快照（新快照覆盖旧记录）。
+    - 限长保留最近 _EDIT_HISTORY_LIMIT 条。
+    - 落盘到 edit_history.json：服务重启后「撤回修改」仍可用。
+    """
+    if not pending:
+        return
+    history = session.setdefault("edit_history", [])
+    history = [h for h in history if h.get("index") != pending.get("index")]
+    history.append(pending)
+    session["edit_history"] = history[-_EDIT_HISTORY_LIMIT:]
+    project_manager.save_edit_history(project_id, session["edit_history"])
+
+
+def _find_edit_history(session: dict, index: int) -> dict | None:
+    """取该条用户消息最近一次编辑发送前的快照（倒序找同 index 记录）。"""
+    for h in reversed(session.get("edit_history", [])):
+        if h.get("index") == index:
+            return h
+    return None
+
+
 def edit_message(project_id: str, index: int) -> dict:
     """修改模式：截断第 index 条用户消息之后的所有对话。
 
-    - 显示列表与 full_history 中的 user 消息一一对应，故以显示列表的
-      index 定位 full_history 中同一条 user 消息，截断到该消息（含）。
-    - 截断仅作用于内存中的会话（不落盘），原尾部快照存入 pending_edit
-      供撤回恢复；未发送/未撤回时磁盘保持原状，中途关闭窗口 = 编辑
-      自然放弃，重开仍是完整对话。
+    - 截断仅作用于内存中的会话（不落盘），进入编辑前的完整状态快照
+      存入 pending_edit 供撤回恢复；未发送/未撤回时磁盘保持原状，中途
+      关闭窗口 = 编辑自然放弃，重开仍是完整对话。
     - 返回截断后的显示列表与被编辑消息原文，供前端渲染并填入输入框。
     """
     session = _get_session(project_id)
@@ -1549,22 +1596,13 @@ def edit_message(project_id: str, index: int) -> dict:
     if index < 0 or index >= len(display) or display[index].get("role") != "user":
         raise ValueError("消息位置无效")
 
-    # 显示列表与 full_history 中的 user 消息按顺序一一对应（AI 消息/
-    # 工具块在显示列表占位，两者下标不同）。先数出该消息是第几个
-    # user 消息，再定位 full_history 中同一条。
-    ordinal = sum(1 for m in display[: index + 1] if m.get("role") == "user")
-    user_positions = [
-        i for i, m in enumerate(session["full_history"]) if m.get("role") == "user"
-    ]
-    if ordinal - 1 >= len(user_positions):
-        raise ValueError("消息位置无效")
-    hist_idx = user_positions[ordinal - 1]
+    hist_idx = _locate_user_in_history(session, index)
 
     session["pending_edit"] = {
         "index": index,
         "text": display[index].get("content", ""),
-        "history_tail": copy.deepcopy(session["full_history"][hist_idx + 1:]),
-        "display_tail": copy.deepcopy(display[index + 1:]),
+        "full_history": copy.deepcopy(session["full_history"]),
+        "chat_display": copy.deepcopy(display),
     }
     session["full_history"] = session["full_history"][:hist_idx + 1]
     session["chat_display"] = display[:index + 1]
@@ -1572,15 +1610,61 @@ def edit_message(project_id: str, index: int) -> dict:
 
 
 def recall_edit(project_id: str) -> dict:
-    """撤回修改：恢复被截断的对话并落盘。无进行中的修改时幂等返回当前列表。"""
+    """撤回修改：恢复进入编辑模式前的完整对话并落盘。
+
+    无进行中的修改时幂等返回当前列表。
+    """
     session = _get_session(project_id)
     pending = session.pop("pending_edit", None)
     if not pending:
         return {"messages": session["chat_display"]}
-    session["full_history"] = session["full_history"] + pending["history_tail"]
-    session["chat_display"] = session["chat_display"] + pending["display_tail"]
+    session["full_history"] = pending["full_history"]
+    session["chat_display"] = pending["chat_display"]
     _persist_project_state(project_id, session["full_history"], session["midi_files"])
     return {"messages": session["chat_display"]}
+
+
+def edit_info(project_id: str, index: int) -> dict:
+    """查询该条消息是否有可撤回的修改历史（前端据此启用「撤回修改」选项）。"""
+    session = _get_session(project_id)
+    display = session["chat_display"]
+    if index < 0 or index >= len(display) or display[index].get("role") != "user":
+        raise ValueError("消息位置无效")
+    return {"has_edit_history": _find_edit_history(session, index) is not None}
+
+
+def undo_edit(project_id: str, index: int) -> dict:
+    """撤回修改：把所有内容退回到这条消息发送之前，再进入修改模式。
+
+    - 从修改历史栈取该消息最近一次编辑发送前的完整快照：该消息恢复
+      原文，其后的内容恢复当时的原始版本（含用户后来做的修改一并还原）。
+    - 执行前的完整状态存入 pending_edit——编辑条上的「↩ 撤回」即可
+      撤回这次撤回（恢复到执行前状态）。
+    - 不落盘（与 edit_message 一致）：发送/撤回时才落盘。
+    """
+    session = _get_session(project_id)
+    display = session["chat_display"]
+    if index < 0 or index >= len(display) or display[index].get("role") != "user":
+        raise ValueError("消息位置无效")
+    snap = _find_edit_history(session, index)
+    if snap is None:
+        raise ValueError("该消息没有可撤回的修改")
+
+    # 先保存执行前状态（供「↩ 撤回」恢复），再退回历史版本
+    session["pending_edit"] = {
+        "index": index,
+        "text": display[index].get("content", ""),
+        "full_history": copy.deepcopy(session["full_history"]),
+        "chat_display": copy.deepcopy(display),
+    }
+    session["full_history"] = copy.deepcopy(snap["full_history"])
+    session["chat_display"] = copy.deepcopy(snap["chat_display"])
+
+    # 退回后截断到该消息（含），进入修改模式
+    hist_idx = _locate_user_in_history(session, index)
+    session["full_history"] = session["full_history"][:hist_idx + 1]
+    session["chat_display"] = session["chat_display"][:index + 1]
+    return {"messages": session["chat_display"], "text": snap["text"]}
 
 
 # ==================== 项目生命周期 ====================
@@ -1934,5 +2018,7 @@ def clear_chat(project_id: str) -> dict:
     session["chat_display"] = []
     session["undo_stack"] = []
     session.pop("pending_edit", None)
+    session["edit_history"] = []
+    project_manager.save_edit_history(project_id, [])
     project_manager.save_history(project_id, [], session["midi_files"] or [])
     return {"messages": []}

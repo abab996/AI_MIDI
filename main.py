@@ -324,7 +324,20 @@ def main() -> None:
         metavar="RATIO",
         help="原生窗口占屏幕工作区的比例(0.0-1.0),默认 0.8",
     )
+    parser.add_argument(
+        "--mcp-child",
+        action="store_true",
+        help=argparse.SUPPRESS,  # 内部参数:打包版 MCP 子进程模式(见 chat_service._ensure_mcp_process)
+    )
     args = parser.parse_args()
+
+    # 打包版 MCP 子进程模式:PyInstaller 下 sys.executable 是 exe,
+    # 无法直接执行 mcp_server.py,以自身 exe + 该参数重新进入 MCP 服务器。
+    if args.mcp_child:
+        import mcp_server
+
+        mcp_server.run_mcp_server()
+        return
 
     _set_current_process_app_id()
 

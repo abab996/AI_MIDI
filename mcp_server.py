@@ -336,5 +336,14 @@ def read_library_file(filename: str) -> str:
         return f"错误：读取失败 — {e}"
 
 
-if __name__ == "__main__":
+def run_mcp_server() -> None:
+    """以 stdio 传输运行 MCP 服务器。
+
+    源码环境由 `python mcp_server.py` 进入；PyInstaller 打包版由
+    `AI_MIDI.exe --mcp-child` 从 main.py 调用进入（exe 无法执行 .py 脚本）。
+    """
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    run_mcp_server()

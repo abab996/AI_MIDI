@@ -269,8 +269,14 @@ def _ensure_mcp_process() -> subprocess.Popen | None:
                 mirror = project_manager.get_midi_mirror_dir(_current_project_id)
                 if mirror is not None:
                     env["AI_MIDI_MIRROR_DIR"] = str(mirror)
+            if getattr(sys, "frozen", False):
+                # 打包版:sys.executable 是 exe 而非 python,不能直接执行 mcp_server.py,
+                # 以内部参数 --mcp-child 让子进程(自身 exe)进入 MCP 服务器模式。
+                _mcp_cmd = [sys.executable, "--mcp-child"]
+            else:
+                _mcp_cmd = [sys.executable, str(_MCP_SCRIPT)]
             _mcp_process = subprocess.Popen(
-                [sys.executable, str(_MCP_SCRIPT)],
+                _mcp_cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,

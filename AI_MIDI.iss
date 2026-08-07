@@ -10,7 +10,7 @@
 ;   - 卸载时保留用户数据(设置/项目/输出),可选择是否一并删除。
 
 #define MyAppName "AI_MIDI"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppPublisher "abab996"
 #define MyAppExeName "AI_MIDI.exe"
 #define MyAppAssocName MyAppName + " File"

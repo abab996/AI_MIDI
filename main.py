@@ -43,19 +43,39 @@ GCLP_HICONSM = -34
 
 SERVER_URL = f"http://127.0.0.1:{config.SERVER_PORT}"
 
+# 服务启动失败原因(端口被占用等),供主线程启动超时后弹窗提示。
+# windowed 模式无控制台,不弹窗的话用户双击后完全无感知。
+_SERVER_START_ERROR: str | None = None
+
 
 def _start_server() -> None:
     """在后台线程启动 uvicorn 服务。"""
+    import socket
+
     import uvicorn
 
     from server import app
 
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=config.SERVER_PORT,
-        log_level="warning",
-    )
+    global _SERVER_START_ERROR
+    # 先自检端口:uvicorn 绑定失败时只打印错误后 sys.exit(1)(SystemExit 无法捕获),
+    # 这里预检一次,让启动失败弹窗能给出准确的"端口被占用"原因。
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", config.SERVER_PORT))
+    except OSError:
+        _SERVER_START_ERROR = f"[Errno 10048] 端口 {config.SERVER_PORT} 已被占用"
+        logger.error("端口 %s 已被占用,服务无法启动", config.SERVER_PORT)
+        return
+    try:
+        uvicorn.run(
+            app,
+            host="127.0.0.1",
+            port=config.SERVER_PORT,
+            log_level="warning",
+        )
+    except OSError as exc:
+        # 端口被占用等绑定失败:记录原因,由主线程在启动超时后弹窗提示
+        _SERVER_START_ERROR = str(exc)
 
 
 def _wait_for_server(timeout: float = 15.0) -> bool:
@@ -70,6 +90,59 @@ def _wait_for_server(timeout: float = 15.0) -> bool:
         except OSError:
             time.sleep(0.3)
     return False
+
+
+def _show_error_dialog(title: str, message: str) -> None:
+    """以原生 MessageBox 弹窗提示错误。
+
+    windowed(无控制台)模式下必须弹窗,否则启动失败用户毫无感知。
+    """
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)  # MB_ICONERROR
+    except (OSError, AttributeError, ImportError):
+        pass
+
+
+def _server_error_message() -> str:
+    """构造服务启动失败的弹窗文案(区分端口占用与未知原因)。"""
+    if _SERVER_START_ERROR:
+        err = _SERVER_START_ERROR.lower()
+        if "10048" in err or "address already in use" in err or "permission denied" in err:
+            return (
+                f"本地端口 {config.SERVER_PORT} 已被其他程序占用,服务无法启动。\n"
+                "请关闭占用该端口的程序后重新启动。\n\n"
+                f"详细信息: {_SERVER_START_ERROR}"
+            )
+        return f"本地服务启动失败,请查看日志确认原因。\n\n详细信息: {_SERVER_START_ERROR}"
+    return (
+        f"本地服务(http://127.0.0.1:{config.SERVER_PORT})在 20 秒内未就绪。\n"
+        "请查看日志文件确认原因:\n"
+        f"{config.OUTPUT_DIR / 'ai_midi.log'}"
+    )
+
+
+_SINGLE_INSTANCE_MUTEX: object | None = None  # 持有句柄防止 GC 后锁失效
+
+
+def _acquire_single_instance_lock() -> bool:
+    """获取单实例互斥锁;已有实例在运行时返回 False。
+
+    互斥锁句柄保存在模块级,进程退出时由系统自动释放。
+    """
+    global _SINGLE_INSTANCE_MUTEX
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        _SINGLE_INSTANCE_MUTEX = kernel32.CreateMutexW(
+            None, False, "Local\\AI_MIDI_SingleInstance"
+        )
+        return kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+    except (OSError, AttributeError, ImportError):
+        return True  # 非 Windows 或异常时不做单实例限制
 
 
 # ===== Windows 原生窗口相关（迁移自原 webui.py） =====
@@ -143,8 +216,8 @@ def _is_usable_icon_file(icon_path: Path, source_path: Path) -> bool:
         return False
 
 
-def _ensure_icon_file(image_path: Path, icon_path: Path | None = None) -> Path:
-    """基于 PNG 生成 Windows 可用的 ICO 文件。"""
+def _ensure_icon_file(image_path: Path, icon_path: Path | None = None) -> Path | None:
+    """基于 PNG 生成 Windows 可用的 ICO 文件;生成失败(如目录只读)返回 None。"""
     if image_path.suffix.lower() == ".ico":
         return image_path
     if image_path.suffix.lower() != ".png":
@@ -223,8 +296,12 @@ def _ensure_icon_file(image_path: Path, icon_path: Path | None = None) -> Path:
             len(png_bytes),
             22,
         )
-        icon_path.write_bytes(header + entry + png_bytes)
-        return icon_path
+        try:
+            icon_path.write_bytes(header + entry + png_bytes)
+            return icon_path
+        except OSError:
+            # 目录只读等场景:放弃生成图标,不阻塞窗口启动
+            return None
 
 
 def _set_native_window_icon(window_title: str, image_path: Path, timeout: float = 5.0) -> None:
@@ -232,6 +309,9 @@ def _set_native_window_icon(window_title: str, image_path: Path, timeout: float 
     _set_current_process_app_id()
     window_icon_path = config.PROJECT_ROOT / "window_icon.ico"
     icon_path = _ensure_icon_file(image_path, window_icon_path)
+    if icon_path is None:
+        # 图标生成失败(如目录只读):跳过图标设置,不影响窗口启动
+        return
     deadline = time.time() + timeout
 
     while time.time() < deadline:
@@ -339,6 +419,15 @@ def main() -> None:
         mcp_server.run_mcp_server()
         return
 
+    # 单实例保护:防止双开导致端口冲突与项目数据互相干扰。
+    # 必须在 --mcp-child 分支之后(子进程复用同一 exe,需跳过检查)。
+    if not _acquire_single_instance_lock():
+        _show_error_dialog(
+            WINDOW_TITLE,
+            "AI_MIDI 已在运行中。\n如需重新启动,请先关闭现有窗口。",
+        )
+        raise SystemExit(0)
+
     _set_current_process_app_id()
 
     # 后台启动 FastAPI 服务
@@ -346,6 +435,7 @@ def main() -> None:
     server_thread.start()
     if not _wait_for_server(timeout=20.0):
         logger.error("服务启动失败或超时: %s", SERVER_URL)
+        _show_error_dialog(WINDOW_TITLE, _server_error_message())
         raise SystemExit(1)
 
     if args.browser:

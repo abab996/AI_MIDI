@@ -441,3 +441,26 @@ func (s *Supervisor) runOnce() {
 		}
 	}
 }
+
+// LoadSoundFont 加载音色文件到引擎
+func (s *Supervisor) LoadSoundFont(path string) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	raw, err := cli.Request(30*time.Second, "loadSoundFont", map[string]any{"path": path})
+	if err != nil {
+		return err
+	}
+	var res struct {
+		Loaded bool   `json:"loaded"`
+		Error  string `json:"error"`
+	}
+	if jsonErr := json.Unmarshal(raw, &res); jsonErr != nil {
+		return jsonErr
+	}
+	if !res.Loaded {
+		return fmt.Errorf("引擎加载音色失败: %s", res.Error)
+	}
+	return nil
+}

@@ -34,6 +34,7 @@ func main() {
 	browserMode := flag.Bool("browser", false, "在系统默认浏览器中打开，而不是使用原生窗口")
 	scaleRatio := flag.Float64("scale", 0.8, "原生窗口占屏幕工作区的比例(0.0-1.0)，默认 0.8")
 	mcpChild := flag.Bool("mcp-child", false, "内部参数：MCP 子进程模式")
+	port := flag.Int("port", config.ServerPort, "HTTP 服务端口（浏览器模式）")
 	flag.Parse()
 
 	// 1. MCP 子进程模式 (不展示启动图)
@@ -71,7 +72,7 @@ func main() {
 
 	// 4. 浏览器模式
 	if *browserMode {
-		addr := fmt.Sprintf("127.0.0.1:%d", config.ServerPort)
+		addr := fmt.Sprintf("127.0.0.1:%d", *port)
 		go func() {
 			splashCtrl.Wait()
 			_ = exec.Command("cmd", "/c", "start", fmt.Sprintf("http://%s/chat.html", addr)).Start()

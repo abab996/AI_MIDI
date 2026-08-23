@@ -64,6 +64,16 @@
 
   SoundLibrary.prototype.saveSoundFont = function (name, arrayBuffer, presets) {
     var self = this;
+    // 镜像到原生引擎音色库（Library/soundfonts/）：失败仅告警，不影响浏览器音源
+    try {
+      fetch("/api/audio/soundfonts?name=" + encodeURIComponent(name), {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: arrayBuffer
+      }).then(function (res) { return res.json(); })
+        .then(function (j) { console.log("[SoundLibrary] 已同步到引擎音色库", j); })
+        .catch(function (err) { console.warn("[SoundLibrary] 引擎同步失败（浏览器音源不受影响）", err); });
+    } catch (e) { /* 非阻塞 */ }
     var id = "sf2_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
     return this.init().then(function (db) {
       return new Promise(function (resolve, reject) {

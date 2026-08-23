@@ -23,6 +23,8 @@ func (r *Router) handleAudioSub(w http.ResponseWriter, req *http.Request) {
 		}
 	case "/api/audio/test-tone":
 		r.handleTestTone(w, req)
+	case "/api/audio/soundfonts":
+		r.handleAudioSoundfonts(w, req)
 	default:
 		writeError(w, http.StatusNotFound, "unknown audio endpoint")
 	}

@@ -464,3 +464,29 @@ func (s *Supervisor) LoadSoundFont(path string) error {
 	}
 	return nil
 }
+
+// NoteOn/NoteOff 演奏事件：尽力而为——引擎未就绪或队列满时静默丢弃，
+// 不阻塞前端键盘路径（M2 骨架；后续可加发送合并）
+func (s *Supervisor) NoteOn(channel, key, velocity int) {
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return
+	}
+	_, _ = cli.Request(2*time.Second, "noteOn", map[string]any{
+		"channel": channel, "key": key, "velocity": velocity,
+	})
+}
+
+func (s *Supervisor) NoteOff(channel, key int) {
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return
+	}
+	_, _ = cli.Request(2*time.Second, "noteOff", map[string]any{
+		"channel": channel, "key": key,
+	})
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "AI_MIDI",
+  "outputfilename": "AI_MIDI",
+  "frontend:dir": "frontend",
+  "author": {
+    "name": "AI_MIDI",
+    "email": "ai_midi@local"
+  },
+  "version": "3.0.0",
+  "info": {
+    "companyName": "AI_MIDI",
+    "productName": "AI_MIDI · AI 编曲助手",
+    "productVersion": "3.0.0",
+    "copyright": "Copyright 2026",
+    "comments": "AI_MIDI Assistant v3.0.0"
+  }
+}

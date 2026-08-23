@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="parchment">
+<head>
+<meta charset="UTF-8">
+<script>
+  /* 主题防闪烁：CSS 应用前同步设置已保存主题（theme.js 在 DOMContentLoaded
+     才生效，暗蓝用户每次导航会先闪暖纸） */
+  (function () {
+    try {
+      if (localStorage.getItem("ai-midi-blueprint-theme") === "dark") {
+        document.documentElement.dataset.theme = "dark";
+      }
+    } catch (e) {}
+  })();
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI_MIDI · 多轮对话</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="stylesheet" href="/style.css">
+<script>
+  (function () {
+    var dir = null;
+    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    if (dir === "forward" || dir === "back") {
+      document.documentElement.dataset.nav = dir;
+      setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
+    }
+  })();
+</script>
+</head>
+<body>
+
+<div class="page">
+  <!-- ===================== 视图 1：档案库 ===================== -->
+  <section id="archiveView">
+    <div class="toolbar">
+      <!-- 第一行：页面名称 + 导航按钮 -->
+      <div class="nav-line">
+        <span class="nav-title">档案库</span>
+        <div class="nav-right">
+          <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
+          <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
+          <button class="btn btn-secondary btn-sm theme-btn" type="button" title="切换主题">☀ 暖纸</button>
+        </div>
+      </div>
+      <!-- 第二行：搜索 + 新建 -->
+      <div class="toolbar-row">
+        <div class="search-box">
+          <span class="stamp">SEARCH</span>
+          <input type="search" id="searchInput" placeholder="搜索对话内容…">
+        </div>
+        <button class="btn btn-secondary" id="taskPanelBtn" title="任务列表">任务<span class="task-btn-count" id="taskPanelBtnCount" hidden>0</span></button>
+        <button class="btn btn-primary" id="newProjectBtn">＋ 新建档案</button>
+      </div>
+    </div>
+
+    <!-- 首次使用引导：未配置 API Key 时显示（对话功能依赖它） -->
+    <div class="api-banner" id="apiBanner" hidden>
+      <span class="api-banner-text">⚠ 尚未配置 AI 接口（API Key）——发送对话消息前需要先完成配置</span>
+      <a class="btn btn-primary btn-sm" href="/settings.html" data-dir="forward">去设置</a>
+      <button class="btn btn-secondary btn-sm" id="apiBannerClose" type="button" title="本次启动不再提示">✕</button>
+    </div>
+
+    <!-- 任务侧边栏：右侧抽屉，有任务执行中或用户手动展开时滑入（独立子树，不触碰卡片） -->
+    <div id="taskPanel" class="task-panel">
+      <div class="task-panel-head">
+        <span class="task-panel-title">任务列表</span>
+        <select id="taskSortSel" title="排序方式">
+          <option value="default">默认排序</option>
+          <option value="time">时间顺序</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" id="taskPanelClose" title="收起">✕</button>
+      </div>
+      <div class="task-panel-list" id="taskPanelList"></div>
+    </div>
+
+    <div class="card-grid" id="projectGrid"></div>
+  </section>
+
+  <!-- ===================== 视图 2：对话工作台 ===================== -->
+  <section id="studioView" class="studio-panel" hidden>
+    <div class="studio-bar">
+      <button class="btn btn-secondary" id="backBtn">← 返回档案库</button>
+      <div class="studio-title" id="studioProjectName">[PROJECT: --]</div>
+      <span class="stamp warn" id="wsStamp">WS: --</span>
+      <span class="stamp" id="modelStamp">MODEL: --</span>
+      <span class="stamp" id="apiStamp">API: --</span>
+      <div class="nav-right">
+        <button class="btn btn-secondary btn-sm" id="arrangeToggleBtn" title="展开 / 收起编曲窗">▦ 编曲窗</button>
+        <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
+        <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
+        <button class="btn btn-secondary btn-sm theme-btn" type="button" title="切换主题">☀ 暖纸</button>
+      </div>
+    </div>
+
+    <div class="divider-measure"></div>
+
+    <!-- 折叠舞台：对话面板与编排窗口叠放，切换时对话向上折叠、编排自下入场 -->
+    <div class="arr-stage" id="arrStage">
+      <div class="arr-fold-pane arr-chat-pane" id="chatFoldPane">
+    <div class="studio-grid">
+      <!-- 左侧：文件站 -->
+      <aside class="sidebar">
+        <div class="sec-head">
+          <span class="sec-name">文件清单</span>
+          <span class="stamp ok" id="fileStamp">0 FILES</span>
+        </div>
+
+        <div class="file-list" id="fileList"></div>
+
+        <div class="btn-grid">
+          <button class="btn btn-secondary" id="uploadBtn">上传</button>
+          <button class="btn btn-secondary" id="downloadBtn">下载</button>
+          <button class="btn btn-secondary" id="newFolderBtn">＋ 文件夹</button>
+          <button class="btn btn-danger" id="deleteBtn">删除</button>
+          <button class="btn btn-secondary" id="undoBtn">撤销</button>
+        </div>
+        <input type="file" id="uploadInput" accept=".mid,.midi" multiple hidden>
+
+        <div class="divider-measure"></div>
+
+        <div class="sec-head">
+          <span class="sec-name">工作区</span>
+          <span style="display:flex; gap:8px; align-items:center">
+            <span class="stamp" id="wsStateStamp">UNBOUND</span>
+            <button class="btn btn-secondary btn-sm" id="openWsBtn" title="打开工作区文件夹">打开</button>
+          </span>
+        </div>
+
+        <div id="wsBindBox">
+          <div style="display:flex; gap:8px; margin-bottom:8px">
+            <input type="text" id="wsPathInput" placeholder="输入本地目录路径…" style="flex:1">
+            <button class="btn btn-secondary btn-sm" id="pickFolderBtn">选择</button>
+          </div>
+          <button class="btn btn-primary btn-block btn-sm" id="bindBtn">🔗 绑定</button>
+        </div>
+
+        <div id="wsBoundBox" hidden>
+          <div class="ws-path" id="wsPathDisplay">--</div>
+          <div class="btn-grid">
+            <button class="btn btn-secondary" id="refreshWsBtn">刷新文件</button>
+            <button class="btn btn-danger" id="unbindBtn">解绑</button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 右侧：对话控制台 -->
+      <main class="console-wrap">
+        <!-- 任务切换条：下拉选择任务（显示任务名称）+ 重命名 -->
+        <div class="task-switcher">
+          <select id="taskSelect" title="选择任务"></select>
+          <button class="btn btn-secondary btn-sm" id="renameTaskBtn" title="重命名任务" disabled>✎ 重命名</button>
+        </div>
+
+        <!-- 任务状态条：仅显示当前项目三种任务状态（进行中/需要确认/已完成） -->
+        <div class="task-status-bar" id="taskStatusBar" hidden></div>
+
+        <div class="chat" id="chat"></div>
+
+        <!-- 一键滚动到底部：离开底部时浮现(.visible),点击回到最新对话并恢复自动跟随 -->
+        <button type="button" class="scroll-bottom-btn" id="scrollBottomBtn" title="回到最新消息">
+          <span class="scroll-bottom-arrow">⇣</span>
+          <span class="scroll-bottom-text">到底部</span>
+        </button>
+
+        <!-- 修改模式撤回条：编辑消息未发送前可一键恢复被截断的对话 -->
+        <div class="edit-bar" id="editBar" hidden>
+          <span class="edit-hint" id="editHint">✎ 正在编辑消息</span>
+          <button class="btn btn-secondary btn-sm" id="recallEditBtn">↩ 撤回</button>
+        </div>
+
+        <div class="composer">
+          <textarea id="msgInput" rows="1" placeholder="输入你的要求…（Enter 发送 / Shift+Enter 换行）"></textarea>
+          <button class="btn btn-primary" id="sendBtn">▶ 发送</button>
+        </div>
+
+        <div class="console-foot">
+          <a class="download-link" id="newMidiLink" href="#" hidden>↓ 新生成的 MIDI</a>
+          <button class="btn btn-primary btn-sm" id="newTaskBtn">＋ 新建任务</button>
+          <button class="btn btn-danger btn-sm" id="deleteTaskBtn" disabled>🗑 删除任务</button>
+        </div>
+      </main>
+    </div>
+    </div><!-- /chatFoldPane -->
+
+    <!-- ===================== 编排窗口 (FL Studio Playlist 风格) ===================== -->
+    <section id="arrangeWorkspace" class="arrange-workspace" hidden aria-label="编曲窗">
+      <!-- 走带条 -->
+      <div class="arr-transport">
+        <span class="stamp">ARRANGE</span>
+
+        <div class="arr-tool-group">
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrHomeBtn" title="回到开头 (Home)">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 3a.5.5 0 0 1 .5.5v7.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 1 1 .708-.708L7.5 11.293V3.5A.5.5 0 0 1 8 3z"/><path d="M1 1.5h14v1H1z"/></svg>
+          </button>
+          <button type="button" class="btn btn-sm btn-primary arr-play-btn" id="arrPlayBtn" title="播放 / 暂停 (Space)">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path id="arrPlayIconPath" d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
+            <span id="arrPlayLabel">播放</span>
+          </button>
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrStopBtn" title="停止播放">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M5 3.5h6A1.5 1.5 0 0 1 12.5 5v6a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 11V5A1.5 1.5 0 0 1 5 3.5z"/></svg>
+          </button>
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrLoopBtn" title="循环选区开关 (L)">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M11 1a1 1 0 0 1 1 1v2.586l1.293-1.293a1 1 0 0 1 1.414 1.414l-3 3a1 1 0 0 1-1.414 0l-3-3a1 1 0 0 1 1.414-1.414L8.707 4.586V2h-4A1.5 1.5 0 0 0 3.207 3.5L3.2 4.7a.5.5 0 0 1-1 0L2.2 3.5A2.5 2.5 0 0 1 4.707 1h6.293zm-6 14a1 1 0 0 1-1-1v-2.586l-1.293 1.293a1 1 0 0 1-1.414-1.414l3-3a1 1 0 0 1 1.414 0l3 3a1 1 0 0 1-1.414 1.414L7.293 11.414V14h4a1.5 1.5 0 0 0 1.5-1.5l.007-1.2a.5.5 0 0 1 1 0l-.007 1.2A2.5 2.5 0 0 1 11.293 15H5z"/></svg>
+          </button>
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrMetroBtn" title="节拍器">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 1a.5.5 0 0 1 .5.5v2.072l3.414 8.536A2 2 0 0 1 10.05 15H5.95a2 2 0 0 1-1.864-2.892L7.5 3.572V1.5A.5.5 0 0 1 8 1zm-2.92 11.455a1 1 0 0 0 .932 1.445h4.1a1 1 0 0 0 .932-1.445L8 4.708 5.08 12.455z"/><circle cx="8" cy="8" r="1.5"/></svg>
+          </button>
+        </div>
+
+        <div class="pr-divider"></div>
+
+        <div class="arr-bpm-wrap" title="曲速 BPM">
+          <span class="dim">BPM</span>
+          <input type="number" id="arrBpmInput" value="120" min="30" max="300">
+        </div>
+        <div class="arr-pos-display" id="arrPosDisplay" title="播放位置 (小节.拍)">1.1</div>
+
+        <div class="pr-divider"></div>
+
+        <div class="pr-dropdown" id="arrSnapDropdown" title="网格吸附">
+          <button type="button" class="pr-dropdown-btn" id="arrSnapBtn">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h11A1.5 1.5 0 0 1 15 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-11zM2.5 2a.5.5 0 0 0-.5.5V5h3V2H2.5zm4 0v3h3V2h-3zm4 0v3h3.5a.5.5 0 0 0 .5-.5V2h-4zm4 4H11v3h3.5a.5.5 0 0 0 .5-.5V6h-4zm0 4H11v3h3.5a.5.5 0 0 0 .5-.5V10h-4zm-4 4v-3h-3v3h3zm-4 0v-3H2v2.5a.5.5 0 0 0 .5.5H6zm-4-4h3V6H2v3.5a.5.5 0 0 0 .5.5zM6 6v3h3V6H6z"/></svg>
+            <span class="pr-dropdown-label">1/4 拍</span>
+            <span class="pr-dropdown-arrow">▾</span>
+          </button>
+          <div class="select-menu" id="arrSnapMenu" hidden></div>
+        </div>
+
+        <div class="arr-zoom-wrap" title="横向缩放 (+ / - / Ctrl+滚轮)">
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrZoomOutBtn">−</button>
+          <input type="range" id="arrZoomRange" min="8" max="80" step="2" value="26">
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrZoomInBtn">＋</button>
+        </div>
+
+        <div class="pr-divider"></div>
+
+        <div class="arr-tool-group">
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrUndoBtn" title="撤销 (Ctrl+Z)">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 3a5 5 0 1 1-4.546 2.914.5.5 0 1 1 .908-.417A4 4 0 1 0 8 4v1.5a.5.5 0 0 1-.854.354L5 3.5 7.146 1.354A.5.5 0 0 1 8 1.5V3z"/></svg>
+          </button>
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrRedoBtn" title="重做 (Ctrl+Y)">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 0-.908-.417A4 4 0 1 1 8 4v1.5a.5.5 0 0 0 .854.354L11 3.5 8.854 1.354A.5.5 0 0 0 8 1.5V3z"/></svg>
+          </button>
+        </div>
+
+        <div class="arr-actions">
+          <span class="stamp ok" id="arrSaveStamp">SAVED</span>
+          <button type="button" class="btn btn-sm btn-secondary" id="arrShortcutsBtn" title="快捷键一览">⌨ 快捷键</button>
+        </div>
+
+        <div class="arr-hud-badge" id="arrHudBadge"></div>
+      </div>
+
+      <div class="divider-measure"></div>
+
+      <!-- 三栏主体 -->
+      <div class="arr-main">
+        <!-- 左：项目 MIDI 文件列表 -->
+        <aside class="arr-side-panel arr-midi-panel">
+          <div class="sec-head">
+            <span class="sec-name">MIDI 文件</span>
+            <span class="stamp ok" id="arrMidiCount">0 FILES</span>
+          </div>
+          <div class="arr-midi-list" id="arrMidiList"></div>
+          <div class="arr-panel-hint">⇱ 拖到轨道头：在播放头处放置<br>⇱ 拖到内容区：落点吸附放置</div>
+        </aside>
+
+        <!-- 中：标尺 + 轨道区 -->
+        <div class="arr-tracks-scroll" id="arrTracksScroll">
+          <div class="arr-inner" id="arrInner">
+            <div class="arr-ruler-row">
+              <div class="arr-corner-cell"><span class="stamp">TRACKS</span></div>
+              <div class="arr-ruler-sticky">
+                <canvas id="arrRulerCanvas" class="arr-ruler-canvas"></canvas>
+              </div>
+            </div>
+            <div class="arr-lanes" id="arrLanes"><!-- 轨道行由 JS 渲染 --></div>
+            <div class="arr-add-track-row" id="arrAddTrackRow">
+              <div class="arr-add-track-head" id="arrAddTrackHead">
+                <button type="button" class="btn btn-secondary btn-sm" id="arrAddTrackBtn" title="在末尾添加一条轨道">＋ 新建轨道</button>
+              </div>
+              <div class="arr-add-track-body"></div>
+            </div>
+            <div class="arr-playline" id="arrPlayline" hidden><i class="arr-playline-head"></i></div>
+          </div>
+        </div>
+
+        <!-- 右：素材库 -->
+        <aside class="arr-side-panel arr-sample-panel">
+          <div class="sec-head">
+            <span class="sec-name">素材库</span>
+            <button type="button" class="btn btn-secondary btn-sm" id="arrAddDirBtn">＋ 文件夹</button>
+          </div>
+          <div class="arr-dir-chips" id="arrDirChips"></div>
+          <div class="arr-file-tree" id="arrFileTree"></div>
+          <div class="arr-panel-hint">⇱ 拖拽音频到轨道创建音频 Clip<br>拖动 Clip 角部手柄调整渐入渐出</div>
+        </aside>
+      </div>
+    </section>
+    </div><!-- /arrStage -->
+  </section>
+</div>
+
+<!-- ===================== 底部抽屉：钢琴卷帘 (Studio One & FL Studio) ===================== -->
+<div id="pianoDrawer" class="piano-drawer closed">
+  <!-- 上边缘拖拽手柄 -->
+  <div class="drawer-resizer" id="prDrawerResizer" title="按住拖拽调整高度，拉到底部关闭，双击最大化">
+    <div class="drawer-resizer-handle"></div>
+  </div>
+
+  <!-- 顶栏：多标签页 + 专业矢量工具栏 + 参数设置 + 播放控制 -->
+  <div class="pr-header">
+    <!-- 行 1：标签页 + 核心画笔切片工具组 + 键盘弹奏 + 辅助工具 + AI 发送与窗口动作 -->
+    <div class="pr-header-row primary-row">
+      <!-- 标签栏 -->
+      <div class="pr-tab-bar" id="prTabBar"></div>
+
+      <div class="pr-divider"></div>
+
+      <!-- 7 大核心矢量工具组 (Icon-only with crisp tooltips) -->
+      <div class="pr-tool-group pr-tool-palette" role="toolbar" aria-label="绘制工具">
+        <button type="button" class="btn btn-sm pr-tool-btn pr-icon-btn active" data-tool="draw" title="画笔 (Draw - P)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5l1.647-1.646a.5.5 0 0 0 0-.708l-3-3zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm pr-tool-btn pr-icon-btn" data-tool="paint" title="笔刷 (Paint - B)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M15.825.12a.5.5 0 0 1 .132.584c-1.53 3.43-4.743 8.17-7.095 10.64a6.067 6.067 0 0 1-2.373 1.534c-.018.227-.06.538-.16.868-.201.659-.667 1.479-1.708 1.74a8.118 8.118 0 0 1-3.078.132 3.659 3.659 0 0 1-.926-.34 1.48 1.48 0 0 1-.508-.49.972.972 0 0 1-.09-.762 2.66 2.66 0 0 1 .892-1.325c.34-.282.724-.51 1.09-.714.288-.16.574-.31.84-.46a4.267 4.267 0 0 1 .465-.231c.362-.163.74-.298 1.134-.403.208-.055.42-.09.638-.112.56-1.688 2.502-4.502 4.887-7.394 1.636-1.984 3.424-3.765 4.673-4.888a.5.5 0 0 1 .536-.089z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm pr-tool-btn pr-icon-btn" data-tool="erase" title="擦除 (Erase - D)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M8.086 2.207a2 2 0 0 1 2.828 0l3.879 3.879a2 2 0 0 1 0 2.828l-5.5 5.5A2 2 0 0 1 7.879 15H5.12a2 2 0 0 1-1.414-.586l-2.5-2.5a2 2 0 0 1 0-2.828l6.879-6.879zm2.121.707a1 1 0 0 0-1.414 0L4.16 7.547l5.293 5.293 4.633-4.633a1 1 0 0 0 0-1.414l-3.879-3.879zM8.746 13.547 3.453 8.254 1.914 9.793a1 1 0 0 0 0 1.414l2.5 2.5a1 1 0 0 0 .707.293H7.88a1 1 0 0 0 .707-.293l.16-.16z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm pr-tool-btn pr-icon-btn" data-tool="slice" title="切片刀 (Slice - C)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M3.5 3.5c-.614-.884-.074-1.962.858-2.5L8 7.226 11.642 1c.932.538 1.472 1.616.858 2.5L8.81 8.61l1.556 2.661a2.5 2.5 0 1 1-.794.637L8 9.73l-1.572 2.177a2.5 2.5 0 1 1-.794-.637L7.19 8.61 3.5 3.5zm2.5 10a1.5 1.5 0 1 0-3 0 1.5 1.5 0 0 0 3 0zm7 0a1.5 1.5 0 1 0-3 0 1.5 1.5 0 0 0 3 0z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm pr-tool-btn pr-icon-btn" data-tool="select" title="框选 (Select - E)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M2.5 1a.5.5 0 0 0-.5.5v1a.5.5 0 0 1-1 0v-1A1.5 1.5 0 0 1 2.5 0h1a.5.5 0 0 1 0 1h-1zm3 0a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5zm5 0a.5.5 0 0 1 .5-.5h1A1.5 1.5 0 0 1 13.5 1.5v1a.5.5 0 0 1-1 0v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 1-.5-.5zM13 5.5a.5.5 0 0 1 .5-.5h.5a.5.5 0 0 1 0 1h-.5a.5.5 0 0 1-.5-.5zm0 3a.5.5 0 0 1 .5-.5h.5a.5.5 0 0 1 0 1h-.5a.5.5 0 0 1-.5-.5zm0 3a.5.5 0 0 1 .5-.5h.5a.5.5 0 0 1 0 1h-.5a.5.5 0 0 1-.5-.5zm-.5 3a.5.5 0 0 1 .5.5v1a1.5 1.5 0 0 1-1.5 1.5h-1a.5.5 0 0 1 0-1h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 1 .5-.5zm-3 1.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5zm-5 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5zm-3-.5a.5.5 0 0 1 .5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 1 0 1h-1A1.5 1.5 0 0 1 1 14.5v-1a.5.5 0 0 1 .5-.5zM1 10.5a.5.5 0 0 1 .5-.5h.5a.5.5 0 0 1 0 1h-.5a.5.5 0 0 1-.5-.5zm0-3a.5.5 0 0 1 .5-.5h.5a.5.5 0 0 1 0 1h-.5a.5.5 0 0 1-.5-.5zm0-3a.5.5 0 0 1 .5-.5h.5a.5.5 0 0 1 0 1h-.5a.5.5 0 0 1-.5-.5z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm pr-tool-btn pr-icon-btn" data-tool="mute" title="静音 (Mute - T)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zm7.137 2.096a.5.5 0 0 1 0 .708L12.207 8l1.647 1.646a.5.5 0 0 1-.708.708L11.5 8.707l-1.646 1.647a.5.5 0 0 1-.708-.708L10.793 8 9.146 6.354a.5.5 0 1 1 .708-.708L11.5 7.293l1.646-1.647a.5.5 0 0 1 .708 0z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm pr-tool-btn pr-icon-btn" data-tool="zoom" title="缩放 (Zoom - Z)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
+        </button>
+      </div>
+
+      <div class="pr-divider"></div>
+
+      <!-- 键盘 MIDI 弹奏开关 -->
+      <div class="pr-tool-group">
+        <button type="button" class="btn btn-sm btn-secondary pr-midi-toggle" id="prTypingMidiBtn" title="键盘作为 MIDI 输入 (Ctrl+T)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M0 3a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3zm2-1a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1H2z"/><path d="M3.5 2a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5h-1zm4 0a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5h-1zm4 0a.5.5 0 0 0-.5.5v6a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-6a.5.5 0 0 0-.5-.5h-1z"/></svg>
+          <span>键盘弹奏</span>
+        </button>
+      </div>
+
+      <!-- 辅助 MIDI 工具 -->
+      <div class="pr-tool-group">
+        <button type="button" class="btn btn-sm btn-secondary pr-compact-btn" id="prQuantizeBtn" title="量化 (Ctrl+Q)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M1 8a.5.5 0 0 1 .5-.5h11.793l-3.147-3.146a.5.5 0 0 1 .708-.708l4 4a.5.5 0 0 1 0 .708l-4 4a.5.5 0 0 1-.708-.708L13.293 8.5H1.5A.5.5 0 0 1 1 8z M15 1v14h1V1h-1z"/></svg>
+          <span>量化</span>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-compact-btn" id="prStrumBtn" title="扫弦 (Alt+S)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M3 2.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zm1 3.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5zm1 3.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5zm1 3.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z"/></svg>
+          <span>扫弦</span>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-compact-btn" id="prArpBtn" title="琶音 (Alt+A)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M2 13h2v2H2v-2zm3-3h2v5H5v-5zm3-3h2v8H8V7zm3-3h2v11h-2V4zm3-3h2v14h-2V1z"/></svg>
+          <span>琶音</span>
+        </button>
+      </div>
+
+      <!-- 右侧：AI 联动与窗口动作 -->
+      <div class="pr-actions">
+        <span class="stamp pr-save-stamp" id="prSaveStamp" hidden>SAVED</span>
+        <button type="button" class="btn btn-sm btn-primary" id="prSendToChatBtn" title="发送给 AI 对话">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0a.75.75 0 0 1 .75.75c0 3.176 2.074 5.25 5.25 5.25a.75.75 0 0 1 0 1.5c-3.176 0-5.25 2.074-5.25 5.25a.75.75 0 0 1-1.5 0c0-3.176-2.074-5.25-5.25-5.25a.75.75 0 0 1 0-1.5c3.176 0 5.25-2.074 5.25-5.25A.75.75 0 0 1 8 0z"/></svg>
+          <span>发送给 AI</span>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prShortcutsHelpBtn" title="快捷键一览">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2zm1.5.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zM1 5v1.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 0-1H2V5a.5.5 0 0 0-1 0zm14.5.5a.5.5 0 0 0-.5-.5v1h-.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 .5-.5v-1zM4.5 5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zM2 8.5a.5.5 0 0 0-.5.5v.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 0-1H2.5V9a.5.5 0 0 0-.5-.5zm2.5.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm2.5 0a.5.5 0 0 0-.5.5v.5h-.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 .5-.5V9a.5.5 0 0 0-.5-.5zM1.5 11.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zM3 4.5a.5.5 0 0 0 0 1H3a.5.5 0 0 0 0-1h0z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prMaxBtn" title="最大化 / 还原">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 0 1 0V2h3.5a.5.5 0 0 0 0-1h-4zm10 0a.5.5 0 0 0 0 1H14v3.5a.5.5 0 0 0 1 0v-4a.5.5 0 0 0-.5-.5h-4zM1 10.5a.5.5 0 0 0 .5.5H5a.5.5 0 0 0 0-1H2v-3.5a.5.5 0 0 0-1 0v4zm14 0a.5.5 0 0 0-1 0V14h-3.5a.5.5 0 0 0 0 1h4a.5.5 0 0 0 .5-.5v-4z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prCloseBtn" title="关闭 (Esc)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M2.146 2.854a.5.5 0 1 1 .708-.708L8 7.293l5.146-5.147a.5.5 0 0 1 .708.708L8.707 8l5.147 5.146a.5.5 0 0 1-.708.708L8 8.707l-5.146 5.147a.5.5 0 0 1-.708-.708L7.293 8 2.146 2.854z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- 行 2：音乐参数设置 + 音源库 + 播放控制条 -->
+    <div class="pr-header-row secondary-row">
+      <!-- 网格吸附 & 音阶高亮 & 和弦印章 & 幽灵参考轨 -->
+      <div class="pr-tool-group">
+        <div class="pr-dropdown" id="prSnapDropdown" title="网格吸附">
+          <button type="button" class="pr-dropdown-btn" id="prSnapBtn">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h11A1.5 1.5 0 0 1 15 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-11zM2.5 2a.5.5 0 0 0-.5.5V5h3V2H2.5zm4 0v3h3V2h-3zm4 0v3h3.5a.5.5 0 0 0 .5-.5V2h-4zm4 4H11v3h3.5a.5.5 0 0 0 .5-.5V6h-4zm0 4H11v3h3.5a.5.5 0 0 0 .5-.5V10h-4zm-4 4v-3h-3v3h3zm-4 0v-3H2v2.5a.5.5 0 0 0 .5.5H6zm-4-4h3V6H2v3.5a.5.5 0 0 0 .5.5zM6 6v3h3V6H6z"/></svg>
+            <span class="pr-dropdown-label">1/4 拍</span>
+            <span class="pr-dropdown-arrow">▾</span>
+          </button>
+          <div class="select-menu" id="prSnapMenu" hidden></div>
+        </div>
+
+        <div class="pr-dropdown" id="prScaleDropdown" title="音阶高亮">
+          <button type="button" class="pr-dropdown-btn" id="prScaleBtn">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M9 13c0 1.105-1.12 2-2.5 2S4 14.105 4 13s1.12-2 2.5-2 2.5.895 2.5 2z"/><path fill-rule="evenodd" d="M9 3v10H8V3h1z"/><path d="M8 2.82a1 1 0 0 1 .804-.98l3-0.6A1 1 0 0 1 13 2.22V4L8 5V2.82z"/></svg>
+            <span class="pr-dropdown-label">音阶: 无</span>
+            <span class="pr-dropdown-arrow">▾</span>
+          </button>
+          <div class="select-menu" id="prScaleMenu" hidden></div>
+        </div>
+
+        <div class="pr-dropdown" id="prChordDropdown" title="和弦印章">
+          <button type="button" class="pr-dropdown-btn" id="prChordBtn">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M2.5 12a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm5-3a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm5-3a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"/><path d="M2 12V3h1v9H2zm5-3V3h1v6H7zm5-3V3h1v3h-1z"/></svg>
+            <span class="pr-dropdown-label">和弦: 单音</span>
+            <span class="pr-dropdown-arrow">▾</span>
+          </button>
+          <div class="select-menu" id="prChordMenu" hidden></div>
+        </div>
+
+        <div class="pr-dropdown" id="prGhostDropdown" title="幽灵参考轨">
+          <button type="button" class="pr-dropdown-btn" id="prGhostBtn">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M8 1a5 5 0 0 0-5 5v7.027a.5.5 0 0 0 .8.4L5.5 12l1.7 1.427a.5.5 0 0 0 .6 0L9.5 12l1.7 1.427a.5.5 0 0 0 .8-.4V6a5 5 0 0 0-5-5zm-2 5a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm4 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg>
+            <span class="pr-dropdown-label">参考: 无</span>
+            <span class="pr-dropdown-arrow">▾</span>
+          </button>
+          <div class="select-menu" id="prGhostMenu" hidden></div>
+        </div>
+      </div>
+
+      <div class="pr-divider"></div>
+
+      <!-- 音源选择与音源库 -->
+      <div class="pr-tool-group">
+        <div class="pr-dropdown" id="prSoundDropdown" title="音源选择">
+          <button type="button" class="pr-dropdown-btn" id="prSoundBtn">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M11.536 14.01A8.473 8.473 0 0 0 14.026 8a8.473 8.473 0 0 0-2.49-6.01l-.708.707A7.476 7.476 0 0 1 13.025 8c0 2.071-.84 3.946-2.197 5.303l.708.707z"/><path d="M10.121 12.596A6.48 6.48 0 0 0 12.025 8a6.48 6.48 0 0 0-1.904-4.596l-.707.707A5.483 5.483 0 0 1 11.025 8a5.483 5.483 0 0 1-1.61 3.89l.706.706z"/><path d="M8.707 11.182A4.486 4.486 0 0 0 10.025 8a4.486 4.486 0 0 0-1.318-3.182L8 5.525A3.489 3.489 0 0 1 9.025 8 3.49 3.49 0 0 1 8 10.475l.707.707zM6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06z"/></svg>
+            <span class="pr-dropdown-label">锯齿波 (Sawtooth)</span>
+            <span class="pr-dropdown-arrow">▾</span>
+          </button>
+          <div class="select-menu" id="prSoundMenu" hidden></div>
+        </div>
+        <button type="button" class="btn btn-sm btn-secondary pr-compact-btn" id="prSoundLibBtn" title="音源库管理">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8.186 1.113a.5.5 0 0 0-.372 0L1.846 3.5 8 5.961 14.154 3.5 8.186 1.113zM15 4.239l-6.5 2.6v7.922l6.5-2.6V4.24zM7.5 14.762V6.838L1 4.239v7.923l6.5 2.6zM7.443.184a1.5 1.5 0 0 1 1.114 0l6.229 2.492A.5.5 0 0 1 15 3.139v8.903a1.5 1.5 0 0 1-.943 1.39l-5.5 2.2a1.5 1.5 0 0 1-1.114 0l-5.5-2.2A1.5 1.5 0 0 1 1 12.042V3.14a.5.5 0 0 1 .214-.463L7.443.184z"/></svg>
+          <span>音源库</span>
+        </button>
+      </div>
+
+      <!-- 播放控制与 Transport (右对齐) -->
+      <div class="pr-transport">
+        <!-- 录制按钮 (左键启闭，右键配置预备拍与模式) -->
+        <div class="pr-record-wrap">
+          <button type="button" class="btn btn-sm btn-secondary pr-icon-btn pr-record-btn" id="prRecordBtn" title="录制音符 (Record - 点击开始/结束录制，右键详细设置)">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><circle cx="8" cy="8" r="5.5"/></svg>
+          </button>
+
+          <!-- 录制详细设置弹出菜单 (右键点击录制按键触发) -->
+          <div class="pr-record-menu select-menu" id="prRecordMenu" hidden>
+            <div class="menu-heading">⏱ 预备拍 (Count-in)</div>
+            <div class="select-option active" data-countin="0">无预备拍</div>
+            <div class="select-option" data-countin="4">1 小节预备拍 (4 拍)</div>
+            <div class="select-option" data-countin="8">2 小节预备拍 (8 拍)</div>
+            <div class="menu-divider"></div>
+            <div class="menu-heading">🎹 录制模式 (Record Mode)</div>
+            <div class="select-option active" data-recmode="overdub">叠加混录 (Overdub)</div>
+            <div class="select-option" data-recmode="replace">覆盖已有音符 (Replace)</div>
+            <div class="menu-divider"></div>
+            <div class="menu-heading">⚙ 辅助选项</div>
+            <label class="menu-toggle-item">
+              <input type="checkbox" id="recQuantizeToggle" checked>
+              <span>录制时实时吸附到网格</span>
+            </label>
+            <label class="menu-toggle-item">
+              <input type="checkbox" id="recMetroToggle" checked>
+              <span>录制时自动开启节拍器</span>
+            </label>
+          </div>
+        </div>
+
+        <button type="button" class="btn btn-sm btn-primary pr-transport-play" id="prPlayBtn" title="播放 / 暂停 (Space)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/></svg>
+          <span>播放</span>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prStopBtn" title="停止播放">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M5 3.5h6A1.5 1.5 0 0 1 12.5 5v6a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 11V5A1.5 1.5 0 0 1 5 3.5z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-icon-btn active" id="prLoopToggleBtn" title="循环选区开关 (Loop - 双击时间轴亦可开关)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M11 1a1 1 0 0 1 1 1v2.586l1.293-1.293a1 1 0 0 1 1.414 1.414l-3 3a1 1 0 0 1-1.414 0l-3-3a1 1 0 0 1 1.414-1.414L8.707 4.586V2h-4A1.5 1.5 0 0 0 3.207 3.5L3.2 4.7a.5.5 0 0 1-1 0L2.2 3.5A2.5 2.5 0 0 1 4.707 1h6.293zm-6 14a1 1 0 0 1-1-1v-2.586l-1.293 1.293a1 1 0 0 1-1.414-1.414l3-3a1 1 0 0 1 1.414 0l3 3a1 1 0 0 1-1.414 1.414L7.293 11.414V14h4a1.5 1.5 0 0 0 1.5-1.5l.007-1.2a.5.5 0 0 1 1 0l-.007 1.2A2.5 2.5 0 0 1 11.293 15H5z"/></svg>
+        </button>
+        <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prMetroBtn" title="节拍器">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 1a.5.5 0 0 1 .5.5v2.072l3.414 8.536A2 2 0 0 1 10.05 15H5.95a2 2 0 0 1-1.864-2.892L7.5 3.572V1.5A.5.5 0 0 1 8 1zm-2.92 11.455a1 1 0 0 0 .932 1.445h4.1a1 1 0 0 0 .932-1.445L8 4.708 5.08 12.455z"/><circle cx="8" cy="8" r="1.5"/></svg>
+        </button>
+        <div class="pr-bpm-wrap" title="BPM (曲速)">
+          <span class="dim">BPM</span>
+          <input type="number" id="prBpmInput" value="120" min="30" max="300">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 卷帘工作区：左侧琴键 + 中间网格画布 + 底部力度窗 -->
+  <div class="pr-workspace-wrap" id="prWorkspaceWrap">
+    <!-- 实时 HUD 悬浮指示器 -->
+    <div class="pr-hud-badge" id="prHudBadge"></div>
+
+    <div class="pr-main-row">
+      <canvas id="prKeysCanvas" class="pr-keys-canvas"></canvas>
+      <canvas id="prGridCanvas" class="pr-grid-canvas"></canvas>
+    </div>
+    <div class="pr-velocity-row">
+      <div class="pr-velocity-label" title="双击打开力度缩放器 (Alt+X)">力度 VEL</div>
+      <canvas id="prVelocityCanvas" class="pr-velocity-canvas"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- 音符属性弹窗 (Note Properties - 双击音符打开) -->
+<div class="modal-overlay" id="notePropModal" hidden role="dialog" aria-modal="true" aria-label="音符属性">
+  <div class="modal card brackets" style="max-width:380px">
+    <div class="modal-title">🎼 音符属性 · Note Properties</div>
+    <div class="field">
+      <label class="field-label" for="notePropPitch">音名 / 音高</label>
+      <input type="text" id="notePropPitch" value="C4" placeholder="如 C4, D#5, Bb3">
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label class="field-label" for="notePropVel">力度 Velocity (1-127)</label>
+        <input type="number" id="notePropVel" min="1" max="127" value="100">
+      </div>
+      <div class="field">
+        <label class="field-label" for="notePropStart">起始位置 Start (拍)</label>
+        <input type="number" id="notePropStart" step="0.25" min="0" value="0">
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label" for="notePropDur">持续时间 Duration (拍)</label>
+      <input type="number" id="notePropDur" step="0.25" min="0.1" value="1">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" id="notePropCancel">取消</button>
+      <button class="btn btn-primary btn-sm" id="notePropOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 力度缩放/偏移/渐变弹窗 (Level Scale - Alt+X) -->
+<div class="modal-overlay" id="levelScaleModal" hidden role="dialog" aria-modal="true" aria-label="力度缩放器">
+  <div class="modal card brackets" style="max-width:440px">
+    <div class="modal-title">📊 力度缩放器 · Level Scaling (Alt+X)</div>
+    <div style="font-size:12px; color:var(--color-ink-dim); margin-bottom:12px">
+      对当前选中音符（若未选中则对全轨）批量进行等比缩放、整体偏移与首尾渐变。
+    </div>
+    <div class="field">
+      <label class="field-label" for="lsMultiply">乘法缩放 (Multiply: 0.1x ~ 2.0x)</label>
+      <input type="range" id="lsMultiply" min="0.1" max="2.0" step="0.05" value="1.0" oninput="this.nextElementSibling.textContent=this.value+'x'">
+      <span class="dim">1.0x</span>
+    </div>
+    <div class="field">
+      <label class="field-label" for="lsOffset">整体力度偏移 (Offset: -64 ~ +64)</label>
+      <input type="range" id="lsOffset" min="-64" max="64" step="1" value="0" oninput="this.nextElementSibling.textContent=(this.value>0?'+':'')+this.value">
+      <span class="dim">0</span>
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label class="field-label" for="lsRampStart">起始斜率 (Ramp Start)</label>
+        <input type="number" id="lsRampStart" value="0" min="-64" max="64">
+      </div>
+      <div class="field">
+        <label class="field-label" for="lsRampEnd">结束斜率 (Ramp End)</label>
+        <input type="number" id="lsRampEnd" value="0" min="-64" max="64">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" id="levelScaleCancel">取消</button>
+      <button class="btn btn-primary btn-sm" id="levelScaleOk">应用力度</button>
+    </div>
+  </div>
+</div>
+
+<!-- 扫弦化设置弹窗 (Strum Tool - Alt+S) -->
+<div class="modal-overlay" id="strumModal" hidden role="dialog" aria-modal="true" aria-label="扫弦化设置">
+  <div class="modal card brackets" style="max-width:420px">
+    <div class="modal-title">🎸 扫弦化工具 · Strum Tool (Alt+S)</div>
+    <div class="field">
+      <label class="field-label" for="strumTime">拨弦时间跨度 Time (Ticks: 5 ~ 60)</label>
+      <input type="range" id="strumTime" min="5" max="60" step="2" value="20" oninput="this.nextElementSibling.textContent=this.value+' ticks'">
+      <span class="dim">20 ticks</span>
+    </div>
+    <div class="field">
+      <label class="field-label" for="strumVelRamp">力度衰减斜率 Velocity Ramp</label>
+      <input type="range" id="strumVelRamp" min="-20" max="20" step="1" value="-8" oninput="this.nextElementSibling.textContent=this.value">
+      <span class="dim">-8</span>
+    </div>
+    <label class="toggle-text" style="margin-top:6px">
+      <input type="checkbox" id="strumAltDir">
+      <span>交替上下扫弦 (Alternate Stroke)</span>
+    </label>
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" id="strumCancel">取消</button>
+      <button class="btn btn-primary btn-sm" id="strumOk">应用扫弦</button>
+    </div>
+  </div>
+</div>
+
+<!-- FL Studio 快捷键一览弹窗 -->
+<div class="modal-overlay" id="prShortcutsModal" hidden role="dialog" aria-modal="true" aria-label="快捷键一览">
+  <div class="modal card brackets" style="max-width:540px">
+    <div class="modal-title">⌨ FL Studio 钢琴卷帘快捷键一览</div>
+    <div style="max-height:320px; overflow-y:auto; font-size:12px; line-height:1.8">
+      <div style="font-weight:bold; color:var(--color-primary); margin-bottom:4px">常用工具单键（关闭键盘弹奏时有效）：</div>
+      <div><code>P</code>: 画笔 (Draw) ｜ <code>B</code>: 笔刷 (Paint) ｜ <code>D</code>: 擦除 (Erase)</div>
+      <div><code>C</code>: 切片刀 (Slice) ｜ <code>E</code>: 框选 (Select) ｜ <code>T</code>: 静音 (Mute) ｜ <code>Z</code>: 缩放 (Zoom)</div>
+      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">🎹 电脑键盘作为 MIDI 弹奏输入：</div>
+      <div><code>Ctrl + T</code>: 切换“键盘弹奏”模式。<b>开启时</b>：电脑键盘按键（Z~M、Q~P）直接作为 MIDI 琴键弹奏发声，单键快捷键挂起；<b>关闭时</b>：单键快捷键恢复生效。</div>
+      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">力度与鼠标高级手势：</div>
+      <div><code>鼠标中键拖拽</code> / <code>Shift + 右键拖拽</code>: <b>视图平移模式 (Pan View)</b>，直接自由拖动卷帘画布</div>
+      <div><code>Alt + 滚轮</code>: 悬浮音符 / 批量调节选中音符力度 (带 HUD 提示)</div>
+      <div><code>Shift + 拖拽音符</code>: 克隆复制音符副本 ｜ <code>Alt + 拖拽</code>: 自由微调 (绕过网格吸附)</div>
+      <div><code>Ctrl + 左键拖拽</code>: 任意工具下快捷拉出选框 ｜ <code>右键划过音符</code>: 极速擦除</div>
+      <div><code>力度窗画线/涂抹</code>: 在下方力度窗按住拖拽划出连续力度斜坡</div>
+      <div><code>双击音符</code>: 打开音符属性弹窗 (Note Properties)</div>
+      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">常用组合键：</div>
+      <div><code>Ctrl + A</code>: 全选 ｜ <code>Ctrl + D</code>: 取消全选 ｜ <code>Ctrl + I</code>: 反选</div>
+      <div><code>Ctrl + B</code>: 顺延复制至下一小节 ｜ <code>Ctrl + Q</code>: 快速量化 ｜ <code>Ctrl + L</code>: 快速连奏</div>
+      <div><code>Alt + X</code>: 力度缩放器 ｜ <code>Alt + S</code>: 扫弦工具 ｜ <code>Alt + A</code>: 琶音器 ｜ <code>Alt + R</code>: 随机化</div>
+      <div><code>Shift + 上/下</code>: 半音移调 ｜ <code>Ctrl + 上/下</code>: 八度移调 ｜ <code>Space</code>: 播放/暂停</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary btn-sm" id="prShortcutsClose">我知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- 音源库管理弹窗 -->
+<div class="modal-overlay" id="soundLibModalOverlay" hidden role="dialog" aria-modal="true" aria-label="音源库管理">
+  <div class="modal card brackets" style="max-width:560px">
+    <div class="modal-title">📦 音源库管理 · SoundFont Library</div>
+    <div style="font-size:12px; color:var(--color-ink-dim); margin-bottom:12px">
+      支持导入标准 SoundFont 2 (.sf2) 音色文件，文件将永久保存在本地浏览器中。
+    </div>
+    <div class="sound-lib-list" id="soundLibList" style="max-height:220px; overflow-y:auto; margin-bottom:14px"></div>
+    <div class="modal-actions" style="justify-content:space-between">
+      <div>
+        <input type="file" id="soundLibUploadInput" accept=".sf2" hidden>
+        <button class="btn btn-secondary btn-sm" id="soundLibUploadBtn">＋ 上传 .sf2 音色文件</button>
+      </div>
+      <button class="btn btn-primary btn-sm" id="soundLibCloseBtn">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建 / 重命名 弹窗 -->
+<div class="modal-overlay" id="modalOverlay" hidden role="dialog" aria-modal="true" aria-label="输入弹窗">
+  <div class="modal card brackets">
+    <div class="modal-title" id="modalTitle">＋ 新建档案</div>
+    <label class="field-label" for="modalInput">档案名称 · Project Name</label>
+    <input type="text" id="modalInput" placeholder="如：副歌和声设计…">
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="modalCancel">取消</button>
+      <button class="btn btn-primary" id="modalOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除确认弹窗 -->
+<div class="modal-overlay" id="confirmOverlay" hidden role="dialog" aria-modal="true" aria-label="确认弹窗">
+  <div class="modal card brackets">
+    <div class="modal-title" id="confirmTitle">删除档案</div>
+    <div class="confirm-text" id="confirmText"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="confirmCancel">取消</button>
+      <button class="btn btn-danger" id="confirmOk">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 轨道重命名弹窗 -->
+<div class="modal-overlay" id="arrRenameModal" hidden role="dialog" aria-modal="true" aria-label="轨道重命名">
+  <div class="modal card brackets" style="max-width:380px">
+    <div class="modal-title">✎ 轨道重命名 · Rename Track</div>
+    <label class="field-label" for="arrRenameInput">轨道名称</label>
+    <input type="text" id="arrRenameInput" placeholder="如：主旋律 / 和声 / 鼓组…">
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" id="arrRenameCancel">取消</button>
+      <button class="btn btn-primary btn-sm" id="arrRenameOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 编排确认弹窗 -->
+<div class="modal-overlay" id="arrConfirmModal" hidden role="dialog" aria-modal="true" aria-label="确认操作">
+  <div class="modal card brackets">
+    <div class="modal-title" id="arrConfirmTitle">确认操作</div>
+    <div class="confirm-text" id="arrConfirmText"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary btn-sm" id="arrConfirmCancel">取消</button>
+      <button class="btn btn-danger btn-sm" id="arrConfirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 编排快捷键一览弹窗（参考 FL Studio） -->
+<div class="modal-overlay" id="arrShortcutsModal" hidden role="dialog" aria-modal="true" aria-label="编排快捷键一览">
+  <div class="modal card brackets" style="max-width:580px">
+    <div class="modal-title">⌨ 编曲窗快捷键一览 · 参考 FL Studio</div>
+    <div style="max-height:340px; overflow-y:auto; font-size:12px; line-height:1.8">
+      <div style="font-weight:bold; color:var(--color-primary); margin-bottom:4px">走带控制：</div>
+      <div><code>Space</code>: 播放 / 暂停 ｜ <code>Home</code>: 回到开头 ｜ <code>End</code>: 跳到末尾 ｜ <code>L</code>: 循环选区开关</div>
+      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">播放头与轨道导航：</div>
+      <div><code>← / →</code>: 播放头按吸附步进 ｜ <code>Shift + ← / →</code>: 按小节步进 ｜ <code>↑ / ↓</code>: 切换选中轨道</div>
+      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">轨道操作：</div>
+      <div><code>M</code>: 当前轨静音 ｜ <code>S</code>: 当前轨独奏 ｜ <code>F2</code>: 重命名当前轨道</div>
+      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">Clip 编辑：</div>
+      <div><code>Ctrl + Z / Y</code>: 撤销 / 重做 ｜ <code>Ctrl + C / X / V</code>: 复制 / 剪切 / 粘贴（粘贴至播放头所在轨）</div>
+      <div><code>Ctrl + D</code>: 原地克隆选中 Clip ｜ <code>Ctrl + B</code>: 向右顺延复制 ｜ <code>Del / Backspace</code>: 删除选中</div>
+      <div><code>Ctrl + A</code>: 全选 ｜ <code>Esc</code>: 取消选择 / 关闭菜单</div>
+      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">鼠标手势：</div>
+      <div><code>拖动 Clip</code>: 移动（自动吸附）｜ <code>Alt + 拖动</code>: 克隆副本 ｜ <code>拖动 Clip 边缘</code>: 裁剪长度</div>
+      <div><code>拖动 Clip 角部三角</code>: 渐入渐出曲线 ｜ <code>双击 MIDI Clip</code>: 在底部钢琴卷帘打开源文件</div>
+      <div><code>标尺下半部拖拽</code>: 移动播放头 ｜ <code>标尺上半部拖拽</code>: 拉出循环区间（双击清除）</div>
+      <div><code>+ / -</code> 或 <code>Ctrl+滚轮</code>: 横向缩放 ｜ <code>Shift+滚轮</code>: 横向滚动</div>
+      <div style="margin-top:10px; color:var(--color-ink-faint)">※ 快捷键按焦点区域生效：聊天输入框、钢琴卷帘、编排窗口各自独立，与 FL Studio 多窗口逻辑一致。单键快捷键在输入框聚焦或中文输入法组合时不触发。</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary btn-sm" id="arrShortcutsClose">我知道了</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/vendor/marked.min.js" defer></script>
+<script src="/js/app.js" defer></script>
+<script src="/js/theme.js" defer></script>
+<script src="/js/tasks.js" defer></script>
+<script src="/js/pianoroll/audio_context.js" defer></script>
+<script src="/js/pianoroll/synth.js" defer></script>
+<script src="/js/pianoroll/soundfont.js" defer></script>
+<script src="/js/pianoroll/sound_library.js" defer></script>
+<script src="/js/pianoroll/midi_input.js" defer></script>
+<script src="/js/pianoroll/tools.js" defer></script>
+<script src="/js/arrangement/midi_parse.js" defer></script>
+<script src="/js/pianoroll/pianoroll.js" defer></script>
+<script src="/js/arrangement/audio_engine.js" defer></script>
+<script src="/js/arrangement/arrange.js" defer></script>
+<script src="/js/chat.js" defer></script>
+</body>
+</html>

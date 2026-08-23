@@ -1,0 +1,46 @@
+# ============================================================
+# AI_MIDI (Go + Wails) 开源仓库忽略规则 —— Apache-2.0
+# ============================================================
+
+# ---------- 严禁推送：闭源 JUCE 音频引擎 ----------
+# 引擎源码在独立私有仓库维护，本仓库绝不跟踪；
+# 编译产物只通过 Release 附件分发（JUCE EULA 1.9/1.11 允许）
+engine/
+third_party/
+ThirdParty/
+asio_sdk/
+ASIO*SDK*/
+
+# ---------- 二进制与构建产物 ----------
+*.exe
+*.dll
+*.pdb
+build/bin/
+bin/
+dist/
+
+# ---------- 敏感配置（含 API key，永不入库） ----------
+settings.json
+.env
+
+# ---------- 运行时生成的文件与数据 ----------
+theme.txt
+window_icon.ico
+output/
+doing/
+projects/
+internal/midi/output/
+
+# ---------- 前端生成绑定（wails build 自动重建） ----------
+frontend/wailsjs/
+
+# ---------- 编辑器与工具状态 ----------
+.idea/
+.vscode/
+.workbuddy/
+.zcode/
+.agents/
+.omo/
+
+# ---------- 旧版 Python 后端（自带独立 git 仓库，不混入本仓库） ----------
+原版Python后端/

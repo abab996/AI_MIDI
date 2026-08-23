@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="parchment">
+<head>
+<meta charset="UTF-8">
+<script>
+  /* 主题防闪烁：CSS 应用前同步设置已保存主题（theme.js 在 DOMContentLoaded
+     才生效，暗蓝用户每次导航会先闪暖纸） */
+  (function () {
+    try {
+      if (localStorage.getItem("ai-midi-blueprint-theme") === "dark") {
+        document.documentElement.dataset.theme = "dark";
+      }
+    } catch (e) {}
+  })();
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI_MIDI · 设置</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="stylesheet" href="/style.css">
+<script>
+  (function () {
+    var dir = null;
+    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    if (dir === "forward" || dir === "back") {
+      document.documentElement.dataset.nav = dir;
+      setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
+    }
+  })();
+</script>
+</head>
+<body>
+
+<div class="page">
+  <div class="top-nav">
+    <span class="nav-title">设置</span>
+    <div class="nav-right">
+      <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
+      <a class="btn btn-secondary btn-sm" href="/chat.html" data-dir="back">多轮对话</a>
+      <button class="btn btn-secondary btn-sm theme-btn" type="button" title="切换主题">☀ 暖纸</button>
+    </div>
+  </div>
+
+  <div class="settings-wrap">
+    <!-- 连接参数 -->
+    <section class="card brackets settings-card">
+      <div class="group-title">连接参数 · Connection</div>
+
+      <div class="field">
+        <label class="field-label" for="apiKey">API Key</label>
+        <div class="row">
+          <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+          <button class="btn btn-secondary btn-sm" id="showKeyBtn">显示</button>
+        </div>
+      </div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="baseUrl">Base URL</label>
+          <input type="url" id="baseUrl" placeholder="如: https://api.deepseek.com">
+        </div>
+        <div class="field">
+          <label class="field-label" for="apiPath">API 路径</label>
+          <input type="text" id="apiPath" placeholder="如: /v1beta/openai（Gemini 专用）">
+          <div class="stat-line"><span class="dim">仅 Gemini 服务商生效；其他服务商请留空</span></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label" for="model">模型 · Model</label>
+        <div class="row">
+          <div class="select-wrap">
+            <input type="text" id="model" placeholder="输入或从列表选择…">
+            <button type="button" class="select-toggle" id="modelToggle" title="从列表选择">▾</button>
+            <div class="select-menu" id="modelMenu" hidden></div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="refreshModelsBtn">刷新列表</button>
+        </div>
+        <div class="stat-line"><span class="dim" id="modelStatus">点击刷新按钮从 API 获取模型列表</span></div>
+      </div>
+    </section>
+
+    <!-- 生成参数 -->
+    <section class="card brackets settings-card">
+      <div class="group-title">生成参数 · Generation</div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="maxTokens">最大上下文 · max_tokens</label>
+          <input type="number" id="maxTokens" placeholder="留空使用默认值">
+        </div>
+        <div class="field">
+          <label class="field-label" for="maxCompletion">最大输出长度 · max_completion_tokens</label>
+          <input type="number" id="maxCompletion" placeholder="留空使用默认值">
+        </div>
+      </div>
+
+      <label class="field-label">推理努力程度 · reasoning_effort</label>
+      <div class="func-selector" style="grid-template-columns:repeat(3,1fr)" id="effortSelector">
+        <button class="fn" data-effort="low">LOW</button>
+        <button class="fn" data-effort="medium">MEDIUM</button>
+        <button class="fn" data-effort="max">MAX</button>
+      </div>
+
+      <label class="toggle-text">
+        <input type="checkbox" id="thinkingEnabled" checked>
+        <span>启用 thinking 模式</span>
+      </label>
+    </section>
+
+    <!-- MIDI 硬件与输入设备 -->
+    <section class="card brackets settings-card">
+      <div class="group-title">MIDI 硬件与输入设备 · MIDI Input</div>
+
+      <label class="toggle-text">
+        <input type="checkbox" id="midiInputEnabled" checked>
+        <span>启用 Web MIDI 硬件输入</span>
+      </label>
+
+      <div class="field">
+        <label class="field-label" for="midiDeviceSelect">MIDI 输入设备 · Input Device</label>
+        <div class="row">
+          <select id="midiDeviceSelect" style="flex:1">
+            <option value="">（未检测到设备，请连接 MIDI 键盘后刷新）</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" id="refreshMidiBtn">扫描设备</button>
+        </div>
+        <div class="stat-line">
+          <span class="dim" id="midiDeviceStatus">等待扫描 MIDI 输入端口…</span>
+          <span class="stamp" id="midiSignalStamp" style="margin-left:auto; display:none">● MIDI IN</span>
+        </div>
+      </div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="midiChannel">接收通道 · Channel</label>
+          <select id="midiChannel">
+            <option value="all">全部通道 (Omni / All)</option>
+            <option value="1">Channel 1</option>
+            <option value="2">Channel 2</option>
+            <option value="3">Channel 3</option>
+            <option value="4">Channel 4</option>
+            <option value="5">Channel 5</option>
+            <option value="6">Channel 6</option>
+            <option value="7">Channel 7</option>
+            <option value="8">Channel 8</option>
+            <option value="9">Channel 9</option>
+            <option value="10">Channel 10 (Drums)</option>
+            <option value="11">Channel 11</option>
+            <option value="12">Channel 12</option>
+            <option value="13">Channel 13</option>
+            <option value="14">Channel 14</option>
+            <option value="15">Channel 15</option>
+            <option value="16">Channel 16</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label" for="midiVelocityCurve">力度曲线 · Velocity Curve</label>
+          <select id="midiVelocityCurve">
+            <option value="linear">线性响应 (Linear)</option>
+            <option value="compressed">软力度压缩 (Soft/Compressed)</option>
+            <option value="expanded">高动态扩展 (Hard/Expanded)</option>
+            <option value="fixed_100">固定力度 100 (Fixed 100)</option>
+            <option value="fixed_127">固定全开 127 (Fixed 127)</option>
+          </select>
+        </div>
+      </div>
+
+      <label class="toggle-text" style="margin-top:8px">
+        <input type="checkbox" id="typingKeyboardEnabled" checked>
+        <span>启用电脑键盘模拟钢琴键盘（Z-M 白键 / S,D,G,H,J 黑键 / Q-U 高八度）</span>
+      </label>
+    </section>
+
+    <!-- 保存 -->
+    <div class="save-row">
+      <span class="save-status" id="saveStatus"></span>
+      <button class="btn btn-secondary" id="resetBtn">恢复默认</button>
+      <button class="btn btn-primary" id="saveBtn">保存配置</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/app.js"></script>
+<script src="/js/theme.js"></script>
+<script src="/js/settings.js"></script>
+</body>
+</html>

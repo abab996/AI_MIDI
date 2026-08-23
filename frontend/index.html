@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="parchment">
+<head>
+<meta charset="UTF-8">
+<script>
+  /* 主题防闪烁：CSS 应用前同步设置已保存主题（theme.js 在 DOMContentLoaded
+     才生效，暗蓝用户每次导航会先闪暖纸） */
+  (function () {
+    try {
+      if (localStorage.getItem("ai-midi-blueprint-theme") === "dark") {
+        document.documentElement.dataset.theme = "dark";
+      }
+    } catch (e) {}
+  })();
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI_MIDI · AI 编曲助手</title>
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="stylesheet" href="/style.css">
+<script>
+  (function () {
+    var dir = null;
+    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    if (dir === "forward" || dir === "back") {
+      document.documentElement.dataset.nav = dir;
+      setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
+    }
+  })();
+</script>
+</head>
+<body>
+
+<div class="page">
+  <div class="top-nav">
+    <span class="nav-title">快捷操作</span>
+    <span class="stamp ok" id="stampApi">API: --</span>
+    <div class="nav-right">
+      <a class="btn btn-secondary btn-sm" href="/chat.html" data-dir="forward">多轮对话</a>
+      <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
+      <button class="btn btn-secondary btn-sm theme-btn" type="button" title="切换主题">☀ 暖纸</button>
+    </div>
+  </div>
+
+  <main class="workbench">
+    <!-- ① 输入站 -->
+    <section class="station">
+      <div class="sec-head"><span class="sec-name">① 输入站 · Input</span></div>
+
+      <div class="dropzone brackets" id="dropzone">
+        <input type="file" id="midiFileInput" accept=".mid,.midi" hidden>
+        <div class="dz-icon">▣</div>
+        <div class="dz-text">拖入或点击选择 MIDI 文件</div>
+        <div class="dz-sub" id="dzSub">*.mid / *.midi</div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="parseBtn">解析 MIDI</button>
+      <div class="stat-line">[PARSE] <span class="dim" id="parseStatus">尚未解析</span></div>
+    </section>
+
+    <!-- ② 配置台 -->
+    <section class="station">
+      <div class="sec-head"><span class="sec-name">② 配置台 · Config</span></div>
+
+      <div class="func-selector" id="funcSelector">
+        <button class="fn active" data-show="fReq">配和弦</button>
+        <button class="fn" data-show="fLyrics fLang">翻译歌词</button>
+        <button class="fn" data-show="fLyrics fReq">设计转音</button>
+        <button class="fn" data-show="fLyrics fNote fReq">其他要求</button>
+      </div>
+
+      <div class="card draft dyn-field dyn-control" id="fLyrics" hidden>
+        <label class="field-label" for="lyricsBox">歌词 · Lyrics</label>
+        <textarea id="lyricsBox" rows="3" placeholder="粘贴歌词文本…"></textarea>
+      </div>
+
+      <div class="card draft dyn-field dyn-control" id="fLang" hidden>
+        <label class="field-label">语言 · Language</label>
+        <div style="display:flex; gap:10px">
+          <input type="text" id="origLang" placeholder="原语言 · 如 日语">
+          <input type="text" id="targetLang" placeholder="目标语言 · 如 中文">
+        </div>
+      </div>
+
+      <label class="switch-row dyn-field dyn-control" id="fNote" hidden>
+        <input type="checkbox" id="noteOutput">
+        <span>输出音符数据 (MIDI)</span>
+      </label>
+
+      <div class="card draft dyn-field dyn-control" id="fReq">
+        <label class="field-label" for="reqBox">具体要求 · Requirements</label>
+        <textarea id="reqBox" rows="3" placeholder="如：使用 1-6-4-5 进行，力度柔和…"></textarea>
+      </div>
+
+      <div class="measure-row dyn-control" id="measureRow">
+        <div class="measure-cell">
+          <div class="measure-label">BPM <span class="measure-tick">▮▮▮▮▮</span></div>
+          <div class="measure-value"><input type="number" id="bpmInput" value="120" min="1" max="600"></div>
+        </div>
+        <div class="measure-cell">
+          <div class="measure-label">拍号 <span class="measure-tick">Time Sig</span></div>
+          <div class="measure-value"><input type="text" id="tsInput" value="4/4"></div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block btn-lg dyn-control" id="startBtn">▶ 开始</button>
+    </section>
+
+    <!-- ③ 结果控制台 -->
+    <section class="station">
+      <div class="sec-head"><span class="sec-name">③ 结果控制台 · Output</span></div>
+
+      <div class="console brackets">
+        <div class="console-head">
+          <span>Console // AI_MIDI_OUTPUT</span>
+          <span class="dots"><span></span><span></span><span></span></span>
+        </div>
+        <div class="console-body" id="consoleBody">
+          <div class="c-line dim">> 等待任务调度…</div>
+        </div>
+      </div>
+
+      <a class="btn btn-primary btn-block" id="downloadLink" href="#" hidden>下载结果</a>
+      <div class="stat-line">[STATUS] <span class="ok" id="runStatus">READY</span></div>
+    </section>
+  </main>
+</div>
+
+<script src="/js/app.js"></script>
+<script src="/js/theme.js"></script>
+<script src="/js/workbench.js"></script>
+</body>
+</html>

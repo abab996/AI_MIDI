@@ -1,0 +1,54 @@
+{
+  "RT_GROUP_ICON": {
+    "MAINICON": {
+      "0000": [
+        "../build/icon_256.png",
+        "../build/icon_128.png",
+        "../build/icon_64.png",
+        "../build/icon_48.png",
+        "../build/icon_32.png",
+        "../build/icon_16.png"
+      ]
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {
+          "name": "com.wails.AI_MIDI",
+          "version": "3.0.0.0",
+          "processorArchitecture": "*"
+        },
+        "description": "AI_MIDI Assistant v3.0.0",
+        "minimum-os": "win7",
+        "execution-level": "asInvoker",
+        "ui-access": false,
+        "auto-elevate": false,
+        "dpi-awareness": "system",
+        "common-controls-v6": true
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "3.0.0.0",
+          "product_version": "3.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "AI_MIDI",
+            "FileDescription": "AI_MIDI · AI 编曲助手",
+            "FileVersion": "3.0.0.0",
+            "InternalName": "AI_MIDI",
+            "LegalCopyright": "Copyright 2026",
+            "OriginalFilename": "AI_MIDI.exe",
+            "ProductName": "AI_MIDI · AI 编曲助手",
+            "ProductVersion": "3.0.0.0"
+          }
+        }
+      }
+    }
+  }
+}

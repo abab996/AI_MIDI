@@ -247,6 +247,12 @@ func contains(s, sub string) bool {
 	return false
 }
 
+func jsonLoose(raw json.RawMessage) map[string]any {
+	m := map[string]any{}
+	_ = json.Unmarshal(raw, &m)
+	return m
+}
+
 func errText(r *response, err error) string {
 	if err != nil {
 		return "transport: " + err.Error()
@@ -345,6 +351,23 @@ func main() {
 	time.Sleep(600 * time.Millisecond)
 	r, reqErr = c.request("testTone", map[string]interface{}{"on": false})
 	check("testTone 关", reqErr == nil && r.OK, errText(r, reqErr))
+
+	// 8.5) M2 合成器：加载失败须优雅表达；noteOn/Off 正常应答；MIDI 二进制帧不致断链
+	r, reqErr = c.request("loadSoundFont", map[string]interface{}{"path": "Z:/__no_such__.sf2"})
+	loaded := true
+	if r != nil && r.OK {
+		loaded, _ = jsonLoose(r.Result)["loaded"].(bool)
+	}
+	check("loadSoundFont 缺文件优雅返回 loaded=false",
+		reqErr == nil && r != nil && r.OK && !loaded, errText(r, reqErr))
+
+	r, reqErr = c.request("noteOn", map[string]interface{}{"channel": 0, "key": 60, "velocity": 100})
+	check("noteOn 应答", reqErr == nil && r.OK, errText(r, reqErr))
+	_ = c.writeFrame(0x04, []byte{1, 0, 64, 100}) // Midi 二进制帧：noteOn ch0 key64
+	r, reqErr = c.request("noteOff", map[string]interface{}{"channel": 0, "key": 60})
+	check("noteOff 应答", reqErr == nil && r.OK, errText(r, reqErr))
+	r, reqErr = c.request("ping", nil)
+	check("MIDI 帧后连接仍健康", reqErr == nil && r.OK, errText(r, reqErr))
 
 	// 8) 断线重连：握手状态应复位（openSession 同样验证网关拒绝）
 	c.close()

@@ -107,6 +107,28 @@
       </label>
     </section>
 
+    <!-- 音频引擎 · Audio Engine -->
+    <section class="card brackets settings-card">
+      <div class="group-title">音频引擎 · Audio Engine</div>
+
+      <div style="margin-bottom:10px">
+        <span class="field-label">引擎状态：</span>
+        <span id="engineState" style="font-family:monospace">检测中…</span>
+        <span id="engineDetail" style="opacity:.7;font-size:12px"></span>
+      </div>
+
+      <label class="field-label">演奏合成后端</label>
+      <div class="func-selector" style="grid-template-columns:repeat(2,1fr)" id="backendSelector">
+        <button class="fn" data-backend="auto">AUTO · 原生引擎优先</button>
+        <button class="fn" data-backend="webaudio">WEBAUDIO · 浏览器合成</button>
+      </div>
+
+      <div style="margin-top:12px;display:flex;gap:10px">
+        <button class="fn" id="testToneBtn">▶ 测试音 开/关</button>
+        <span style="align-self:center;font-size:12px;opacity:.7" id="sf2Hint"></span>
+      </div>
+    </section>
+
     <!-- MIDI 硬件与输入设备 -->
     <section class="card brackets settings-card">
       <div class="group-title">MIDI 硬件与输入设备 · MIDI Input</div>
@@ -183,5 +205,60 @@
 <script src="/js/app.js"></script>
 <script src="/js/theme.js"></script>
 <script src="/js/settings.js"></script>
+
+<script>
+(function () {
+  "use strict";
+  var stateEl = document.getElementById("engineState");
+  var detailEl = document.getElementById("engineDetail");
+  var selector = document.getElementById("backendSelector");
+  var toneBtn = document.getElementById("testToneBtn");
+  var toneOn = false;
+
+  function refreshStatus() {
+    fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (st) {
+      var map = { ready: "✅ 就绪", starting: "⏳ 启动中", restarting: "🔄 重启中",
+                  failed: "❌ 失败", stopped: "已停止", disabled: "已禁用" };
+      stateEl.textContent = map[st.state] || st.state;
+      detailEl.textContent = st.pid ? ("pid=" + st.pid + " 重启=" + st.restarts) : "";
+      var sf2 = window.SoundLibrary;
+      if (sf2 && sf2.listSoundFonts) {
+        sf2.listSoundFonts().then(function (list) {
+          document.getElementById("sf2Hint").textContent =
+            list.length ? ("浏览器音源库：" + list.length + " 个 SF2") : "尚未加载 SF2";
+        }).catch(function () {});
+      }
+    }).catch(function () { stateEl.textContent = "不可用"; });
+  }
+
+  function paintBackend() {
+    var mode = window.AudioBackend ? window.AudioBackend.getMode() : "auto";
+    Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
+      btn.style.borderColor = btn.dataset.backend === mode ? "var(--accent, #7aa2f7)" : "";
+      btn.style.color = btn.dataset.backend === mode ? "var(--accent, #7aa2f7)" : "";
+    });
+  }
+
+  Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
+    btn.addEventListener("click", function () {
+      if (window.AudioBackend) window.AudioBackend.setMode(btn.dataset.backend);
+      paintBackend();
+    });
+  });
+
+  toneBtn.addEventListener("click", function () {
+    toneOn = !toneOn;
+    fetch("/api/audio/test-tone", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: toneOn })
+    });
+  });
+
+  refreshStatus();
+  paintBackend();
+  setInterval(refreshStatus, 5000);
+})();
+</script>
 </body>
 </html>

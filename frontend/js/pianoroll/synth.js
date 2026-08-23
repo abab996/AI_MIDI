@@ -20,6 +20,7 @@
     this.resonance = 1.0;
     this.volume = 0.7;
     this.isMuted = false;
+    this._nativeVoices = {}; // 原生后端下正在发声的 midiNote -> 声部计数
   }
 
   SynthEngine.prototype.init = function () {
@@ -53,6 +54,31 @@
     return 440 * Math.pow(2, (midiNote - 69) / 12);
   };
 
+  /* ===== 原生音频引擎双后端（M2）=====
+     mode："auto"（默认：EngineBridge 可用即走原生 SF2 合成器）|"webaudio"（强制浏览器合成）
+     经 localStorage 持久化；原生调用失败自动回退 Web Audio 路径。 */
+  var BACKEND_KEY = "ai_midi_audio_backend";
+  var _backendMode = (function () {
+    try { return localStorage.getItem(BACKEND_KEY) || "auto"; } catch (e) { return "auto"; }
+  })();
+
+  window.AudioBackend = {
+    getMode: function () { return _backendMode; },
+    setMode: function (mode) {
+      if (mode !== "auto" && mode !== "webaudio") return;
+      _backendMode = mode;
+      try { localStorage.setItem(BACKEND_KEY, mode); } catch (e) {}
+    },
+    isNativeAvailable: function () {
+      return !!(window.EngineBridge && window.EngineBridge.available);
+    }
+  };
+
+  SynthEngine.prototype._useNative = function () {
+    return _backendMode === "auto" && window.AudioBackend.isNativeAvailable();
+  };
+
+
   SynthEngine.prototype.setWaveform = function (type) {
     if (["sine", "triangle", "square", "sawtooth"].indexOf(type) !== -1) {
       this.waveform = type;
@@ -76,6 +102,17 @@
   };
 
   SynthEngine.prototype.noteOn = function (midiNote, velocity, when) {
+    // 原生路径：SF2 合成器在引擎进程渲染；when 调度暂不支持（即时发声）
+    if (this._useNative()) {
+      try {
+        window.EngineBridge.noteOn(0, midiNote, Math.round(velocity !== undefined ? velocity : 100));
+        this._nativeVoices[midiNote] = (this._nativeVoices[midiNote] || 0) + 1;
+        return;
+      } catch (e) {
+        console.warn("[SynthEngine] 原生 noteOn 失败，回退 Web Audio:", e);
+      }
+    }
+
     this.resume();
     if (!this.ctx || this.isMuted) return;
 
@@ -117,6 +154,14 @@
   };
 
   SynthEngine.prototype.noteOff = function (midiNote, when) {
+    // 原生路径
+    if (this._useNative() && this._nativeVoices[midiNote]) {
+      var left = --this._nativeVoices[midiNote];
+      if (left <= 0) delete this._nativeVoices[midiNote];
+      try { window.EngineBridge.noteOff(0, midiNote); } catch (e) {}
+      return;
+    }
+
     var voices = this.activeVoices[midiNote];
     if (!voices || !voices.length || !this.ctx) return;
 
@@ -147,6 +192,15 @@
 
   SynthEngine.prototype.stopAll = function () {
     var self = this;
+
+    // 原生路径：对仍在发声的音符逐个 noteOff
+    if (this._nativeVoices) {
+      Object.keys(this._nativeVoices).forEach(function (note) {
+        try { window.EngineBridge.noteOff(0, parseInt(note, 10)); } catch (e) {}
+      });
+      this._nativeVoices = {};
+    }
+
     Object.keys(this.activeVoices).forEach(function (note) {
       var voices = self.activeVoices[note];
       for (var i = 0; i < voices.length; i++) {

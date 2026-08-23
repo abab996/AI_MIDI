@@ -75,6 +75,9 @@ func (r *Router) registerRoutes() {
 	// Arrangement 编排窗口（素材目录注册表 + 项目编排数据）
 	r.mux.HandleFunc("/api/arrangement/", r.handleArrangementSub)
 
+	// Audio 原生音频引擎
+	r.mux.HandleFunc("/api/audio/", r.handleAudioSub)
+
 	// Static Assets
 	r.registerStaticRoutes()
 }

@@ -16,4 +16,9 @@ if not exist "AI_MIDI.exe" (
     )
 )
 
+if not exist "bin\aimidi-engine.exe" (
+    echo [提示] 未找到原生音频引擎 bin\aimidi-engine.exe，将以浏览器音频模式运行（延迟较高）。
+    echo        如需启用原生引擎，请先运行 tools\build_engine.bat。
+)
+
 start "" "%~dp0AI_MIDI.exe" %*

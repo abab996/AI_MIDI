@@ -95,7 +95,8 @@ func isTempDir(dir string) bool {
 	clean := filepath.Clean(dir)
 	tmp := filepath.Clean(os.TempDir())
 	rel, err := filepath.Rel(tmp, clean)
-	if err == nil && len(rel) > 0 && rel != "." && rel[:2] != ".." {
+	// rel == "."：可执行文件直接位于临时目录根部，同样视为开发/临时环境
+	if err == nil && rel != "." && rel[:2] != ".." {
 		return true
 	}
 	return false

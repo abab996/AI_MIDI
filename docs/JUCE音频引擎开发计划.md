@@ -204,14 +204,14 @@ type Engine interface { DeviceManager; SynthEngine; Transport; Status() EngineSt
 ```
 
 ### 5.2 IPC 协议（protocol.go ↔ Protocol.h）
-- 管道：`\\.\pipe\AI_MIDI_ENGINE_<父进程pid>`，消息帧 = `[4B 长度][1B 类型][payload]`；
+- 管道：`\\.\pipe\AI_MIDI_ENGINE_<引擎进程pid>`（引擎自身 PID，Go 侧经 os/exec 获取子进程 PID 后拼接连接），消息帧 = `[4B 长度][1B 类型][payload]`；
 - 控制类消息用 JSON（可读、易调试）：设备切换、音色加载、走带控制、设置读写；
 - 高频消息用紧凑二进制：MIDI 事件（3 字节原始消息 + 1 字节通道）、timecode（24B 定长）；
 - 请求-响应带 `msg_id` 匹配；事件类消息单向推送（timecode/电平/设备变化/错误）；
 - **协议文档单独成文**：`docs/引擎IPC协议.md`，Go/C++ 两侧实现共同遵循，版本号写入握手包。
 
 ### 5.3 进程监督（supervisor.go）
-- 启动：从可执行文件同目录定位 `aimidi-engine.exe`（开发期可指向构建目录，走 `settings.json` 覆盖）；
+- 启动：按顺序定位 `aimidi-engine.exe`：settings.json 覆盖路径 → 主程序同级 `bin/`（约定部署位）；
 - 握手：3 秒超时，失败则进入降级模式并通知前端；
 - 心跳：1 秒周期，连续 3 次丢失判定崩溃；
 - 重启恢复：自动重启 + 重放最近会话快照（当前设备设置、已加载音色、走带状态——快照由 Go 侧维护）；
@@ -258,7 +258,7 @@ type Engine interface { DeviceManager; SynthEngine; Transport; Status() EngineSt
 
 1. **工具链**：Visual Studio 2022（MSVC v143）+ CMake ≥ 3.25 + JUCE 8（CMake 集成，`juce_add_console_app` 起步，M5 起改 `juce_add_gui_app`）；
 2. **依赖获取**：JUCE 以 git submodule 引入 `engine/ThirdParty/JUCE`（锁定版本标签）；ASIO SDK 头文件按 Steinberg 许可下载后放入 `engine/ThirdParty/asio_sdk`（许可文本随仓库记录，不入 git 则写入构建文档）；
-3. **构建脚本**：`tools/build_engine.bat` → Release x64 → 输出 `aimidi-engine.exe` 复制到项目根（与 `AI_MIDI.exe` 同级）；
+3. **构建脚本**：`tools/build_engine.bat` → Release x64 → 输出 `aimidi-engine.exe` 复制到主仓库 `bin/`；
 4. **wails build 集成**：在 `wails.json` 增加构建钩子，`wails build` 前先跑引擎构建；
 5. **启动校验**：`RUN.bat` / `启动.bat` 增加引擎文件存在性检查；
 6. **发布清单**：`AI_MIDI.exe` + `aimidi-engine.exe` + `Library/` + 配置，引擎缺省时主程序仍可运行（降级模式）。

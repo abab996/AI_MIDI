@@ -20,6 +20,7 @@ import (
 
 	"aimidi/internal/app"
 	"aimidi/internal/config"
+	"aimidi/internal/engine"
 	"aimidi/internal/mcp"
 	"aimidi/internal/server"
 )
@@ -59,6 +60,14 @@ func main() {
 
 	appInstance := app.NewApp()
 	router := server.NewRouter(subFS, appInstance.SelectFolderDialog)
+
+	// 原生音频引擎守护（M1）：随主程序启动拉起 aimidi-engine，
+	// 崩溃自动重启；进程退出时优雅回收。缺失/失败均不阻断主程序（降级 Web Audio）。
+	audioSettings := config.LoadSettings().Audio
+	engineSup := engine.NewSupervisor(engine.Config{}, audioSettings)
+	engine.SetGlobal(engineSup)
+	engineSup.Start()
+	defer engineSup.Stop()
 
 	// 4. 浏览器模式
 	if *browserMode {

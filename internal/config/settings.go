@@ -8,19 +8,25 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aimidi/internal/engine"
 )
+
+// AudioSettings 音频设置（与引擎包共享同一类型定义）
+type AudioSettings = engine.AudioSettings
 
 // Settings 用户配置结构
 type Settings struct {
-	APIKey              string   `json:"api_key"`
-	BaseURL             string   `json:"base_url"`
-	APIPath             string   `json:"api_path"`
-	Model               string   `json:"model"`
-	MaxTokens           *int     `json:"max_tokens"`
-	MaxCompletionTokens *int     `json:"max_completion_tokens"`
-	ReasoningEffort     string   `json:"reasoning_effort"`
-	ThinkingEnabled     bool     `json:"thinking_enabled"`
-	MaterialDirs        []string `json:"material_dirs,omitempty"`
+	APIKey              string        `json:"api_key"`
+	BaseURL             string        `json:"base_url"`
+	APIPath             string        `json:"api_path"`
+	Model               string        `json:"model"`
+	MaxTokens           *int          `json:"max_tokens"`
+	MaxCompletionTokens *int          `json:"max_completion_tokens"`
+	ReasoningEffort     string        `json:"reasoning_effort"`
+	ThinkingEnabled     bool          `json:"thinking_enabled"`
+	MaterialDirs        []string      `json:"material_dirs,omitempty"`
+	Audio               AudioSettings `json:"audio"`
 }
 
 var (
@@ -42,6 +48,7 @@ func DefaultSettings() Settings {
 		Model:           DefaultModel,
 		ReasoningEffort: "max",
 		ThinkingEnabled: true,
+		Audio:           AudioSettings{EngineEnabled: true},
 	}
 }
 
@@ -116,6 +123,27 @@ func parseSettings(data []byte) Settings {
 			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
 				res.MaterialDirs = append(res.MaterialDirs, filepath.Clean(s))
 			}
+		}
+	}
+
+	if v, ok := raw["audio"].(map[string]interface{}); ok {
+		if b, ok := v["engine_enabled"].(bool); ok {
+			res.Audio.EngineEnabled = b
+		}
+		if s, ok := v["engine_path"].(string); ok {
+			res.Audio.EnginePath = strings.TrimSpace(s)
+		}
+		if s, ok := v["driver"].(string); ok {
+			res.Audio.Driver = strings.TrimSpace(s)
+		}
+		if s, ok := v["device"].(string); ok {
+			res.Audio.Device = strings.TrimSpace(s)
+		}
+		if f, ok := v["sample_rate"].(float64); ok && f > 0 {
+			res.Audio.SampleRate = int(f)
+		}
+		if f, ok := v["buffer_size"].(float64); ok && f > 0 {
+			res.Audio.BufferSize = int(f)
 		}
 	}
 

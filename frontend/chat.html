@@ -50,6 +50,7 @@
           <input type="search" id="searchInput" placeholder="搜索对话内容…">
         </div>
         <button class="btn btn-secondary" id="taskPanelBtn" title="任务列表">任务<span class="task-btn-count" id="taskPanelBtnCount" hidden>0</span></button>
+        <button class="btn btn-secondary" id="quickTaskBtn" title="结构化表单快速发起一次 AI 编曲任务">⚡ 快速任务</button>
         <button class="btn btn-primary" id="newProjectBtn">＋ 新建档案</button>
       </div>
     </div>
@@ -672,6 +673,61 @@
     <div class="modal-actions">
       <button class="btn btn-secondary" id="confirmCancel">取消</button>
       <button class="btn btn-danger" id="confirmOk">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 快速任务弹窗：结构化表单（吸收原快捷操作页的字段化输入价值），
+     提交 = 新建档案 + 以表单内容组装的首条消息直接发起对话 -->
+<div class="modal-overlay" id="quickTaskOverlay" hidden role="dialog" aria-modal="true" aria-label="快速任务">
+  <div class="modal card brackets" style="width:520px">
+    <div class="modal-title">⚡ 快速任务 · Quick Task</div>
+
+    <label class="field-label">任务类型 · Function</label>
+    <div class="func-selector" id="qtFuncSelector" style="grid-template-columns:repeat(4,1fr)">
+      <button class="fn active" data-func="chord" type="button">配和弦</button>
+      <button class="fn" data-func="translate" type="button">翻译歌词</button>
+      <button class="fn" data-func="melisma" type="button">设计转音</button>
+      <button class="fn" data-func="other" type="button">其他要求</button>
+    </div>
+
+    <div id="qtLyricsField" hidden>
+      <label class="field-label" for="qtLyrics">歌词 · Lyrics</label>
+      <textarea id="qtLyrics" rows="3" placeholder="粘贴歌词文本…"></textarea>
+    </div>
+
+    <div id="qtLangField" hidden>
+      <label class="field-label">语言 · Language</label>
+      <div class="field-grid">
+        <input type="text" id="qtOrigLang" placeholder="原语言 · 如 日语">
+        <input type="text" id="qtTargetLang" placeholder="目标语言 · 如 中文">
+      </div>
+    </div>
+
+    <label class="toggle-text" id="qtNoteField" hidden>
+      <input type="checkbox" id="qtNoteOutput">
+      <span>输出音符数据 (MIDI)</span>
+    </label>
+
+    <div id="qtReqField">
+      <label class="field-label" for="qtReq">具体要求 · Requirements</label>
+      <textarea id="qtReq" rows="3" placeholder="如：使用 1-6-4-5 进行，力度柔和…"></textarea>
+    </div>
+
+    <div class="field-grid" style="margin-top:10px">
+      <div>
+        <label class="field-label" for="qtBpm">BPM</label>
+        <input type="number" id="qtBpm" value="120" min="1" max="600">
+      </div>
+      <div>
+        <label class="field-label" for="qtTs">拍号 · Time Sig</label>
+        <input type="text" id="qtTs" value="4/4">
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="qtCancel" type="button">取消</button>
+      <button class="btn btn-primary" id="qtSubmit" type="button">▶ 发起任务</button>
     </div>
   </div>
 </div>

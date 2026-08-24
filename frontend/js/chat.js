@@ -493,6 +493,18 @@
     }
     $("#msgInput").value = payload.draft || "";
     $("#sendBtn").disabled = false;
+    /* 旧流已随上方 epoch 递增过期，chatDone 不会复位——这里显式复位忙态
+       （与切换任务处同理；此前流式中途返回再新建档案，首条消息会被
+       chatBusy 静默吞掉，且发送按钮停留在"停止"文案） */
+    chatBusy = false;
+    streamEnded = false;
+    liveStreaming = false;
+    var epSendBtn = $("#sendBtn");
+    if (epSendBtn) {
+      epSendBtn.textContent = "▶ 发送";
+      epSendBtn.title = "发送 (Enter)";
+      epSendBtn.classList.remove("stop");
+    }
     $("#newMidiLink").hidden = true;
 
     /* 无卡片来源：直接切换视图 + 面板内容弹入（无 VT，立即播放） */
@@ -2414,6 +2426,110 @@
     setTimeout(function () { $("#modalInput").focus(); }, 50);
   }
 
+  /* ---- 快速任务弹窗（洞察报告 P0-4 步骤②）----
+     结构化表单吸收原快捷操作页（index.html）的字段化输入价值：
+     提交 = 新建档案 + 组装首条消息直接进入对话流。 */
+  var qtFunc = "chord";
+
+  /* 各任务类型的字段显隐（与 index 快捷操作页语义一致）；
+     "具体要求"框对所有类型保持可见（翻译歌词场景为可选补充） */
+  function qtApplyFunc(fn) {
+    qtFunc = fn;
+    var lyric = fn === "translate" || fn === "melisma" || fn === "other";
+    $("#qtLyricsField").hidden = !lyric;
+    $("#qtLangField").hidden = fn !== "translate";
+    $("#qtNoteField").hidden = fn !== "other";
+    var fns = $("#qtFuncSelector").querySelectorAll(".fn");
+    fns.forEach(function (b) {
+      b.classList.toggle("active", b.dataset.func === fn);
+    });
+  }
+
+  function openQuickTask() {
+    modalToken++;
+    modalFocusReturn = document.activeElement;
+    qtApplyFunc(qtFunc);
+    overlayIn($("#quickTaskOverlay"), modalToken);
+    setTimeout(function () { $("#qtReq").focus(); }, 50);
+  }
+
+  function closeQuickTask() {
+    modalToken++;
+    overlayOut($("#quickTaskOverlay"), modalToken);
+    restoreModalFocus();
+  }
+
+  /* 表单 → 首条消息组装（喂给对话管线的结构化 prompt） */
+  function qtComposeMessage() {
+    var lines = [];
+    var labels = { chord: "配和弦", translate: "翻译歌词", melisma: "设计转音", other: "其他要求" };
+    lines.push("【快速任务 · " + labels[qtFunc] + "】");
+    var lyrics = $("#qtLyrics").value.trim();
+    if (lyrics) lines.push("歌词：\n" + lyrics);
+    if (qtFunc === "translate") {
+      lines.push("原语言：" + ($("#qtOrigLang").value.trim() || "（未指定）"));
+      lines.push("目标语言：" + ($("#qtTargetLang").value.trim() || "（未指定）"));
+    }
+    var req = $("#qtReq").value.trim();
+    if (req) lines.push("具体要求：" + req);
+    if (qtFunc === "other" && $("#qtNoteOutput").checked) {
+      lines.push("请输出音符数据（MIDI）。");
+    }
+    lines.push("BPM：" + ($("#qtBpm").value.trim() || "120") +
+      "｜拍号：" + ($("#qtTs").value.trim() || "4/4"));
+    return lines.join("\n");
+  }
+
+  /* 进入工作台后立刻发送组装好的首条消息。
+     enterProject 自带 isTransitioning 延迟重试，但它之后的发送不会等它——
+     这里统一守卫，避免返回动画期间提交导致消息被丢 */
+  function enterProjectAndSend(payload, message) {
+    if (isTransitioning) {
+      setTimeout(function () { enterProjectAndSend(payload, message); }, 650);
+      return;
+    }
+    enterProject(payload);
+    $("#msgInput").value = message;
+    sendMessage();
+  }
+
+  function qtSubmit() {
+    /* 按任务类型做最小校验（与快捷操作页一致的业务必填） */
+    var lyrics = $("#qtLyrics").value.trim();
+    var req = $("#qtReq").value.trim();
+    if (qtFunc === "translate") {
+      if (!lyrics) { UI.toast("翻译歌词需要先粘贴歌词文本", "warn"); return; }
+      if (!$("#qtOrigLang").value.trim() || !$("#qtTargetLang").value.trim()) {
+        UI.toast("请填写原语言与目标语言", "warn"); return;
+      }
+    } else if (qtFunc === "melisma") {
+      if (!lyrics) { UI.toast("设计转音需要先粘贴歌词文本", "warn"); return; }
+      if (!req) { UI.toast("请填写具体要求（转音风格/位置）", "warn"); return; }
+    } else if (!req) {
+      UI.toast("请填写具体要求", "warn"); return;
+    }
+
+    var labels = { chord: "配和弦", translate: "翻译歌词", melisma: "设计转音", other: "其他要求" };
+    var now = new Date();
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    var stamp = (now.getMonth() + 1) + "-" + pad(now.getDate()) + " " + pad(now.getHours()) + ":" + pad(now.getMinutes());
+    var message = qtComposeMessage();
+
+    var btn = $("#qtSubmit");
+    btn.disabled = true;
+    UI.postJSON("/api/projects", { name: labels[qtFunc] + " " + stamp })
+      .then(function (payload) {
+        closeQuickTask();
+        reloadProjects();
+        /* 进入工作台后以组装好的首条消息直接发起对话 */
+        enterProjectAndSend(payload, message);
+      })
+      .catch(function (e) {
+        UI.toast("✗ 创建快速任务失败: " + e.message, "err");
+      })
+      .finally(function () { btn.disabled = false; });
+  }
+
   function hideModal() {
     modalToken++;
     modalAction = null;
@@ -2451,8 +2567,10 @@
     if (e.key !== "Escape") return;
     var modal = $("#modalOverlay");
     var confirm = $("#confirmOverlay");
+    var quick = $("#quickTaskOverlay");
     if (modal && !modal.hidden) { hideModal(); }
     else if (confirm && !confirm.hidden) { hideConfirm(); }
+    else if (quick && !quick.hidden) { closeQuickTask(); }
   }
 
   /* ═══════════ 初始化 ═══════════ */
@@ -2515,6 +2633,18 @@
       showModal("＋ 新建档案", "", function (name) {
         return UI.postJSON("/api/projects", { name: name }).then(enterProject);
       });
+    });
+
+    /* 快速任务：结构化表单 → 新建档案 + 首条消息（洞察报告 P0-4 步骤②） */
+    $("#quickTaskBtn").addEventListener("click", openQuickTask);
+    $("#qtCancel").addEventListener("click", closeQuickTask);
+    $("#qtSubmit").addEventListener("click", qtSubmit);
+    $("#quickTaskOverlay").addEventListener("click", function (e) {
+      if (e.target === this) closeQuickTask();
+    });
+    $("#qtFuncSelector").addEventListener("click", function (e) {
+      var btn = e.target.closest(".fn");
+      if (btn && btn.dataset.func) qtApplyFunc(btn.dataset.func);
     });
 
     $("#modalOk").addEventListener("click", function () {

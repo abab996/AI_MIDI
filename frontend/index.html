@@ -13,6 +13,24 @@
     } catch (e) {}
   })();
 </script>
+<script>
+  /* 启动落点改造（洞察报告 P0-4 步骤①）：冷启动不再落在快捷操作页，
+     直达档案库（对话工作台为主入口）。仅当"带导航标记进入"（从应用内
+     页面显式点过来）或本会话已展示过本页（刷新）时正常展示。
+     -browser 模式默认本就直达 chat.html，此处只兜住手动访问 "/" 的情况。 */
+  (function () {
+    try {
+      var dir = sessionStorage.getItem("ai-midi-nav-dir");
+      var explicit = dir === "forward" || dir === "back";
+      var shown = sessionStorage.getItem("ai-midi-index-shown") === "1";
+      if (explicit || shown) {
+        sessionStorage.setItem("ai-midi-index-shown", "1");
+      } else {
+        location.replace("/chat.html");
+      }
+    } catch (e) {}
+  })();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI_MIDI · AI 编曲助手</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">

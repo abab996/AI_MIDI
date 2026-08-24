@@ -117,14 +117,41 @@
         <span id="engineDetail" style="opacity:.7;font-size:12px"></span>
       </div>
 
-      <label class="field-label">演奏合成后端</label>
+      <label class="field-label">驱动类型（含 ASIO）</label>
+      <select id="drvSel" style="width:100%;margin-bottom:8px"><option value="">检测中…</option></select>
+
+      <label class="field-label">输出设备</label>
+      <select id="devSel" style="width:100%;margin-bottom:8px"></select>
+
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label">采样率</label>
+          <select id="rateSel" style="width:100%">
+            <option value="">默认</option><option>44100</option><option>48000</option>
+            <option>88200</option><option>96000</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label">缓冲区（samples）</label>
+          <select id="bufSel" style="width:100%">
+            <option value="">默认</option><option>64</option><option>128</option>
+            <option>256</option><option>512</option><option>1024</option><option>2048</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="fn" id="applyAudioBtn" style="margin-top:10px">应用音频设置</button>
+      <span id="applyHint" style="font-size:12px;opacity:.7;margin-left:8px"></span>
+
+      <label class="field-label" style="margin-top:12px">演奏合成后端</label>
       <div class="func-selector" style="grid-template-columns:repeat(2,1fr)" id="backendSelector">
         <button class="fn" data-backend="auto">AUTO · 原生引擎优先</button>
         <button class="fn" data-backend="webaudio">WEBAUDIO · 浏览器合成</button>
       </div>
 
-      <div style="margin-top:12px;display:flex;gap:10px">
+      <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
         <button class="fn" id="testToneBtn">▶ 测试音 开/关</button>
+        <button class="fn" id="openPanelBtn" style="background:#2a3b4c">🎛️ 打开声卡控制面板 (ASIO)</button>
         <span style="align-self:center;font-size:12px;opacity:.7" id="sf2Hint"></span>
       </div>
     </section>
@@ -205,32 +232,94 @@
 <script src="/js/app.js"></script>
 <script src="/js/theme.js"></script>
 <script src="/js/settings.js"></script>
+<script src="/js/engine/engine_bridge.js"></script>
+<script src="/js/pianoroll/synth.js"></script>
 
 <script>
 (function () {
   "use strict";
-  var stateEl = document.getElementById("engineState");
-  var detailEl = document.getElementById("engineDetail");
-  var selector = document.getElementById("backendSelector");
-  var toneBtn = document.getElementById("testToneBtn");
+  var $ = function (id) { return document.getElementById(id); };
   var toneOn = false;
 
   function refreshStatus() {
     fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (st) {
       var map = { ready: "✅ 就绪", starting: "⏳ 启动中", restarting: "🔄 重启中",
                   failed: "❌ 失败", stopped: "已停止", disabled: "已禁用" };
-      stateEl.textContent = map[st.state] || st.state;
-      detailEl.textContent = st.pid ? ("pid=" + st.pid + " 重启=" + st.restarts) : "";
-      var sf2 = window.SoundLibrary;
-      if (sf2 && sf2.listSoundFonts) {
-        sf2.listSoundFonts().then(function (list) {
-          document.getElementById("sf2Hint").textContent =
-            list.length ? ("浏览器音源库：" + list.length + " 个 SF2") : "尚未加载 SF2";
-        }).catch(function () {});
-      }
-    }).catch(function () { stateEl.textContent = "不可用"; });
+      $("engineState").textContent = map[st.state] || st.state;
+      $("engineDetail").textContent =
+        (st.pid ? "pid=" + st.pid + " 重启=" + st.restarts + " " : "") + (st.device_summary || "");
+    }).catch(function () { $("engineState").textContent = "不可用"; });
   }
 
+  function loadDevices() {
+    fetch("/api/audio/devices").then(function (r) { return r.json(); }).then(function (dl) {
+      var drvSel = $("drvSel"); drvSel.innerHTML = "";
+      (dl.drivers || []).forEach(function (d) {
+        window.__aiDevList[d.driver] = d.devices;
+        var o = document.createElement("option");
+        o.value = d.driver; o.textContent = d.driver + "（" + d.devices.length + " 设备）";
+        drvSel.appendChild(o);
+      });
+      return fetch("/api/audio/settings").then(function (r) { return r.json(); });
+    }).then(function (a) {
+      if (!a) return;
+      if (a.driver) $("drvSel").value = a.driver;
+      fillDevs();
+      if (a.device) $("devSel").value = a.device;
+      $("rateSel").value = a.sample_rate ? String(a.sample_rate) : "";
+      $("bufSel").value = a.buffer_size ? String(a.buffer_size) : "";
+    }).catch(function () {});
+  }
+
+  window.__aiDevList = {};
+  function fillDevs() {
+    var drv = $("drvSel").value;
+    var devSel = $("devSel"); devSel.innerHTML = "";
+    (window.__aiDevList[drv] || []).forEach(function (n) {
+      var o = document.createElement("option");
+      o.value = n; o.textContent = n;
+      devSel.appendChild(o);
+    });
+  }
+  $("drvSel").addEventListener("change", function () {
+    fillDevs();
+  });
+
+  $("applyAudioBtn").addEventListener("click", function () {
+    var body = {
+      driver: $("drvSel").value,
+      device: $("devSel").value,
+      sample_rate: parseInt($("rateSel").value, 10) || 0,
+      buffer_size: parseInt($("bufSel").value, 10) || 0
+    };
+    fetch("/api/audio/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      $("applyHint").textContent = j.saved ? "✅ 已应用" : "❌ 失败";
+      setTimeout(function () { $("applyHint").textContent = ""; refreshStatus(); }, 2500);
+    }).catch(function () { $("applyHint").textContent = "❌ 网络错误"; });
+  });
+
+  $("openPanelBtn").addEventListener("click", function () {
+    var btn = $("openPanelBtn");
+    btn.disabled = true;
+    fetch("/api/audio/control-panel", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        btn.disabled = false;
+        if (!j.opened) {
+          alert("当前音频设备不支持弹出硬件控制面板（非 ASIO 设备或驱动未提供控制界面）。");
+        }
+      })
+      .catch(function (err) {
+        btn.disabled = false;
+        alert("打开控制面板失败: " + (err.message || err));
+      });
+  });
+
+  var selector = $("backendSelector");
   function paintBackend() {
     var mode = window.AudioBackend ? window.AudioBackend.getMode() : "auto";
     Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
@@ -238,7 +327,6 @@
       btn.style.color = btn.dataset.backend === mode ? "var(--accent, #7aa2f7)" : "";
     });
   }
-
   Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
     btn.addEventListener("click", function () {
       if (window.AudioBackend) window.AudioBackend.setMode(btn.dataset.backend);
@@ -246,7 +334,7 @@
     });
   });
 
-  toneBtn.addEventListener("click", function () {
+  $("testToneBtn").addEventListener("click", function () {
     toneOn = !toneOn;
     fetch("/api/audio/test-tone", {
       method: "POST",
@@ -257,6 +345,7 @@
 
   refreshStatus();
   paintBackend();
+  loadDevices();
   setInterval(refreshStatus, 5000);
 })();
 </script>

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"aimidi/internal/config"
 	"aimidi/internal/engine"
@@ -25,6 +26,10 @@ func (r *Router) handleAudioSub(w http.ResponseWriter, req *http.Request) {
 		r.handleTestTone(w, req)
 	case "/api/audio/soundfonts":
 		r.handleAudioSoundfonts(w, req)
+	case "/api/audio/control-panel":
+		r.handleAudioControlPanel(w, req)
+	case "/api/audio/selftest-result":
+		r.handleSelftestResult(w, req)
 	default:
 		writeError(w, http.StatusNotFound, "unknown audio endpoint")
 	}
@@ -37,7 +42,18 @@ func (r *Router) handleAudioStatus(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"state": engine.StateStopped})
 		return
 	}
-	writeJSON(w, http.StatusOK, sup.Status())
+	st := sup.Status()
+	if st.State == engine.StateReady {
+		if raw, err := sup.RequestRaw("currentSummary", 5*time.Second); err == nil {
+			var extra struct {
+				Summary string `json:"summary"`
+			}
+			if json.Unmarshal(raw, &extra) == nil && extra.Summary != "" {
+				st.DeviceSummary = extra.Summary
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 // handleAudioDevices 设备列表（透传引擎枚举结果）
@@ -149,4 +165,23 @@ func (r *Router) handleTestTone(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"on": body.On, "freq": freq})
+}
+
+// handleAudioControlPanel 打开声卡驱动控制面板（ASIO 专用）
+func (r *Router) handleAudioControlPanel(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	sup := engine.Get()
+	if sup == nil {
+		writeError(w, http.StatusServiceUnavailable, "音频引擎未就绪")
+		return
+	}
+	opened, err := sup.OpenControlPanel()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "打开控制面板失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opened": opened})
 }

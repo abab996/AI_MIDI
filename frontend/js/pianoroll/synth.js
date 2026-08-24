@@ -102,8 +102,9 @@
   };
 
   SynthEngine.prototype.noteOn = function (midiNote, velocity, when) {
-    // 原生路径：SF2 合成器在引擎进程渲染；when 调度暂不支持（即时发声）
-    if (this._useNative()) {
+    // 原生路径仅限实时演奏（钢琴卷帘键盘）：带 when 的预调度调用
+    // （编曲引擎）不走此路——原生桥不支持 when 且每音符 IPC 往返会阻塞主线程
+    if (!this._forceWebAudio && when === undefined && this._useNative()) {
       try {
         window.EngineBridge.noteOn(0, midiNote, Math.round(velocity !== undefined ? velocity : 100));
         this._nativeVoices[midiNote] = (this._nativeVoices[midiNote] || 0) + 1;
@@ -154,8 +155,8 @@
   };
 
   SynthEngine.prototype.noteOff = function (midiNote, when) {
-    // 原生路径
-    if (this._useNative() && this._nativeVoices[midiNote]) {
+    // 原生路径（仅实时演奏；编曲预调度见 noteOn 注释）
+    if (!this._forceWebAudio && this._useNative() && this._nativeVoices[midiNote]) {
       var left = --this._nativeVoices[midiNote];
       if (left <= 0) delete this._nativeVoices[midiNote];
       try { window.EngineBridge.noteOff(0, midiNote); } catch (e) {}
@@ -173,18 +174,54 @@
     var releaseTime = Math.max(0.01, this.release);
 
     try {
-      voice.gain.gain.cancelScheduledValues(stopTime);
-      var currentVal = Math.max(0.0001, voice.gain.gain.value);
-      voice.gain.gain.setValueAtTime(currentVal, stopTime);
-      voice.gain.gain.exponentialRampToValueAtTime(0.00001, stopTime + releaseTime);
+      /* 远期停音（编曲/走带预排：noteOn 与 noteOff 同拍调用，stopTime 在未来）
+         不能用 gain.value 快照——那是「现在」的瞬时值（新节点 ≈ 0），
+         也不能用 cancelAndHoldAtTime——WebView2 内核对远期时刻的 hold
+         行为不正确（实测把音符提前切断：每音只响 attack+decay 即静默，
+         听感即"粒子效果器式"断续；代码注释中"1.2s 前瞻实验全静默"同源）。
+         正解：cancelScheduledValues(0) 清掉 noteOn 排的完整包络后，
+         用 voice 记录的包络参数（startTime/peakGain）确定性重放
+         attack/decay/sustain 到 stopTime，再接 release 衰减。 */
+      var g = voice.gain.gain;
+      var now = this.ctx.currentTime;
+      g.cancelScheduledValues(0);
+      if (stopTime <= now + 0.005) {
+        // 即时/已过期停音：当前瞬时值即正确起点
+        stopTime = Math.max(stopTime, now);
+        g.setValueAtTime(Math.max(0.0001, g.value), stopTime);
+      } else {
+        var X = voice.startTime;
+        var a = Math.max(0.005, this.attack);
+        var d = Math.max(0.01, this.decay);
+        var peak = Math.max(0.0001, voice.peakGain);
+        var sus = Math.max(0.0001, peak * this.sustain);
+        g.setValueAtTime(0.0001, X);
+        if (stopTime >= X + a + d) {
+          // 完整 attack+decay 后维持 sustain 至 stopTime
+          g.exponentialRampToValueAtTime(peak, X + a);
+          g.exponentialRampToValueAtTime(sus, X + a + d);
+          g.setValueAtTime(sus, stopTime);
+        } else if (stopTime >= X + a) {
+          // stopTime 落在 decay 段：按指数曲线取该时刻的包络值
+          var fDecay = (stopTime - X - a) / d;
+          g.exponentialRampToValueAtTime(peak, X + a);
+          g.exponentialRampToValueAtTime(Math.max(0.0001, peak * Math.pow(sus / peak, fDecay)), stopTime);
+        } else {
+          // stopTime 落在 attack 段：按指数曲线取该时刻的包络值
+          var fAtt = (stopTime - X) / a;
+          g.exponentialRampToValueAtTime(Math.max(0.0001, 0.0001 * Math.pow(peak / 0.0001, fAtt)), stopTime);
+        }
+      }
+      g.exponentialRampToValueAtTime(0.00001, stopTime + releaseTime);
       voice.osc.stop(stopTime + releaseTime + 0.05);
 
+      var nowRef = now;
       setTimeout(function () {
         try {
           voice.osc.disconnect();
           voice.gain.disconnect();
         } catch (e) {}
-      }, (releaseTime + 0.1) * 1000);
+      }, Math.max(0, (stopTime + releaseTime - nowRef)) * 1000 + 150);
     } catch (e) {
       try { voice.osc.stop(stopTime); } catch (err) {}
     }

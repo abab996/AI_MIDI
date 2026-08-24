@@ -1,26 +1,25 @@
 @echo off
-chcp 65001 >nul
 setlocal
 cd /d "%~dp0..\engine"
 
-echo [build_engine] æ£€æŸ¥ JUCE submodule...
+echo [build_engine] ¼ì²é JUCE submodule...
 if not exist "ThirdParty\JUCE\CMakeLists.txt" (
-    echo [é”™è¯¯] ThirdParty\JUCE ç¼ºå¤±ã€‚è¯·å…ˆæ‰§è¡Œï¼š
+    echo [´íÎó] ThirdParty\JUCE È±Ê§¡£ÇëÏÈÖ´ĞĞ£º
     echo     cd engine ^&^& git submodule update --init --recursive
     exit /b 1
 )
 
-echo [build_engine] CMake é…ç½®ï¼ˆVS2022 x64ï¼‰...
+echo [build_engine] CMake ÅäÖÃ£¨VS2022 x64£©...
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 || exit /b 1
 
-echo [build_engine] ç¼–è¯‘ Release x64...
+echo [build_engine] ±àÒë Release x64...
 cmake --build build --config Release --target aimidi-engine || exit /b 1
 
 if not exist "..\bin" mkdir "..\bin"
 copy /y "build\aimidi-engine_artefacts\Release\aimidi-engine.exe" "..\bin\aimidi-engine.exe" >nul || (
-    echo [é”™è¯¯] å¤åˆ¶äº§ç‰©å¤±è´¥ï¼Œè¯·æ£€æŸ¥ build\aimidi-engine_artefacts\Release\
+    echo [´íÎó] ¸´ÖÆ²úÎïÊ§°Ü£¬Çë¼ì²é build\aimidi-engine_artefacts\Release\
     exit /b 1
 )
 
-echo [OK] å·²æ›´æ–° bin\aimidi-engine.exe
+echo [OK] ÒÑ¸üĞÂ bin\aimidi-engine.exe
 endlocal

@@ -1111,7 +1111,29 @@
   };
 
   Arrange.prototype.applyMixSafe = function () {
+    // Web Audio 侧立即生效（本地节点操作，廉价）
     this.engine.applyMix(this.tracks);
+    // 同步原生引擎混音图（M3）：轨序号即引擎轨号；浏览器模式/引擎未就绪时
+    // updateTrackMix 内部自动跳过。音量滑块按 input 连续触发（每拖动帧
+    // 一次 × 全轨道 IPC），故引擎同步做短防抖合并，避免 IPC 洪峰
+    if (typeof this.engine.updateTrackMix === "function") {
+      var self = this;
+      if (this._mixSyncTimer) clearTimeout(this._mixSyncTimer);
+      this._mixSyncTimer = setTimeout(function () {
+        self._mixSyncTimer = null;
+        for (var i = 0; i < self.tracks.length && i < 32; i++) {
+          var t = self.tracks[i];
+          self.engine.updateTrackMix(
+            i,
+            t.volume !== undefined ? t.volume : 0.8,
+            0,
+            !!t.mute,
+            !!t.solo,
+            true
+          );
+        }
+      }, 80);
+    }
   };
 
   /* ═══════════ 渲染管线 ═══════════ */

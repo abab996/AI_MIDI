@@ -36,7 +36,11 @@ func (r *Router) handleAudioSoundfonts(w http.ResponseWriter, req *http.Request)
 	dir := filepath.Join(config.LibraryDir, "soundfonts")
 	dest := filepath.Join(dir, safe+".sf2")
 
-	buf := make([]byte, 0, req.ContentLength)
+	capHint := 0
+	if req.ContentLength > 0 {
+		capHint = int(req.ContentLength)
+	}
+	buf := make([]byte, 0, capHint)
 	chunk := make([]byte, 32*1024)
 	for {
 		n, err := req.Body.Read(chunk)

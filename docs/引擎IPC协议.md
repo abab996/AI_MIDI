@@ -27,8 +27,16 @@ payload = [1 字节消息类型][消息体]
 | Request | 0x01 | Go → Engine | UTF-8 JSON：`{"id":<num>,"method":"...","params":{...}}` |
 | Response | 0x02 | Engine → Go | UTF-8 JSON：`{"id":<num>,"ok":true,"result":...}` 或 `{"id":<num>,"ok":false,"error":{"message":"..."}}` |
 | Event | 0x03 | Engine → Go | UTF-8 JSON：`{"event":"...","data":{...}}` |
-| Midi | 0x04 | Go → Engine | 预留（二进制，M2 定义） |
-| Timecode | 0x05 | Engine → Go | 预留（二进制定长，M2/M3 定义） |
+| Midi | 0x04 | Go → Engine | 二进制 3 字节：`[status][data1][data2]`（M2 实时演奏路径，见下） |
+| Timecode | 0x05 | Engine → Go | 二进制定长 25 字节走带时间码（M3，见下） |
+
+**Midi 帧（0x04）布局**：payload 在类型字节后为一条标准 MIDI 消息——
+`[status][data1][data2]`，status 为完整状态字节（`0x90|ch` noteOn、`0x80|ch` noteOff），
+data1 为键号、data2 为力度；noteOn 且 data2=0 按 MIDI 约定等价 noteOff。
+
+**Timecode 帧（0x05）布局**（M3）：payload 在类型字节后为 25 字节——
+`[samplePos int64 LE][beatPos float64 LE][bpm float64 LE][playing uint8]`。
+播放中 50Hz 周期推送；stop 时推送终态一帧。客户端也可用 `timecode` 方法拉取同源数据。
 
 JSON 约定：
 - 编码 UTF-8，无 BOM；**载荷不含结尾 NUL 字节**（C++ 侧注意 `CharPointer_UTF8::sizeInBytes()` 含终止符，发送时须 -1）；
@@ -85,26 +93,62 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 | 错误 | JUCE setAudioDeviceSetup 返回的错误文本 |
 
 ### 4.5 `testTone`
-正弦测试音开关（M1 验收用），带电平渐变防咔哒声。
+三角波测试音开关（M1 验收用），带电平渐变防咔哒声。
 | | |
-|---|---|
+|---|---|---|
 | params | `{"on":true,"freq?":440.0}`（freq 合法域 20–20000 Hz，越界保持原值） |
 | result | `{"on":true}` |
 
-### 4.6 `shutdown`
+### 4.6 `loadSoundFont`（M2）
+| | |
+|---|---|
+| params | `{"path":"D:/.../xxx.sf2"}` |
+| result | `{"loaded":true,"path":"..."}`；失败时 `loaded=false` 且附 `error` 文本（加载失败不算协议错误） |
+
+### 4.7 `setTrackMix`（M3 混音图）
+| | |
+|---|---|
+| params | `{"track":0,"gain":1.0,"pan":0.0,"mute":false,"solo":false,"active":true}`（track 0–31） |
+| result | `{}` |
+
+### 4.8 `openControlPanel`
+打开当前声卡的驱动控制面板（仅部分 ASIO 驱动支持）。
+| | |
+|---|---|
+| params | `{}` |
+| result | `{"opened":true}`；不支持时 `opened=false`（非错误） |
+
+### 4.9 `currentSummary`
+当前音频设备摘要（与 applySetup result.summary 同格式），供状态轮询。
+| | |
+|---|---|
+| params | `{}` |
+| result | `{"summary":"<设备> @ <采样率>Hz, buffer=<N>"}` |
+
+### 4.10 走带（M3）
+| 方法 | params | result | 说明 |
+|---|---|---|---|
+| `play` | `{}` | `{}` | 开始推进走带位置，50Hz 推送 timecode 帧 |
+| `stop` | `{}` | `{}` | 停止推进，推送终态一帧 |
+| `locate` | `{"beat": <double>}` | `{}` | 定位到指定拍 |
+| `setTempo` | `{"bpm": <double>}` | `{}` | 变速（保持当前位置拍值，重算采样位置） |
+| `timecode` | `{}` | `{"samplePos":..,"beat":..,"bpm":..,"playing":..}` | 拉取式时间码（与推送帧同源） |
+
+### 4.11 `shutdown`
+
 | | |
 |---|---|
 | params | `{}` |
 | result | `"bye"`；引擎随后退出（主进程可等待进程结束或超时强杀） |
 
-### 4.7 未知方法
+### 4.12 未知方法
 返回 `ok=false`，`error.message = "unknown method: <method>"`。
 
 ## 5. 事件（Engine → Go，单向推送）
 
 | 事件 | data | 触发 |
 |---|---|---|
-| `deviceChanged` | `{"summary":"..."}` | applySetup 成功后 |
+| `deviceChanged` | `{"summary":"..."}` | **暂未实现**（当前引擎不推送；设备摘要经 applySetup result 与 `currentSummary` 轮询获取） |
 
 （v2 预留：`deviceListChanged` 热插拔、`xrun`、电平表、错误上报）
 

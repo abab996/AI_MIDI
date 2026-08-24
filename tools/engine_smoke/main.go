@@ -18,8 +18,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -65,8 +67,10 @@ type listDevicesResult struct {
 // client 串行 I/O 客户端：所有读写只发生在调用 request 的 goroutine 上
 // （看门狗辅助 goroutine 仅阻塞在单次系统调用上，超时后由 close 解除）
 type client struct {
-	conn   *os.File
-	nextID float64
+	conn        *os.File
+	nextID      float64
+	everPlaying bool // 任一 timecode 帧 playing=true
+	everStopped bool // 任一 timecode 帧 playing=false
 }
 
 func dialOnce(name string, timeout time.Duration) (*os.File, error) {
@@ -150,12 +154,20 @@ func ioReadFull(f *os.File, buf []byte) (int, error) {
 	return total, nil
 }
 
-// awaitResponse 串行读帧直到出现与 id 匹配的响应；期间收到的事件帧直接跳过
+// awaitResponse 串行读帧直到出现与 id 匹配的响应；事件帧打印，
+// timecode 帧锁存播放状态（body = payload 去掉类型字节，playing 在 body[24]）
 func (c *client) awaitResponse(id float64) (*response, error) {
 	for {
 		fr, err := c.readFrame()
 		if err != nil {
 			return nil, err
+		}
+		if fr.typ == 0x05 && len(fr.body) >= 25 {
+			if fr.body[24] == 1 {
+				c.everPlaying = true
+			} else {
+				c.everStopped = true
+			}
 		}
 		switch fr.typ {
 		case msgResponse:
@@ -188,6 +200,47 @@ func (c *client) request(method string, params map[string]interface{}) (*respons
 }
 
 func (c *client) close() { _ = c.conn.Close() }
+
+// drainTimecode 在时限内统计收到的 Timecode 帧（0x05）。
+// 线格式：payload（含类型字节）= [0x05][samplePos int64][beat f64][bpm f64][playing u8]
+// 故原始帧 p 中：p[0]=类型、p[9:17]=beat、p[25]=playing。
+func (c *client) drainTimecode(d time.Duration) (count int, playingLast bool, beatLast float64) {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		type res struct {
+			p   []byte
+			err error
+		}
+		ch := make(chan res, 1)
+		go func() {
+			var lb [4]byte
+			if _, err := ioReadFull(c.conn, lb[:]); err != nil {
+				ch <- res{nil, err}
+				return
+			}
+			n := binary.LittleEndian.Uint32(lb[:])
+			pl := make([]byte, n)
+			if _, err := ioReadFull(c.conn, pl); err != nil {
+				ch <- res{nil, err}
+				return
+			}
+			ch <- res{pl, nil}
+		}()
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				return
+			}
+			if r.p[0] == 0x05 && len(r.p) >= 26 {
+				count++
+				playingLast = r.p[25] == 1
+				beatLast = math.Float64frombits(binary.LittleEndian.Uint64(r.p[9:17]))
+			}
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	return
+}
 
 // openSession 建立经过验证的会话：连接后先发一次网关探测（ping 应被协议拒绝），
 // 全部 I/O 带看门狗；任何传输层异常都丢弃句柄重连。返回的会话已通过网关验证，
@@ -325,21 +378,35 @@ func main() {
 	check("ping→pong", reqErr == nil && r.OK && string(r.Result) == `"pong"`, errText(r, reqErr))
 
 	// 5) 设备枚举（ASIO 编译开关验证点）
+	// ASIO 枚举与引擎启动期的默认设备初始化存在竞争（虚拟 ASIO 驱动
+	// 初始化期间扫描可能为空），缺失时延迟重试一次
 	r, reqErr = c.request("listDevices", nil)
 	check("listDevices", reqErr == nil && r.OK, errText(r, reqErr))
-	if r != nil && r.OK {
-		var ld listDevicesResult
-		_ = json.Unmarshal(r.Result, &ld)
-		hasASIO := false
-		for _, d := range ld.Drivers {
-			fmt.Printf("      驱动 %-14s 设备数 %d\n", d.Driver, len(d.Devices))
-			if d.Driver == "ASIO" {
-				hasASIO = true
+	hasASIO := false
+	for attempt := 0; attempt < 2; attempt++ {
+		if r != nil && r.OK {
+			var ld listDevicesResult
+			_ = json.Unmarshal(r.Result, &ld)
+			hasASIO = false
+			for _, d := range ld.Drivers {
+				fmt.Printf("      驱动 %-14s 设备数 %d\n", d.Driver, len(d.Devices))
+				if d.Driver == "ASIO" {
+					hasASIO = true
+				}
 			}
+			if hasASIO || attempt == 1 {
+				break
+			}
+			fmt.Println("      [重试] 未发现 ASIO，2 秒后重试一次…")
 		}
-		check("枚举结果包含 ASIO 驱动类型（JUCE_ASIO 已生效）", hasASIO,
-			"未发现 ASIO 类型——确认 SDK 就位且 CMake 检测通过后重新构建")
+		time.Sleep(2 * time.Second)
+		r, reqErr = c.request("listDevices", nil)
+		if reqErr != nil || r == nil || !r.OK {
+			break
+		}
 	}
+	check("枚举结果包含 ASIO 驱动类型（JUCE_ASIO 已生效）", hasASIO,
+		"未发现 ASIO 类型——确认 SDK 就位且 CMake 检测通过后重新构建")
 
 	// 6) applySetup 空参数回环（不做机器相关的硬件假设）
 	r, reqErr = c.request("applySetup", map[string]interface{}{})
@@ -352,7 +419,7 @@ func main() {
 	r, reqErr = c.request("testTone", map[string]interface{}{"on": false})
 	check("testTone 关", reqErr == nil && r.OK, errText(r, reqErr))
 
-	// 8.5) M2 合成器：加载失败须优雅表达；noteOn/Off 正常应答；MIDI 二进制帧不致断链
+	// 8.5) M2 合成器：加载失败须优雅表达；实时音符走二进制 Midi 帧（协议禁止 JSON 化）
 	r, reqErr = c.request("loadSoundFont", map[string]interface{}{"path": "Z:/__no_such__.sf2"})
 	loaded := true
 	if r != nil && r.OK {
@@ -361,13 +428,66 @@ func main() {
 	check("loadSoundFont 缺文件优雅返回 loaded=false",
 		reqErr == nil && r != nil && r.OK && !loaded, errText(r, reqErr))
 
-	r, reqErr = c.request("noteOn", map[string]interface{}{"channel": 0, "key": 60, "velocity": 100})
-	check("noteOn 应答", reqErr == nil && r.OK, errText(r, reqErr))
-	_ = c.writeFrame(0x04, []byte{1, 0, 64, 100}) // Midi 二进制帧：noteOn ch0 key64
-	r, reqErr = c.request("noteOff", map[string]interface{}{"channel": 0, "key": 60})
-	check("noteOff 应答", reqErr == nil && r.OK, errText(r, reqErr))
+	// Midi 帧线格式：payload = [类型0x04][status][data1][data2]
+	err = c.writeFrame(0x04, []byte{0x90, 60, 100}) // noteOn ch0 key60 vel100
+	check("Midi noteOn 帧写入", err == nil, fmt.Sprintf("err=%v", err))
+	err = c.writeFrame(0x04, []byte{0x90, 64, 100}) // noteOn ch0 key64 vel100
+	check("Midi noteOn 帧写入（第二音）", err == nil, fmt.Sprintf("err=%v", err))
+	err = c.writeFrame(0x04, []byte{0x80, 60, 0}) // noteOff ch0 key60
+	check("Midi noteOff 帧写入", err == nil, fmt.Sprintf("err=%v", err))
+	err = c.writeFrame(0x04, []byte{0x80, 64, 0}) // noteOff ch0 key64（防声部悬挂）
+	check("Midi noteOff 帧写入（第二音）", err == nil, fmt.Sprintf("err=%v", err))
 	r, reqErr = c.request("ping", nil)
 	check("MIDI 帧后连接仍健康", reqErr == nil && r.OK, errText(r, reqErr))
+
+	// 8.6) 真实 SF2 加载（文件存在时）：守护器启动即自动加载默认音色，
+	// 此处验证引擎对真实文件解析成功（tsf 渲染路径打通的前置条件）
+	if sfPath, sfErr := filepath.Abs("Library/soundfonts/PianoteqTest.sf2"); sfErr == nil {
+		if _, statErr := os.Stat(sfPath); statErr == nil {
+			r, reqErr = c.request("loadSoundFont", map[string]interface{}{"path": sfPath})
+			loadedReal := false
+			if r != nil && r.OK {
+				loadedReal, _ = jsonLoose(r.Result)["loaded"].(bool)
+			}
+			check("loadSoundFont 真实文件 loaded=true",
+				reqErr == nil && r != nil && r.OK && loadedReal, errText(r, reqErr))
+		} else {
+			fmt.Println("[跳过] Library/soundfonts/PianoteqTest.sf2 不存在，跳过真实音色加载检查")
+		}
+	}
+
+	// 7.6) M3 走带：play → timecode 推送 → locate/setTempo → stop。
+	// 注意：drainTimecode 结束时残留的阻塞读 goroutine 会占住同步管道句柄，
+	// 播放期间引擎 50Hz 推送可在 20ms 内喂饱它，但停止后无新帧 → 后续写入死锁。
+	// 故停止后不再 drain，终态经 awaitResponse 内锁存 + timecode 拉取验证。
+	r, reqErr = c.request("play", nil)
+	check("play 应答", reqErr == nil && r.OK, errText(r, reqErr))
+	tcCount, _, _ := c.drainTimecode(1200 * time.Millisecond)
+	check(fmt.Sprintf("timecode 推送 ≥20 帧（实测 %d）", tcCount), tcCount >= 20,
+		"引擎未按 50Hz 推送走带帧")
+
+	r, reqErr = c.request("locate", map[string]interface{}{"beat": 8})
+	check("locate 应答", reqErr == nil && r.OK, errText(r, reqErr))
+	_, _, beatNow := c.drainTimecode(400 * time.Millisecond)
+	check(fmt.Sprintf("locate 后 beat≈8（实测 %.2f）", beatNow),
+		beatNow > 7.0 && beatNow < 9.5, "定位后拍位置不符")
+
+	r, reqErr = c.request("setTempo", map[string]interface{}{"bpm": 140})
+	check("setTempo 应答", reqErr == nil && r.OK, errText(r, reqErr))
+
+	r, reqErr = c.request("stop", nil)
+	check("stop 应答", reqErr == nil && r.OK, errText(r, reqErr))
+	check("播放/停止状态切换均经推送帧观察到", c.everPlaying && c.everStopped,
+		fmt.Sprintf("playing=%v stopped=%v", c.everPlaying, c.everStopped))
+
+	r, reqErr = c.request("timecode", nil)
+	tcJSON := jsonLoose(nil)
+	if r != nil && r.OK {
+		tcJSON = jsonLoose(r.Result)
+	}
+	playingJSON, _ := tcJSON["playing"].(bool)
+	check("timecode 拉取 playing=false", reqErr == nil && r != nil && r.OK && !playingJSON,
+		errText(r, reqErr))
 
 	// 8) 断线重连：握手状态应复位（openSession 同样验证网关拒绝）
 	c.close()

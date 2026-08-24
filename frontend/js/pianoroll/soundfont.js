@@ -524,7 +524,8 @@
     voices.push({
       source: src,
       gain: gain,
-      startTime: startTime
+      startTime: startTime,
+      startGain: vel * 0.7
     });
   };
 
@@ -540,18 +541,31 @@
     var release = 0.2;
 
     try {
-      voice.gain.gain.cancelScheduledValues(stopTime);
-      var curGain = Math.max(0.0001, voice.gain.gain.value);
-      voice.gain.gain.setValueAtTime(curGain, stopTime);
-      voice.gain.gain.exponentialRampToValueAtTime(0.00001, stopTime + release);
+      /* 远期停音（编曲预排）与 synth.js 同理：不用 gain.value 快照
+         （「现在」的瞬时值，非 stopTime 时刻值）也不用 cancelAndHoldAtTime
+         （WebView2 内核对远期 hold 不正确，会提前切断音符——断续/粒子感）。
+         本播放器包络为恒定电平：cancel 全部事件后重放
+         setValueAtTime(startGain, startTime) 即可精确还原。 */
+      var g = voice.gain.gain;
+      var now = this.ctx.currentTime;
+      g.cancelScheduledValues(0);
+      if (stopTime <= now + 0.005) {
+        // 即时/已过期停音：当前瞬时值即正确起点
+        stopTime = Math.max(stopTime, now);
+        g.setValueAtTime(Math.max(0.0001, g.value), stopTime);
+      } else {
+        g.setValueAtTime(Math.max(0.0001, voice.startGain || 0.5), voice.startTime);
+      }
+      g.exponentialRampToValueAtTime(0.00001, stopTime + release);
       voice.source.stop(stopTime + release + 0.05);
 
+      var nowRef = now;
       setTimeout(function () {
         try {
           voice.source.disconnect();
           voice.gain.disconnect();
         } catch (e) {}
-      }, (release + 0.1) * 1000);
+      }, Math.max(0, (stopTime + release - nowRef)) * 1000 + 150);
     } catch (e) {
       try { voice.source.stop(stopTime); } catch (err) {}
     }

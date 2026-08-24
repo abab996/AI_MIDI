@@ -1,6 +1,49 @@
 package engine
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// Request 控制请求（Go → Engine）
+type Request struct {
+	ID     float64        `json:"id"`
+	Method string         `json:"method"`
+	Params map[string]any `json:"params"`
+}
+
+// Response 控制响应（Engine → Go）；ok=false 时 Error 非 nil
+type Response struct {
+	ID     *float64         `json:"id"`
+	OK     bool             `json:"ok"`
+	Result json.RawMessage  `json:"result"`
+	Error  *EngineErrorBody `json:"error"`
+}
+
+// EngineErrorBody 引擎业务错误的载荷（协议文档 4.x：error 为 {message}）
+type EngineErrorBody struct {
+	Message string `json:"message"`
+}
+
+// Err ok=false 时返回业务错误
+func (r *Response) Err() error {
+	if r.OK {
+		return nil
+	}
+	msg := "unknown error"
+	if r.Error != nil {
+		msg = r.Error.Message
+	}
+	return fmt.Errorf("engine: %s", msg)
+}
+
+// EngineInfo hello 应答内的引擎信息
+type EngineInfo struct {
+	Name            string   `json:"name"`
+	Version         string   `json:"version"`
+	ProtocolVersion uint32   `json:"protocolVersion"`
+	Capabilities    []string `json:"capabilities"`
+}
 
 // AudioSettings 音频设置（settings.json 的 audio 段）
 type AudioSettings struct {
@@ -49,4 +92,27 @@ type EngineStatus struct {
 type Event struct {
 	Name string          `json:"event"`
 	Data json.RawMessage `json:"data"`
+}
+
+// TrackMixParams 多轨混音参数（M3 混音图）
+type TrackMixParams struct {
+	Track  int     `json:"track"`
+	Gain   float32 `json:"gain"`
+	Pan    float32 `json:"pan"`
+	Mute   bool    `json:"mute"`
+	Solo   bool    `json:"solo"`
+	Active bool    `json:"active"`
+}
+
+// Timecode 走带时间码（引擎 0x05 二进制帧 / timecode 请求共用结构）
+type Timecode struct {
+	SamplePos int64   `json:"samplePos"`
+	Beat      float64 `json:"beat"`
+	BPM       float64 `json:"bpm"`
+	Playing   bool    `json:"playing"`
+}
+
+// zero 是否从未收到过任何 timecode（区分"停在 0 拍"与"无数据"）
+func (t Timecode) zero() bool {
+	return t.SamplePos == 0 && t.Beat == 0 && t.BPM == 0 && !t.Playing
 }

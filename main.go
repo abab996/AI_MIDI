@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/wailsapp/wails/v2"
@@ -65,7 +66,9 @@ func main() {
 	// 原生音频引擎守护（M1）：随主程序启动拉起 aimidi-engine，
 	// 崩溃自动重启；进程退出时优雅回收。缺失/失败均不阻断主程序（降级 Web Audio）。
 	audioSettings := config.LoadSettings().Audio
-	engineSup := engine.NewSupervisor(engine.Config{}, audioSettings)
+	engineSup := engine.NewSupervisor(engine.Config{
+		SoundFontDir: filepath.Join(config.LibraryDir, "soundfonts"),
+	}, audioSettings)
 	engine.SetGlobal(engineSup)
 	engineSup.Start()
 	defer engineSup.Stop()

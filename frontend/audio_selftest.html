@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>音频引擎自测（v2 调度器）</title>
+<script src="/js/pianoroll/synth.js"></script>
+<script src="/js/arrangement/audio_engine.js"></script>
+</head>
+<body>
+<h3>音频引擎自动自测运行中…（8 秒后自动回传结果，含 UI 负载模拟）</h3>
+<pre id="out">初始化…</pre>
+<script>
+(function () {
+  "use strict";
+  var out = document.getElementById("out");
+  function log(m) { out.textContent += "\n" + m; }
+  var jsErrors = [];
+  window.onerror = function (msg, src, line, col) {
+    jsErrors.push(String(msg) + " @" + line + ":" + col);
+  };
+  window.addEventListener("unhandledrejection", function (e) {
+    jsErrors.push("unhandledrejection: " + String(e.reason));
+  });
+
+  var SAMPLE_SEC = 8;
+  var UI_LOAD_MS = 18; // 每帧模拟的 UI 忙碌时长（模拟编曲窗渲染负载）
+
+  // 合成单轨工程：4 拍 MIDI 剪辑 × 8 个音符（0.5 拍间隔、0.45 拍时长），无循环。
+  // @120BPM 音符覆盖 0~2.2s，之后静音尾——用于观察"断续"的时间分布
+  var notes = [];
+  for (var i = 0; i < 8; i++) {
+    notes.push({ note: ["C4","D4","E4","F4","G4","A4","B4","C5"][i],
+                 start: i * 0.5, end: i * 0.5 + 0.45, velocity: 100 });
+  }
+  var tracks = [{
+    id: "t1", name: "selftest", volume: 0.9, mute: false, solo: false,
+    source: { type: "synth", wave: "sawtooth" },
+    clips: [{ type: "midi", id: "c1", start: 0, length: 4, notes: notes,
+              mute: false }]
+  }];
+
+  var eng = new window.ArrangeEngine();
+  eng.getTracks = function () { return tracks; };
+  eng.resume();
+
+  var noteOnTotal = 0;
+  var hbCount = 0;
+  var lastHbAt = 0;
+  var hbGaps = [];      // 心跳实际间隔（ms）——Worker 心跳应稳定 ~25ms
+  var schedLead = [];   // 每个音符实际触发时的提前量（when - now，秒）
+  var proto = window.SynthEngine.prototype;
+  var origNoteOn = proto.noteOn;
+  proto.noteOn = function (midiNote, velocity, when) {
+    noteOnTotal++;
+    if (when !== undefined && this.ctx) {
+      schedLead.push(Number((when - this.ctx.currentTime).toFixed(3)));
+    }
+    return origNoteOn.call(this, midiNote, velocity, when);
+  };
+
+  // 主输出挂分析器：采样实际发声能量
+  eng.init();
+  var analyser = eng.ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  eng.limiter.disconnect();
+  eng.limiter.connect(analyser);
+  analyser.connect(eng.ctx.destination);
+
+  var samples = [];
+  var buf = new Float32Array(analyser.fftSize);
+
+  var ctxStates = [];
+  var lastState = eng.ctx.state;
+  ctxStates.push(lastState + "@0s");
+  var msLeft = SAMPLE_SEC * 1000;
+  var statePoll = setInterval(function () {
+    if (eng.ctx.state !== lastState) {
+      lastState = eng.ctx.state;
+      ctxStates.push(lastState + "@" + ((SAMPLE_SEC * 1000 - msLeft) / 1000).toFixed(1) + "s");
+    }
+  }, 50);
+
+  /* UI 负载模拟：每帧忙循环 + 强制样式抖动（模拟编曲窗 rAF 渲染）。
+     v1 的 setInterval 心跳在此负载下被推迟 → 音符丢失/包络过期；
+     v2 的 Worker 心跳不受主线程阻塞影响。 */
+  var loadEl = document.createElement("div");
+  loadEl.style.cssText = "position:fixed;left:0;top:0;width:10px;height:10px;background:#333";
+  document.body.appendChild(loadEl);
+  var loadOn = true;
+  var loadBusyMs = 0;
+  function loadFrame() {
+    if (!loadOn) return;
+    var t0 = performance.now();
+    var x = 0;
+    while (performance.now() - t0 < UI_LOAD_MS) { x += Math.sqrt(x + 1); } // 忙循环
+    loadBusyMs += performance.now() - t0;
+    loadEl.style.left = (Math.random() * 200) + "px";
+    requestAnimationFrame(loadFrame);
+  }
+  requestAnimationFrame(loadFrame);
+
+  log("开始播放 " + SAMPLE_SEC + " 秒（含每帧 " + UI_LOAD_MS + "ms UI 负载）…");
+
+  // 探针挂 v2 心跳入口 _onHeartbeat（Worker 驱动）
+  var origHb = eng._onHeartbeat;
+  eng._onHeartbeat = function () {
+    hbCount++;
+    var now = performance.now();
+    if (lastHbAt > 0) hbGaps.push(Math.round(now - lastHbAt));
+    lastHbAt = now;
+    try { origHb.call(this); }
+    catch (e) { jsErrors.push("heartbeat throw: " + String(e && e.message || e)); }
+  };
+
+  var _isPlaying = false;
+  Object.defineProperty(eng, "isPlaying", {
+    get: function () { return _isPlaying; },
+    set: function (v) {
+      if (_isPlaying !== v) {
+        jsErrors.push("isPlaying " + _isPlaying + "->" + v);
+      }
+      _isPlaying = v;
+    }
+  });
+  _isPlaying = true;
+
+  eng.play(0);
+
+  var meter = setInterval(function () {
+    msLeft -= 50;
+    analyser.getFloatTimeDomainData(buf);
+    var rms = 0;
+    for (var i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
+    rms = Math.sqrt(rms / buf.length);
+    samples.push(Number(rms.toFixed(4)));
+  }, 50);
+
+  setTimeout(function () {
+    clearInterval(meter);
+    clearInterval(statePoll);
+    loadOn = false;
+    eng.stopSchedule();
+
+    /* 判定（无循环 8 音符，恰好各触发一次；0~2.2s 应连续可听）：
+       - noteOnTotal === 8：>8 重复触发，<8 丢音符
+       - 心跳间隔 >100ms 记为推迟（Worker 心跳应接近 25ms 稳定）
+       - 触发提前量应为小正值（0~0.15s 临近触发；负值=过期补触发）
+       - rmsTimeline：0~2.2s 区间应连续 █，2.5s 后渐弱为 · */
+    var audible = samples.filter(function (r) { return r > 0.002; }).length;
+    var audibleRatio = samples.length ? (audible / samples.length) : 0;
+    var maxRms = Math.max.apply(null, samples.concat([0]));
+    var realErrors = jsErrors.filter(function (e) {
+      return e.indexOf("isPlaying ") !== 0;
+    });
+
+    var gapMax = 0, delayed = 0, gapSum = 0;
+    for (var g = 0; g < hbGaps.length; g++) {
+      gapSum += hbGaps[g];
+      if (hbGaps[g] > gapMax) gapMax = hbGaps[g];
+      if (hbGaps[g] > 100) delayed++;
+    }
+    var gapAvg = hbGaps.length ? Math.round(gapSum / hbGaps.length) : 0;
+
+    var leadMin = Infinity, leadMax = -Infinity, expired = 0;
+    for (var l = 0; l < schedLead.length; l++) {
+      if (schedLead[l] < leadMin) leadMin = schedLead[l];
+      if (schedLead[l] > leadMax) leadMax = schedLead[l];
+      if (schedLead[l] < 0) expired++;
+    }
+
+    var viz = samples.map(function (r) { return r > 0.002 ? "█" : "·"; }).join("");
+
+    var verdict = {
+      engine: "v2",
+      workerHeartbeat: !!eng._heartbeat,
+      uiLoadPerFrameMs: UI_LOAD_MS,
+      noteOnTotal: noteOnTotal,
+      noteOnExpected: 8,
+      heartbeatCount: hbCount,
+      hbGapAvgMs: gapAvg,
+      hbGapMaxMs: gapMax,
+      hbDelayed: delayed,
+      schedLeadMin: leadMin === Infinity ? null : leadMin,
+      schedLeadMax: leadMax === -Infinity ? null : leadMax,
+      schedExpired: expired,
+      ctxStates: ctxStates,
+      samples: samples.length,
+      audibleSamples: audible,
+      audibleRatio: Number(audibleRatio.toFixed(3)),
+      maxRms: Number(maxRms.toFixed(4)),
+      rmsTimeline: viz,
+      jsErrors: realErrors,
+      isPlayingAtEnd: eng.isPlaying,
+      reasons: []
+    };
+    if (noteOnTotal !== 8)
+      verdict.reasons.push("音符触发数异常（应恰为 8，实测 " + noteOnTotal + "）");
+    if (maxRms <= 0.005 || audible < 5)
+      verdict.reasons.push("输出几乎无声");
+    if (delayed > 3)
+      verdict.reasons.push("心跳被推迟 " + delayed + " 次（最大间隔 " + gapMax + "ms）");
+    if (expired > 2)
+      verdict.reasons.push(expired + " 个音符过期触发（主线程阻塞超缓冲）");
+    // 断续检测：0~2.2s（前 44 个 50ms 采样）内的静音空洞
+    var holes = 0;
+    for (var v = 2; v < 44 && v < samples.length; v++) {
+      if (samples[v] <= 0.002 && samples[v - 1] > 0.002 && samples[v - 2] > 0.002) holes++;
+    }
+    verdict.silenceHoles = holes;
+    if (holes > 2)
+      verdict.reasons.push("发声区间存在 " + holes + " 处静音空洞（断续）");
+
+    verdict.pass = verdict.reasons.length === 0;
+    var text = JSON.stringify(verdict);
+    out.textContent = text;
+    fetch("/api/audio/selftest-result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: text
+    });
+  }, SAMPLE_SEC * 1000);
+})();
+</script>
+</body>
+</html>

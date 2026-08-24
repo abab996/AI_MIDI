@@ -69,3 +69,61 @@ func (a *App) EngineLoadSoundFont(path string) error {
 	}
 	return sup.LoadSoundFont(path)
 }
+
+// EngineSetTrackMix 设置音轨混音参数（M3 混音图）
+func (a *App) EngineSetTrackMix(track int, gain, pan float32, mute, solo, active bool) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.SetTrackMix(engine.TrackMixParams{
+		Track:  track,
+		Gain:   gain,
+		Pan:    pan,
+		Mute:   mute,
+		Solo:   solo,
+		Active: active,
+	})
+}
+
+// ===== 走带控制（M3 阶段一）=====
+
+// EnginePlay 引擎走带播放
+func (a *App) EnginePlay() error {
+	if sup := engine.Get(); sup != nil {
+		return sup.TransportPlay()
+	}
+	return errEngineUnavailable
+}
+
+// EngineStop 引擎走带停止
+func (a *App) EngineStop() error {
+	if sup := engine.Get(); sup != nil {
+		return sup.TransportStop()
+	}
+	return errEngineUnavailable
+}
+
+// EngineLocate 引擎走带定位（拍）
+func (a *App) EngineLocate(beat float64) error {
+	if sup := engine.Get(); sup != nil {
+		return sup.TransportLocate(beat)
+	}
+	return errEngineUnavailable
+}
+
+// EngineSetTempo 设置引擎走带 BPM
+func (a *App) EngineSetTempo(bpm float64) error {
+	if sup := engine.Get(); sup != nil {
+		return sup.TransportSetTempo(bpm)
+	}
+	return errEngineUnavailable
+}
+
+// EngineGetTimecode 读取引擎走带时间码
+func (a *App) EngineGetTimecode() (*engine.Timecode, error) {
+	if sup := engine.Get(); sup != nil {
+		return sup.Timecode()
+	}
+	return nil, errEngineUnavailable
+}

@@ -45,3 +45,4 @@ frontend/wailsjs/
 # ---------- 旧版 Python 后端（自带独立 git 仓库，不混入本仓库） ----------
 原版Python后端/
 *.exe~
+smoke_run.log

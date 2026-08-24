@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -16,6 +18,7 @@ import (
 // Config 守护器配置
 type Config struct {
 	EnginePath       string // 引擎 exe 路径（已解析为绝对路径）
+	SoundFontDir     string // 默认音色目录（Library/soundfonts）；由 main 注入，避免 config↔engine 循环导入
 	DialTimeout      time.Duration
 	HandshakeTimeout time.Duration
 	RequestTimeout   time.Duration
@@ -37,7 +40,10 @@ type Supervisor struct {
 	client     *Client
 	cmd        *exec.Cmd
 	startedEnabled bool // 当前守护会话是否以启用状态启动
+	parked     bool   // 引擎文件缺失等不可重试错误：驻留失败态直至退出
+	sessionCnt int    // 已建立的会话数（Restarts = sessionCnt - 1）
 	lastApply  *map[string]any // 最近一次 applySetup 参数（重启后重放）
+	lastSoundFont string // 最近一次成功加载的音色路径（重启后重放）
 	exePath    string
 	stopOnce   sync.Once
 	doneCh     chan struct{} // 关闭表示主循环退出
@@ -87,6 +93,9 @@ func ResolveEnginePath(override string) string {
 			return c
 		}
 	}
+	if len(candidates) == 0 {
+		candidates = append(candidates, filepath.Join("bin", "aimidi-engine.exe"))
+	}
 	slog.Warn("[engine] 未找到 aimidi-engine.exe，使用首选候选路径", "candidates", candidates)
 	return candidates[0]
 }
@@ -102,6 +111,10 @@ func (s *Supervisor) Start() {
 	s.doneCh = make(chan struct{})
 	s.mu.Unlock()
 
+	// 启动清场：收割历史孤儿引擎（主程序被强杀且 Job 兜底失效的残留），
+	// 避免与本次新引擎并存（"一次启动两个引擎"的根因之一）
+	cleanupOrphanEngines(0)
+
 	go s.loop()
 }
 
@@ -115,7 +128,7 @@ func (s *Supervisor) Stop() {
 
 		// 先尝试协议层优雅退出
 		if cli != nil {
-			_, _ = cli.Request(1*time.Second, "shutdown", nil)
+			_, _ = cli.Request("shutdown", nil, 1*time.Second)
 			_ = cli.Close()
 		}
 		if cancel != nil {
@@ -143,25 +156,36 @@ func (s *Supervisor) Status() EngineStatus {
 	return st
 }
 
-// Ready 等待引擎就绪或 ctx/超时；返回可用的客户端引用
+// Ready 等待引擎就绪或 ctx/超时；返回可用的客户端引用。
+// 引擎禁用或驻留失败态（可执行文件缺失等不可重试错误）时立即返回，
+// 避免每次调用都等满超时。
 func (s *Supervisor) Ready(timeout time.Duration) (*Client, error) {
 	deadline := time.After(timeout)
 	for {
 		s.mu.RLock()
-		state, cli := s.status.State, s.client
+		state, cli, parked := s.status.State, s.client, s.parked
 		s.mu.RUnlock()
 		if state == StateReady && cli != nil {
 			return cli, nil
 		}
+		if state == StateDisabled || (state == StateFailed && parked) {
+			return nil, fmt.Errorf("引擎不可用（state=%s, last_error=%q）",
+				state, s.LastError())
+		}
 		select {
 		case <-deadline:
-			s.mu.RLock()
-			defer s.mu.RUnlock()
 			return nil, fmt.Errorf("引擎未就绪（state=%s, last_error=%q）",
-				s.status.State, s.status.LastError)
+				state, s.LastError())
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// LastError 最近一次错误信息快照
+func (s *Supervisor) LastError() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.status.LastError
 }
 
 // ApplySettings 更新音频设置；引擎就绪时立即下发 applySetup
@@ -198,8 +222,11 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 		// 未就绪：设置已保存，引擎就绪后会由 loop 自动重放
 		return nil
 	}
-	_, err = cli.Request(s.cfg.RequestTimeout, "applySetup", params)
-	return err
+	resp, err := cli.Request("applySetup", params, s.cfg.RequestTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
 }
 
 // TestTone 测试音开关
@@ -208,8 +235,11 @@ func (s *Supervisor) TestTone(on bool, freq float64) error {
 	if err != nil {
 		return err
 	}
-	_, err = cli.Request(10*time.Second, "testTone", map[string]any{"on": on, "freq": freq})
-	return err
+	resp, err := cli.Request("testTone", map[string]any{"on": on, "freq": freq}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
 }
 
 // ListDevices 设备枚举透传
@@ -218,8 +248,11 @@ func (s *Supervisor) ListDevices() (*DeviceList, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := cli.Request(s.cfg.RequestTimeout, "listDevices", nil)
+	resp, err := cli.Request("listDevices", nil, s.cfg.RequestTimeout)
 	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
 		return nil, err
 	}
 	var dl DeviceList
@@ -232,7 +265,7 @@ func (s *Supervisor) ListDevices() (*DeviceList, error) {
 			} `json:"devices"`
 		} `json:"drivers"`
 	}
-	if err := json.Unmarshal(raw, &rawList); err != nil {
+	if err := json.Unmarshal(resp.Result, &rawList); err != nil {
 		return nil, err
 	}
 	for _, d := range rawList.Drivers {
@@ -243,6 +276,50 @@ func (s *Supervisor) ListDevices() (*DeviceList, error) {
 		dl.Drivers = append(dl.Drivers, dt)
 	}
 	return &dl, nil
+}
+
+// SetTrackMix 设置指定轨道的混音参数（音量、声相、静音、独奏、激活状态）
+func (s *Supervisor) SetTrackMix(p TrackMixParams) error {
+	s.mu.Lock()
+	cli := s.client
+	s.mu.Unlock()
+	if cli == nil {
+		return fmt.Errorf("引擎未就绪")
+	}
+	resp, err := cli.Request("setTrackMix", map[string]any{
+		"track":  p.Track,
+		"gain":   p.Gain,
+		"pan":    p.Pan,
+		"mute":   p.Mute,
+		"solo":   p.Solo,
+		"active": p.Active,
+	}, s.cfg.RequestTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// OpenControlPanel 打开当前声卡的控制面板（ASIO 驱动专用）
+func (s *Supervisor) OpenControlPanel() (bool, error) {
+	s.mu.Lock()
+	cli := s.client
+	s.mu.Unlock()
+	if cli == nil {
+		return false, fmt.Errorf("引擎未就绪")
+	}
+	resp, err := cli.Request("openControlPanel", map[string]any{}, s.cfg.RequestTimeout)
+	if err != nil {
+		return false, err
+	}
+	if err := resp.Err(); err != nil {
+		return false, err
+	}
+	var res struct {
+		Opened bool `json:"opened"`
+	}
+	_ = json.Unmarshal(resp.Result, &res)
+	return res.Opened, nil
 }
 
 // setState 更新状态（带日志）
@@ -322,6 +399,9 @@ func (s *Supervisor) loop() {
 
 // parkUntilDone 驻留直至守护器停止（用于不可重试的部署类错误）
 func (s *Supervisor) parkUntilDone() {
+	s.mu.Lock()
+	s.parked = true
+	s.mu.Unlock()
 	<-s.ctx.Done()
 	s.setState(StateStopped, "")
 }
@@ -339,7 +419,7 @@ func isExecNotFound(err error) bool {
 func (s *Supervisor) runOnce() {
 	s.setState(StateStarting, "")
 
-	cmd := exec.Command(s.exePath)
+	cmd := exec.Command(s.exePath, "--parent", strconv.Itoa(os.Getpid()))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -367,25 +447,83 @@ func (s *Supervisor) runOnce() {
 	cli, err := Dial(cmd.Process.Pid, s.cfg.DialTimeout, s.cfg.HandshakeTimeout)
 	if err != nil {
 		s.setState(StateFailed, "连接失败: "+err.Error())
-		_ = cmd.Process.Kill()
-		<-waitCh
+		if kerr := cmd.Process.Kill(); kerr != nil {
+			slog.Warn("[engine] 连接失败后终止引擎出错（可能已退出）", "pid", cmd.Process.Pid, "err", kerr.Error())
+		}
+		// 等待退出带 5 秒上限：进程若卡内核态（个别驱动）不再冻结守护循环；
+		// 极端未退出场景由引擎侧父进程看门狗兜底
+		select {
+		case <-waitCh:
+		case <-time.After(5 * time.Second):
+			slog.Warn("[engine] 引擎终止确认超时，继续重启流程", "pid", cmd.Process.Pid)
+			_ = cmd.Process.Kill()
+		}
 		return
 	}
 
 	s.mu.Lock()
 	s.client = cli
-	s.status.Restarts++
+	s.sessionCnt++
+	if s.sessionCnt > 1 {
+		s.status.Restarts = s.sessionCnt - 1
+	}
 	s.mu.Unlock()
 	s.setState(StateReady, "")
 
 	// 重放最近的音频设置（崩溃恢复对上层透明）
 	s.mu.RLock()
 	lastApply := s.lastApply
+	audio := s.audio
 	s.mu.RUnlock()
+
+	// 会话建立后应用音频设置：重启重放优先，否则应用持久化配置（首启）
+	params := map[string]any{}
 	if lastApply != nil && len(*lastApply) > 0 {
-		if _, err := cli.Request(15*time.Second, "applySetup", *lastApply); err != nil {
-			slog.Warn("[engine] 重放音频设置失败", "err", err)
+		params = *lastApply
+	} else {
+		if audio.Driver != "" {
+			params["driver"] = audio.Driver
 		}
+		if audio.Device != "" {
+			params["device"] = audio.Device
+		}
+		if audio.SampleRate > 0 {
+			params["sampleRate"] = audio.SampleRate
+		}
+		if audio.BufferSize > 0 {
+			params["bufferSize"] = audio.BufferSize
+		}
+	}
+	if len(params) > 0 {
+		if resp, err := cli.Request("applySetup", params, 30*time.Second); err != nil {
+			slog.Warn("[engine] 应用音频设置失败", "err", err)
+		} else if err := resp.Err(); err != nil {
+			slog.Warn("[engine] 应用音频设置失败", "err", err)
+		} else {
+			s.mu.Lock()
+			p := params
+			s.lastApply = &p
+			s.mu.Unlock()
+		}
+	}
+
+	// 会话建立后加载音色：显式加载过的优先重放（崩溃恢复），
+	// 否则取音色目录首个 SF2 作为默认——否则原生演奏路径静默
+	// （引擎合成器无音色时 render 直接返回 false）
+	s.mu.RLock()
+	lastSF := s.lastSoundFont
+	s.mu.RUnlock()
+	if lastSF == "" {
+		lastSF = s.defaultSoundFontPath()
+	}
+	if lastSF != "" {
+		if err := s.loadSoundFontWith(cli, lastSF); err != nil {
+			slog.Warn("[engine] 加载默认音色失败（原生演奏将静默，可在设置切换 WEBAUDIO 后端）", "path", lastSF, "err", err)
+		} else {
+			slog.Info("[engine] 已加载默认音色", "path", lastSF)
+		}
+	} else {
+		slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），原生演奏静默")
 	}
 
 	// 心跳 + 进程退出 + IPC 失联三通道监控
@@ -400,7 +538,7 @@ func (s *Supervisor) runOnce() {
 				return
 			case <-ticker.C:
 				// 慢请求排队时心跳会顺延；连续失败才判定失联
-				if _, err := cli.Request(5*time.Second, "ping", nil); err != nil {
+				if err := cli.Ping(5 * time.Second); err != nil {
 					failures++
 					if failures >= 2 {
 						slog.Warn("[engine] 心跳连续失败，判定会话失效", "failures", failures)
@@ -448,25 +586,56 @@ func (s *Supervisor) LoadSoundFont(path string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := cli.Request(30*time.Second, "loadSoundFont", map[string]any{"path": path})
+	if err := s.loadSoundFontWith(cli, path); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.lastSoundFont = path
+	s.mu.Unlock()
+	return nil
+}
+
+// loadSoundFontWith 在指定会话上加载音色并解析结果
+func (s *Supervisor) loadSoundFontWith(cli *Client, path string) error {
+	resp, err := cli.Request("loadSoundFont", map[string]any{"path": path}, 30*time.Second)
 	if err != nil {
+		return err
+	}
+	if err := resp.Err(); err != nil {
 		return err
 	}
 	var res struct {
 		Loaded bool   `json:"loaded"`
 		Error  string `json:"error"`
 	}
-	if jsonErr := json.Unmarshal(raw, &res); jsonErr != nil {
+	if jsonErr := json.Unmarshal(resp.Result, &res); jsonErr != nil {
 		return jsonErr
 	}
 	if !res.Loaded {
-		return fmt.Errorf("引擎加载音色失败: %s", res.Error)
+		if res.Error != "" {
+			return fmt.Errorf("引擎加载音色失败: %s", res.Error)
+		}
+		return fmt.Errorf("引擎加载音色失败: %s", path)
 	}
 	return nil
 }
 
-// NoteOn/NoteOff 演奏事件：尽力而为——引擎未就绪或队列满时静默丢弃，
-// 不阻塞前端键盘路径（M2 骨架；后续可加发送合并）
+// defaultSoundFontPath 返回音色目录（按文件名排序）的首个 SF2；无则空串。
+// 目录约定与 handler_soundfont.go 的上传落盘位置一致。
+func (s *Supervisor) defaultSoundFontPath() string {
+	if s.cfg.SoundFontDir == "" {
+		return ""
+	}
+	matches, err := filepath.Glob(filepath.Join(s.cfg.SoundFontDir, "*.sf2"))
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	return matches[0]
+}
+
+// NoteOn/NoteOff 演奏事件：走二进制 Midi 帧（协议规定实时消息禁止 JSON 化），
+// 尽力而为——引擎未就绪时静默丢弃，不阻塞前端键盘路径。
 func (s *Supervisor) NoteOn(channel, key, velocity int) {
 	s.mu.RLock()
 	cli := s.client
@@ -474,9 +643,7 @@ func (s *Supervisor) NoteOn(channel, key, velocity int) {
 	if cli == nil {
 		return
 	}
-	_, _ = cli.Request(2*time.Second, "noteOn", map[string]any{
-		"channel": channel, "key": key, "velocity": velocity,
-	})
+	_ = cli.NoteOn(channel, key, velocity)
 }
 
 func (s *Supervisor) NoteOff(channel, key int) {
@@ -486,7 +653,76 @@ func (s *Supervisor) NoteOff(channel, key int) {
 	if cli == nil {
 		return
 	}
-	_, _ = cli.Request(2*time.Second, "noteOff", map[string]any{
-		"channel": channel, "key": key,
-	})
+	_ = cli.NoteOff(channel, key)
+}
+
+// TransportPlay/TransportStop/TransportLocate/TransportSetTempo 走带控制（M3 阶段一）
+func (s *Supervisor) TransportPlay() error {
+	return s.transportCall("play", nil)
+}
+
+func (s *Supervisor) TransportStop() error {
+	return s.transportCall("stop", nil)
+}
+
+func (s *Supervisor) TransportLocate(beat float64) error {
+	return s.transportCall("locate", map[string]any{"beat": beat})
+}
+
+func (s *Supervisor) TransportSetTempo(bpm float64) error {
+	return s.transportCall("setTempo", map[string]any{"bpm": bpm})
+}
+
+func (s *Supervisor) transportCall(method string, params map[string]any) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	resp, err := cli.Request(method, params, s.cfg.RequestTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// Timecode 返回引擎走带位置：优先用推送帧的锁存值（随任意请求刷新），
+// 无锁存时发一次 timecode 请求拉取。
+func (s *Supervisor) Timecode() (*Timecode, error) {
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return nil, fmt.Errorf("引擎未就绪")
+	}
+	if tc, ok := cli.LatchedTimecode(); ok {
+		return &tc, nil
+	}
+	resp, err := cli.Request("timecode", nil, s.cfg.RequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var tc Timecode
+	if err := json.Unmarshal(resp.Result, &tc); err != nil {
+		return nil, err
+	}
+	return &tc, nil
+}
+
+// RequestRaw 透传任意方法调用（内部/调试用）
+func (s *Supervisor) RequestRaw(method string, timeout time.Duration) (json.RawMessage, error) {
+	cli, err := s.Ready(timeout)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.Request(method, nil, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
 }

@@ -318,12 +318,12 @@
       .then(function (j) {
         btn.disabled = false;
         if (!j.opened) {
-          alert("当前音频设备不支持弹出硬件控制面板（非 ASIO 设备或驱动未提供控制界面）。");
+          UI.toast("⚠ 当前音频设备不支持弹出硬件控制面板（非 ASIO 设备或驱动未提供控制界面）", "warn");
         }
       })
       .catch(function (err) {
         btn.disabled = false;
-        alert("打开控制面板失败: " + (err.message || err));
+        UI.toast("✗ 打开控制面板失败: " + (err.message || err), "err");
       });
   });
 
@@ -344,11 +344,20 @@
 
   $("testToneBtn").addEventListener("click", function () {
     toneOn = !toneOn;
+    var btn = $("testToneBtn");
+    btn.disabled = true;
     fetch("/api/audio/test-tone", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ on: toneOn })
-    });
+    })
+      .then(function () { btn.disabled = false; })
+      .catch(function (err) {
+        /* 请求失败：回滚开关状态，避免 UI 显示与实际音源状态失同步 */
+        toneOn = !toneOn;
+        btn.disabled = false;
+        UI.toast("✗ 测试音请求失败: " + (err.message || err), "err");
+      });
   });
 
   refreshStatus();

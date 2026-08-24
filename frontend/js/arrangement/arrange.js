@@ -2865,6 +2865,14 @@
       if (k === "+" || k === "=") { self.zoomStep(1); return; }
       if (k === "-" || k === "_") { self.zoomStep(-1); return; }
       if (k === "Escape") {
+        /* Esc 分层：吸附下拉 → 右键菜单 → 清选区（下拉此前只能点外部关闭，
+           与弹层 Esc 分层惯例不一致） */
+        var snapMenu = self.el.arrSnapMenu;
+        if (snapMenu && !snapMenu.hidden) {
+          snapMenu.hidden = true;
+          if (self.el.arrSnapDropdown) self.el.arrSnapDropdown.classList.remove("open");
+          return;
+        }
         if (self.menuEl) { self.closeMenu(); return; }
         self.clearSelection();
         return;

@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"runtime/debug"
@@ -57,6 +60,16 @@ func (c *capturingWriter) Flush() {
 	if f, ok := c.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack 透传连接劫持（WebSocket 升级等场景；内层不支持时如实返回错误，
+// 保证包装层不成为中间件链的接口黑洞）
+func (c *capturingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := c.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("内层 ResponseWriter 不支持 Hijack")
+	}
+	return h.Hijack()
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {

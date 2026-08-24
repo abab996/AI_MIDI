@@ -32,9 +32,12 @@
     });
 
     // 3. 通知 Go 后端切换 Windows 原生标题栏与任务栏图标
+    // keepalive：冷启动 index→chat.html 重定向会中止进行中的 fetch，
+    // 落一条 ERR_ABORTED 控制台错误；keepalive 让请求在导航后仍完成
     try {
       fetch("/api/theme/switch?theme=" + encodeURIComponent(theme), {
-        method: "POST"
+        method: "POST",
+        keepalive: true
       }).catch(function () {});
     } catch (e) {}
   }

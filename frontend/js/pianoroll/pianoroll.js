@@ -2633,6 +2633,10 @@
   /* Esc 分层：有选中音符先取消选择，无选择才关闭抽屉——编辑中按 Esc
      的反射不再直接收起整个工作区（多层防误触：弹窗 > 选择 > 关闭） */
   PianoRoll.prototype.escapeAction = function () {
+    /* Esc 分层：弹窗（keydown 顶部 anyModalOpen 拦截）→ 下拉菜单 →
+       清选区 → 关抽屉。下拉此前只能点外部关闭，与弹层 Esc 分层惯例不一致 */
+    var openDD = document.querySelector(".pr-dropdown.open");
+    if (openDD) { this.closeAllDropdowns(); return; }
     if (this.selectedNotes && this.selectedNotes.length) {
       this.selectedNotes = [];
       this.render();

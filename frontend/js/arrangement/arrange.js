@@ -799,6 +799,9 @@
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
         self.updateDropHighlight(e);
+        /* 剪影预览：与 drop 用同一份 resolveDropTarget 计算，
+           拖动所见位置 = 松手放置位置 */
+        self.updateDropGhost(self.resolveDropTarget(e));
       });
       scroller.addEventListener("dragleave", function (e) {
         self.clearDropHighlight();
@@ -957,33 +960,19 @@
     var clipRect = clipEl.getBoundingClientRect();
     grabOffsetPx = e.clientX - clipRect.left;
 
-    /* 手势起点快照（移动/裁剪/渐变共用）——必须在 Alt 克隆等一切变异
+    /* 手势起点快照（移动/裁剪/渐变共用）——必须在克隆等一切变异
        之前抓取，否则快照里已包含克隆，撤销后克隆残留 */
     this.pushHistory();
 
-    // Alt+拖动：先克隆一份再拖动副本（FL 式复制）
-    if (mode === "move" && e.altKey) {
-      var clones = [];
-      this.forEachSelectedClip(function (track, clip) {
-        var copy = JSON.parse(JSON.stringify(clip));
-        copy.id = uid("clip");
-        track.clips.push(copy);
-        clones.push(copy.id);
-      });
-      if (clones.length) {
-        this.selectedClips = clones;
-        this.renderTracks();
-        var newEl = this.el.arrLanes.querySelector('.arr-clip[data-clip-id="' + clones[0] + '"]');
-        if (newEl) { clipEl = newEl; found = this.locateClip(newEl) || found; }
-      }
-      mode = "move";
-      this.showHUD("⧉ 克隆拖动");
-    }
+    /* Ctrl+拖动 = 克隆（FL Playlist 惯例；Alt 为旧版肌肉记忆兼容）。
+       延迟到位移超阈值才真正克隆：Ctrl+点击（不拖动）不产生副本 */
+    var wantClone = mode === "move" && (e.ctrlKey || e.metaKey || e.altKey);
 
     this.dragState = {
       mode: mode,
       clipEl: clipEl,
       found: found,
+      startX: e.clientX,
       startY: e.clientY,
       grabOffsetPx: grabOffsetPx,
       origStart: found.clip.start,
@@ -993,9 +982,19 @@
       spb: spb,
       lastThumbDraw: 0,
       changed: false,
-      movedToTrackIdx: found.trackIdx
+      movedToTrackIdx: found.trackIdx,
+      clonePending: wantClone,
+      /* Alt 按下 = 临时禁用网格吸附（FL 惯例；Alt 曾被克隆占用，
+         克隆已改回 Ctrl，与 FL Playlist 一致） */
+      freeSnap: e.altKey && !wantClone
     };
     if (clipEl) clipEl.style.pointerEvents = "none";
+  };
+
+  /** 手势期间吸附：Alt 按下时跳过吸附（与钢琴窗 freeSnap 同语义） */
+  Arrange.prototype.gestureSnap = function (beat, e) {
+    if (e && e.altKey) return Math.max(0, Math.round(beat * 1000) / 1000);
+    return this.snapBeat(beat);
   };
 
   /** 遍历当前选中的 clip（含所在轨道） */
@@ -1016,8 +1015,40 @@
     var now = performance.now();
 
     if (d.mode === "move") {
-      // 横向：吸附移动；纵向：跨轨
-      var newStart = this.snapBeat(Math.max(0, this.clientXToBeat(e.clientX) - d.grabOffsetPx / this.ppb));
+      /* 延迟克隆：Ctrl 按下后位移超过阈值（4px）才克隆选中 Clip 并
+         改拖副本——Ctrl+点击（不拖动）不产生副本（FL Playlist 惯例） */
+      if (d.clonePending) {
+        if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) <= 4) return;
+        var clones = [];
+        this.forEachSelectedClip(function (track, clip) {
+          var copy = JSON.parse(JSON.stringify(clip));
+          copy.id = uid("clip");
+          track.clips.push(copy);
+          clones.push(copy.id);
+        });
+        if (clones.length) {
+          this.selectedClips = clones;
+          this.renderTracks();
+          var newEl = this.el.arrLanes.querySelector('.arr-clip[data-clip-id="' + clones[0] + '"]');
+          if (newEl) {
+            if (el) el.style.pointerEvents = "";
+            var rel = this.locateClip(newEl);
+            if (rel) {
+              d.found = rel;   // 后续移动作用于克隆体（局部 clip/el 同步换新）
+              clip = rel.clip;
+            }
+            el = newEl;
+            d.clipEl = newEl;
+            el.style.pointerEvents = "none";
+          }
+          d.changed = true;
+        }
+        d.clonePending = false;
+        this.showHUD("⧉ 克隆拖动");
+      }
+
+      // 横向：吸附移动（Alt 临时禁用吸附）；纵向：跨轨
+      var newStart = this.gestureSnap(Math.max(0, this.clientXToBeat(e.clientX) - d.grabOffsetPx / this.ppb), e);
       if (Math.abs(newStart - clip.start) > 1e-6) {
         var delta = newStart - clip.start;
         clip.start = newStart;
@@ -1058,7 +1089,7 @@
       this.positionClipEl(el, clip);
     } else if (d.mode === "trimL") {
       var endFixed = d.origStart + d.origLength;
-      var newStart = clamp(this.snapBeat(this.clientXToBeat(e.clientX)), 0, endFixed - MIN_CLIP_LEN);
+      var newStart = clamp(this.gestureSnap(this.clientXToBeat(e.clientX), e), 0, endFixed - MIN_CLIP_LEN);
       var delta = newStart - d.origStart;
       if (Math.abs(delta) > 1e-6) {
         clip.start = newStart;
@@ -1068,7 +1099,7 @@
       }
       this.positionClipEl(el, clip);
     } else if (d.mode === "trimR") {
-      var newLen = clamp(this.snapBeat(this.clientXToBeat(e.clientX)) - clip.start, MIN_CLIP_LEN, 1e5);
+      var newLen = clamp(this.gestureSnap(this.clientXToBeat(e.clientX), e) - clip.start, MIN_CLIP_LEN, 1e5);
       if (Math.abs(newLen - clip.length) > 1e-6) {
         clip.length = newLen;
         d.changed = true;
@@ -2188,6 +2219,70 @@
       this.hoverDropEl.classList.remove("drop-target");
       this.hoverDropEl = null;
     }
+    this.hideDropGhost();
+  };
+
+  /**
+   * 统一落点解析（dragover 剪影与 drop 放置共用同一份计算，
+   * 保证"剪影 = 真实放置位置"）：
+   * - 轨道头 → 播放头位置（选中该轨道）
+   * - 内容区 → 鼠标 x 的吸附位置
+   * - 其他区域 → 选中轨道 + 播放头位置
+   */
+  Arrange.prototype.resolveDropTarget = function (e) {
+    var headEl = e.target && e.target.closest ? e.target.closest(".arr-track-head") : null;
+    var contentEl = e.target && e.target.closest ? e.target.closest(".arr-lane-content") : null;
+    var trackIdx;
+    var startBeat;
+    var zone;
+    if (headEl) {
+      trackIdx = Number(headEl.dataset.trackIdx);
+      startBeat = this.snapBeat(Math.max(0, this.playheadBeat));
+      zone = "head";
+    } else if (contentEl) {
+      trackIdx = Number(contentEl.dataset.trackIdx);
+      startBeat = this.snapBeat(Math.max(0, this.clientXToBeat(e.clientX)));
+      zone = "content";
+    } else {
+      trackIdx = this.selectedTrackIdx;
+      startBeat = this.snapBeat(Math.max(0, this.playheadBeat));
+      zone = "fallback";
+    }
+    if (isNaN(trackIdx) || !this.tracks[trackIdx]) trackIdx = 0;
+    return { trackIdx: trackIdx, startBeat: Math.max(0, startBeat), zone: zone };
+  };
+
+  /** 拖放剪影：半透明块指示 clip 即将出现的位置与轨道 */
+  Arrange.prototype.updateDropGhost = function (target) {
+    var content = this.el.arrLanes
+      ? this.el.arrLanes.querySelector('.arr-lane-content[data-track-idx="' + target.trackIdx + '"]')
+      : null;
+    if (!content) { this.hideDropGhost(); return; }
+
+    var ghost = this.dropGhostEl;
+    if (!ghost || !ghost.parentNode) {
+      ghost = document.createElement("div");
+      ghost.className = "arr-drop-ghost";
+      ghost.innerHTML = '<span class="arr-drop-ghost-label"></span>';
+      this.dropGhostEl = ghost;
+    }
+    if (ghost.parentNode !== content) content.appendChild(ghost);
+    /* 剪影宽度用 2 小节示意（真实长度 drop 后由文件内容决定）；
+       轨道头落点时剪影直接跳到播放头处，所见即所得 */
+    var widthBeats = BAR_BEATS * 2;
+    ghost.style.width = Math.max(24, widthBeats * this.ppb) + "px";
+    ghost.style.transform = "translateX(" + (target.startBeat * this.ppb) + "px)";
+    var bar = Math.floor(target.startBeat / BAR_BEATS) + 1;
+    var label = ghost.firstChild;
+    if (label) label.textContent = "↧ 第 " + bar + " 小节" + (target.zone === "head" ? "（播放头）" : "");
+    ghost.hidden = false;
+  };
+
+  Arrange.prototype.hideDropGhost = function () {
+    if (this.dropGhostEl) {
+      this.dropGhostEl.remove();
+      this.dropGhostEl = null;
+    }
   };
 
   Arrange.prototype.handleDrop = function (e) {
@@ -2197,27 +2292,13 @@
     try { data = JSON.parse(raw); } catch (err) { return; }
     if (!data || (data.kind !== "arr-midi" && data.kind !== "arr-audio")) return;
 
-    // 落点轨道：轨道头 → 播放头位置；内容区 → 落点吸附位置
-    var headEl = e.target.closest ? e.target.closest(".arr-track-head") : null;
-    var contentEl = e.target.closest ? e.target.closest(".arr-lane-content") : null;
-    var trackIdx;
-    var startBeat;
-    if (headEl) {
-      trackIdx = Number(headEl.dataset.trackIdx);
-      startBeat = this.snapBeat(Math.max(0, this.playheadBeat));
-    } else if (contentEl) {
-      trackIdx = Number(contentEl.dataset.trackIdx);
-      startBeat = this.snapBeat(Math.max(0, this.clientXToBeat(e.clientX)));
-    } else {
-      trackIdx = this.selectedTrackIdx;
-      startBeat = this.snapBeat(Math.max(0, this.playheadBeat));
-    }
-    if (isNaN(trackIdx) || !this.tracks[trackIdx]) trackIdx = 0;
+    // 落点与剪影同一份计算（resolveDropTarget），放置位置即拖动所见
+    var target = this.resolveDropTarget(e);
 
     if (data.kind === "arr-midi") {
-      this.addMidiClipFromDrop(trackIdx, data.name, startBeat);
+      this.addMidiClipFromDrop(target.trackIdx, data.name, target.startBeat);
     } else {
-      this.addAudioClipFromDrop(trackIdx, data.p, data.name, startBeat);
+      this.addAudioClipFromDrop(target.trackIdx, data.p, data.name, target.startBeat);
     }
   };
 

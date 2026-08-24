@@ -1767,20 +1767,21 @@
 
       this.playNoteSound(pos.pitch, hitNote.velocity);
 
-      // Shift + 拖拽：克隆复制音符
+      /* 暂存变异前快照：mouseup 确认发生位移才正式入栈（点击选中
+         不污染撤销栈）；此前移动/缩放音符完全没有历史快照——不可撤销 */
+      var gestureSnapshot = JSON.stringify(tab.notes);
+
+      // Shift + 拖拽：克隆复制音符（FL 惯例：位移超阈值才克隆，点击不误触）
       if (e.shiftKey) {
-        this.pushHistory();
-        var cloned = this.selectedNotes.map(function (n) {
-          return { note: n.note, velocity: n.velocity, start: n.start, end: n.end };
-        });
-        tab.notes = tab.notes.concat(cloned);
-        this.selectedNotes = cloned;
         this.dragState = {
           type: "move_note",
           startBeat: pos.beat,
           startPitch: pos.pitch,
           freeSnap: e.altKey,
-          origNotes: cloned.map(function (n) {
+          clonePending: true,
+          snapshot: gestureSnapshot,
+          changed: false,
+          origNotes: this.selectedNotes.map(function (n) {
             return { note: n, start: n.start, end: n.end, pitch: Tools.noteNameToNumber(n.note) };
           })
         };
@@ -1793,7 +1794,9 @@
           type: "resize_note",
           note: hitNote,
           startBeat: hitNote.end,
-          freeSnap: e.altKey
+          freeSnap: e.altKey,
+          snapshot: gestureSnapshot,
+          changed: false
         };
       } else {
         this.dragState = {
@@ -1801,6 +1804,8 @@
           startBeat: pos.beat,
           startPitch: pos.pitch,
           freeSnap: e.altKey,
+          snapshot: gestureSnapshot,
+          changed: false,
           origNotes: this.selectedNotes.map(function (n) {
             return { note: n, start: n.start, end: n.end, pitch: Tools.noteNameToNumber(n.note) };
           })
@@ -1946,14 +1951,40 @@
       var note = this.dragState.note;
       var snap = this.dragState.freeSnap ? 0.02 : this.snapGrid;
       var snappedEnd = Math.max(note.start + snap, Math.round(pos.beat / snap) * snap);
-      note.end = Math.round(snappedEnd * 1000) / 1000;
+      var snappedRounded = Math.round(snappedEnd * 1000) / 1000;
+      if (Math.abs(snappedRounded - note.end) > 1e-9) this.dragState.changed = true;
+      note.end = snappedRounded;
       this.scheduleRender();
     } else if (this.dragState.type === "move_note") {
-      var snapM = this.dragState.freeSnap ? 0.02 : this.snapGrid;
-      var deltaBeat = Math.round((pos.beat - this.dragState.startBeat) / snapM) * snapM;
-      var deltaPitch = pos.pitch - this.dragState.startPitch;
+      var ds = this.dragState;
 
-      this.dragState.origNotes.forEach(function (item) {
+      /* 延迟克隆：Shift 按下后位移超过阈值（4px 等效）才克隆副本，
+         单纯 Shift+点击不产生克隆——FL Piano Roll 的复制是"拖动"语义 */
+      if (ds.clonePending) {
+        var dragPx = Math.abs(pos.beat - ds.startBeat) * this.pixelsPerBeat +
+                     Math.abs(pos.pitch - ds.startPitch) * this.noteRowHeight;
+        if (dragPx <= 4) return;
+        this.pushHistory();   // 快照=克隆前（undo 一次回滚整个克隆+拖动）
+        var cloned = this.selectedNotes.map(function (n) {
+          return { note: n.note, velocity: n.velocity, start: n.start, end: n.end, muted: n.muted };
+        });
+        tab.notes = tab.notes.concat(cloned);
+        this.selectedNotes = cloned;
+        ds.origNotes = cloned.map(function (n) {
+          return { note: n, start: n.start, end: n.end, pitch: Tools.noteNameToNumber(n.note) };
+        });
+        ds.clonePending = false;
+        ds.changed = true;
+        ds.historyPushed = true;
+        this.showHUD("⧉ 克隆拖动");
+      }
+
+      var snapM = ds.freeSnap ? 0.02 : this.snapGrid;
+      var deltaBeat = Math.round((pos.beat - ds.startBeat) / snapM) * snapM;
+      var deltaPitch = pos.pitch - ds.startPitch;
+      if (deltaBeat !== 0 || deltaPitch !== 0) ds.changed = true;
+
+      ds.origNotes.forEach(function (item) {
         var newStart = Math.max(0, Math.round((item.start + deltaBeat) * 1000) / 1000);
         var dur = item.end - item.start;
         item.note.start = newStart;
@@ -1987,6 +2018,19 @@
 
     if (!this.dragState) return;
     var tab = this.getActiveTab();
+
+    /* 移动/缩放/克隆手势收尾：确认发生过变异才把 mousedown 暂存的
+       快照正式入撤销栈（克隆在拖动阈值处已自行入栈，此处跳过）。
+       此前移动/缩放音符没有任何历史快照——拖错位置无法 Ctrl+Z */
+    var gs = this.dragState;
+    if (tab && gs.snapshot && gs.changed && !gs.historyPushed) {
+      tab.undoStack.push(gs.snapshot);
+      if (tab.undoStack.length > 50) tab.undoStack.shift();
+      tab.redoStack = [];
+      tab.dirty = true;
+      this.renderTabs();
+      this.scheduleAutoSave();
+    }
 
     if (this.dragState.type === "slice_line" && tab) {
       var sl = this.dragState;

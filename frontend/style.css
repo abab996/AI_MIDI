@@ -4004,6 +4004,33 @@ body.is-panning *,
   overflow: hidden;
 }
 
+/* 拖放剪影：指示 MIDI/音频文件松手后的真实落点（宽度为 2 小节示意，
+   真实长度由文件内容在 drop 后决定） */
+.arr-drop-ghost {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 0;
+  border: 1px dashed var(--color-primary);
+  background: var(--color-primary-soft);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.arr-drop-ghost-label {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: var(--color-primary);
+  padding: 0 6px;
+  text-shadow: 0 1px 2px var(--color-shadow);
+}
+
 .arr-clip:active { cursor: grabbing; }
 
 .arr-clip.selected {

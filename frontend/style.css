@@ -572,6 +572,27 @@ input[type="checkbox"] {
   flex-direction: column;
 }
 
+/* ---------- 应用窗口布局（chat.html 专属，配合 body.app-shell） ----------
+   整页锁定一屏、页面级滚动彻底关闭；内容超出一屏时由内部滚动区消化，
+   所有元素始终挤在窗口内并随窗口大小自适应。
+   index.html / settings.html 保持文档式滚动（不挂 page-app）。
+   注意 body 层 overflow:hidden 只裁 body 盒子，html 层仍可滚——
+   两个都锁才能彻底消除页面滚动条（实测小视口下 .arrange-workspace
+   入场 transform 的 56px 位移会把 html scrollHeight 撑出滚动）。 */
+html:has(body.app-shell) {
+  overflow: hidden;
+}
+
+.app-shell {
+  overflow: hidden;
+}
+
+.page-app {
+  height: 100vh;          /* 兼容旧浏览器回退 */
+  height: 100dvh;
+  min-height: 0;          /* 覆盖通用 .page 的 min-height:100dvh，锁定不生长 */
+}
+
 [hidden] {
   display: none !important;
 }
@@ -903,11 +924,11 @@ a.btn {
   flex-direction: column;
 }
 
-/* 工作台视图：固定一屏高度，聊天区内部滚动（页面不滚动） */
+/* 工作台视图：flex 填满 .page-app 锁定高度（此前固定 100dvh 在
+   .page 内叠加 min-height 会溢出 1px 级误差），聊天区内部滚动 */
 .studio-panel {
-  flex: none;
-  height: 100vh;
-  height: 100dvh;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -1001,7 +1022,17 @@ a.btn {
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 20px;
   align-content: start;
-  padding-bottom: 24px;   /* 卡片多时页面自然滚动，顶部导航条固定不动 */
+}
+
+/* 档案库卡片网格：应用窗口布局下的内部滚动区（此前卡片多时撑破
+   #archiveView 直接引发页面级滚动——#archiveView 注释声称"内部滚动
+   各自负责"但从未落地，此为整页滚动的根因） */
+#archiveView .card-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;   /* 滚到头不再外溢给页面 */
+  padding-bottom: 24px;           /* 滚动容器内底部留白 */
 }
 
 .proj-card {
@@ -3485,6 +3516,9 @@ body.is-panning *,
   position: relative;
   flex: 1;
   min-height: 0;
+  /* 折叠舞台内两个面板均为 absolute 叠放，转场用 transform 位移——
+     不裁剪时位移中的面板会把 html scrollHeight 撑出页面级滚动条 */
+  overflow: hidden;
 }
 
 /* 折叠面板基座：绝对叠放，切换只动 transform / opacity */

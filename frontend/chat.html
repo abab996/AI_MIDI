@@ -28,9 +28,11 @@
   })();
 </script>
 </head>
-<body>
+<body class="app-shell">
 
-<div class="page">
+<!-- page-app：应用窗口布局——整页锁定一屏、永不滚动，内部区域（卡片网格/
+     聊天区/文件清单/编曲轨道）各自滚动，随窗口大小自适应 -->
+<div class="page page-app">
   <!-- ===================== 视图 1：档案库 ===================== -->
   <section id="archiveView">
     <div class="toolbar">

@@ -299,6 +299,13 @@
       fillMidiSettings();
     });
 
+    /* About 卡片：版本号（与 wails.json 同源，失败静默显示 --） */
+    if ($("#aboutVersion")) {
+      UI.getJSON("/api/version").then(function (v) {
+        $("#aboutVersion").textContent = "v" + (v.version || "--");
+      }).catch(function () {});
+    }
+
     /* MIDI 控制事件 */
     if ($("#refreshMidiBtn")) {
       $("#refreshMidiBtn").addEventListener("click", function () {

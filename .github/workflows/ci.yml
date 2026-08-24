@@ -1,0 +1,40 @@
+# 最小 CI：vet + test + build（Windows，与桌面目标平台一致）
+# wails build 的完整打包（WebView2/NSIS）留给本地/Release 流程，
+# 这里只保证 Go 侧编译与测试始终可过（洞察报告 P0-5）。
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -trimpath -ldflags "-s -w" -o AI_MIDI.exe .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI_MIDI-windows
+          path: AI_MIDI.exe
+          retention-days: 14

@@ -46,7 +46,7 @@
       <!-- 第二行：搜索 + 新建 -->
       <div class="toolbar-row">
         <div class="search-box">
-          <span class="stamp">SEARCH</span>
+          <span class="stamp-plain">SEARCH</span>
           <input type="search" id="searchInput" placeholder="搜索对话内容…">
         </div>
         <button class="btn btn-secondary" id="taskPanelBtn" title="任务列表">任务<span class="task-btn-count" id="taskPanelBtnCount" hidden>0</span></button>
@@ -128,11 +128,12 @@
         </div>
 
         <div id="wsBindBox">
-          <div style="display:flex; gap:8px; margin-bottom:8px">
+          <button class="btn btn-primary btn-block btn-sm" id="pickFolderBtn" title="打开系统目录选择框">选择目录…</button>
+          <a href="javascript:void(0)" class="ws-manual-toggle" id="wsManualToggle" hidden>✎ 手动输入路径</a>
+          <div id="wsManualRow" style="display:flex; gap:8px; margin-bottom:8px">
             <input type="text" id="wsPathInput" placeholder="输入本地目录路径…" style="flex:1">
-            <button class="btn btn-secondary btn-sm" id="pickFolderBtn">选择</button>
+            <button class="btn btn-secondary btn-sm" id="bindBtn">🔗 绑定</button>
           </div>
-          <button class="btn btn-primary btn-block btn-sm" id="bindBtn">🔗 绑定</button>
         </div>
 
         <div id="wsBoundBox" hidden>
@@ -187,7 +188,7 @@
     <section id="arrangeWorkspace" class="arrange-workspace" hidden aria-label="编曲窗">
       <!-- 走带条 -->
       <div class="arr-transport">
-        <span class="stamp">ARRANGE</span>
+        <span class="stamp-plain">ARRANGE</span>
 
         <div class="arr-tool-group">
           <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrHomeBtn" title="回到开头 (Home)">
@@ -270,7 +271,7 @@
         <div class="arr-tracks-scroll" id="arrTracksScroll">
           <div class="arr-inner" id="arrInner">
             <div class="arr-ruler-row">
-              <div class="arr-corner-cell"><span class="stamp">TRACKS</span></div>
+              <div class="arr-corner-cell"><span class="stamp-plain">TRACKS</span></div>
               <div class="arr-ruler-sticky">
                 <canvas id="arrRulerCanvas" class="arr-ruler-canvas"></canvas>
               </div>

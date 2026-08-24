@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -29,8 +30,23 @@ import (
 //go:embed all:frontend
 var assets embed.FS
 
+//go:embed wails.json
+var wailsCfgRaw []byte
+
+// loadVersion 从打包配置读取版本号注入 config（/api/version 与设置页 About
+// 展示用；与 wails.json 同源，避免版本号双份维护）
+func loadVersion() {
+	var meta struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(wailsCfgRaw, &meta); err == nil && meta.Version != "" {
+		config.AppVersion = meta.Version
+	}
+}
+
 func main() {
 	config.SetupLogging()
+	loadVersion()
 
 	browserMode := flag.Bool("browser", false, "在系统默认浏览器中打开，而不是使用原生窗口")
 	scaleRatio := flag.Float64("scale", 0.8, "原生窗口占屏幕工作区的比例(0.0-1.0)，默认 0.8")

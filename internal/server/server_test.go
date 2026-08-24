@@ -323,3 +323,32 @@ func TestClientErrorEndpoint(t *testing.T) {
 		t.Errorf("empty message status = %d, want 400", resp2.StatusCode)
 	}
 }
+
+
+/* ---- 版本端点（P0-6 About 卡片）---- */
+
+func TestVersionEndpoint(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/api/version")
+	if err != nil {
+		t.Fatalf("GET /api/version failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var res map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("响应不是 JSON: %v", err)
+	}
+	/* 单测环境未注入 wails.json 版本，应回落 dev 而非空串 */
+	if res["version"] != "dev" {
+		t.Errorf("version = %v, want dev", res["version"])
+	}
+	if res["name"] != config.WindowTitle {
+		t.Errorf("name = %v", res["name"])
+	}
+}

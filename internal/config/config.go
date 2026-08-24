@@ -30,6 +30,10 @@ const (
 	WindowTitle   = "AI_MIDI · AI 编曲助手"
 )
 
+// AppVersion 应用版本：main 启动时从 wails.json 注入（与打包配置同源，
+// 避免双份维护）；未注入时（单测/浏览器降级）显示 dev。
+var AppVersion = "dev"
+
 // ===== DeepSeek / OpenAI / Gemini API 默认值 =====
 const (
 	DefaultBaseURL = "https://api.deepseek.com"

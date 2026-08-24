@@ -2820,15 +2820,27 @@
         })
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
     });
-    $("#pickFolderBtn").addEventListener("click", function () {
-      UI.postJSON("/api/projects/" + currentProjectId + "/workspace/pick-folder", {})
-        .then(function (data) {
-          if (data.path) $("#wsPathInput").value = data.path;
-        })
-        .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
-    });
-    $("#bindBtn").addEventListener("click", function () {
-      var path = $("#wsPathInput").value.trim();
+    /* 工作区绑定入口：Wails 原生模式突出"选择目录"（选完即绑），
+       手输路径折叠为次要入口；-browser 模式无原生对话框，手输为主。
+       （洞察报告 §2.3：桌面应用强制手打路径属反人类，但 browser 模式必须保留） */
+    var hasNativeFolderDialog = !!(window.go && window.go.app &&
+      window.go.app.App && window.go.app.App.SelectFolderDialog);
+    var wsManualRow = $("#wsManualRow");
+    var wsManualToggle = $("#wsManualToggle");
+    if (hasNativeFolderDialog) {
+      if (wsManualRow) wsManualRow.style.display = "none";
+      if (wsManualToggle) {
+        wsManualToggle.hidden = false;
+        wsManualToggle.addEventListener("click", function () {
+          wsManualRow.style.display = (wsManualRow.style.display === "none") ? "flex" : "none";
+        });
+      }
+    } else {
+      if (wsManualRow) wsManualRow.style.display = "flex";
+      if ($("#pickFolderBtn")) $("#pickFolderBtn").style.display = "none";
+    }
+
+    function bindWorkspace(path) {
       if (!path) { UI.toast("请输入工作区目录路径", "warn"); return; }
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/bind", { path: path })
         .then(function (data) {
@@ -2842,6 +2854,22 @@
           }
         })
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+    }
+
+    $("#pickFolderBtn").addEventListener("click", function () {
+      UI.postJSON("/api/projects/" + currentProjectId + "/workspace/pick-folder", {})
+        .then(function (data) {
+          if (!data.path) return; /* 用户取消选择 */
+          if (hasNativeFolderDialog) {
+            bindWorkspace(data.path); /* 原生模式：选完即绑，省一步 */
+          } else {
+            $("#wsPathInput").value = data.path;
+          }
+        })
+        .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
+    });
+    $("#bindBtn").addEventListener("click", function () {
+      bindWorkspace($("#wsPathInput").value.trim());
     });
     $("#unbindBtn").addEventListener("click", function () {
       /* 解绑即从工作区回到项目内文件清单（界面立变），给一次确认 */

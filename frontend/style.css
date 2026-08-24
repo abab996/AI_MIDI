@@ -186,6 +186,19 @@ code {
   border-color: var(--color-danger);
 }
 
+/* 装饰性标签（SEARCH/ARRANGE/TRACKS 等区域名）：降为纯文本，
+   "盖章"样式只保留给真正的状态（REC/SAVED/OFFLINE/API …） */
+.stamp-plain {
+  display: inline-flex;
+  align-items: center;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+
 /* ---------- 按钮体系（统一三档） ---------- */
 .btn {
   display: inline-flex;
@@ -1222,6 +1235,25 @@ a.btn {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-bottom: 6px;
+}
+
+/* 工作区"手动输入路径"切换：低调文字链，不与主按钮争夺注意力 */
+.ws-manual-toggle {
+  display: block;
+  width: fit-content;
+  margin: 6px 0 2px;
+  font-size: 12px;
+  color: var(--color-ink-dim);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--color-border-dashed);
+}
+.ws-manual-toggle:hover {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+/* 显式声明：hidden 属性优先于类的 display:block */
+.ws-manual-toggle[hidden] {
+  display: none;
 }
 
 .ws-path {

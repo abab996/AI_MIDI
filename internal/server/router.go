@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+
+	"aimidi/internal/config"
 )
 
 // Router HTTP API 与静态资源路由器
@@ -102,6 +104,9 @@ func (r *Router) registerRoutes() {
 	// 前端异常上报（window.onerror → 本地日志，便于用户报障自查）
 	r.mux.HandleFunc("/api/client-error", r.handleClientError)
 
+	// 版本信息（设置页 About 卡片）
+	r.mux.HandleFunc("/api/version", r.handleVersion)
+
 	// MIDI
 	r.mux.HandleFunc("/api/parse", r.handleParseMIDI)
 	r.mux.HandleFunc("/api/run", r.handleRunTask)
@@ -180,6 +185,14 @@ func (r *Router) handleClientError(w http.ResponseWriter, req *http.Request) {
 		"page", in.Page, "source", in.Source,
 		"line", in.Line, "col", in.Column, "message", in.Message)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleVersion 设置页 About 卡片数据源（版本由 main 从 wails.json 注入）
+func (r *Router) handleVersion(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version": config.AppVersion,
+		"name":    config.WindowTitle,
+	})
 }
 
 func sseEvent(data any) string {

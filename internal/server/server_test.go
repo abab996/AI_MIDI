@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"aimidi/internal/config"
@@ -238,5 +239,87 @@ func TestModelsEndpointPOST(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&res)
 	if res["models"] == nil {
 		t.Fatalf("expected models array in response, got %+v", res)
+	}
+}
+
+
+/* ---- panic 恢复中间件（P0-2）---- */
+
+func TestRecoverPanicBeforeWrite(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := &capturingWriter{ResponseWriter: rec}
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+
+	func() {
+		defer recoverPanic(cw, req)
+		panic("人为测试 panic")
+	}()
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var res map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatalf("响应不是 JSON: %v", err)
+	}
+	if res["detail"] != "服务内部错误，请查看日志后重试" {
+		t.Errorf("detail = %v", res["detail"])
+	}
+}
+
+func TestRecoverPanicAfterSSEStart(t *testing.T) {
+	/* SSE 已开始输出：无法补写 500，recover 不得再 panic、状态保持 200 */
+	rec := httptest.NewRecorder()
+	cw := &capturingWriter{ResponseWriter: rec}
+	cw.WriteHeader(http.StatusOK)
+	_, _ = cw.Write([]byte("data: {\"type\":\"progress\"}\n\n"))
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+
+	func() {
+		defer recoverPanic(cw, req)
+		panic("流中途 panic")
+	}()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（流已开始）", rec.Code)
+	}
+}
+
+func TestRecoverPanicNoPanic(t *testing.T) {
+	/* 无 panic 时 recoverPanic 直接返回，不影响正常响应 */
+	rec := httptest.NewRecorder()
+	cw := &capturingWriter{ResponseWriter: rec}
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	writeJSON(cw, http.StatusOK, map[string]any{"ok": true})
+	recoverPanic(cw, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"ok":true`)) {
+		t.Fatalf("正常响应被破坏: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+/* ---- 前端异常上报端点（P0-7）---- */
+
+func TestClientErrorEndpoint(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	body := `{"message":"Test error","source":"app.js","line":10,"column":2,"page":"/chat.html"}`
+	resp, err := http.Post(ts.URL+"/api/client-error", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /api/client-error failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	/* 空消息应被拒绝 */
+	resp2, err := http.Post(ts.URL+"/api/client-error", "application/json", strings.NewReader(`{"message":"  "}`))
+	if err != nil {
+		t.Fatalf("POST empty failed: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty message status = %d, want 400", resp2.StatusCode)
 	}
 }

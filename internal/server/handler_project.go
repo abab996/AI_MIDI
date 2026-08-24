@@ -37,7 +37,7 @@ func (r *Router) handleProjects(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		meta, err := project.CreateProject(in.Name)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "创建项目失败")
+			writeErr(w, http.StatusInternalServerError, "创建项目失败", err)
 			return
 		}
 		// 返回与打开项目一致的完整载荷（前端 enterProject 期望 meta/ 任务/文件/草稿等字段）
@@ -106,7 +106,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		meta, err := project.CopyProject(projectID, in.Name)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			/* err.Error() 本身是面向用户的原因（如名称冲突），保留展示并留痕日志 */
+			writeErr(w, http.StatusBadRequest, err.Error(), err)
 			return
 		}
 		writeJSON(w, http.StatusOK, meta)

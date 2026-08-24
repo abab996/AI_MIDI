@@ -2,6 +2,34 @@
 (function (global) {
   "use strict";
 
+  /* ---- 全局脚本错误兜底 ----
+     toast 提示（同消息 3s 去重防刷屏）+ POST /api/client-error 落后端日志；
+     上报自身失败静默，避免错误处理再触发新错误 */
+  var lastErrMsg = "", lastErrAt = 0;
+  global.addEventListener("error", function (e) {
+    if (!e || !e.message) return;
+    var now = Date.now();
+    if (e.message === lastErrMsg && now - lastErrAt < 3000) return;
+    lastErrMsg = e.message;
+    lastErrAt = now;
+    try {
+      toast("✗ 脚本错误: " + e.message, "err");
+    } catch (t) {}
+    try {
+      fetch("/api/client-error", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: String(e.message),
+          source: e.filename || "",
+          line: e.lineno || 0,
+          column: e.colno || 0,
+          page: location.pathname
+        })
+      }).catch(function () {});
+    } catch (f) {}
+  });
+
   /* ---- DOM 工具 ---- */
   function qs(sel, root) { return (root || document).querySelector(sel); }
   function qsa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }

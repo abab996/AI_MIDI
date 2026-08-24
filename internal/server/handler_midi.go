@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,13 +33,13 @@ func (r *Router) handleParseMIDI(w http.ResponseWriter, req *http.Request) {
 
 	err := req.ParseMultipartForm(32 << 20) // 32MB max
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "解析表单数据失败")
+		writeErr(w, http.StatusBadRequest, "解析表单数据失败", err)
 		return
 	}
 
 	file, header, err := req.FormFile("file")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "缺少上传文件")
+		writeErr(w, http.StatusBadRequest, "缺少上传文件", err)
 		return
 	}
 	defer file.Close()
@@ -52,13 +53,13 @@ func (r *Router) handleParseMIDI(w http.ResponseWriter, req *http.Request) {
 	_ = os.MkdirAll(filepath.Dir(config.InputMidi), 0755)
 	dst, err := os.Create(config.InputMidi)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "保存上传文件失败")
+		writeErr(w, http.StatusInternalServerError, "保存上传文件失败", err)
 		return
 	}
 	defer dst.Close()
 
 	if _, err := io.Copy(dst, file); err != nil {
-		writeError(w, http.StatusInternalServerError, "写入上传文件失败")
+		writeErr(w, http.StatusInternalServerError, "写入上传文件失败", err)
 		return
 	}
 
@@ -169,7 +170,14 @@ func (r *Router) handleRunTask(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err != nil || result == "" {
-		sendSSE(map[string]any{"type": "error", "message": elapsed("✗ 调用失败，请稍后重试。")})
+		/* llm 层返回的错误本就是面向用户的中文原因（API Key 缺失/网络/状态码），
+		   透传给用户而非吞掉；空结果单独留痕便于区分"模型回了空串" */
+		slog.Error("LLM 调用失败", "func", in.Func, "err", err, "result_len", len(result))
+		msg := "✗ 调用失败，请稍后重试。"
+		if err != nil {
+			msg = "✗ 调用失败：" + err.Error()
+		}
+		sendSSE(map[string]any{"type": "error", "message": elapsed(msg)})
 		return
 	}
 

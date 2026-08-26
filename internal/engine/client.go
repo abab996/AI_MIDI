@@ -178,6 +178,52 @@ func (c *Client) ClearSamples(timeout time.Duration) error {
 	return resp.Err()
 }
 
+// ScheduleNotes 批量调度 MIDI（为离线 bounce 准备）
+func (c *Client) ScheduleNotes(notes []map[string]any, bpm float64, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	resp, err := c.Request("scheduleNotes", map[string]any{"notes": notes, "bpm": bpm}, timeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// ClearNotes 清空 MIDI 调度
+func (c *Client) ClearNotes(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	resp, err := c.Request("clearNotes", nil, timeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// Bounce 离线渲染至 WAV（按全局采样率，尾音到静默不截断）
+func (c *Client) Bounce(params map[string]any, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	resp, err := c.Request("bounce", params, timeout)
+	if err != nil {
+		return "", err
+	}
+	if err := resp.Err(); err != nil {
+		return "", err
+	}
+	var res struct {
+		Path string `json:"path"`
+		Ok   bool   `json:"ok"`
+	}
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		return "", err
+	}
+	return res.Path, nil
+}
+
 // Shutdown 通知引擎退出
 func (c *Client) Shutdown(timeout time.Duration) error {
 	resp, err := c.Request("shutdown", nil, timeout)

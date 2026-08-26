@@ -167,3 +167,21 @@ func (a *App) EngineClearSamples() error {
 	}
 	return sup.ClearSamples()
 }
+
+// EngineScheduleNotes 批量调度 MIDI
+func (a *App) EngineScheduleNotes(notes []map[string]any, bpm float64) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.ScheduleNotes(notes, bpm)
+}
+
+// EngineBounce 离线渲染
+func (a *App) EngineBounce(params map[string]any) (string, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return "", errEngineUnavailable
+	}
+	return sup.Bounce(params)
+}

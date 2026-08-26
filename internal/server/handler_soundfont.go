@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"aimidi/internal/config"
@@ -67,8 +68,19 @@ func (r *Router) handleAudioSoundfonts(w http.ResponseWriter, req *http.Request)
 
 	result := map[string]any{"saved": dest, "bytes": len(buf)}
 	if sup := engine.Get(); sup != nil {
-		if err := sup.LoadSoundFont(dest); err == nil {
-			result["engine_loaded"] = true
+		// 支持 per-track 加载：?track=2
+		trackStr := strings.TrimSpace(req.URL.Query().Get("track"))
+		if trackStr != "" {
+			if tr, err := strconv.Atoi(trackStr); err == nil && tr >= 0 && tr < 32 {
+				if err := sup.LoadSoundFontTrack(tr, dest); err == nil {
+					result["engine_loaded"] = true
+					result["track"] = tr
+				}
+			}
+		} else {
+			if err := sup.LoadSoundFont(dest); err == nil {
+				result["engine_loaded"] = true
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, result)

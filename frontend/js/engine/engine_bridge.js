@@ -71,6 +71,14 @@
     clearSamples: function () {
       if (app && app.EngineClearSamples) { return app.EngineClearSamples(); }
       return Promise.reject(new Error("engine unavailable"));
+    },
+    scheduleNotes: function (notes, bpm) {
+      if (app && app.EngineScheduleNotes) { return app.EngineScheduleNotes(notes, bpm); }
+      return Promise.reject(new Error("engine unavailable"));
+    },
+    bounce: function (params) {
+      if (app && app.EngineBounce) { return app.EngineBounce(params); }
+      return Promise.reject(new Error("engine unavailable"));
     }
   };
 

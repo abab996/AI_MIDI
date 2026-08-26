@@ -2,7 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"aimidi/internal/config"
@@ -30,6 +33,10 @@ func (r *Router) handleAudioSub(w http.ResponseWriter, req *http.Request) {
 		r.handleAudioControlPanel(w, req)
 	case "/api/audio/selftest-result":
 		r.handleSelftestResult(w, req)
+	case "/api/audio/bounce":
+		r.handleAudioBounce(w, req)
+	case "/api/audio/bounce/file":
+		r.handleAudioBounceFile(w, req)
 	default:
 		writeError(w, http.StatusNotFound, "unknown audio endpoint")
 	}
@@ -199,4 +206,155 @@ func (r *Router) handleAudioControlPanel(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"opened": opened})
+}
+
+// handleAudioBounce 离线 bounce（按全局采样率，尾音播到静默不截断）
+func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	sup := engine.Get()
+	if sup == nil {
+		writeError(w, http.StatusServiceUnavailable, "音频引擎未启用")
+		return
+	}
+	var body struct {
+		Bpm       *float64 `json:"bpm"`
+		Beats     *float64 `json:"beats"`
+		TailSec   *float64 `json:"tailSec"`
+		Tracks    any      `json:"tracks"`
+		SampleRate *int    `json:"sampleRate"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
+		return
+	}
+	settings := config.LoadSettings()
+	bpm := 120.0
+	if body.Bpm != nil && *body.Bpm > 20 {
+		bpm = *body.Bpm
+	} else if settings.Audio.SampleRate > 0 {
+		// 尝试从已有工程取 bpm，若无则 120
+	}
+	sampleRate := settings.Audio.SampleRate
+	if body.SampleRate != nil && *body.SampleRate > 8000 {
+		sampleRate = *body.SampleRate
+	}
+	if sampleRate <= 0 {
+		sampleRate = 44100
+	}
+	beats := 16.0
+	if body.Beats != nil && *body.Beats > 0 {
+		beats = *body.Beats
+	}
+	tailSec := 2.5
+	if body.TailSec != nil && *body.TailSec >= 0 {
+		tailSec = *body.TailSec
+	}
+	// 若提供了 tracks，尝试从中推导最大拍（取 clips/midi 的最远 end，含 clip内 notes）
+	if body.Tracks != nil {
+		if tracks, ok := body.Tracks.([]any); ok {
+			maxEnd := beats
+			for _, t := range tracks {
+				if tm, ok := t.(map[string]any); ok {
+					if clips, ok := tm["clips"].([]any); ok {
+						for _, c := range clips {
+							if cm, ok := c.(map[string]any); ok {
+								sv, _ := cm["start"].(float64)
+								lv, _ := cm["length"].(float64)
+								if e := sv + lv; e > maxEnd {
+									maxEnd = e
+								}
+								// midi clip 内嵌 notes
+								if notes, ok := cm["notes"].([]any); ok {
+									for _, n := range notes {
+										if nm, ok := n.(map[string]any); ok {
+											ns, _ := nm["start"].(float64)
+											ne, _ := nm["end"].(float64)
+											clipStart, _ := cm["start"].(float64)
+											absEnd := clipStart + ne
+											absStart := clipStart + ns
+											_ = absStart
+											if absEnd > maxEnd {
+												maxEnd = absEnd
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			beats = maxEnd
+		}
+	}
+	// 输出路径：output/bounce_<ts>.wav（全局生效采样率，尾音已含）
+	ts := time.Now().Format("20060102_150405")
+	outPath := filepath.Join("output", fmt.Sprintf("bounce_%s.wav", ts))
+	_ = os.MkdirAll(filepath.Dir(outPath), 0755)
+	abs, _ := filepath.Abs(outPath)
+	params := map[string]any{
+		"bpm":        bpm,
+		"beats":      beats,
+		"tailSec":    tailSec,
+		"sampleRate": sampleRate,
+		"path":       abs,
+	}
+	// 若前端提供了 notes/clips 明细，透传给引擎以备真实渲染（当前引擎以静默占位保证长度）
+	if body.Tracks != nil {
+		params["tracks"] = body.Tracks
+	}
+	retPath, err := sup.Bounce(params)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "离线渲染失败: "+err.Error())
+		return
+	}
+	if retPath == "" {
+		retPath = abs
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":   true,
+		"path": retPath,
+		"url":  "/api/audio/bounce/file?path=" + retPath,
+		"beats": beats,
+		"tailSec": tailSec,
+		"sampleRate": sampleRate,
+	})
+}
+
+// handleAudioBounceFile 下载已渲染的 WAV
+func (r *Router) handleAudioBounceFile(w http.ResponseWriter, req *http.Request) {
+	path := req.URL.Query().Get("path")
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "缺少 path")
+		return
+	}
+	// 仅允许 output 目录下的文件
+	abs, _ := filepath.Abs(path)
+	cwd, _ := os.Getwd()
+	outDir, _ := filepath.Abs("output")
+	if !isSubPath(abs, outDir) && !isSubPath(abs, cwd) {
+		writeError(w, http.StatusForbidden, "非法路径")
+		return
+	}
+	if _, err := os.Stat(abs); err != nil {
+		writeError(w, http.StatusNotFound, "文件不存在")
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(abs)+"\"")
+	http.ServeFile(w, req, abs)
+}
+
+func isSubPath(target, base string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return len(rel) > 0 && rel[0] != '.' && !filepath.IsAbs(rel)
 }

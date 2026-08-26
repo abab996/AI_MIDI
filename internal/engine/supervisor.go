@@ -725,6 +725,33 @@ func (s *Supervisor) ClearSamples() error {
 	return cli.ClearSamples(s.cfg.RequestTimeout)
 }
 
+// ScheduleNotes 批量调度 MIDI
+func (s *Supervisor) ScheduleNotes(notes []map[string]any, bpm float64) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	return cli.ScheduleNotes(notes, bpm, s.cfg.RequestTimeout)
+}
+
+// ClearNotes 清空 MIDI 调度
+func (s *Supervisor) ClearNotes() error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	return cli.ClearNotes(s.cfg.RequestTimeout)
+}
+
+// Bounce 离线渲染
+func (s *Supervisor) Bounce(params map[string]any) (string, error) {
+	cli, err := s.Ready(10 * time.Second)
+	if err != nil {
+		return "", err
+	}
+	return cli.Bounce(params, 30*time.Second)
+}
+
 // TransportPlay/TransportStop/TransportLocate/TransportSetTempo 走带控制（M3 阶段一）
 func (s *Supervisor) TransportPlay() error {
 	return s.transportCall("play", nil)

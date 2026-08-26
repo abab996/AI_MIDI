@@ -491,6 +491,7 @@
     on("arrMetroBtn", function () { self.toggleMetro(); });
     on("arrUndoBtn", function () { self.undo(); });
     on("arrRedoBtn", function () { self.redo(); });
+    on("arrExportWavBtn", function () { self.exportWav(); });
     on("arrZoomInBtn", function () { self.zoomStep(1); });
     on("arrZoomOutBtn", function () { self.zoomStep(-1); });
 
@@ -664,6 +665,51 @@
       this.engine.play(this.playheadBeat);
       try { if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) { try{window.EngineBridge.locate(this.playheadBeat);}catch(e){} } } catch(e){}
     }
+  };
+
+  Arrange.prototype.exportWav = function () {
+    var self = this;
+    // 仅 AUTO+JUCE就绪时可离线导出（保证按全局采样率+尾音不截断）
+    var useNative = false;
+    try { useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred(); } catch(e) {}
+    if (!useNative) {
+      if (window.UI && window.UI.toast) window.UI.toast("⚠ 当前为 WEBAUDIO 模式，导出走浏览器（无离线尾音保障）。请切回 AUTO 后重试", "warn");
+      return;
+    }
+    if (!this.tracks || !this.tracks.length) {
+      if (window.UI && window.UI.toast) window.UI.toast("⚠ 无轨道可导出", "warn");
+      return;
+    }
+    this.showHUD("⏳ 正在离线渲染 WAV（尾音到静默）…");
+    var payload = { bpm: this.bpm, tracks: this.tracks };
+    // 优先走 Wails 直通（低延迟），失败回退 HTTP
+    var p = null;
+    if (window.EngineBridge && window.EngineBridge.bounce) {
+      try { p = window.EngineBridge.bounce(payload); } catch(e) { p = null; }
+    }
+    if (!p || !p.then) {
+      p = fetch("/api/audio/bounce", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) }).then(function(r){ return r.json(); });
+    }
+    Promise.resolve(p).then(function(res){
+      var url = null;
+      if (typeof res === "string") {
+        url = "/api/audio/bounce/file?path=" + encodeURIComponent(res);
+      } else {
+        url = res && (res.url || res.path);
+        if (url && url.indexOf("/api/") !== 0 && res.path) url = "/api/audio/bounce/file?path=" + encodeURIComponent(res.path);
+      }
+      if (!url) throw new Error("无下载链接");
+      self.showHUD("✅ 渲染完成，开始下载…");
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function(){ try{ a.remove(); }catch(e){} }, 1000);
+    }).catch(function(err){
+      self.showHUD("✗ 导出失败");
+      if (window.UI && window.UI.toast) window.UI.toast("✗ 导出失败: " + (err && err.message || err), "err");
+    });
   };
 
   /* ═══════════ 缩放 ═══════════ */

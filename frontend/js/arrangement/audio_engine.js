@@ -196,9 +196,11 @@
         nodes.synth.init();
         nodes.synth.setWaveform(src.wave || "sawtooth");
         // 默认走 JUCE 时，编曲亦走引擎；仅 WEBAUDIO 强制留 WebAudio
-        nodes.synth._forceWebAudio = !isNativePreferred();
-        // 标记是否原生直通（供 _triggerDue 分流）
-        nodes._isNativeSynth = isNativePreferred();
+        var useNativeSynth = isNativePreferred();
+        nodes.synth._forceWebAudio = !useNativeSynth;
+        // 标记是否原生直通（供 _triggerDue 分流，SF2与synth统一用 _useNative）
+        nodes._useNative = useNativeSynth;
+        nodes._isNativeSynth = useNativeSynth;
       }
     }
     if (created && this.getTracks) {
@@ -207,17 +209,49 @@
     return nodes;
   };
 
-  /** 从 IndexedDB 音源库异步加载轨道 SF2（不阻塞 UI） */
+  /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立） */
   ArrangeEngine.prototype.loadTrackSoundFont = function (track, nodes, src) {
     var self = this;
     if (!window.SoundLibrary || !src.libId) return;
     nodes.sfLoading = true;
     window.SoundLibrary.getSoundFont(src.libId).then(function (rec) {
       if (!rec || !rec.data) throw new Error("音源数据不存在");
-      var parsed = nodes.soundfont.parseSF2(rec.data);
-      if (src.presetId) nodes.soundfont.setPreset(src.presetId);
-      nodes.sfLoading = false;
-      if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, parsed);
+      // 原生优先：尝试经 JUCE 加载（每轨独立SF2，为VST铺垫）
+      if (isNativePreferred() && window.EngineBridge && window.EngineBridge.loadSoundFont) {
+        var tracks = self.getTracks ? self.getTracks() : [];
+        var idx = trackIndexOf(track.id, tracks);
+        if (idx < 0) idx = 0;
+        // 仿 handler_soundfont.go 的 safe 规则
+        var rawName = rec.name || src.name || "soundfont";
+        var safe = rawName.replace(/[^\p{L}\p{N}_\-\.]/gu, "_");
+        safe = safe.replace(/\.[^/.]+$/, "");
+        if (!safe) safe = "soundfont";
+        var diskPath = "Library/soundfonts/" + safe + ".sf2";
+        // 优先用磁盘路径（已镜像），失败则回退 Web 解析
+        return window.EngineBridge.loadSoundFont(diskPath, idx).then(function(){
+          nodes.sfLoading = false;
+          nodes._useNative = true;
+          nodes._nativeTrackIdx = idx;
+          if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, { name: rec.name, presets: rec.presets, native: true });
+        }).catch(function(e){
+          // 回退 WebAudio
+          try {
+            var parsed = nodes.soundfont.parseSF2(rec.data);
+            if (src.presetId) nodes.soundfont.setPreset(src.presetId);
+            nodes._useNative = false;
+            nodes.sfLoading = false;
+            if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, parsed);
+          } catch(err2){
+            nodes.sfLoading = false;
+            throw err2;
+          }
+        });
+      } else {
+        var parsed = nodes.soundfont.parseSF2(rec.data);
+        if (src.presetId) nodes.soundfont.setPreset(src.presetId);
+        nodes.sfLoading = false;
+        if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, parsed);
+      }
     }).catch(function (err) {
       nodes.sfLoading = false;
       console.warn("轨道音源加载失败:", err);
@@ -436,14 +470,10 @@
         var tracks = this.getTracks ? this.getTracks() : [];
         for (var k = 0; k < this._pendingOff.length; k++) {
           var ev = this._pendingOff[k];
-          if (!ev.trackId) continue;
+          if (!ev.trackId || !ev.nodes || !ev.nodes._useNative) continue;
           var idx = trackIndexOf(ev.trackId, tracks);
-          var tr = idx >=0 ? tracks[idx] : null;
-          if (tr && tr.source && tr.source.type === "synth") {
-            try { window.EngineBridge.noteOffTrack(idx, ev.midi); } catch(e) {}
-          }
+          if (idx >= 0) { try { window.EngineBridge.noteOffTrack(idx, ev.midi); } catch(e) {} }
         }
-        // 额外 panic：确保所有轨静默（引擎侧 panicAll 兜底，但逐个 off 更精确）
       } catch(e) {}
     }
     this._pendingOn = [];
@@ -634,11 +664,10 @@
       if (ev.t <= now + TRIGGER_S) {
         if (ev.t >= now - 0.25 && this.isPlaying) {
           var handledNative = false;
-          if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOnTrack) {
+          if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOnTrack && ev.nodes && ev.nodes._useNative) {
             var tracksOn = this.getTracks ? this.getTracks() : [];
             var idxOn = trackIndexOf(ev.trackId, tracksOn);
-            var tro = idxOn >= 0 ? tracksOn[idxOn] : null;
-            if (tro && tro.source && tro.source.type === "synth") {
+            if (idxOn >= 0) {
               try { window.EngineBridge.noteOnTrack(idxOn, ev.midi, ev.vel); handledNative = true; } catch(e) { handledNative = false; }
             }
           }
@@ -670,11 +699,10 @@
       if (ev.t <= now + TRIGGER_S + 0.05) {
         if (this.isPlaying) {
           var handledOff = false;
-          if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOffTrack) {
+          if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOffTrack && ev.nodes && ev.nodes._useNative) {
             var tracksOff = this.getTracks ? this.getTracks() : [];
             var idxOff = trackIndexOf(ev.trackId, tracksOff);
-            var troOff = idxOff >=0 ? tracksOff[idxOff] : null;
-            if (troOff && troOff.source && troOff.source.type === "synth") {
+            if (idxOff >= 0) {
               try { window.EngineBridge.noteOffTrack(idxOff, ev.midi); handledOff = true; } catch(e) { handledOff = false; }
             }
           }

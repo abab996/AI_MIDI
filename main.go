@@ -68,8 +68,9 @@ func main() {
 
 	app.SetCurrentProcessAppID(config.WindowTitle)
 
-	// 3. 立即在 Windows 桌面上弹出 32 位 Alpha 真透明无边框原生 Splash 窗口（至少展示 1.4 秒）
-	splashCtrl := app.ShowNativeTransparentSplash(1400 * time.Millisecond)
+	// 3. 立即在 Windows 桌面上弹出 32 位 Alpha 真透明无边框原生 Splash 窗口
+	// 去掉 1.4s 假等待：改为“引擎就绪即关”，最多等 5s
+	splashCtrl := app.ShowNativeTransparentSplash(5000 * time.Millisecond)
 
 	subFS, err := fs.Sub(assets, "frontend")
 	if err != nil {
@@ -88,6 +89,31 @@ func main() {
 	engine.SetGlobal(engineSup)
 	engineSup.Start()
 	defer engineSup.Stop()
+
+	// 启动图跟随引擎：就绪/失败/禁用即关（去掉固定 1s 假等待），最多 5s 兜底
+	go func() {
+		if !audioSettings.EngineEnabled {
+			time.Sleep(300 * time.Millisecond)
+			splashCtrl.Close()
+			return
+		}
+		deadline := time.Now().Add(5000 * time.Millisecond)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			st := engineSup.Status()
+			if st.State == engine.StateReady || st.State == engine.StateFailed || st.State == engine.StateDisabled {
+				time.Sleep(150 * time.Millisecond)
+				splashCtrl.Close()
+				return
+			}
+			if time.Now().After(deadline) {
+				splashCtrl.Close()
+				return
+			}
+			<-ticker.C
+		}
+	}()
 
 	// 4. 浏览器模式
 	if *browserMode {
@@ -139,13 +165,8 @@ func main() {
 				runtime.WindowShow(ctx)
 			}()
 		},
-		// 前端 DOM 就绪（首帧已具备渲染条件）后提前关闭启动图——
-		// 1400ms 固定时长改为上限，实际展示 = 图片解码 + DOM 就绪 + 短暂留白
+		// 前端 DOM 就绪后不再假等待 400ms，启动图已由引擎就绪驱动关闭
 		OnDomReady: func(ctx context.Context) {
-			go func() {
-				time.Sleep(400 * time.Millisecond)
-				splashCtrl.Close()
-			}()
 		},
 		Bind: []interface{}{
 			appInstance,

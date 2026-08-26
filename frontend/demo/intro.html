@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AI_MIDI-go · 宣传片片头</title>
+<style>
+  :root {
+    --color-bg: #F5F3EE;
+    --color-bg-card: #FAF8F3;
+    --color-primary: #4169E1;
+    --color-ink: #1E3A5F;
+    --color-accent: #D35400;
+    --color-border: rgba(30, 58, 95, 0.2);
+    --color-grid: rgba(65, 105, 225, 0.07);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: var(--color-bg);
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    color: var(--color-ink);
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* 图纸网格 */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(var(--color-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  .stage { position: relative; text-align: center; }
+
+  /* 四角准星 */
+  .brackets { position: relative; padding: 90px 150px; }
+  .brackets i {
+    position: absolute; width: 26px; height: 26px;
+    border: 0 solid var(--color-primary); opacity: 0;
+    animation: bracketIn .5s cubic-bezier(.2,1.4,.4,1) forwards;
+  }
+  .brackets i:nth-child(1) { top: 0; left: 0; border-width: 2px 0 0 2px; animation-delay: .15s; }
+  .brackets i:nth-child(2) { top: 0; right: 0; border-width: 2px 2px 0 0; animation-delay: .22s; }
+  .brackets i:nth-child(3) { bottom: 0; left: 0; border-width: 0 0 2px 2px; animation-delay: .29s; }
+  .brackets i:nth-child(4) { bottom: 0; right: 0; border-width: 0 2px 2px 0; animation-delay: .36s; }
+  @keyframes bracketIn { from { opacity: 0; transform: scale(1.8); } to { opacity: 1; transform: scale(1); } }
+
+  .line-hard {
+    font-size: 64px; font-weight: 800; letter-spacing: .02em;
+    opacity: 0; animation: popIn .55s cubic-bezier(.2,1.5,.4,1) .45s forwards;
+  }
+  .line-soft {
+    font-size: 64px; font-weight: 800; letter-spacing: .02em; color: var(--color-ink);
+    position: absolute; left: 0; right: 0; top: 96px;
+    opacity: 0; pointer-events: none;
+  }
+  .strike {
+    position: absolute; left: -4%; right: -4%; top: 52%; height: 10px;
+    background: var(--color-accent); border-radius: 5px;
+    transform: scaleX(0); transform-origin: left center;
+  }
+  #phase1 { position: relative; }
+  #phase1.striking .line-hard { animation: none; opacity: 1; }
+  #phase1.striking .strike { animation: strike .34s cubic-bezier(.7,0,.3,1) forwards; }
+  #phase1.striking .line-hard { color: rgba(30,58,95,.38); }
+  @keyframes strike { to { transform: scaleX(1); } }
+
+  #phase2 { position: relative; opacity: 0; }
+  #phase2 .not-anymore {
+    font-size: 76px; font-weight: 900; color: var(--color-primary);
+  }
+  #phase2 .not-anymore em {
+    font-style: normal; color: var(--color-accent);
+  }
+
+  .sub {
+    margin-top: 46px; font-size: 20px; letter-spacing: .28em; color: var(--color-ink);
+    opacity: 0;
+  }
+  .sub .mono { font-family: Consolas, monospace; font-size: 15px; letter-spacing: .12em;
+    border: 1px solid var(--color-border); padding: 6px 14px; border-radius: 2px;
+    background: var(--color-bg-card); color: var(--color-ink); }
+  .show { animation: popIn .5s cubic-bezier(.2,1.5,.4,1) forwards; }
+  @keyframes popIn { from { opacity: 0; transform: translateY(26px) scale(.92); } to { opacity: 1; transform: none; } }
+
+  /* 品牌落版 */
+  #brand {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 26px;
+    background: var(--color-bg); opacity: 0; pointer-events: none;
+  }
+  #brand.show { animation: brandIn .6s cubic-bezier(.2,1.2,.4,1) forwards; }
+  @keyframes brandIn { from { opacity: 0; } to { opacity: 1; } }
+  #brand .logo {
+    font-family: Consolas, monospace; font-weight: 700; font-size: 30px;
+    letter-spacing: .1em; color: var(--color-ink);
+    border: 2px solid var(--color-ink); padding: 14px 34px; border-radius: 3px;
+    position: relative;
+  }
+  #brand .logo b { color: var(--color-accent); }
+  #brand .slogan { font-size: 40px; font-weight: 800; color: var(--color-ink); }
+  #brand .slogan em { font-style: normal; color: var(--color-primary); }
+  #brand .tags { display: flex; gap: 14px; }
+  #brand .tags span {
+    font-family: Consolas, monospace; font-size: 14px; letter-spacing: .18em;
+    color: var(--color-ink); border: 1px dashed var(--color-border);
+    padding: 7px 16px; border-radius: 2px; background: var(--color-bg-card);
+  }
+  .out { animation: fadeOut .45s ease forwards !important; }
+  @keyframes fadeOut { to { opacity: 0; transform: scale(.96); } }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="brackets">
+      <i></i><i></i><i></i><i></i>
+      <div id="phase1">
+        <div class="line-hard">Starting a new track is hard.</div>
+        <div class="strike"></div>
+      </div>
+      <div id="phase2">
+        <div class="not-anymore">Not <em>anymore.</em></div>
+        <div class="sub" id="sub1"><span class="mono">[ AI_MIDI · AI MUSIC COPILOT ]</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="brand">
+    <div class="logo" style="position:relative">AI_MIDI<span class="ver" style="position:absolute;top:-14px;right:-20px;font-size:15px;font-weight:700;color:#fff;background:var(--color-accent);padding:3px 10px;border-radius:3px;box-shadow:0 2px 0 rgba(30,58,95,.55);transform:rotate(6deg)">3.0</span></div>
+    <div class="slogan">你的下一首曲子，只差一句提示词。<br><em>Your next track, one prompt away.</em></div>
+    <div class="tags"><span>开源 OPEN-SOURCE</span><span>本地 LOCAL</span><span>为音乐人 FOR PRODUCERS</span></div>
+  </div>
+
+<script>
+  /* 时间轴按 85 BPM 节拍对齐（1 拍 = 0.7059s）：
+     0.71 拍2: 大字弹入 | 2.12 拍3: 划线+叮 | 2.82 拍4: Not anymore
+     4.24 拍6: 副标     | 7.06 小节3(8.47s 切出前): 品牌落版于 5.65(拍8) */
+  const B = (n) => n * 0.70588 * 1000;
+  const p1 = document.getElementById("phase1");
+  const p2 = document.getElementById("phase2");
+  const sub = document.getElementById("sub1");
+  const brand = document.getElementById("brand");
+  const stage = document.querySelector(".stage");
+  setTimeout(() => { p1.classList.add("striking"); }, B(3));      /* 2.12s */
+  setTimeout(() => {
+    p1.classList.add("out");
+    p2.style.opacity = 1;
+    p2.querySelector(".not-anymore").classList.add("show");
+  }, B(4));                                                        /* 2.82s */
+  setTimeout(() => sub.classList.add("show"), B(6));               /* 4.24s */
+  setTimeout(() => {
+    stage.classList.add("out");
+    brand.classList.add("show");
+  }, B(8) + 400);                                                  /* ~6.07s */
+</script>
+</body>
+</html>

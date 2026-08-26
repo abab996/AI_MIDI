@@ -2427,28 +2427,185 @@
   }
 
   /* ---- 快速任务弹窗（洞察报告 P0-4 步骤②）----
-     结构化表单吸收原快捷操作页（index.html）的字段化输入价值：
-     提交 = 新建档案 + 组装首条消息直接进入对话流。 */
+     结构化表单 1:1 还原快捷操作页（index.html）输入项：MIDI 上传解析/
+     四类任务/歌词/语言对/音符输出/要求/BPM/拍号；提交 = 新建档案 +
+     组装首条消息直接进入对话流；字段切换沿用 dyn-control 动画体系。 */
   var qtFunc = "chord";
+  var qtNoteTable = [];      /* 解析出的音符表（与快捷操作页 noteTable 同源同构） */
+  var qtFuncToken = 0;
 
-  /* 各任务类型的字段显隐（与 index 快捷操作页语义一致）；
-     "具体要求"框对所有类型保持可见（翻译歌词场景为可选补充） */
-  function qtApplyFunc(fn) {
-    qtFunc = fn;
-    var lyric = fn === "translate" || fn === "melisma" || fn === "other";
-    $("#qtLyricsField").hidden = !lyric;
-    $("#qtLangField").hidden = fn !== "translate";
-    $("#qtNoteField").hidden = fn !== "other";
+  /* 各任务类型的字段显隐（对齐 workbench.js funcFields 的语义） */
+  function qtFuncFields(fn) {
+    var map = {
+      chord: ["qtReqField"],
+      translate: ["qtLyricsField", "qtLangField"],
+      melisma: ["qtLyricsField", "qtReqField"],
+      other: ["qtLyricsField", "qtNoteField", "qtReqField"],
+    };
+    return map[fn] || ["qtReqField"];
+  }
+
+  function qtClearDynField(f) {
+    f.classList.remove("dyn-in", "dyn-out");
+    f.style.removeProperty("--dyn-delay");
+    f.style.removeProperty("--out-dx");
+    f.style.removeProperty("--out-dy");
+    f.style.removeProperty("--fly-dx");
+    f.style.removeProperty("--fly-dy");
+  }
+
+  /* 切换任务类型：完整移植快捷操作页的"收拢→弹出"级联动画
+     （dyn-out 朝触发按钮收拢 → 隐藏该隐藏的字段 → dyn-in 自弹窗
+     底边中点起飞，级联 60ms；reduced-motion 直接切换） */
+  function qtApplyFunc(btn, fn) {
+    var allFields = [$("#qtLyricsField"), $("#qtLangField"), $("#qtNoteField"), $("#qtReqField")];
+
+    /* 打开弹窗（无触发按钮）：无动画强制同步字段状态——上次会话的
+       切换动画可能在收拢阶段被中途关闭，hidden 状态不保证一致 */
+    if (!btn) {
+      qtFunc = fn;
+      var showNow = qtFuncFields(fn);
+      allFields.forEach(function (f) { f.hidden = showNow.indexOf(f.id) === -1; });
+      return;
+    }
+    if (fn === qtFunc) return;   /* 点击当前激活项：不重复动画 */
+
+    qtFuncToken++;
+    var token = qtFuncToken;
+
     var fns = $("#qtFuncSelector").querySelectorAll(".fn");
-    fns.forEach(function (b) {
-      b.classList.toggle("active", b.dataset.func === fn);
+    fns.forEach(function (b) { b.classList.toggle("active", b === btn); });
+    qtFunc = fn;
+    var show = qtFuncFields(fn);
+
+    var modal = $("#quickTaskOverlay").querySelector(".modal");
+    var persistent = [$("#qtMeasureRow"), $("#qtSubmitRow")];
+    var fields = allFields;
+    var controls = persistent.concat(fields);
+
+    if (reducedMotion) {
+      fields.forEach(function (f) { f.hidden = show.indexOf(f.id) === -1; });
+      return;
+    }
+
+    /* 按钮 Q 弹按压（切换撞击点） */
+    if (btn) {
+      btn.classList.add("pressed");
+      setTimeout(function () {
+        if (token === qtFuncToken) btn.classList.remove("pressed");
+      }, 420);
+    }
+
+    /* 退场：可见控件朝按钮中心收拢（自下而上级联） */
+    var br = btn ? btn.getBoundingClientRect()
+      : $("#qtFuncSelector").getBoundingClientRect();
+    var ox = br.left + br.width / 2;
+    var oy = br.top + br.height / 2;
+    var outList = controls.filter(function (f) { return !f.hidden; });
+    outList.forEach(function (f, i) {
+      qtClearDynField(f);
+      var r = f.getBoundingClientRect();
+      var fx = r.left + r.width / 2;
+      var fy = r.top + r.height / 2;
+      var dx = ox - fx;
+      var dy = oy - fy;
+      var d = Math.hypot(dx, dy);
+      if (d < 1) { dx = 0; dy = 1; d = 1; }
+      var pull = 14;
+      f.style.setProperty("--out-dx", (dx / d * pull).toFixed(1) + "px");
+      f.style.setProperty("--out-dy", (dy / d * pull).toFixed(1) + "px");
+      f.style.setProperty("--dyn-delay", ((outList.length - 1 - i) * 60) + "ms");
+      f.classList.add("dyn-out");
     });
+    var hideMs = outList.length ? (outList.length - 1) * 60 + 240 : 0;
+
+    setTimeout(function () {
+      if (token !== qtFuncToken) return;
+      fields.forEach(function (f) { f.hidden = show.indexOf(f.id) === -1; });
+      qtStartShow(token);
+    }, hideMs);
+
+    /* 进场：从弹窗底边中点起飞（提交行 → BPM/拍号 → 字段自下而上） */
+    function qtStartShow(tok) {
+      var sr = modal.getBoundingClientRect();
+      var lx = sr.left + sr.width / 2;
+      var ly = sr.bottom;
+      var inList = persistent.slice().reverse().concat(
+        fields.filter(function (f) { return show.indexOf(f.id) !== -1; }).slice().reverse()
+      );
+      inList.forEach(function (f, i) {
+        qtClearDynField(f);
+        var r = f.getBoundingClientRect();
+        var fx = r.left + r.width / 2;
+        var fy = r.top + r.height / 2;
+        f.style.setProperty("--fly-dx", (fx - lx).toFixed(1) + "px");
+        f.style.setProperty("--fly-dy", (fy - ly).toFixed(1) + "px");
+        f.style.setProperty("--dyn-delay", (i * 60) + "ms");
+        f.classList.add("dyn-in");
+        setTimeout(function () {
+          if (tok !== qtFuncToken) return;
+          qtClearDynField(f);
+        }, i * 60 + 700);
+      });
+    }
+  }
+
+  /* MIDI 上传解析（复用 /api/parse；对齐快捷操作页 handleFile） */
+  function qtHandleFile(file) {
+    if (!file) return;
+    var form = new FormData();
+    form.append("file", file);
+    UI.toast("正在解析 " + file.name + " …", "");
+    fetch("/api/parse", { method: "POST", body: form })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || "解析失败"); });
+        return r.json();
+      })
+      .then(function (data) {
+        qtNoteTable = data.note_table || [];
+        $("#qtParseStatus").textContent = data.status;
+        $("#qtParseStatus").className = "ok";
+        $("#qtDzSub").textContent = file.name;
+        UI.toast(data.status, "ok");
+      })
+      .catch(function (e) {
+        $("#qtParseStatus").textContent = "✗ " + e.message;
+        $("#qtParseStatus").className = "err";
+        UI.toast("✗ " + e.message, "err");
+      });
+  }
+
+  function resetQuickTaskForm() {
+    qtNoteTable = [];
+    var statusEl = $("#qtParseStatus");
+    if (statusEl) {
+      statusEl.textContent = "尚未解析";
+      statusEl.className = "dim";
+    }
+    var subEl = $("#qtDzSub");
+    if (subEl) {
+      subEl.textContent = "*.mid / *.midi";
+    }
+    var fileInput = $("#qtMidiInput");
+    if (fileInput) fileInput.value = "";
+    var lyrics = $("#qtLyrics");
+    if (lyrics) lyrics.value = "";
+    var req = $("#qtReq");
+    if (req) req.value = "";
+    var origLang = $("#qtOrigLang");
+    if (origLang) origLang.value = "";
+    var targetLang = $("#qtTargetLang");
+    if (targetLang) targetLang.value = "";
+    var bpm = $("#qtBpm");
+    if (bpm) bpm.value = "120";
+    var ts = $("#qtTs");
+    if (ts) ts.value = "4/4";
   }
 
   function openQuickTask() {
     modalToken++;
     modalFocusReturn = document.activeElement;
-    qtApplyFunc(qtFunc);
+    qtApplyFunc(null, qtFunc);
     overlayIn($("#quickTaskOverlay"), modalToken);
     setTimeout(function () { $("#qtReq").focus(); }, 50);
   }
@@ -2457,13 +2614,19 @@
     modalToken++;
     overlayOut($("#quickTaskOverlay"), modalToken);
     restoreModalFocus();
+    resetQuickTaskForm();
   }
 
-  /* 表单 → 首条消息组装（喂给对话管线的结构化 prompt） */
+  /* 表单 → 首条消息组装（喂给对话管线的结构化 prompt；
+     音符表与快捷操作页 /api/run 的 note_table 同构，全量嵌入） */
   function qtComposeMessage() {
     var lines = [];
     var labels = { chord: "配和弦", translate: "翻译歌词", melisma: "设计转音", other: "其他要求" };
     lines.push("【快速任务 · " + labels[qtFunc] + "】");
+    if (qtNoteTable.length) {
+      lines.push("音符表（共 " + qtNoteTable.length + " 个音符）：");
+      lines.push(qtNoteTable.join("\n"));
+    }
     var lyrics = $("#qtLyrics").value.trim();
     if (lyrics) lines.push("歌词：\n" + lyrics);
     if (qtFunc === "translate") {
@@ -2494,9 +2657,15 @@
   }
 
   function qtSubmit() {
-    /* 按任务类型做最小校验（与快捷操作页一致的业务必填） */
+    /* 按任务类型做最小校验（与快捷操作页 runTask 一致：
+       配和弦/设计转音依赖 MIDI 音符表；翻译歌词需歌词+语言对） */
     var lyrics = $("#qtLyrics").value.trim();
     var req = $("#qtReq").value.trim();
+    var needsMidi = qtFunc === "chord" || qtFunc === "melisma";
+    if (needsMidi && !qtNoteTable.length) {
+      UI.toast("⚠ 请先解析 MIDI 文件", "warn");
+      return;
+    }
     if (qtFunc === "translate") {
       if (!lyrics) { UI.toast("翻译歌词需要先粘贴歌词文本", "warn"); return; }
       if (!$("#qtOrigLang").value.trim() || !$("#qtTargetLang").value.trim()) {
@@ -2520,6 +2689,12 @@
     UI.postJSON("/api/projects", { name: labels[qtFunc] + " " + stamp })
       .then(function (payload) {
         closeQuickTask();
+        /* 任务已发起，音符表已嵌入消息——重置解析状态（取消关闭则保留，
+           与快捷操作页"解析结果页面级持久"的行为一致） */
+        qtNoteTable = [];
+        $("#qtParseStatus").textContent = "尚未解析";
+        $("#qtParseStatus").className = "dim";
+        $("#qtDzSub").textContent = "*.mid / *.midi";
         reloadProjects();
         /* 进入工作台后以组装好的首条消息直接发起对话 */
         enterProjectAndSend(payload, message);
@@ -2644,8 +2819,44 @@
     });
     $("#qtFuncSelector").addEventListener("click", function (e) {
       var btn = e.target.closest(".fn");
-      if (btn && btn.dataset.func) qtApplyFunc(btn.dataset.func);
+      if (btn && btn.dataset.func) qtApplyFunc(btn, btn.dataset.func);
     });
+
+    /* 快速任务 MIDI 输入区：点击选择 / 拖入（对齐快捷操作页 dropzone） */
+    var qtDz = $("#qtDropzone");
+    var qtInput = $("#qtMidiInput");
+    if (qtDz && qtInput) {
+      qtDz.addEventListener("click", function () { qtInput.click(); });
+      qtInput.addEventListener("change", function () {
+        if (qtInput.files && qtInput.files[0]) qtHandleFile(qtInput.files[0]);
+        qtInput.value = "";
+      });
+      var qtDragCounter = 0;
+      qtDz.addEventListener("dragenter", function (e) {
+        e.preventDefault();
+        qtDragCounter++;
+        qtDz.classList.add("dragover");
+      });
+      qtDz.addEventListener("dragover", function (e) {
+        e.preventDefault();
+        qtDz.classList.add("dragover");
+      });
+      qtDz.addEventListener("dragleave", function (e) {
+        e.preventDefault();
+        qtDragCounter--;
+        if (qtDragCounter <= 0) {
+          qtDragCounter = 0;
+          qtDz.classList.remove("dragover");
+        }
+      });
+      qtDz.addEventListener("drop", function (e) {
+        e.preventDefault();
+        qtDragCounter = 0;
+        qtDz.classList.remove("dragover");
+        var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (f) qtHandleFile(f);
+      });
+    }
 
     $("#modalOk").addEventListener("click", function () {
       if (!modalAction) return;

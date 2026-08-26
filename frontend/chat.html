@@ -679,11 +679,21 @@
   </div>
 </div>
 
-<!-- 快速任务弹窗：结构化表单（吸收原快捷操作页的字段化输入价值），
-     提交 = 新建档案 + 以表单内容组装的首条消息直接发起对话 -->
+<!-- 快速任务弹窗：结构化表单（1:1 还原快捷操作页输入项：MIDI 上传解析/四类
+     任务/歌词/语言对/音符输出/要求/BPM/拍号），提交 = 新建档案 + 组装首条
+     消息直入对话流；字段切换沿用 dyn-control 收拢→弹出动画体系 -->
 <div class="modal-overlay" id="quickTaskOverlay" hidden role="dialog" aria-modal="true" aria-label="快速任务">
-  <div class="modal card brackets" style="width:520px">
+  <div class="modal card brackets" style="width:520px;max-height:calc(100vh - 96px);overflow-y:auto">
     <div class="modal-title">⚡ 快速任务 · Quick Task</div>
+
+    <!-- MIDI 输入（对齐快捷操作页"① 输入站"：拖入/点击选择 → 解析音符表） -->
+    <div class="dropzone brackets qt-dropzone" id="qtDropzone">
+      <input type="file" id="qtMidiInput" accept=".mid,.midi" hidden>
+      <div class="dz-icon">▣</div>
+      <div class="dz-text">拖入或点击选择 MIDI 文件</div>
+      <div class="dz-sub" id="qtDzSub">*.mid / *.midi</div>
+    </div>
+    <div class="stat-line" style="margin-bottom:4px">[PARSE] <span class="dim" id="qtParseStatus">尚未解析</span></div>
 
     <label class="field-label">任务类型 · Function</label>
     <div class="func-selector" id="qtFuncSelector" style="grid-template-columns:repeat(4,1fr)">
@@ -693,12 +703,12 @@
       <button class="fn" data-func="other" type="button">其他要求</button>
     </div>
 
-    <div id="qtLyricsField" hidden>
+    <div id="qtLyricsField" class="dyn-control" hidden>
       <label class="field-label" for="qtLyrics">歌词 · Lyrics</label>
       <textarea id="qtLyrics" rows="3" placeholder="粘贴歌词文本…"></textarea>
     </div>
 
-    <div id="qtLangField" hidden>
+    <div id="qtLangField" class="dyn-control" hidden>
       <label class="field-label">语言 · Language</label>
       <div class="field-grid">
         <input type="text" id="qtOrigLang" placeholder="原语言 · 如 日语">
@@ -706,17 +716,17 @@
       </div>
     </div>
 
-    <label class="toggle-text" id="qtNoteField" hidden>
+    <label class="toggle-text dyn-control" id="qtNoteField" hidden>
       <input type="checkbox" id="qtNoteOutput">
       <span>输出音符数据 (MIDI)</span>
     </label>
 
-    <div id="qtReqField">
+    <div id="qtReqField" class="dyn-control">
       <label class="field-label" for="qtReq">具体要求 · Requirements</label>
       <textarea id="qtReq" rows="3" placeholder="如：使用 1-6-4-5 进行，力度柔和…"></textarea>
     </div>
 
-    <div class="field-grid" style="margin-top:10px">
+    <div class="field-grid dyn-control" id="qtMeasureRow" style="margin-top:10px">
       <div>
         <label class="field-label" for="qtBpm">BPM</label>
         <input type="number" id="qtBpm" value="120" min="1" max="600">
@@ -727,7 +737,7 @@
       </div>
     </div>
 
-    <div class="modal-actions">
+    <div class="modal-actions dyn-control" id="qtSubmitRow">
       <button class="btn btn-secondary" id="qtCancel" type="button">取消</button>
       <button class="btn btn-primary" id="qtSubmit" type="button">▶ 发起任务</button>
     </div>
@@ -804,5 +814,7 @@
 <script src="/js/arrangement/audio_engine.js" defer></script>
 <script src="/js/arrangement/arrange.js" defer></script>
 <script src="/js/chat.js" defer></script>
+<script src="/demo/script_data.js" defer></script>
+<script src="/demo/showrunner.js" defer></script>
 </body>
 </html>

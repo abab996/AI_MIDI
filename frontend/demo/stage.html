@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AI_MIDI-go · 电影舞台</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  /* ── 舞台覆盖层：在产品样式之上搭建电影舞台 ── */
+  html { perspective: 1500px; }
+  body {
+    margin: 0; overflow: hidden; height: 100vh;
+    transform-origin: 50% 58%;
+    will-change: transform, filter;
+    background: var(--color-bg);
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    color: var(--color-ink);
+  }
+  body::before {
+    content: ""; position: fixed; inset: -60px; pointer-events: none; z-index: 0;
+    background-image:
+      linear-gradient(var(--color-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  .world { position: relative; z-index: 2; height: 100vh; }
+
+  /* 品牌角标 */
+  .brandmark {
+    position: fixed; left: 34px; top: 26px; z-index: 50;
+    font-family: Consolas, monospace; font-weight: 700; font-size: 15px;
+    letter-spacing: .14em; color: var(--color-ink);
+    border: 1.6px solid var(--color-ink); padding: 6px 13px; border-radius: 2px;
+    opacity: 0;
+  }
+  .brandmark b { color: var(--color-accent); }
+  .brandmark.show { animation: popIn .45s cubic-bezier(.2,1.5,.4,1) forwards; }
+
+  @keyframes popIn { from { opacity: 0; transform: translateY(22px) scale(.92); } to { opacity: 1; transform: none; } }
+  @keyframes popInBig { from { opacity: 0; transform: translateY(34px) scale(.88); } to { opacity: 1; transform: none; } }
+
+  /* ── 场景一：孤立输入卡 ── */
+  .input-stage {
+    position: absolute; left: 50%; top: 42%; width: 720px;
+    transform: translate(-50%, -50%);
+  }
+  .input-card {
+    background: var(--color-bg-card);
+    border: 1px solid var(--color-border); border-radius: 4px;
+    box-shadow: 0 24px 60px rgba(10, 20, 36, .14), 0 0 0 1px rgba(30,58,95,.06);
+    padding: 22px 22px 16px;
+    opacity: 0;
+  }
+  .input-card.show { animation: popInBig .6s cubic-bezier(.05,.7,.1,1) forwards; }
+  .input-label {
+    font-family: Consolas, monospace; font-size: 12px; letter-spacing: .2em;
+    color: rgba(30,58,95,.55); margin-bottom: 12px;
+  }
+  .fake-input {
+    min-height: 58px; border: 1px solid var(--color-border); border-radius: 3px;
+    background: var(--color-bg); padding: 14px 16px; font-size: 19px; line-height: 1.5;
+    position: relative;
+  }
+  .caret {
+    display: inline-block; width: 2px; height: 22px; vertical-align: -4px;
+    background: var(--color-primary); animation: caretBlink .85s steps(1) infinite;
+  }
+  @keyframes caretBlink { 50% { opacity: 0; } }
+  .send-row { display: flex; justify-content: flex-end; margin-top: 14px; }
+  .btn-send {
+    font-size: 15px; font-weight: 700; color: var(--color-bg);
+    background: var(--color-ink); border: none; border-radius: 3px;
+    padding: 10px 26px; box-shadow: 0 3px 0 var(--color-accent);
+    position: relative;
+  }
+  /* 发送后的升空轨迹 */
+  .launch-dot {
+    position: fixed; z-index: 60; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--color-accent); box-shadow: 0 0 18px rgba(211,84,0,.8);
+    pointer-events: none; opacity: 0;
+  }
+
+  /* ── 对话流世界 ── */
+  .chat-stage {
+    position: absolute; left: 50%; top: 0; width: 780px;
+    transform: translateX(-50%);
+    padding-top: 90px;
+  }
+  .chat-col { display: flex; flex-direction: column; gap: 16px; }
+  .chat-col > * { opacity: 0; }
+  .chat-col > *.in { animation: msgIn .48s cubic-bezier(.05,.7,.1,1) forwards; }
+  @keyframes msgIn { from { opacity: 0; transform: translateY(30px) scale(.94); } to { opacity: 1; transform: none; } }
+
+  /* 工具块 shimmer（AI 正在工作）*/
+  .tool-call { position: relative; overflow: hidden; }
+  .tool-call.pending::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(105deg, transparent 30%, rgba(65,105,225,.14) 48%, rgba(0,240,255,.20) 52%, transparent 70%);
+    transform: translateX(-120%);
+    animation: sheen 1.15s ease-in-out infinite;
+  }
+  @keyframes sheen { to { transform: translateX(120%); } }
+
+  /* 结果大卡 */
+  .result-card {
+    position: absolute; left: 50%; top: 46%; width: 640px;
+    transform: translate(-50%, -50%);
+    background: var(--color-bg-card);
+    border: 1px solid var(--color-border); border-radius: 6px;
+    box-shadow: 0 34px 90px rgba(10, 20, 36, .22), 0 0 44px rgba(0, 240, 255, .12);
+    padding: 26px 28px; opacity: 0;
+  }
+  .result-card.show { animation: popInBig .65s cubic-bezier(.05,.7,.1,1) forwards; }
+  .result-wave { display: flex; align-items: flex-end; gap: 5px; height: 92px; margin: 20px 0 6px; }
+  .result-wave i {
+    flex: 1; background: linear-gradient(180deg, var(--color-primary), rgba(65,105,225,.35));
+    border-radius: 2px 2px 0 0; transform-origin: bottom; transform: scaleY(.08);
+  }
+  .result-card.show .result-wave i { animation: waveUp .7s cubic-bezier(.05,.7,.1,1) forwards; }
+  @keyframes waveUp { to { transform: scaleY(var(--h)); } }
+  .result-meta {
+    display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap;
+  }
+  .result-meta span {
+    font-family: Consolas, monospace; font-size: 13px; letter-spacing: .14em;
+    border: 1px dashed var(--color-border); padding: 6px 13px; border-radius: 2px;
+    color: rgba(30,58,95,.75);
+  }
+  .play-chip {
+    display: flex; align-items: center; gap: 12px; margin-top: 4px;
+  }
+  .play-btn {
+    width: 54px; height: 54px; border-radius: 50%; background: var(--color-ink);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 4px 0 var(--color-accent);
+  }
+  .play-btn::after { content: ""; border-left: 18px solid var(--color-bg);
+    border-top: 11px solid transparent; border-bottom: 11px solid transparent; margin-left: 5px; }
+  .play-name { font-weight: 800; font-size: 21px; }
+  .play-sub { font-family: Consolas, monospace; font-size: 12.5px; color: rgba(30,58,95,.55);
+    letter-spacing: .12em; margin-top: 3px; }
+
+  /* 导出徽章砸落 */
+  .export-badges { position: absolute; left: 50%; top: 62%; transform: translateX(-50%);
+    display: flex; gap: 22px; z-index: 40; }
+  .exp-badge {
+    font-family: Consolas, monospace; font-size: 17px; letter-spacing: .12em;
+    color: var(--color-bg); background: var(--color-ink); border-radius: 3px;
+    padding: 13px 26px; box-shadow: 0 5px 0 var(--color-accent);
+    opacity: 0;
+  }
+  .exp-badge.slam { animation: slamIn .42s cubic-bezier(.25,1.5,.4,1) forwards; }
+  @keyframes slamIn { from { opacity: 0; transform: scale(2.1); } to { opacity: 1; transform: scale(1); } }
+
+  /* 虚拟光标（与 showrunner 同款） */
+  #cursor { position: fixed; left: 0; top: 0; z-index: 200000; pointer-events: none;
+    width: 26px; height: 26px; margin: -3px 0 0 -3px;
+    filter: drop-shadow(0 2px 6px rgba(0,240,255,.45)); will-change: transform; }
+  #ripple { position: fixed; left: 0; top: 0; z-index: 199999; pointer-events: none;
+    width: 14px; height: 14px; margin: -7px 0 0 -7px;
+    border: 2px solid rgba(0,240,255,.9); border-radius: 50%; opacity: 0; }
+
+  /* 循环场景布局 */
+  .loop-stage { position: absolute; inset: 0; display: none; }
+  .loop-stage.on { display: block; }
+  .loop-slab { position: absolute; left: 4%; top: 50%; width: 44%;
+    transform: translateY(-50%) rotateY(-14deg) rotateX(3deg);
+    transform-style: preserve-3d; perspective: 1200px; }
+  .loop-chat { position: absolute; right: 4%; top: 16%; width: 40%; }
+  .fly-note { position: fixed; z-index: 80; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--color-primary); box-shadow: 0 0 14px rgba(65,105,225,.9);
+    pointer-events: none; opacity: 0; }
+</style>
+</head>
+<body>
+  <div class="brandmark" id="brandmark">AI_MIDI · STAGE</div>
+  <div class="world" id="world"></div>
+  <div id="cursor">
+    <svg width="26" height="26" viewBox="0 0 24 24"><path d="M6.2 2.6 L6.2 17.4 L10.3 14.0 L12.8 19.7 Q13.15 20.5 13.95 20.15 L16.35 19.1 Q17.15 18.75 16.75 17.95 L14.15 12.55 L19.3 11.9 Z" fill="#FFFFFF" stroke="#2B2B2B" stroke-width="1.25" stroke-linejoin="round" stroke-linecap="round"/></svg>
+  </div>
+  <div id="ripple"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════
+ * AI_MIDI-go · 电影舞台
+ * scene=chat : 孤立输入 → 发送 → 3D 仰视流式回复 → 提问卡 → 结果定格
+ * scene=loop : 卷帘薄片 → 音符飞回聊天 → 编曲扩展 → 导出徽章砸落
+ * ══════════════════════════════════════════════════════════ */
+const q = new URLSearchParams(location.search);
+const SCENE = q.get("scene") || "chat";
+const world = document.getElementById("world");
+const bodyEl = document.body;
+
+const EASE_OUT = "cubic-bezier(.05,.7,.1,1)";      // M3 emphasized decelerate
+let cur = { x: innerWidth * 0.7, y: innerHeight * 0.72 };
+let tgt = { x: cur.x, y: cur.y };
+const cursor = document.getElementById("cursor");
+const ripple = document.getElementById("ripple");
+(function follow() {
+  cur.x += (tgt.x - cur.x) * 0.42; cur.y += (tgt.y - cur.y) * 0.42;
+  cursor.style.transform = `translate(${cur.x.toFixed(1)}px,${cur.y.toFixed(1)}px)`;
+  requestAnimationFrame(follow);
+})();
+function cmove(x, y) { tgt.x = x; tgt.y = y; }
+function cclick(x, y) {
+  ripple.style.left = x + "px"; ripple.style.top = y + "px";
+  ripple.style.transition = "none"; ripple.style.opacity = ".95";
+  ripple.style.transform = "scale(.4)"; void ripple.offsetWidth;
+  ripple.style.transition = "transform .5s cubic-bezier(.2,.8,.3,1), opacity .5s";
+  ripple.style.transform = "scale(3.2)"; ripple.style.opacity = "0";
+}
+async function cursorTo(x, y, ms = 550) {
+  const sx = cur.x, sy = cur.y;
+  const t0 = performance.now();
+  return new Promise((res) => {
+    (function step() {
+      const p = Math.min(1, (performance.now() - t0) / ms);
+      const e = 1 - Math.pow(1 - p, 3);
+      cur.x = sx + (x - sx) * e; cur.y = sy + (y - sy) * e;   /* 直接驱动，消除滞后 */
+      tgt.x = cur.x; tgt.y = cur.y;
+      if (p < 1) requestAnimationFrame(step); else res();
+    })();
+  });
+}
+async function cursorHide() {
+  cursor.style.transition = "opacity .35s ease";
+  cursor.style.opacity = "0";
+  ripple.style.opacity = "0";
+}
+
+/* 摄像机：对 body 施加 scale/translate/rotateX/Y + 运动模糊（用后必复位）。
+   3D 姿态只作瞬态运镜——Chromium 对 3D 变换做纹理映射不重栅格化，
+   保持姿态会导致整页发糊；运镜结束解除合成层强制按终态重栅格化。 */
+function cam(to, dur = 650, opts = {}) {
+  if (opts.blur) {
+    bodyEl.style.transition = "filter .14s ease";
+    bodyEl.style.filter = `blur(${opts.blur}px)`;
+  }
+  bodyEl.style.transition =
+    `transform ${dur}ms ${opts.ease || EASE_OUT}` +
+    (opts.blur ? `, filter ${Math.round(dur * 0.85)}ms ease ${Math.round(dur * 0.12)}ms` : "");
+  bodyEl.style.transformOrigin = opts.origin || "50% 58%";
+  bodyEl.style.transform =
+    `translate(${to.x || 0}px, ${to.y || 0}px) scale(${to.scale ?? 1})` +
+    ` rotateX(${to.rx || 0}deg) rotateY(${to.ry || 0}deg)`;
+  clearTimeout(cam._t);
+  cam._t = setTimeout(() => {
+    bodyEl.style.filter = "none";
+    bodyEl.style.willChange = "auto";
+    void bodyEl.offsetWidth;
+    if (!opts.flat) bodyEl.style.willChange = "transform";
+  }, dur + 60);
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const el = (tag, cls, html) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+};
+
+/* 工具块模板（与后端 llm.FormatSingleToolEntry 同构） */
+function toolHTML(name, args, result, pending) {
+  if (pending) {
+    return `<details>\n<summary>🔧 调用 \`${name}(${args})\` ⏳</summary>\n\n` +
+      `<div class="tool-pending">⏳ 正在执行 \`${name}\`…</div>\n</details>`;
+  }
+  return `<details>\n<summary>🔧 调用 \`${name}(${args})\`</summary>\n\n\`\`\`\n${result}\n\`\`\`\n</details>`;
+}
+
+/* ══════════════ 场景一：对话写歌 ══════════════ */
+async function sceneChat() {
+  /* 1. 孤立输入卡登场 */
+  const stg = el("div", "input-stage");
+  stg.innerHTML = `
+    <div class="input-card" id="icard">
+      <div class="input-label">[ PROMPT INPUT · 向你的编曲搭档描述灵感 ]</div>
+      <div class="fake-input"><span id="typed"></span><span class="caret"></span></div>
+      <div class="send-row"><button class="btn-send" id="sendBtn">▶ 发送 (Enter)</button></div>
+    </div>`;
+  world.appendChild(stg);
+  document.getElementById("brandmark").classList.add("show");
+  await sleep(300);
+  document.getElementById("icard").classList.add("show");
+  cam({ y: 0, scale: 1 }, 10);
+  await sleep(900);
+
+  /* 2. 光标飞入输入框，逐字打字 */
+  const fake = stg.querySelector(".fake-input");
+  const fr = fake.getBoundingClientRect();
+  await cursorTo(fr.left + 30, fr.top + 28, 520);
+  cclick(fr.left + 30, fr.top + 28);
+  const text = "来一段 85 BPM 温暖复古的 Lo-Fi 电钢和弦，D 多利亚调式，要能直接循环";
+  const typed = stg.querySelector("#typed");
+  let shown = "";
+  for (let i = 0; i < text.length; i++) {
+    shown += text[i];
+    typed.textContent = shown;
+    let d = 42 + Math.random() * 46;
+    if ("，。、".includes(text[i])) d += 130;
+    await sleep(d);
+  }
+  await sleep(420);
+
+  /* 3. 光标飞向发送键点击；镜头快速推近叠运动模糊，消息"发射"升空 */
+  const btn = stg.querySelector("#sendBtn");
+  const br = btn.getBoundingClientRect();
+  await cursorTo(br.left + br.width / 2, br.top + br.height / 2, 430);
+  cclick(br.left + br.width / 2, br.top + br.height / 2);
+  cam({ x: 0, y: 60, scale: 1.22, rx: -6 }, 480, { blur: 7 });   // 快速推近 + 模糊
+  const dot = el("div", "launch-dot");
+  dot.style.left = (br.left + br.width / 2) + "px";
+  dot.style.top = br.top + "px";
+  document.body.appendChild(dot);
+  dot.animate([
+    { transform: "translateY(0) scale(1)", opacity: 1 },
+    { transform: "translateY(-46vh) scale(.4)", opacity: 0 },
+  ], { duration: 620, easing: EASE_OUT });
+  await sleep(240);
+  stg.querySelector("#icard").animate(
+    [{ opacity: 1 }, { opacity: 0 }],
+    { duration: 320, fill: "forwards" });
+
+  /* 4. 镜头上仰 whip（瞬态 3D + 运动模糊）→ 回正平面，进入可读的流式阶段 */
+  await sleep(260);
+  cam({ x: 0, y: -26, scale: 1.05, rx: 8, ry: -4 }, 430, { blur: 5, origin: "50% 30%" });
+  await sleep(470);
+  cam({ x: 0, y: 0, scale: 1, rx: 0, ry: 0 }, 520);
+  await sleep(560);
+  const col = el("div", "chat-stage");
+  col.innerHTML = `<div class="chat-col" id="ccol"></div>`;
+  world.appendChild(col);
+  const cc = col.querySelector("#ccol");
+
+  const put = (node, at, blurLast) => new Promise((res) => {
+    setTimeout(() => {
+      cc.appendChild(node);
+      requestAnimationFrame(() => node.classList.add("in"));
+      res();
+    }, at);
+  });
+  const userMsg = () => el("div", "msg user",
+    `<div class="msg-label">你 · You</div><p>${text}</p>`);
+  const toolMsg = (name, args, result, pending) => {
+    const d = el("div", "tool-call" + (pending ? " pending" : ""));
+    d.innerHTML = toolHTML(name, args, result, pending);
+    return d;
+  };
+
+  const U = userMsg();
+  await put(U, 200);
+
+  /* 5. 流式工具链：先慢后快 */
+  const T1P = toolMsg("read_library_file", 'filename="harmony_dorian_vamp.md"', "", true);
+  await put(T1P, 900);
+  await sleep(1250);
+  T1P.classList.remove("pending");
+  T1P.innerHTML = toolHTML("read_library_file", ARGS_LIB(),
+    "✓ 已读取 harmony_dorian_vamp.md\n  · 多利亚色彩：i7 ↔ IV7 循环\n  · 中音区封闭排列声位建议", false);
+  await sleep(700);
+
+  /* 6. 提问卡：先展开显示问题 → 光标点选 → 折叠收起 → 光标退场
+     （展开/折叠机制与产品 chat.js 一致：max-height 显式赋值 + open 类） */
+  const qc = buildQuestionCard();
+  await put(qc, 350);
+  await sleep(280);
+  const qbody = qc.querySelector(".details-body");
+  qbody.style.maxHeight = qbody.scrollHeight + "px";
+  qbody.classList.add("open");
+  await sleep(1450);
+  const optRow = qc.querySelectorAll(".q-option")[0];
+  const orr = optRow.getBoundingClientRect();
+  await cursorTo(orr.left + 26, orr.top + orr.height / 2, 460);
+  cclick(orr.left + 26, orr.top + orr.height / 2);
+  optRow.classList.add("selected");
+  optRow.querySelector(".q-mark").textContent = "✓";
+  await sleep(560);
+  /* 折叠动画：正文收起 → 摘要条显示回答 */
+  qbody.style.maxHeight = "0px";
+  await sleep(430);
+  qc.open = false;
+  qc.querySelector(".q-sum-state").textContent = "✓ 温暖复古 Lo-Fi";
+  await cursorHide();                                        /* 回答后光标退场 */
+  await sleep(650);
+
+  /* 7. 后半程加速：create_midi → 结果徽章 → 正文快刷 */
+  const T2P = toolMsg("create_midi", 'filename="Lofi_Chords.mid"', "", true);
+  await put(T2P, 250);
+  await sleep(850);
+  T2P.classList.remove("pending");
+  T2P.innerHTML = toolHTML("create_midi", 'filename="Lofi_Chords.mid"',
+    "✓ MIDI 已生成：Lofi_Chords.mid\n  · 16 小节 · 85 BPM · D Dorian\n  · 179 个音符 · 电钢和声垫", false);
+  await sleep(450);
+  const A = el("div", "msg ai",
+    `<div class="msg-label">AI · 乐理专家</div><p>✓ 和弦垫已完成 —— Dm9 ↔ G13 多利亚律动，` +
+    `反拍切分带 6% 摇摆。文件已加入左侧列表，双击即可进钢琴卷帘细修。</p>`);
+  await put(A, 380);
+  await sleep(700);
+
+  /* 8. 结果聚焦：快速推近（运动模糊）后回平定格，波形逐条升起 */
+  cam({ x: 0, y: 0, scale: 1.16, rx: -3 }, 480, { blur: 8 });
+  const rc = el("div", "result-card");
+  rc.innerHTML = `
+    <div class="play-chip">
+      <div class="play-btn"></div>
+      <div><div class="play-name">Lofi_Chords.mid</div>
+        <div class="play-sub">[ 16 BARS · 85 BPM · D DORIAN · 179 NOTES ]</div></div>
+    </div>
+    <div class="result-wave">${Array.from({ length: 42 }, (_, i) =>
+      `<i style="--h:${(0.25 + 0.72 * Math.abs(Math.sin(i * 0.55))).toFixed(2)};animation-delay:${i * 18}ms"></i>`).join("")}</div>
+    <div class="result-meta"><span>[ RHODES 电钢 ]</span><span>[ 反拍切分 ]</span><span>[ 6% SWING ]</span></div>`;
+  world.appendChild(rc);
+  await sleep(500);
+  rc.classList.add("show");
+  await sleep(2600);
+  cam({ x: 0, y: 0, scale: 1 }, 900);
+  await sleep(1200);
+}
+
+function ARGS_LIB() { return 'filename="harmony_dorian_vamp.md"'; }
+
+/* 问题卡（复刻产品 question-card 结构） */
+function buildQuestionCard() {
+  const d = el("details", "question-card card-enter");
+  d.open = true;
+  d.innerHTML = `
+    <summary class="q-summary-bar">
+      <span class="q-sum-label">❓ AI · 向你提问</span>
+      <span class="q-sum-state">待回答</span>
+    </summary>
+    <div class="details-body"><div class="details-inner q-inner">
+      <div class="q-list"><div class="q-block">
+        <div class="q-head"><span class="stamp q-stamp">VIBE</span>
+          <span class="q-text">想要哪种整体氛围？我来定和声色彩与配器密度。</span></div>
+        <div class="q-options">
+          <label class="q-option"><span class="q-mark"></span>
+            <span class="q-opt-txt"><span class="q-opt-name">温暖复古 Lo-Fi</span>
+            <span class="q-opt-desc">Rhodes 电钢 + 磁带底噪，适合傍晚</span></span></label>
+          <label class="q-option"><span class="q-mark"></span>
+            <span class="q-opt-txt"><span class="q-opt-name">清亮爵士 · 城市夜曲</span>
+            <span class="q-opt-desc">行走贝斯 + 刷鼓，微凉夜色</span></span></label>
+          <label class="q-option"><span class="q-mark"></span>
+            <span class="q-opt-txt"><span class="q-opt-name">电影感弦乐</span>
+            <span class="q-opt-desc">绵长弓弦 + 混响尾音</span></span></label>
+        </div>
+      </div></div>
+    </div></div>`;
+  return d;
+}
+
+/* ══════════════ 场景二：闭环导出 ══════════════ */
+async function sceneLoop() {
+  document.getElementById("brandmark").classList.add("show");
+  const stg = el("div", "loop-stage on");
+  stg.innerHTML = `
+    <div class="loop-slab">
+      <div class="screen" style="border-radius:6px;overflow:hidden;border:1px solid rgba(0,240,255,.5);
+           box-shadow:0 26px 70px rgba(10,20,36,.25),0 0 38px rgba(0,240,255,.14)">
+        <img id="loopshot" src="/demo/assets/shots/pianoroll.jpg" style="display:block;width:100%">
+      </div>
+    </div>
+    <div class="loop-chat"><div class="chat-col" id="lcc"></div></div>
+    <div class="export-badges" id="exp" style="top:auto;bottom:16%">
+      <span class="exp-badge">↓ 导出 MIDI</span>
+      <span class="exp-badge">↓ 导出 WAV</span>
+    </div>`;
+  stg.style.display = "block";
+  world.appendChild(stg);
+  await sleep(400);
+
+  const lcc = stg.querySelector("#lcc");
+  const put = (node, at) => new Promise((res) => setTimeout(() => {
+    lcc.appendChild(node); requestAnimationFrame(() => node.classList.add("in")); res();
+  }, at));
+
+  /* 手修旋律卡片（薄片代表卷帘中的修改） */
+  await sleep(500);
+  cam({ scale: 1.04, x: -20 }, 700);
+
+  /* 音符粒子从薄片飞向聊天列（发送到聊天） */
+  const slabR = stg.querySelector(".loop-slab").getBoundingClientRect();
+  const flyN = 7;
+  for (let i = 0; i < flyN; i++) {
+    const n = el("div", "fly-note");
+    n.style.left = (slabR.right - 60) + "px";
+    n.style.top = (slabR.top + 120 + i * 26) + "px";
+    document.body.appendChild(n);
+    n.animate([
+      { transform: "translate(0,0) scale(1)", opacity: 0 },
+      { opacity: 1, offset: 0.25 },
+      { transform: `translate(${innerWidth * 0.36}px, ${-40 - i * 12}px) scale(.5)`, opacity: 0 },
+    ], { duration: 900, delay: i * 70, easing: EASE_OUT, fill: "forwards" });
+  }
+  await sleep(1000);
+
+  const U = el("div", "msg user", `<div class="msg-label">你 · You</div>` +
+    `<p>手绘的旋律改好了，发给你 —— 补一条律动贝斯和 Boom-Bap 鼓组</p>`);
+  await put(U, 200);
+  await sleep(700);
+
+  const T = el("div", "tool-call");
+  T.innerHTML = toolHTML("read_library_file", 'filename="arrangement_layers.md"', "",
+    true);
+  await put(T, 300);
+  await sleep(900);
+  T.classList.remove("pending");
+  T.innerHTML = toolHTML("read_library_file", 'filename="arrangement_layers.md"',
+    "✓ 层次递进：A 段铺底 → B 段旋律进入 → 末段全奏", false);
+  await sleep(550);
+
+  const A = el("div", "msg ai",
+    `<div class="msg-label">AI · 乐理专家</div><p>✓ 完整编曲已扩展 —— <b>贝斯 · 鼓组 · 副歌和声</b>全部就位，` +
+    `播放头走到第 9 小节自动进入全奏。</p>`);
+  await put(A, 420);
+  await sleep(900);
+
+  /* 导出徽章按节拍砸落 */
+  const badges = stg.querySelectorAll(".exp-badge");
+  badges[0].classList.add("slam");
+  await sleep(360);
+  badges[1].classList.add("slam");
+  cam({ scale: 1.07 }, 600);
+  await sleep(2200);
+}
+
+/* ══════════════ 启动 ══════════════ */
+window.addEventListener("load", async () => {
+  try { await document.getElementById("loopshot").decode(); } catch (_) {}
+  await sleep(500);
+  if (SCENE === "loop") await sceneLoop();
+  else await sceneChat();
+});
+</script>
+</body>
+</html>

@@ -749,6 +749,19 @@ a.btn {
 
 .dz-text { font-size: 14px; color: var(--color-ink); }
 
+/* 快速任务弹窗内的紧凑版 MIDI 输入区（复用 dropzone 交互，缩小留白
+   以适配 520px 弹窗；解析状态行紧随其下） */
+.qt-dropzone {
+  padding: 14px 16px;
+  margin-bottom: 6px;
+}
+.qt-dropzone .dz-icon {
+  font-size: 20px;
+  margin-bottom: 4px;
+}
+.qt-dropzone .dz-text { font-size: 13px; }
+.qt-dropzone .dz-sub { font-size: 10px; }
+
 .dz-sub {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 11px;

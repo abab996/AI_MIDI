@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AI_MIDI-go · 宣传片片尾</title>
+<style>
+  :root {
+    --color-bg: #F5F3EE;
+    --color-bg-card: #FAF8F3;
+    --color-primary: #4169E1;
+    --color-ink: #1E3A5F;
+    --color-accent: #D35400;
+    --color-border: rgba(30, 58, 95, 0.2);
+    --color-grid: rgba(65, 105, 225, 0.07);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: var(--color-bg);
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    color: var(--color-ink);
+    display: flex; align-items: center; justify-content: center;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(var(--color-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  .wrap { text-align: center; position: relative; padding: 80px 140px; }
+  .wrap i {
+    position: absolute; width: 24px; height: 24px;
+    border: 0 solid var(--color-primary); opacity: 0;
+    animation: bIn .5s cubic-bezier(.2,1.4,.4,1) forwards;
+  }
+  .wrap i:nth-child(1) { top: 0; left: 0; border-width: 2px 0 0 2px; }
+  .wrap i:nth-child(2) { top: 0; right: 0; border-width: 2px 2px 0 0; animation-delay: .08s; }
+  .wrap i:nth-child(3) { bottom: 0; left: 0; border-width: 0 0 2px 2px; animation-delay: .16s; }
+  .wrap i:nth-child(4) { bottom: 0; right: 0; border-width: 0 2px 2px 0; animation-delay: .24s; }
+  @keyframes bIn { from { opacity: 0; transform: scale(1.7); } to { opacity: 1; transform: scale(1); } }
+
+  .logo {
+    display: inline-block; position: relative;
+    font-family: Consolas, monospace; font-weight: 700;
+    font-size: 56px; letter-spacing: .08em; color: var(--color-ink);
+    border: 3px solid var(--color-ink); border-radius: 4px; padding: 18px 46px;
+    opacity: 0; animation: pop .6s cubic-bezier(.2,1.5,.4,1) .1s forwards;
+  }
+  .logo .ver {
+    position: absolute; top: -16px; right: -22px;
+    font-size: 19px; font-weight: 700; letter-spacing: .06em;
+    color: #fff; background: var(--color-accent);
+    padding: 4px 12px; border-radius: 3px;
+    box-shadow: 0 3px 0 rgba(30, 58, 95, 0.55);
+    transform: rotate(6deg);
+  }
+  .slogan {
+    margin-top: 40px; font-size: 42px; font-weight: 800; line-height: 1.5;
+    opacity: 0; animation: pop .55s cubic-bezier(.2,1.5,.4,1) .55s forwards;
+  }
+  .slogan em { font-style: normal; color: var(--color-primary); }
+  .en {
+    margin-top: 14px; font-size: 20px; font-weight: 600; color: rgba(30,58,95,.62);
+    letter-spacing: .04em; opacity: 0; animation: pop .5s ease .8s forwards;
+  }
+  .tags {
+    margin-top: 44px; display: flex; gap: 16px; justify-content: center;
+    opacity: 0; animation: pop .5s cubic-bezier(.2,1.4,.4,1) 1.05s forwards;
+  }
+  .tags span {
+    font-family: Consolas, monospace; font-size: 15px; letter-spacing: .2em;
+    border: 1px dashed var(--color-border); background: var(--color-bg-card);
+    padding: 9px 20px; border-radius: 2px;
+  }
+  .cta {
+    margin-top: 52px; font-family: Consolas, monospace; font-size: 16px;
+    color: var(--color-bg); background: var(--color-ink);
+    display: inline-block; padding: 14px 38px; border-radius: 3px;
+    box-shadow: 0 4px 0 var(--color-accent);
+    opacity: 0; animation: pop .5s cubic-bezier(.2,1.5,.4,1) 1.3s forwards;
+  }
+  .stamp {
+    position: absolute; right: -30px; top: -34px; transform: rotate(8deg);
+    font-family: Consolas, monospace; font-size: 13px; letter-spacing: .16em;
+    color: var(--color-accent); border: 2px solid var(--color-accent);
+    padding: 6px 12px; border-radius: 2px; opacity: 0;
+    animation: stampIn .4s cubic-bezier(.3,1.6,.5,1) 1.5s forwards;
+  }
+  @keyframes pop { from { opacity: 0; transform: translateY(24px) scale(.94); } to { opacity: 1; transform: none; } }
+  @keyframes stampIn { from { opacity: 0; transform: rotate(8deg) scale(2.2); } to { opacity: 1; transform: rotate(8deg) scale(1); } }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <i></i><i></i><i></i><i></i>
+    <div class="stamp">[ V1.0 · OPEN SOURCE ]</div>
+    <div class="logo">AI_MIDI<span class="ver">3.0</span></div>
+    <div class="slogan">让每一个灵感，都成为完整的作品</div>
+    <div class="en">Turn every spark of inspiration into a finished track.</div>
+    <div class="tags"><span>对话式编曲</span><span>音符级掌控</span><span>人机共创</span><span>MIDI / WAV 导出</span></div>
+    <div class="cta">▶ 现在就开始创作</div>
+  </div>
+</body>
+</html>

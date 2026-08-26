@@ -10,6 +10,7 @@ import (
 
 	"aimidi/internal/config"
 	"aimidi/internal/engine"
+	"aimidi/internal/midi"
 )
 
 // handleAudioSub /api/audio/* 子路由：引擎状态、设备、设置、测试音
@@ -302,8 +303,81 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 		"sampleRate": sampleRate,
 		"path":       abs,
 	}
-	// 若前端提供了 notes/clips 明细，透传给引擎以备真实渲染（当前引擎以静默占位保证长度）
-	if body.Tracks != nil {
+	// 扁平化 tracks → notes/clips 供引擎离线渲染（真实尾音，不截断）
+	var flatNotes []map[string]any
+	var flatClips []map[string]any
+	if tracks, ok := body.Tracks.([]any); ok {
+		for ti, t := range tracks {
+			if tm, ok := t.(map[string]any); ok {
+				if clips, ok := tm["clips"].([]any); ok {
+					for _, c := range clips {
+						if cm, ok := c.(map[string]any); ok {
+							typ, _ := cm["type"].(string)
+							if typ == "midi" {
+								if notes, ok := cm["notes"].([]any); ok {
+									clipStart, _ := cm["start"].(float64)
+									for _, n := range notes {
+										if nm, ok := n.(map[string]any); ok {
+											noteStr, _ := nm["note"].(string)
+											midiNum := 60
+											if noteStr != "" {
+												if v, err := midi.NoteNameToMidiNumber(noteStr); err == nil {
+													midiNum = v
+												}
+											}
+											ns, _ := nm["start"].(float64)
+											ne, _ := nm["end"].(float64)
+											velF, _ := nm["velocity"].(float64)
+											if velF == 0 {
+												velF = 100
+											}
+											flatNotes = append(flatNotes, map[string]any{
+												"track": ti,
+												"key":   midiNum,
+												"vel":   int(velF),
+												"start": clipStart + ns,
+												"end":   clipStart + ne,
+											})
+										}
+									}
+								}
+							} else if typ == "audio" {
+								if src, ok := cm["src"].(map[string]any); ok {
+									if p, ok := src["p"].(string); ok && p != "" {
+										sv, _ := cm["start"].(float64)
+										lv, _ := cm["length"].(float64)
+										off, _ := cm["offset"].(float64)
+										fi, _ := cm["fadeIn"].(float64)
+										fo, _ := cm["fadeOut"].(float64)
+										gv, _ := cm["gain"].(float64)
+										if gv == 0 {
+											gv = 1
+										}
+										flatClips = append(flatClips, map[string]any{
+											"track":  ti,
+											"path":   p,
+											"start":  sv,
+											"length": lv,
+											"offset": off,
+											"fadeIn": fi,
+											"fadeOut": fo,
+											"gain":   gv,
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if len(flatNotes) > 0 {
+		params["notes"] = flatNotes
+	}
+	if len(flatClips) > 0 {
+		params["clips"] = flatClips
+	} else if body.Tracks != nil {
 		params["tracks"] = body.Tracks
 	}
 	retPath, err := sup.Bounce(params)

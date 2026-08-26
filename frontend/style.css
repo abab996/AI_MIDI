@@ -4328,13 +4328,4 @@ body.is-panning *,
   }
 }
 
-/* 修复：ASIO 面板按钮在浅色主题下对比度不足（硬编码深底需强制亮字） */
-#openPanelBtn {
-  color: #E0F7FC !important;
-  border-color: #2a3b4c !important;
-}
-#openPanelBtn:hover {
-  background: #1e2a3a !important;
-  color: #fff !important;
-  border-color: #1e2a3a !important;
-}
+

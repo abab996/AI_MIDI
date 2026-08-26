@@ -758,6 +758,15 @@ func (s *Supervisor) Bounce(params map[string]any) (string, error) {
 	return cli.Bounce(params, 30*time.Second)
 }
 
+// SetLoop 设置循环
+func (s *Supervisor) SetLoop(on bool, start, end float64) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	return cli.SetLoop(on, start, end, s.cfg.RequestTimeout)
+}
+
 // TransportPlay/TransportStop/TransportLocate/TransportSetTempo 走带控制（M3 阶段一）
 func (s *Supervisor) TransportPlay() error {
 	return s.transportCall("play", nil)

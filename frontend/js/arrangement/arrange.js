@@ -546,6 +546,7 @@
     // 原生优先时：同步 JUCE 走带与素材调度（全走JUCE，尾音自然不截断）
     try {
       if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) {
+        try { window.EngineBridge.setLoop(this.loop.on, this.loop.start, this.loop.end); } catch(e) {}
         try { window.EngineBridge.setTempo(this.bpm); } catch(e) {}
         try { window.EngineBridge.locate(this.playheadBeat); } catch(e) {}
         try { window.EngineBridge.play(); } catch(e) {}
@@ -614,6 +615,7 @@
       this.loop.end = BAR_BEATS * 4;
     }
     this.engine.loop = this.loop;
+    try { if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge && window.EngineBridge.setLoop) { try{ window.EngineBridge.setLoop(this.loop.on, this.loop.start, this.loop.end); }catch(e){} } } catch(e){}
     // 循环切换影响调度基准：播放中则从当前拍重锚
     if (this.isPlaying) {
       var b = Math.max(0, this.engine.currentBeat());

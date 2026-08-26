@@ -347,9 +347,31 @@
     return 60 / (this.bpm || 120);
   };
 
-  /** 当前播放头所在的时间线拍 */
+  /** 当前播放头所在的时间线拍（AUTO时跟随引擎 timecode 插值，WEBAUDIO时用 AudioContext） */
   ArrangeEngine.prototype.currentBeat = function () {
-    if (!this.isPlaying || !this.ctx) return this._playStartBeat;
+    if (!this.isPlaying) return this._playStartBeat;
+    if (isNativePreferred() && window.__engineTimecode && window.__engineTimecode.t) {
+      var tc = window.__engineTimecode;
+      if (!tc.playing) return tc.beat;
+      var now = performance.now() / 1000;
+      var delta = now - tc.t;
+      if (delta < 0) delta = 0;
+      if (delta > 0.2) delta = 0;
+      var beat = tc.beat + delta * (tc.bpm / 60);
+      // 仍经 _posToBeat 做循环回绕（引擎 Transport 尚未接管 loop 时由前端兜底）
+      var pos = beat - this._playStartBeat;
+      if (pos < 0) pos = 0;
+      // 若引擎已做循环，则 beat 已回绕，此时直接返回 beat 即可；用 _posToBeat 可兼容两种
+      var looped = this._posToBeat(pos);
+      // 当循环开启且引擎未回绕时，looped 会回绕；否则 looped≈beat
+      // 取两者中更符合循环语义的（looped 在循环区间内）
+      if (this.loop && this.loop.on && this.loop.end > this.loop.start) {
+        if (beat >= this.loop.start && beat < this.loop.end) return beat;
+        return looped;
+      }
+      return beat;
+    }
+    if (!this.ctx) return this._playStartBeat;
     var pos = (this.ctx.currentTime - this._anchorCtxTime) / this.secondsPerBeat();
     return this._posToBeat(pos);
   };

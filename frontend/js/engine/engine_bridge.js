@@ -79,6 +79,10 @@
     bounce: function (params) {
       if (app && app.EngineBounce) { return app.EngineBounce(params); }
       return Promise.reject(new Error("engine unavailable"));
+    },
+    setLoop: function (on, start, end) {
+      if (app && app.EngineSetLoop) { return app.EngineSetLoop(on, start, end); }
+      return Promise.reject(new Error("engine unavailable"));
     }
   };
 
@@ -100,4 +104,30 @@
   };
 
   window.EngineBridge = EngineBridge;
+
+  // timecode 轮询缓存（40ms，引擎为唯一时钟主时前端插值用）
+  (function(){
+    var last = { beat: 0, samplePos: 0, bpm: 120, playing: false, t: 0 };
+    window.__engineTimecode = last;
+    function tick(){
+      if (!EngineBridge.available) return;
+      // 仅 AUTO 且 ready 时才高频拉取，避免 WEBAUDIO 模式无谓开销
+      try {
+        if (EngineBridge.getBackend() === "webaudio") return;
+        if (window.__engineState && window.__engineState !== "ready") return;
+      } catch(e) {}
+      EngineBridge.getTimecode().then(function(tc){
+        if (tc && typeof tc.beat === "number") {
+          last.beat = tc.beat;
+          last.samplePos = tc.samplePos;
+          last.bpm = tc.bpm;
+          last.playing = tc.playing;
+          last.t = performance.now() / 1000;
+        }
+      }).catch(function(){});
+    }
+    setInterval(tick, 40);
+    // 首帧立即拉一次
+    setTimeout(tick, 300);
+  })();
 })(window);

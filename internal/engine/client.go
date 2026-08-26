@@ -224,6 +224,18 @@ func (c *Client) Bounce(params map[string]any, timeout time.Duration) (string, e
 	return res.Path, nil
 }
 
+// SetLoop 设置循环区间
+func (c *Client) SetLoop(on bool, start, end float64, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	resp, err := c.Request("setLoop", map[string]any{"on": on, "start": start, "end": end}, timeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
 // Shutdown 通知引擎退出
 func (c *Client) Shutdown(timeout time.Duration) error {
 	resp, err := c.Request("shutdown", nil, timeout)

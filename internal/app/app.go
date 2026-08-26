@@ -185,3 +185,12 @@ func (a *App) EngineBounce(params map[string]any) (string, error) {
 	}
 	return sup.Bounce(params)
 }
+
+// EngineSetLoop 设置循环区间
+func (a *App) EngineSetLoop(on bool, start, end float64) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.SetLoop(on, start, end)
+}

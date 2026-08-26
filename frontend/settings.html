@@ -115,6 +115,7 @@
         <span class="field-label">引擎状态：</span>
         <span id="engineState" style="font-family:monospace">检测中…</span>
         <span id="engineDetail" style="opacity:.7;font-size:12px"></span>
+        <span id="latencyHint" style="opacity:.7;font-size:12px;margin-left:8px"></span>
       </div>
 
       <label class="field-label">驱动类型（含 ASIO）</label>
@@ -249,6 +250,26 @@
   var $ = function (id) { return document.getElementById(id); };
   var toneOn = false;
 
+  function updateLatency() {
+    var rate = parseInt($("rateSel").value, 10) || 0;
+    var buf = parseInt($("bufSel").value, 10) || 0;
+    // 若未选则尝试从 device_summary 解析： “@ 48000Hz, buffer=128”
+    if (!rate || !buf) {
+      var m = ($("engineDetail").textContent || "").match(/(\d+)\s*Hz.*?buffer=(\d+)/i);
+      if (m) { rate = parseInt(m[1],10); buf = parseInt(m[2],10); }
+    }
+    var hint = $("latencyHint");
+    if (hint) {
+      if (rate && buf) {
+        var ms = (buf / rate * 1000).toFixed(2);
+        hint.textContent = "延迟≈" + ms + "ms";
+        hint.title = "理论往返延迟≈ buffer/sampleRate";
+      } else {
+        hint.textContent = "";
+      }
+    }
+  }
+
   function refreshStatus() {
     fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (st) {
       var map = { ready: "✅ 就绪", starting: "⏳ 启动中", restarting: "🔄 重启中",
@@ -256,6 +277,7 @@
       $("engineState").textContent = map[st.state] || st.state;
       $("engineDetail").textContent =
         (st.pid ? "pid=" + st.pid + " 重启=" + st.restarts + " " : "") + (st.device_summary || "");
+      updateLatency();
     }).catch(function () { $("engineState").textContent = "不可用"; });
   }
 
@@ -382,6 +404,28 @@
   paintBackend();
   loadDevices();
   setInterval(refreshStatus, 5000);
+  // 延迟实时刷新
+  $("rateSel").addEventListener("change", updateLatency);
+  $("bufSel").addEventListener("change", updateLatency);
+  // 热插拔：5s 轮询设备列表，变化时 toast 并刷新下拉
+  (function(){
+    var lastHash = "";
+    function hashDevices(dl){
+      try { return JSON.stringify(dl); } catch(e){ return ""; }
+    }
+    setInterval(function(){
+      fetch("/api/audio/devices").then(function(r){ return r.json(); }).then(function(dl){
+        var h = hashDevices(dl);
+        if (lastHash && h && h !== lastHash) {
+          if (window.UI && window.UI.toast) window.UI.toast("🔌 音频设备列表已变化，已自动刷新", "");
+          loadDevices();
+        }
+        lastHash = h;
+      }).catch(function(){});
+    }, 5000);
+    // 首帧初始化 hash
+    fetch("/api/audio/devices").then(function(r){ return r.json(); }).then(function(dl){ lastHash = hashDevices(dl); }).catch(function(){});
+  })();
 })();
 </script>
 </body>

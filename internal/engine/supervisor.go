@@ -43,7 +43,8 @@ type Supervisor struct {
 	parked     bool   // 引擎文件缺失等不可重试错误：驻留失败态直至退出
 	sessionCnt int    // 已建立的会话数（Restarts = sessionCnt - 1）
 	lastApply  *map[string]any // 最近一次 applySetup 参数（重启后重放）
-	lastSoundFont string // 最近一次成功加载的音色路径（重启后重放）
+	lastSoundFont string // 兼容旧单轨（track 0）
+	lastSoundFonts map[int]string // 每轨独立 SF2（重启后重放）
 	exePath    string
 	stopOnce   sync.Once
 	doneCh     chan struct{} // 关闭表示主循环退出
@@ -63,7 +64,7 @@ func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 	if cfg.PingInterval <= 0 {
 		cfg.PingInterval = 2 * time.Second
 	}
-	sup := &Supervisor{cfg: cfg, audio: audio}
+	sup := &Supervisor{cfg: cfg, audio: audio, lastSoundFonts: make(map[int]string)}
 	sup.exePath = ResolveEnginePath(audio.EnginePath)
 	sup.startedEnabled = audio.EngineEnabled
 	return sup
@@ -510,17 +511,29 @@ func (s *Supervisor) runOnce() {
 	// 会话建立后加载音色：显式加载过的优先重放（崩溃恢复），
 	// 否则取音色目录首个 SF2 作为默认——否则原生演奏路径静默
 	// （引擎合成器无音色时 render 直接返回 false）
+	// 多轨：逐轨重放 lastSoundFonts，track 0 兼容旧单值
 	s.mu.RLock()
 	lastSF := s.lastSoundFont
-	s.mu.RUnlock()
-	if lastSF == "" {
-		lastSF = s.defaultSoundFontPath()
+	fonts := make(map[int]string, len(s.lastSoundFonts))
+	for k, v := range s.lastSoundFonts {
+		fonts[k] = v
 	}
-	if lastSF != "" {
-		if err := s.loadSoundFontWith(cli, lastSF); err != nil {
-			slog.Warn("[engine] 加载默认音色失败（原生演奏将静默，可在设置切换 WEBAUDIO 后端）", "path", lastSF, "err", err)
-		} else {
-			slog.Info("[engine] 已加载默认音色", "path", lastSF)
+	s.mu.RUnlock()
+	if len(fonts) == 0 && lastSF != "" {
+		fonts[0] = lastSF
+	}
+	if len(fonts) == 0 {
+		if def := s.defaultSoundFontPath(); def != "" {
+			fonts[0] = def
+		}
+	}
+	if len(fonts) > 0 {
+		for tr, p := range fonts {
+			if err := s.loadSoundFontWithTrack(cli, tr, p); err != nil {
+				slog.Warn("[engine] 加载音色失败（track)", "track", tr, "path", p, "err", err)
+			} else {
+				slog.Info("[engine] 已加载音色", "track", tr, "path", p)
+			}
 		}
 	} else {
 		slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），原生演奏静默")
@@ -580,24 +593,40 @@ func (s *Supervisor) runOnce() {
 	}
 }
 
-// LoadSoundFont 加载音色文件到引擎
+// LoadSoundFont 加载音色文件到引擎（track 0 兼容）
 func (s *Supervisor) LoadSoundFont(path string) error {
+	return s.LoadSoundFontTrack(0, path)
+}
+
+// LoadSoundFontTrack 指定轨道加载音色
+func (s *Supervisor) LoadSoundFontTrack(track int, path string) error {
 	cli, err := s.Ready(5 * time.Second)
 	if err != nil {
 		return err
 	}
-	if err := s.loadSoundFontWith(cli, path); err != nil {
+	if err := s.loadSoundFontWithTrack(cli, track, path); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.lastSoundFont = path
+	if s.lastSoundFonts == nil {
+		s.lastSoundFonts = make(map[int]string)
+	}
+	s.lastSoundFonts[track] = path
+	if track == 0 {
+		s.lastSoundFont = path
+	}
 	s.mu.Unlock()
 	return nil
 }
 
-// loadSoundFontWith 在指定会话上加载音色并解析结果
+// loadSoundFontWith 在指定会话上加载音色并解析结果（track 0）
 func (s *Supervisor) loadSoundFontWith(cli *Client, path string) error {
-	resp, err := cli.Request("loadSoundFont", map[string]any{"path": path}, 30*time.Second)
+	return s.loadSoundFontWithTrack(cli, 0, path)
+}
+
+// loadSoundFontWithTrack 指定轨道
+func (s *Supervisor) loadSoundFontWithTrack(cli *Client, track int, path string) error {
+	resp, err := cli.Request("loadSoundFont", map[string]any{"path": path, "track": track}, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -636,6 +665,7 @@ func (s *Supervisor) defaultSoundFontPath() string {
 
 // NoteOn/NoteOff 演奏事件：走二进制 Midi 帧（协议规定实时消息禁止 JSON 化），
 // 尽力而为——引擎未就绪时静默丢弃，不阻塞前端键盘路径。
+// 兼容旧单轨（track 0）；新多轨请用 NoteOnTrack/NoteOffTrack。
 func (s *Supervisor) NoteOn(channel, key, velocity int) {
 	s.mu.RLock()
 	cli := s.client
@@ -654,6 +684,27 @@ func (s *Supervisor) NoteOff(channel, key int) {
 		return
 	}
 	_ = cli.NoteOff(channel, key)
+}
+
+// NoteOnTrack/NoteOffTrack 每轨独立 SF2 的演奏事件（编曲多轨）
+func (s *Supervisor) NoteOnTrack(track, key, velocity int) {
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return
+	}
+	_ = cli.NoteOnTrack(track, key, velocity)
+}
+
+func (s *Supervisor) NoteOffTrack(track, key int) {
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return
+	}
+	_ = cli.NoteOffTrack(track, key)
 }
 
 // TransportPlay/TransportStop/TransportLocate/TransportSetTempo 走带控制（M3 阶段一）

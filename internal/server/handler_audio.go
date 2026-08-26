@@ -84,6 +84,7 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 		Device        *string `json:"device"`
 		SampleRate    *int    `json:"sample_rate"`
 		BufferSize    *int    `json:"buffer_size"`
+		Backend       *string `json:"backend"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
@@ -113,6 +114,20 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 			return
 		}
 		s.Audio.BufferSize = *body.BufferSize
+	}
+	if body.Backend != nil {
+		b := *body.Backend
+		// 兼容前端旧值 webaudio/auto
+		switch b {
+		case "webaudio", "auto":
+			s.Audio.Backend = b
+		default:
+			writeError(w, http.StatusBadRequest, "backend 仅支持 auto/webaudio")
+			return
+		}
+	}
+	if s.Audio.Backend == "" {
+		s.Audio.Backend = "auto"
 	}
 
 	if err := config.SaveSettings(s); err != nil {

@@ -328,17 +328,35 @@
   });
 
   var selector = $("backendSelector");
-  function paintBackend() {
-    var mode = window.AudioBackend ? window.AudioBackend.getMode() : "auto";
+  function paintBackend(modeOverride) {
+    var mode = modeOverride || (window.AudioBackend ? window.AudioBackend.getMode() : "auto");
     Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
       btn.style.borderColor = btn.dataset.backend === mode ? "var(--accent, #7aa2f7)" : "";
       btn.style.color = btn.dataset.backend === mode ? "var(--accent, #7aa2f7)" : "";
     });
+    // 异步以 Go 为准校正（解漂移）
+    try {
+      fetch("/api/audio/settings").then(function (r) { return r.json(); }).then(function (j) {
+        if (j && (j.backend === "auto" || j.backend === "webaudio")) {
+          var gm = j.backend;
+          try { localStorage.setItem("ai_midi_audio_backend", gm); } catch (e) {}
+          Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
+            var on = btn.dataset.backend === gm;
+            btn.style.borderColor = on ? "var(--accent, #7aa2f7)" : "";
+            btn.style.color = on ? "var(--accent, #7aa2f7)" : "";
+          });
+        }
+      }).catch(function () {});
+    } catch (e) {}
   }
   Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
     btn.addEventListener("click", function () {
-      if (window.AudioBackend) window.AudioBackend.setMode(btn.dataset.backend);
-      paintBackend();
+      var mode = btn.dataset.backend;
+      var p = window.AudioBackend ? window.AudioBackend.setMode(mode) : Promise.resolve();
+      Promise.resolve(p).then(function () {
+        paintBackend(mode);
+        if (window.UI && window.UI.toast) window.UI.toast(mode === "auto" ? "✅ 已切为 AUTO·原生优先（全链路 JUCE）" : "✅ 已切为 WEBAUDIO·浏览器合成（全链路 WebAudio）", "");
+      });
     });
   });
 

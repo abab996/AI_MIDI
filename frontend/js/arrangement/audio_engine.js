@@ -32,6 +32,27 @@
   var LOOKAHEAD_S = 0.45; // 入队提前量
   var TRIGGER_S = 0.15;   // 触发提前量（包络事件的最远端点）
 
+  function isNativePreferred() {
+    try {
+      // 全局后端为准（Go权威），引擎未就绪时自动回退 Web
+      var backend = (window.__engineBackend || (window.AudioBackend && window.AudioBackend.getMode ? window.AudioBackend.getMode() : "auto"));
+      if (backend === "webaudio") return false;
+      if (window.__engineState && window.__engineState !== "ready") return false;
+      if (window.AudioBackend && window.AudioBackend.isNativePreferred) {
+        return window.AudioBackend.isNativePreferred();
+      }
+      if (window.AudioBackend && window.AudioBackend.getMode) {
+        return window.AudioBackend.getMode() === "auto" && window.EngineBridge && window.EngineBridge.available;
+      }
+    } catch (e) {}
+    return false;
+  }
+  function trackIndexOf(trackId, tracks) {
+    if (!tracks) return -1;
+    for (var i = 0; i < tracks.length; i++) if (tracks[i].id === trackId) return i;
+    return -1;
+  }
+
   function ArrangeEngine() {
     this.ctx = null;
     this.masterGain = null;
@@ -174,8 +195,10 @@
         nodes.synth = new window.SynthEngine(this.ctx, nodes.gain);
         nodes.synth.init();
         nodes.synth.setWaveform(src.wave || "sawtooth");
-        // 编排引擎按音乐时间批量预排音符，必须留在 Web Audio
-        nodes.synth._forceWebAudio = true;
+        // 默认走 JUCE 时，编曲亦走引擎；仅 WEBAUDIO 强制留 WebAudio
+        nodes.synth._forceWebAudio = !isNativePreferred();
+        // 标记是否原生直通（供 _triggerDue 分流）
+        nodes._isNativeSynth = isNativePreferred();
       }
     }
     if (created && this.getTracks) {
@@ -405,9 +428,24 @@
     }
   };
 
-  /** 停止调度并立即静音 */
+  /** 停止调度并立即静音（原生轨经 EngineBridge 逐个 noteOff，避免挂音） */
   ArrangeEngine.prototype.stopSchedule = function () {
     this._stopHeartbeat();
+    if (isNativePreferred() && window.EngineBridge) {
+      try {
+        var tracks = this.getTracks ? this.getTracks() : [];
+        for (var k = 0; k < this._pendingOff.length; k++) {
+          var ev = this._pendingOff[k];
+          if (!ev.trackId) continue;
+          var idx = trackIndexOf(ev.trackId, tracks);
+          var tr = idx >=0 ? tracks[idx] : null;
+          if (tr && tr.source && tr.source.type === "synth") {
+            try { window.EngineBridge.noteOffTrack(idx, ev.midi); } catch(e) {}
+          }
+        }
+        // 额外 panic：确保所有轨静默（引擎侧 panicAll 兜底，但逐个 off 更精确）
+      } catch(e) {}
+    }
     this._pendingOn = [];
     this._pendingOff = [];
     this._pendingClicks = [];
@@ -519,7 +557,7 @@
           var evTo = Math.min(seg.beatTo, clipEnd);
 
           if (clip.type === "midi" && clip.notes && clip.notes.length) {
-            this._queueMidiClip(clip, nodes, evFrom, evTo, seg, spb);
+            this._queueMidiClip(clip, track, nodes, evFrom, evTo, seg, spb);
           } else if (clip.type === "audio" && clip.src && clip.src.p) {
             this._queueAudioClip(clip, track, nodes, evFrom, evTo, seg, spb);
           }
@@ -534,14 +572,16 @@
   };
 
   /** MIDI 剪辑 → 待触发音符事件（noteOn 仅当音符物理起点落在窗口内） */
-  ArrangeEngine.prototype._queueMidiClip = function (clip, nodes, evFrom, evTo, seg, spb) {
+  ArrangeEngine.prototype._queueMidiClip = function (clip, track, nodes, evFrom, evTo, seg, spb) {
     var pitchCache = this._pitchCache || (this._pitchCache = {});
     for (var ni = 0; ni < clip.notes.length; ni++) {
       var n = clip.notes[ni];
       var nStart = clip.start + n.start;
       var nEnd = clip.start + n.end;
       if (nStart < evFrom || nStart >= evTo) continue;
-      if (!nodes.synth && !nodes.soundfont) continue;
+      // 原生优先时：synth 轨也允许（无 Web 节点也能经 EngineBridge 发声）
+      var native = isNativePreferred() && track && track.source && track.source.type === "synth";
+      if (!native && !nodes.synth && !nodes.soundfont) continue;
       var midiNote = pitchCache[n.note];
       if (midiNote === undefined) {
         midiNote = window.MidiParse ? window.MidiParse.noteNameToNumber(n.note) : 60;
@@ -552,7 +592,8 @@
         midi: midiNote,
         vel: n.velocity || 100,
         dur: Math.max(0.02, (nEnd - nStart)) * spb,
-        nodes: nodes
+        nodes: nodes,
+        trackId: track ? track.id : null
       });
     }
   };
@@ -583,22 +624,35 @@
   ArrangeEngine.prototype._triggerDue = function (now) {
     var i, ev;
 
-    // 音符 on：过期 >0.25s 丢弃；否则临近触发
+    // 音符 on：过期 >0.25s 丢弃；否则临近触发（原生优先时走 JUCE，失败回退 WebAudio）
     var stillOn = [];
+    var nativeWanted = isNativePreferred();
     for (i = 0; i < this._pendingOn.length; i++) {
       ev = this._pendingOn[i];
       if (ev.t <= now + TRIGGER_S) {
         if (ev.t >= now - 0.25 && this.isPlaying) {
-          var whenOn = Math.max(ev.t, now);
-          if (ev.nodes.soundfont) {
-            ev.nodes.soundfont.noteOn(ev.midi, ev.vel, whenOn);
-          } else if (ev.nodes.synth) {
-            ev.nodes.synth.noteOn(ev.midi, ev.vel, whenOn);
+          var handledNative = false;
+          if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOnTrack) {
+            var tracksOn = this.getTracks ? this.getTracks() : [];
+            var idxOn = trackIndexOf(ev.trackId, tracksOn);
+            var tro = idxOn >= 0 ? tracksOn[idxOn] : null;
+            if (tro && tro.source && tro.source.type === "synth") {
+              try { window.EngineBridge.noteOnTrack(idxOn, ev.midi, ev.vel); handledNative = true; } catch(e) { handledNative = false; }
+            }
+          }
+          if (!handledNative) {
+            var whenOn = Math.max(ev.t, now);
+            if (ev.nodes.soundfont) {
+              ev.nodes.soundfont.noteOn(ev.midi, ev.vel, whenOn);
+            } else if (ev.nodes.synth) {
+              ev.nodes.synth.noteOn(ev.midi, ev.vel, whenOn);
+            }
           }
           this._pendingOff.push({
             t: ev.t + ev.dur,   // 原时刻（非 whenOn），保持乐句时值
             midi: ev.midi,
-            nodes: ev.nodes
+            nodes: ev.nodes,
+            trackId: ev.trackId
           });
         }
       } else {
@@ -613,11 +667,22 @@
       ev = this._pendingOff[i];
       if (ev.t <= now + TRIGGER_S + 0.05) {
         if (this.isPlaying) {
-          var whenOff = ev.t < now ? now : ev.t;
-          if (ev.nodes.soundfont) {
-            ev.nodes.soundfont.noteOff(ev.midi, whenOff);
-          } else if (ev.nodes.synth) {
-            ev.nodes.synth.noteOff(ev.midi, whenOff);
+          var handledOff = false;
+          if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOffTrack) {
+            var tracksOff = this.getTracks ? this.getTracks() : [];
+            var idxOff = trackIndexOf(ev.trackId, tracksOff);
+            var troOff = idxOff >=0 ? tracksOff[idxOff] : null;
+            if (troOff && troOff.source && troOff.source.type === "synth") {
+              try { window.EngineBridge.noteOffTrack(idxOff, ev.midi); handledOff = true; } catch(e) { handledOff = false; }
+            }
+          }
+          if (!handledOff) {
+            var whenOff = ev.t < now ? now : ev.t;
+            if (ev.nodes.soundfont) {
+              ev.nodes.soundfont.noteOff(ev.midi, whenOff);
+            } else if (ev.nodes.synth) {
+              ev.nodes.synth.noteOff(ev.midi, whenOff);
+            }
           }
         }
       } else {

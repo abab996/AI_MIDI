@@ -47,27 +47,49 @@ func (a *App) SelectFolderDialog() (string, error) {
 
 var errEngineUnavailable = errors.New("音频引擎未启用")
 
-// EngineNoteOn 演奏音符按下（实时路径）
+// EngineNoteOn 演奏音符按下（实时路径，track 0）
 func (a *App) EngineNoteOn(channel, key, velocity int) {
 	if sup := engine.Get(); sup != nil {
 		sup.NoteOn(channel, key, velocity)
 	}
 }
 
-// EngineNoteOff 演奏音符抬起
+// EngineNoteOff 演奏音符抬起（track 0）
 func (a *App) EngineNoteOff(channel, key int) {
 	if sup := engine.Get(); sup != nil {
 		sup.NoteOff(channel, key)
 	}
 }
 
-// EngineLoadSoundFont 加载音色文件到引擎
+// EngineNoteOnTrack 指定轨道演奏（编曲多轨）
+func (a *App) EngineNoteOnTrack(track, key, velocity int) {
+	if sup := engine.Get(); sup != nil {
+		sup.NoteOnTrack(track, key, velocity)
+	}
+}
+
+func (a *App) EngineNoteOffTrack(track, key int) {
+	if sup := engine.Get(); sup != nil {
+		sup.NoteOffTrack(track, key)
+	}
+}
+
+// EngineLoadSoundFont 加载音色文件到引擎（track 0 兼容）
 func (a *App) EngineLoadSoundFont(path string) error {
 	sup := engine.Get()
 	if sup == nil {
 		return errEngineUnavailable
 	}
 	return sup.LoadSoundFont(path)
+}
+
+// EngineLoadSoundFontTrack 指定轨道加载 SF2
+func (a *App) EngineLoadSoundFontTrack(track int, path string) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.LoadSoundFontTrack(track, path)
 }
 
 // EngineSetTrackMix 设置音轨混音参数（M3 混音图）

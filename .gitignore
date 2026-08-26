@@ -49,3 +49,12 @@ frontend/wailsjs/
 # ---------- 调试产物（运行日志/临时探针输出，不入库） ----------
 smoke_run.log
 *.log
+
+# ---------- 宣传片/演示产物（体积大，源码已入库，产物不入库） ----------
+promo/__pycache__/
+promo/audio/
+promo/out/
+promo/sfx/
+promo/*.ttc
+frontend/demo/assets/shots/
+promo/msyhbd.ttc

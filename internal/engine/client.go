@@ -99,11 +99,26 @@ func (c *Client) Request(method string, params map[string]any, timeout time.Dura
 
 // SendMidi 发送 3 字节 MIDI 二进制帧（尽力而为，不等待响应）。
 // 线格式：payload = [类型0x04][status][data1][data2]（status 为完整 MIDI 状态字节）。
+// 兼容旧单轨；新多轨请用 SendMidiTrack。
 func (c *Client) SendMidi(status, data1, data2 byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	return c.writeFrame(MsgMidi, []byte{status, data1, data2})
+}
+
+// SendMidiTrack 发送带 track 的 MIDI 帧（每轨独立 tsf）。
+// 线格式：payload = [类型0x04][track][status][data1][data2]
+func (c *Client) SendMidiTrack(track int, status, data1, data2 byte) error {
+	if track < 0 {
+		track = 0
+	}
+	if track > 31 {
+		track = 31
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeFrame(MsgMidi, []byte{byte(track), status, data1, data2})
 }
 
 // Ping 心跳探测
@@ -118,14 +133,24 @@ func (c *Client) Ping(timeout time.Duration) error {
 	return nil
 }
 
-// NoteOn 实时音符按下（二进制帧）
+// NoteOn 实时音符按下（二进制帧，track 0 兼容）
 func (c *Client) NoteOn(channel, key, velocity int) error {
 	return c.SendMidi(byte(0x90|(channel&0x0F)), byte(key&0x7F), byte(velocity&0x7F))
 }
 
-// NoteOff 实时音符释放（二进制帧）
+// NoteOff 实时音符释放（二进制帧，track 0 兼容）
 func (c *Client) NoteOff(channel, key int) error {
 	return c.SendMidi(byte(0x80|(channel&0x0F)), byte(key&0x7F), 0x00)
+}
+
+// NoteOnTrack 指定轨道的音符按下（每轨独立 SF2）
+func (c *Client) NoteOnTrack(track, key, velocity int) error {
+	return c.SendMidiTrack(track, byte(0x90), byte(key&0x7F), byte(velocity&0x7F))
+}
+
+// NoteOffTrack 指定轨道的音符释放
+func (c *Client) NoteOffTrack(track, key int) error {
+	return c.SendMidiTrack(track, byte(0x80), byte(key&0x7F), 0x00)
 }
 
 // Shutdown 通知引擎退出

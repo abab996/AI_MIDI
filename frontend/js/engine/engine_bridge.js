@@ -13,9 +13,22 @@
     noteOff: function (channel, key) {
       if (app) { return app.EngineNoteOff(channel, key); }
     },
-    loadSoundFont: function (path) {
-      if (app) { return app.EngineLoadSoundFont(path); }
+    loadSoundFont: function (path, track) {
+      if (app) {
+        if (track !== undefined && app.EngineLoadSoundFontTrack) {
+          return app.EngineLoadSoundFontTrack(track, path);
+        }
+        return app.EngineLoadSoundFont(path);
+      }
       return Promise.reject(new Error("engine unavailable"));
+    },
+    noteOnTrack: function (track, key, velocity) {
+      if (app && app.EngineNoteOnTrack) { return app.EngineNoteOnTrack(track, key, velocity); }
+      if (app) { return app.EngineNoteOn(0, key, velocity); }
+    },
+    noteOffTrack: function (track, key) {
+      if (app && app.EngineNoteOffTrack) { return app.EngineNoteOffTrack(track, key); }
+      if (app) { return app.EngineNoteOff(0, key); }
     },
     setTrackMix: function (track, gain, pan, mute, solo, active) {
       if (app) {
@@ -51,6 +64,20 @@
       if (app) { return app.EngineGetTimecode(); }
       return Promise.reject(new Error("engine unavailable"));
     }
+  };
+
+  // 后端模式辅助：统一以 Go settings.audio.backend 为准，localStorage 仅作离线缓存
+  EngineBridge.getBackend = function () {
+    try {
+      var v = localStorage.getItem("ai_midi_audio_backend");
+      if (v === "webaudio" || v === "auto") return v;
+    } catch (e) {}
+    return "auto";
+  };
+  EngineBridge.isNativePreferred = function () {
+    var mode = EngineBridge.getBackend();
+    if (mode === "webaudio") return false;
+    return !!EngineBridge.available;
   };
 
   window.EngineBridge = EngineBridge;

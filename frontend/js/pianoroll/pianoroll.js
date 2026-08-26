@@ -957,8 +957,24 @@
         var pos = seg.posFrom + (n.start - seg.beatFrom);
         var when = this._schedCtxTime + pos * spb;
         var durSec = Math.max(0.02, (n.end - n.start) * spb);
-        this.playNoteSound(pNum, n.velocity, when);
-        this.stopNoteSound(pNum, when + durSec);
+        // 原生优先且为合成器音源时，经 JUCE 直通（避免 WebAudio 远期包络不可靠，且统一主链路）
+        var useNative = false;
+        try {
+          useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred()
+            && this.soundSource && this.soundSource.indexOf("synth_") === 0
+            && window.EngineBridge && window.EngineBridge.noteOnTrack;
+        } catch(e) {}
+        if (useNative) {
+          (function(p, v, w, d){
+            var delayOn = Math.max(0, (w - self._audioNow()) * 1000);
+            setTimeout(function(){ try{ window.EngineBridge.noteOnTrack(0, p, v); }catch(e){} }, delayOn);
+            var delayOff = Math.max(0, (w + d - self._audioNow()) * 1000);
+            setTimeout(function(){ try{ window.EngineBridge.noteOffTrack(0, p); }catch(e){} }, delayOff);
+          })(pNum, n.velocity || 100, when, durSec);
+        } else {
+          this.playNoteSound(pNum, n.velocity, when);
+          this.stopNoteSound(pNum, when + durSec);
+        }
       }
     }
 

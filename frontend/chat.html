@@ -88,6 +88,7 @@
       <span class="stamp warn" id="wsStamp">WS: --</span>
       <span class="stamp" id="modelStamp">MODEL: --</span>
       <span class="stamp" id="apiStamp">API: --</span>
+      <span class="stamp" id="engineStamp" title="音频引擎状态">ENGINE: --</span>
       <div class="nav-right">
         <button class="btn btn-secondary btn-sm" id="arrangeToggleBtn" title="展开 / 收起编曲窗">▦ 编曲窗</button>
         <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
@@ -816,5 +817,52 @@
 <script src="/js/chat.js" defer></script>
 <script src="/demo/script_data.js" defer></script>
 <script src="/demo/showrunner.js" defer></script>
+<script>
+// 引擎常驻徽章 + 降级提示（满足“默认走JUCE，仅WEBAUDIO走Web”的可观测性要求）
+(function(){
+  var badge = document.getElementById("engineStamp");
+  if (!badge) return;
+  var lastState = null;
+  function updateBadge(){
+    Promise.all([
+      fetch("/api/audio/status").then(function(r){return r.json();}).catch(function(){return {state:"unknown"};}),
+      fetch("/api/audio/settings").then(function(r){return r.json();}).catch(function(){return {backend:"auto"};})
+    ]).then(function(arr){
+      var st = arr[0] || {};
+      var cfg = arr[1] || {};
+      var backend = (cfg.backend === "webaudio" ? "webaudio" : "auto");
+      var state = st.state || "unknown";
+      var isWeAudioForced = backend === "webaudio";
+      var text = "";
+      var cls = "stamp";
+      if (isWeAudioForced) {
+        text = "WEB ○";
+        cls = "stamp warn";
+        badge.title = "已强制 WEBAUDIO（设置页可切回 AUTO）";
+      } else {
+        if (state === "ready") { text = "JUCE ●"; cls = "stamp ok"; badge.title = (st.device_summary||"JUCE就绪") + " · AUTO"; }
+        else if (state === "starting" || state === "restarting") { text = "JUCE …"; cls = "stamp warn"; badge.title = "JUCE启动中"; }
+        else if (state === "failed" || state === "stopped" || state === "disabled") { text = "WEB ○"; cls = "stamp warn"; badge.title = "JUCE不可用，已回退 WebAudio："+(st.last_error||state); }
+        else { text = "WEB ○"; cls = "stamp"; badge.title = "引擎状态："+state; }
+      }
+      badge.textContent = "ENGINE: " + text;
+      badge.className = cls;
+      window.__engineState = state;
+      window.__engineBackend = backend;
+      // 失败转态 toast（仅一次）
+      if (state === "failed" && lastState !== "failed" && !isWeAudioForced) {
+        if (window.UI && window.UI.toast) window.UI.toast("⚠ 原生引擎不可用，已自动回退到浏览器音频（可在设置页切 WEBAUDIO 或检查声卡）", "warn");
+      }
+      lastState = state;
+    });
+  }
+  updateBadge();
+  setInterval(updateBadge, 5000);
+  // 后端切换后 badge 立即刷新（监听 storage 事件与自定义事件）
+  window.addEventListener("storage", function(e){ if(e.key==="ai_midi_audio_backend") updateBadge(); });
+  // 暴露给 settings.html 调用
+  window.__refreshEngineBadge = updateBadge;
+})();
+</script>
 </body>
 </html>

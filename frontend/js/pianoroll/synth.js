@@ -54,23 +54,50 @@
     return 440 * Math.pow(2, (midiNote - 69) / 12);
   };
 
-  /* ===== 原生音频引擎双后端（M2）=====
-     mode："auto"（默认：EngineBridge 可用即走原生 SF2 合成器）|"webaudio"（强制浏览器合成）
-     经 localStorage 持久化；原生调用失败自动回退 Web Audio 路径。 */
+  /* ===== 原生音频引擎双后端（M2→M3统一）=====
+     mode："auto"（默认：走 JUCE，失败回退 WebAudio）|"webaudio"（强制 WebAudio）
+     以 Go settings.audio.backend 为权威，localStorage 仅作离线缓存与启动瞬时的同步源。 */
   var BACKEND_KEY = "ai_midi_audio_backend";
   var _backendMode = (function () {
     try { return localStorage.getItem(BACKEND_KEY) || "auto"; } catch (e) { return "auto"; }
   })();
 
+  // 启动时异步与 Go 同步（Go 为准，失败保持本地值）
+  (function syncBackendFromServer() {
+    try {
+      fetch("/api/audio/settings").then(function (r) { return r.json(); }).then(function (j) {
+        var b = j && j.backend;
+        if (b === "auto" || b === "webaudio") {
+          _backendMode = b;
+          try { localStorage.setItem(BACKEND_KEY, b); } catch (e) {}
+        }
+      }).catch(function () {});
+    } catch (e) {}
+  })();
+
   window.AudioBackend = {
     getMode: function () { return _backendMode; },
     setMode: function (mode) {
-      if (mode !== "auto" && mode !== "webaudio") return;
+      if (mode !== "auto" && mode !== "webaudio") return Promise.resolve();
       _backendMode = mode;
       try { localStorage.setItem(BACKEND_KEY, mode); } catch (e) {}
+      try { window.__engineBackend = mode; } catch(e) {}
+      // 同步到 Go（权威），失败不影响本地已生效
+      try {
+        return fetch("/api/audio/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ backend: mode })
+        }).then(function (r) { return r.json(); }).catch(function () {});
+      } catch (e) { return Promise.resolve(); }
     },
     isNativeAvailable: function () {
       return !!(window.EngineBridge && window.EngineBridge.available);
+    },
+    isNativePreferred: function () {
+      if (_backendMode === "webaudio") return false;
+      if (window.__engineState && window.__engineState !== "ready") return false;
+      return _backendMode === "auto" && !!(window.EngineBridge && window.EngineBridge.available);
     }
   };
 

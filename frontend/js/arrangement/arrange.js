@@ -542,6 +542,25 @@
     this.engine.bpm = this.bpm;
     this.isPlaying = true;
     this.engine.play(this.playheadBeat);
+    // 原生优先时：同步 JUCE 走带与素材调度（全走JUCE，尾音自然不截断）
+    try {
+      if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) {
+        try { window.EngineBridge.setTempo(this.bpm); } catch(e) {}
+        try { window.EngineBridge.locate(this.playheadBeat); } catch(e) {}
+        try { window.EngineBridge.play(); } catch(e) {}
+        // 批量调度音频素材（按全局采样率，引擎内重采样+包络，统一尾音）
+        var clips = [];
+        for (var ti = 0; ti < this.tracks.length; ti++) {
+          var tr = this.tracks[ti];
+          for (var ci = 0; ci < tr.clips.length; ci++) {
+            var c = tr.clips[ci];
+            if (c.mute || c.type !== "audio" || !c.src || !c.src.p) continue;
+            clips.push({ track: ti, path: c.src.p, start: c.start, length: c.length, offset: c.offset || 0, fadeIn: c.fadeIn || 0, fadeOut: c.fadeOut || 0, gain: c.gain !== undefined ? c.gain : 1 });
+          }
+        }
+        if (clips.length) { try { window.EngineBridge.scheduleSamples(clips, this.bpm); } catch(e) {} }
+      }
+    } catch(e) {}
     this.updatePlayButton();
   };
 
@@ -568,6 +587,12 @@
   Arrange.prototype.stopEngineClock = function () {
     this.engine.stopSchedule();
     this.isPlaying = false;
+    try {
+      if (window.EngineBridge) {
+        try { window.EngineBridge.stop(); } catch(e) {}
+        try { window.EngineBridge.clearSamples(); } catch(e) {}
+      }
+    } catch(e) {}
     this.updatePlayButton();
   };
 
@@ -593,6 +618,7 @@
       var b = Math.max(0, this.engine.currentBeat());
       this.playheadBeat = b;
       this.engine.play(b);
+      try { if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) { try{window.EngineBridge.locate(b);}catch(e){} } } catch(e){}
     }
     this.syncTransportUI();
     this.renderRuler();
@@ -618,9 +644,11 @@
       this.bpm = val;
       this.engine.bpm = val;
       this.engine.play(b);
+      try { if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) { try{window.EngineBridge.setTempo(val);}catch(e){} try{window.EngineBridge.locate(b);}catch(e){} } } catch(e){}
     } else {
       this.bpm = val;
       this.engine.bpm = val;
+      try { if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) { try{window.EngineBridge.setTempo(val);}catch(e){} } } catch(e){}
     }
     this.syncTransportUI();
     this.renderAllThumbsSoon();
@@ -634,6 +662,7 @@
     this.updatePosDisplay();
     if (restartIfPlaying && this.isPlaying) {
       this.engine.play(this.playheadBeat);
+      try { if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) { try{window.EngineBridge.locate(this.playheadBeat);}catch(e){} } } catch(e){}
     }
   };
 

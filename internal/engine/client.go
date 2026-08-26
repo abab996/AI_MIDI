@@ -153,6 +153,31 @@ func (c *Client) NoteOffTrack(track, key int) error {
 	return c.SendMidiTrack(track, byte(0x80), byte(key&0x7F), 0x00)
 }
 
+// ScheduleSamples 批量调度音频素材（每轨独立缓冲，尾音自然不截断）
+// clips: [{track, path, start, length, offset, fadeIn, fadeOut, gain}]
+func (c *Client) ScheduleSamples(clips []map[string]any, bpm float64, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	resp, err := c.Request("scheduleSamples", map[string]any{"clips": clips, "bpm": bpm}, timeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// ClearSamples 清空已调度素材
+func (c *Client) ClearSamples(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	resp, err := c.Request("clearSamples", nil, timeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
 // Shutdown 通知引擎退出
 func (c *Client) Shutdown(timeout time.Duration) error {
 	resp, err := c.Request("shutdown", nil, timeout)

@@ -826,11 +826,14 @@
     }
     await sleep(400);
 
+    /* 先回正运镜再点击：否则点击后弹窗缩小，光标视觉上脱离按钮 */
+    cam({ scale: 1, y: 0 }, 650);
+    await sleep(750);
+
     /* 发起任务（新建工程 → 自动发送 → SSE 拦截回放） */
     armGen(3);
     const submit = document.getElementById("qtSubmit");
     await clickEl(submit);
-    cam({ scale: 1 }, 600);
     await sleep(6800);
     log("镜头07 完成");
   }

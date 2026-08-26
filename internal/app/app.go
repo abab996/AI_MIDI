@@ -149,3 +149,21 @@ func (a *App) EngineGetTimecode() (*engine.Timecode, error) {
 	}
 	return nil, errEngineUnavailable
 }
+
+// EngineScheduleSamples 批量调度音频素材（AUTO时全走JUCE，尾音自然不截断）
+func (a *App) EngineScheduleSamples(clips []map[string]any, bpm float64) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.ScheduleSamples(clips, bpm)
+}
+
+// EngineClearSamples 清空素材调度
+func (a *App) EngineClearSamples() error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.ClearSamples()
+}

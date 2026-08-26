@@ -604,6 +604,8 @@
       （颗粒/合唱感的重要来源之一）。起点错过窗口的（起播点在剪辑
       中段的定位播放）由 _startAudioClip 的迟到接入逻辑兜底。 */
   ArrangeEngine.prototype._queueAudioClip = function (clip, track, nodes, evFrom, evTo, seg, spb) {
+    // 原生优先时样本走 JUCE SamplePool（批量调度），Web队列跳过以免双重播放
+    if (isNativePreferred()) return;
     if (clip.start < evFrom || clip.start >= evTo) return;
     var clipRemain = clip.length;
     if (clipRemain <= 0) return;

@@ -707,6 +707,24 @@ func (s *Supervisor) NoteOffTrack(track, key int) {
 	_ = cli.NoteOffTrack(track, key)
 }
 
+// ScheduleSamples 批量调度音频素材（走带位置驱动，统一尾音）
+func (s *Supervisor) ScheduleSamples(clips []map[string]any, bpm float64) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	return cli.ScheduleSamples(clips, bpm, s.cfg.RequestTimeout)
+}
+
+// ClearSamples 清空素材调度
+func (s *Supervisor) ClearSamples() error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	return cli.ClearSamples(s.cfg.RequestTimeout)
+}
+
 // TransportPlay/TransportStop/TransportLocate/TransportSetTempo 走带控制（M3 阶段一）
 func (s *Supervisor) TransportPlay() error {
 	return s.transportCall("play", nil)

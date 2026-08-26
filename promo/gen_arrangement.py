@@ -76,7 +76,7 @@ if __name__ == "__main__":
                   {"type": "synth", "wave": "square", "label": "合成器 · 方波"},
                   [make_clip(C.build_melody(), "Demo_Melody.mid", "melody")]),
             track("Drums", "#06D6A0",
-                  {"type": "synth", "wave": "sawtooth", "label": "合成器 · 锯齿波"},
+                  {"type": "synth", "wave": "sawtooth", "label": "架子鼓"},
                   [make_clip(C.build_drums(), "Demo_Drums.mid", "drums")]),
         ],
     }

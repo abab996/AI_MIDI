@@ -63,12 +63,22 @@
     getTimecode: function () {
       if (app) { return app.EngineGetTimecode(); }
       return Promise.reject(new Error("engine unavailable"));
+    },
+    scheduleSamples: function (clips, bpm) {
+      if (app && app.EngineScheduleSamples) { return app.EngineScheduleSamples(clips, bpm); }
+      return Promise.reject(new Error("engine unavailable"));
+    },
+    clearSamples: function () {
+      if (app && app.EngineClearSamples) { return app.EngineClearSamples(); }
+      return Promise.reject(new Error("engine unavailable"));
     }
   };
 
   // 后端模式辅助：统一以 Go settings.audio.backend 为准，localStorage 仅作离线缓存
+  // 引擎未就绪时自动回退 Web（避免有绑定无声的假阳性）
   EngineBridge.getBackend = function () {
     try {
+      if (window.__engineBackend) return window.__engineBackend;
       var v = localStorage.getItem("ai_midi_audio_backend");
       if (v === "webaudio" || v === "auto") return v;
     } catch (e) {}
@@ -77,6 +87,7 @@
   EngineBridge.isNativePreferred = function () {
     var mode = EngineBridge.getBackend();
     if (mode === "webaudio") return false;
+    if (window.__engineState && window.__engineState !== "ready") return false;
     return !!EngineBridge.available;
   };
 

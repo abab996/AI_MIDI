@@ -189,14 +189,31 @@ def main():
     (s_intro, s_A, s_tr1, s_qt, s_tr2, s_arr,
      s_tr3, s_d1, s_d2, s_tr4, s_loop, s_outro) = starts
 
-    # ── 垫乐：片头 + A 段连铺（8 小节），过场 sting，片尾再现 ──
-    tl.place(f"{AUDIO_DIR}/bed_loop.wav", 0.0, gain=0.5, dur=B(32), fade_out=0.8)
-    tl.place(f"{AUDIO_DIR}/bed_loop.wav", B(32), gain=0.3, dur=B(12), fade_out=1.0)   # A 段尾补底
-    for st, off in ((s_tr1, 0.0), (s_tr2, B(8)), (s_tr3, B(16)), (s_tr4, B(24))):
-        tl.place(f"{AUDIO_DIR}/bed_loop.wav", st, gain=0.38, fade_in=0.15,
-                 fade_out=0.35, src_offset=off, dur=B(5))
-    tl.place(f"{AUDIO_DIR}/bed_loop.wav", s_outro, gain=0.42, fade_in=0.2,
-             fade_out=2.0, src_offset=B(8), dur=B(10))
+    # ── 垫乐：全程连续循环、永不断开（从根源消灭段间接缝）。
+    #    电平用包络自动化：应用出声时压低（duck），过场/纯视觉段回到全值 ──
+    bed = AudioTimeline(total)
+    bt = 0.0
+    while bt < total - 0.1:
+        bed.place(f"{AUDIO_DIR}/bed_loop.wav", bt, gain=1.0, dur=min(B(32), total - bt))
+        bt += B(32)
+    env_bars = [
+        (0, 0.50),      # 片头全值
+        (12.25, 0.50),  # B 快速任务：和弦垫先入，垫乐在其下避让（电平不塌陷）
+        (13.0, 0.16),
+        (18.0, 0.13),
+        (18.6, 0.22),   # 过场2：riser 爬升，垫乐略抬
+        (19.5, 0.09),   # C 编曲窗：全奏高潮，垫乐让位
+        (24.2, 0.09),
+        (24.6, 0.30),   # 过场3：无应用音源，垫乐回升避免空洞
+        (27.75, 0.30),  # 过场4
+        (29, 0.42),     # E 闭环（纯视觉段，垫乐回升）
+        (32, 0.42),     # 片尾
+        (33.9, 0.0),    # 结尾随 chime 收干净
+    ]
+    env_t = np.arange(len(bed.buf)) / bed.sr
+    env = np.interp(env_t, [b * BAR for b, _ in env_bars], [g for _, g in env_bars])
+    bed.buf *= env[:, None]
+    tl.buf += bed.buf
 
     # ── 片头音效 ──
     tl.place(f"{SFX_DIR}/sfx_chaos.wav", B(0.5), gain=0.5)
@@ -209,8 +226,8 @@ def main():
     tl.place(f"{SFX_DIR}/sfx_pop.wav", s_A + B(34), gain=0.5)
 
     # ── B 快速任务：应用内结果（和弦垫变奏）──
-    tl.place(f"{AUDIO_DIR}/music_chords.wav", s_qt, gain=0.6,
-             fade_in=0.3, fade_out=0.4, src_offset=B(16), dur=B(24))
+    tl.place(f"{AUDIO_DIR}/music_chords.wav", s_qt, gain=0.38,
+             fade_in=0.6, fade_out=0.4, src_offset=B(16), dur=B(24))
 
     # ── C 编曲窗：riser 接 impact + 全奏高潮（全片最响）──
     tl.place(f"{AUDIO_DIR}/fx_riser.wav", s_tr2, gain=0.5, src_offset=B(3), dur=B(5))
@@ -219,14 +236,12 @@ def main():
              fade_in=0.25, fade_out=0.5, src_offset=B(32), dur=B(20))
 
     # ── D 卷帘快剪：轻和声垫 + 擦除 shimmer ──
-    tl.place(f"{AUDIO_DIR}/music_chords.wav", s_d1, gain=0.5,
-             fade_in=0.25, fade_out=0.3, src_offset=B(8), dur=B(8))
+    tl.place(f"{AUDIO_DIR}/music_chords.wav", s_d1, gain=0.4,
+             fade_in=0.45, fade_out=0.3, src_offset=B(8), dur=B(8))
     tl.place(f"{SFX_DIR}/sfx_shimmer.wav", s_d2 + B(0.5), gain=0.55)
     tl.duck(s_d2 - 0.1, 1.0, floor=0.35)
 
-    # ── E 闭环：保持原垫乐直接延续（不切换），导出徽章 pop 点缀 ──
-    tl.place(f"{AUDIO_DIR}/bed_loop.wav", s_loop, gain=0.38, fade_in=0.2,
-             fade_out=1.2, src_offset=0.0, dur=B(12))
+    # ── E 闭环：导出徽章 pop 点缀（垫乐保持连续）──
     tl.place(f"{SFX_DIR}/sfx_pop.wav", s_loop + B(10), gain=0.5)
     tl.place(f"{SFX_DIR}/sfx_pop.wav", s_loop + B(10.5), gain=0.45)
 

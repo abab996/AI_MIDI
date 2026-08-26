@@ -273,8 +273,15 @@
     }
   };
 
-  /** 轨道电平峰值（电平表 ~20fps 轮询） */
+  /** 轨道电平峰值（AUTO时读引擎推算，WEBAUDIO时用 AnalyserNode） */
   ArrangeEngine.prototype.trackLevel = function (trackId) {
+    if (isNativePreferred() && window.__engineLevels) {
+      var tracks = this.getTracks ? this.getTracks() : [];
+      var idx = trackIndexOf(trackId, tracks);
+      if (idx >= 0 && window.__engineLevels[idx] !== undefined) {
+        return Math.min(1, window.__engineLevels[idx]);
+      }
+    }
     var nodes = this.trackNodes[trackId];
     if (!nodes || !this.ctx) return 0;
     var arr = nodes._lvlBuf;

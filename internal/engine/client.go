@@ -224,6 +224,27 @@ func (c *Client) Bounce(params map[string]any, timeout time.Duration) (string, e
 	return res.Path, nil
 }
 
+// GetLevels 获取各轨峰值电平
+func (c *Client) GetLevels(timeout time.Duration) ([]float32, error) {
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	resp, err := c.Request("getLevels", nil, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var res struct {
+		Levels []float32 `json:"levels"`
+	}
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		return nil, err
+	}
+	return res.Levels, nil
+}
+
 // SetLoop 设置循环区间
 func (c *Client) SetLoop(on bool, start, end float64, timeout time.Duration) error {
 	if timeout <= 0 {

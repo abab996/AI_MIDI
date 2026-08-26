@@ -758,6 +758,15 @@ func (s *Supervisor) Bounce(params map[string]any) (string, error) {
 	return cli.Bounce(params, 30*time.Second)
 }
 
+// GetLevels 获取电平
+func (s *Supervisor) GetLevels() ([]float32, error) {
+	cli, err := s.Ready(2 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return cli.GetLevels(s.cfg.RequestTimeout)
+}
+
 // SetLoop 设置循环
 func (s *Supervisor) SetLoop(on bool, start, end float64) error {
 	cli, err := s.Ready(5 * time.Second)

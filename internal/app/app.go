@@ -186,6 +186,15 @@ func (a *App) EngineBounce(params map[string]any) (string, error) {
 	return sup.Bounce(params)
 }
 
+// EngineGetLevels 获取各轨电平
+func (a *App) EngineGetLevels() ([]float32, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return nil, errEngineUnavailable
+	}
+	return sup.GetLevels()
+}
+
 // EngineSetLoop 设置循环区间
 func (a *App) EngineSetLoop(on bool, start, end float64) error {
 	sup := engine.Get()

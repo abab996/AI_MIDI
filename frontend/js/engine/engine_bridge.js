@@ -83,6 +83,10 @@
     setLoop: function (on, start, end) {
       if (app && app.EngineSetLoop) { return app.EngineSetLoop(on, start, end); }
       return Promise.reject(new Error("engine unavailable"));
+    },
+    getLevels: function () {
+      if (app && app.EngineGetLevels) { return app.EngineGetLevels(); }
+      return Promise.reject(new Error("engine unavailable"));
     }
   };
 
@@ -129,5 +133,22 @@
     setInterval(tick, 40);
     // 首帧立即拉一次
     setTimeout(tick, 300);
+  })();
+
+  // 电平轮询（50ms，替代前端 AnalyserNode）
+  (function(){
+    window.__engineLevels = [];
+    function tick(){
+      if (!EngineBridge.available || !EngineBridge.getLevels) return;
+      try {
+        if (EngineBridge.getBackend() === "webaudio") return;
+        if (window.__engineState && window.__engineState !== "ready") return;
+      } catch(e) {}
+      EngineBridge.getLevels().then(function(arr){
+        if (Array.isArray(arr)) window.__engineLevels = arr;
+      }).catch(function(){});
+    }
+    setInterval(tick, 50);
+    setTimeout(tick, 500);
   })();
 })(window);

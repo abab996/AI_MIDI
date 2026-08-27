@@ -195,6 +195,11 @@ func parseSMF(data []byte) ([]RawMidiEvent, int, error) {
 		if err := binary.Read(r, binary.BigEndian, &trackLen); err != nil {
 			return nil, 0, err
 		}
+		// 声明长度必须以文件实际剩余字节为上界：恶意/损坏文件可声明
+		// 最大 4GB，先分配后读取会直接 OOM 杀死整个桌面应用
+		if int64(trackLen) > int64(r.Len()) {
+			return nil, 0, fmt.Errorf("MTrk 声明长度 %d 超出文件剩余 %d 字节", trackLen, r.Len())
+		}
 
 		trackData := make([]byte, trackLen)
 		if _, err := io.ReadFull(r, trackData); err != nil {
@@ -253,6 +258,11 @@ func parseTrack(data []byte) ([]RawMidiEvent, error) {
 			if err != nil {
 				break
 			}
+			// 声明长度以轨内剩余字节为上界（readVarLength 已限 4 字节，
+			// 但合法上限 0x0FFFFFFF 仍远超实际数据，先分配会 OOM）
+			if metaLen > uint32(r.Len()) {
+				break
+			}
 			metaData := make([]byte, metaLen)
 			_, _ = io.ReadFull(r, metaData)
 			if metaType == 0x2F { // End of track
@@ -302,19 +312,21 @@ func parseTrack(data []byte) ([]RawMidiEvent, error) {
 	return events, nil
 }
 
+// readVarLength 读取 SMF 变长数（spec 上限 4 字节 / 0x0FFFFFFF）。
+// 不限长度的话恶意文件可用连续 0x80 让循环空转到 EOF。
 func readVarLength(r *bytes.Reader) (uint32, error) {
 	var value uint32
-	for {
+	for i := 0; i < 4; i++ {
 		b, err := r.ReadByte()
 		if err != nil {
 			return 0, err
 		}
 		value = (value << 7) | uint32(b&0x7F)
 		if (b & 0x80) == 0 {
-			break
+			return value, nil
 		}
 	}
-	return value, nil
+	return 0, errors.New("变长数超过 SMF 规范的 4 字节上限")
 }
 
 // GetNote 解析输入 MIDI 文件并返回 note_table 格式

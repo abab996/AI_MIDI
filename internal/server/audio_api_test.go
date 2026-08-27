@@ -35,7 +35,7 @@ func TestAudioSettingsBackend(t *testing.T) {
 	defer cleanup()
 
 	// GET 默认应为 auto
-	req := httptest.NewRequest("GET", "/api/audio/settings", nil)
+	req := newLocalRequest("GET", "/api/audio/settings", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != 200 {
@@ -51,7 +51,7 @@ func TestAudioSettingsBackend(t *testing.T) {
 
 	// POST webaudio
 	body, _ := json.Marshal(map[string]any{"backend": "webaudio"})
-	req = httptest.NewRequest("POST", "/api/audio/settings", bytes.NewReader(body))
+	req = newLocalRequest("POST", "/api/audio/settings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -59,7 +59,7 @@ func TestAudioSettingsBackend(t *testing.T) {
 		t.Fatalf("POST webaudio code %d body %s", w.Code, w.Body.String())
 	}
 	// 再次 GET 应持久化
-	req = httptest.NewRequest("GET", "/api/audio/settings", nil)
+	req = newLocalRequest("GET", "/api/audio/settings", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	json.Unmarshal(w.Body.Bytes(), &got)
@@ -69,7 +69,7 @@ func TestAudioSettingsBackend(t *testing.T) {
 
 	// 非法值应 400
 	body, _ = json.Marshal(map[string]any{"backend": "invalid"})
-	req = httptest.NewRequest("POST", "/api/audio/settings", bytes.NewReader(body))
+	req = newLocalRequest("POST", "/api/audio/settings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -83,7 +83,7 @@ func TestAudioBounceRequiresEngine(t *testing.T) {
 	defer cleanup()
 	// 未启动引擎时应 503
 	body, _ := json.Marshal(map[string]any{"bpm": 120, "tracks": []any{}})
-	req := httptest.NewRequest("POST", "/api/audio/bounce", bytes.NewReader(body))
+	req := newLocalRequest("POST", "/api/audio/bounce", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -95,7 +95,7 @@ func TestAudioBounceRequiresEngine(t *testing.T) {
 func TestBounceFileServingPathTraversalBlocked(t *testing.T) {
 	r, cleanup := setupTestRouter(t)
 	defer cleanup()
-	req := httptest.NewRequest("GET", "/api/audio/bounce/file?path=C:/Windows/win.ini", nil)
+	req := newLocalRequest("GET", "/api/audio/bounce/file?path=C:/Windows/win.ini", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != 403 && w.Code != 404 {

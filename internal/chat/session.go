@@ -66,6 +66,35 @@ func GetSessionLock(projectID string) *sync.RWMutex {
 	return l
 }
 
+// SnapshotDisplay 逐条浅拷贝 ChatDisplay（每条消息复制为独立 map）。
+// 调用方须已持有对应项目的会话读锁；拷贝出来的切片可安全地在锁外
+// 序列化/返回给 HTTP 响应，不会与流式写入方竞争。
+func SnapshotDisplay(display []map[string]any) []map[string]any {
+	if display == nil {
+		return nil
+	}
+	out := make([]map[string]any, len(display))
+	for i, m := range display {
+		cp := make(map[string]any, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		out[i] = cp
+	}
+	return out
+}
+
+// SnapshotMidiFiles 拷贝 MIDI 清单切片（元素为值结构体，直接复制即一致快照）。
+// 调用方须已持有对应项目的会话读锁。
+func SnapshotMidiFiles(files []project.MidiFileInfo) []project.MidiFileInfo {
+	if files == nil {
+		return nil
+	}
+	out := make([]project.MidiFileInfo, len(files))
+	copy(out, files)
+	return out
+}
+
 func loadTaskState(projectID, taskID string) *TaskState {
 	taskRec := tasks.TaskEnsure(projectID, &taskID, "")
 	legacy := taskRec.Legacy

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"aimidi/internal/config"
@@ -58,15 +59,20 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 	s := GetSession(projectID)
 	s.SwitchTask(tid)
 	st := s.GetTaskState(tid)
+	// 会话状态锁：ChatDisplay/MidiFiles 的所有读写（含 HTTP 处理器里的
+	// 读路径）都必须经过它，否则流式写入与 GET 载荷快照并发读写 map
+	// 会触发 Go runtime fatal（recover 无法拦截，整个应用崩溃）
+	fl := GetSessionLock(projectID)
 
 	// 若用户未回答提问便发新消息：自动标记跳过
 	if !resume && st.PendingQuestion != nil {
+		fl.Lock()
 		SkipPendingQuestion(st, projectID, tid, s.MidiFiles, taskRec.Legacy)
+		fl.Unlock()
 	}
 
 	// 绑定工作区同步
 	if project.GetWorkspaceDir(projectID) != "" {
-		fl := GetSessionLock(projectID)
 		fl.Lock()
 		s.MidiFiles = project.SyncWorkspaceToProjects(projectID, s.MidiFiles)
 		fl.Unlock()
@@ -74,6 +80,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 
 	// 处理用户消息
 	if !resume {
+		fl.Lock()
 		st.UndoStack = append(st.UndoStack, UndoEntry{
 			Files: s.MidiFiles,
 		})
@@ -96,6 +103,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			st.FullHistory = append(st.FullHistory, map[string]any{"role": "user", "content": message})
 			st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "user", "content": message})
 		}
+		fl.Unlock()
 	}
 
 	_ = onEvent(map[string]any{
@@ -173,6 +181,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			break
 		}
 
+		fl.Lock()
 		apiMessages := buildApiMessages(st.FullHistory, s.MidiFiles)
 
 		// 检查是否需要压缩并立即重新构建 API 消息
@@ -180,6 +189,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			st.FullHistory = CompactFullHistory(st.FullHistory)
 			apiMessages = buildApiMessages(st.FullHistory, s.MidiFiles)
 		}
+		fl.Unlock()
 
 		var tools []llm.ToolDefinition
 		tools = append(tools, mcp.GetMCPTools(projectID)...)
@@ -194,7 +204,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 		}
 
 		// 消费流式响应
-		deltaContent, deltaReasoning, toolCalls, err := processStreamChunks(streamResp, st, onEvent, tid)
+		deltaContent, deltaReasoning, toolCalls, err := processStreamChunks(streamResp, st, fl, onEvent, tid)
 		_ = streamResp.Body.Close()
 		if err != nil {
 			slog.Error("处理流式响应失败", "err", err)
@@ -203,6 +213,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 
 		if len(toolCalls) == 0 {
 			// 无工具调用：回合结束
+			fl.Lock()
 			formatted := llm.FormatDisplayMessage(deltaReasoning, deltaContent)
 			assistantMsg := map[string]any{
 				"role":              "assistant",
@@ -230,6 +241,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			})
 
 			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+			fl.Unlock()
 			break
 		}
 
@@ -247,12 +259,14 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			})
 		}
 
+		fl.Lock()
 		st.FullHistory = append(st.FullHistory, map[string]any{
 			"role":              "assistant",
 			"content":           deltaContent,
 			"reasoning_content": deltaReasoning,
 			"tool_calls":        tcHistoryList,
 		})
+		fl.Unlock()
 
 		pausedByQuestion := false
 		baseDir := project.GetMidiBaseDir(projectID)
@@ -268,6 +282,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 				if len(questions) == 0 {
 					errText := "错误：ask_user_question 参数无效（缺少 questions 或选项不足）"
 					entry := llm.FormatSingleToolEntry(fnName, rawArgs, errText)
+					fl.Lock()
 					st.FullHistory = append(st.FullHistory, map[string]any{
 						"role":         "tool",
 						"tool_call_id": tc.ID,
@@ -282,6 +297,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 						"type":     "chat",
 						"messages": st.ChatDisplay,
 					})
+					fl.Unlock()
 					continue
 				}
 
@@ -307,6 +323,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 				}
 
 				qid := SetPendingQuestion(projectID, tid, tc.ID, questions, remCalls)
+				fl.Lock()
 				st.ChatDisplay = append(st.ChatDisplay, map[string]any{
 					"role":        "assistant",
 					"type":        "question",
@@ -337,6 +354,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 				})
 
 				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+				fl.Unlock()
 				pausedByQuestion = true
 				break
 			}
@@ -344,6 +362,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			// 工具「执行中」占位块：用户第一时间看到工具标签 + ⏳ 进度标记，
 			// 完成后由完成块整体替换。
 			pendingEntry := llm.FormatPendingToolEntry(fnName, rawArgs)
+			fl.Lock()
 			st.ChatDisplay = append(st.ChatDisplay, map[string]any{
 				"role":    "assistant",
 				"content": pendingEntry,
@@ -352,6 +371,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 				"type":     "chat",
 				"messages": st.ChatDisplay,
 			})
+			fl.Unlock()
 
 			// 执行 MCP 工具
 			resText, _ := mcp.ExecuteTool(fnName, rawArgs, baseDir, mirrorDir)
@@ -377,6 +397,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 						NoteTable: strings.Join(noteList, "\n"),
 					}
 
+					fl.Lock()
 					var updated []project.MidiFileInfo
 					for _, f := range s.MidiFiles {
 						if f.Name != newInfo.Name && f.Path != newInfo.Path {
@@ -390,6 +411,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 						"type":  "files",
 						"files": s.MidiFiles,
 					})
+					fl.Unlock()
 
 					relToProj, _ := filepath.Rel(config.ProjectRoot, targetPath)
 					_ = onEvent(map[string]any{
@@ -400,6 +422,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			} else if fnName == "delete_midi" {
 				fn, _ := rawArgs["filename"].(string)
 				cleanFn := filepath.ToSlash(filepath.Clean(fn))
+				fl.Lock()
 				var updated []project.MidiFileInfo
 				for _, f := range s.MidiFiles {
 					fClean := filepath.ToSlash(filepath.Clean(f.Name))
@@ -418,8 +441,10 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 					"type":  "files",
 					"files": s.MidiFiles,
 				})
+				fl.Unlock()
 			}
 
+			fl.Lock()
 			st.FullHistory = append(st.FullHistory, map[string]any{
 				"role":         "tool",
 				"tool_call_id": tc.ID,
@@ -441,9 +466,12 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 				"type":     "chat",
 				"messages": st.ChatDisplay,
 			})
+			fl.Unlock()
 		}
 
+		fl.Lock()
 		project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+		fl.Unlock()
 
 		if pausedByQuestion {
 			break
@@ -472,6 +500,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 	tid := taskRec.ID
 	s.SwitchTask(tid)
 	st := s.GetTaskState(tid)
+	fl := GetSessionLock(projectID)
 
 	if st.PendingQuestion == nil {
 		lock.Unlock()
@@ -480,6 +509,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 		return nil
 	}
 
+	fl.Lock()
 	pending := st.PendingQuestion
 	st.PendingQuestion = nil
 
@@ -511,6 +541,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 	})
 
 	MarkQuestionBlock(st.ChatDisplay, questionID, answers)
+	fl.Unlock()
 
 	// 补执行排在提问之后的工具调用
 	baseDir := project.GetMidiBaseDir(projectID)
@@ -524,6 +555,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 
 		// 占位 + 执行 + 完成块（与主循环一致，用户能看到补执行的即时反馈）
 		pendingEntry := llm.FormatPendingToolEntry(fnName, args)
+		fl.Lock()
 		st.ChatDisplay = append(st.ChatDisplay, map[string]any{
 			"role":    "assistant",
 			"content": pendingEntry,
@@ -532,6 +564,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 			"type":     "chat",
 			"messages": st.ChatDisplay,
 		})
+		fl.Unlock()
 
 		resText, _ := mcp.ExecuteTool(fnName, args, baseDir, mirrorDir)
 
@@ -555,6 +588,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 					Size:      size,
 					NoteTable: strings.Join(noteList, "\n"),
 				}
+				fl.Lock()
 				var updated []project.MidiFileInfo
 				for _, f := range s.MidiFiles {
 					if f.Name != newInfo.Name && f.Path != newInfo.Path {
@@ -564,6 +598,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 				updated = append(updated, newInfo)
 				s.MidiFiles = updated
 				_ = onEvent(map[string]any{"type": "files", "files": s.MidiFiles})
+				fl.Unlock()
 				relToProj, _ := filepath.Rel(config.ProjectRoot, targetPath)
 				_ = onEvent(map[string]any{
 					"type": "download",
@@ -572,6 +607,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 			}
 		}
 
+		fl.Lock()
 		st.FullHistory = append(st.FullHistory, map[string]any{
 			"role":         "tool",
 			"tool_call_id": call["id"],
@@ -588,13 +624,16 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 				"content": completedEntry,
 			})
 		}
+		fl.Unlock()
 	}
+	fl.Lock()
 	_ = onEvent(map[string]any{
 		"type":     "chat",
 		"messages": st.ChatDisplay,
 	})
 
 	project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+	fl.Unlock()
 
 	lock.Unlock()
 
@@ -684,17 +723,19 @@ func streamChatCompletion(s config.Settings, messages []llm.ChatCompletionMessag
 	return nil, fmt.Errorf("重试次数耗尽，未能完成流式请求")
 }
 
-func processStreamChunks(resp *http.Response, st *TaskState, onEvent StreamCallback, tid string) (string, string, []llm.ToolCall, error) {
+func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, onEvent StreamCallback, tid string) (string, string, []llm.ToolCall, error) {
 	reader := bufio.NewReader(resp.Body)
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	toolCallMap := make(map[int]*llm.ToolCall)
 
 	// 占位 assistant 消息
+	fl.Lock()
 	st.ChatDisplay = append(st.ChatDisplay, map[string]any{
 		"role":    "assistant",
 		"content": "",
 	})
+	fl.Unlock()
 
 	lastEmit := time.Now()
 	sentReasoning, sentContent := 0, 0
@@ -790,6 +831,7 @@ func processStreamChunks(resp *http.Response, st *TaskState, onEvent StreamCallb
 		}
 	}
 
+	fl.Lock()
 	if contentBuilder.Len() == 0 && reasoningBuilder.Len() == 0 {
 		if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == "" {
 			st.ChatDisplay = st.ChatDisplay[:len(st.ChatDisplay)-1]
@@ -802,6 +844,7 @@ func processStreamChunks(resp *http.Response, st *TaskState, onEvent StreamCallb
 			"messages": st.ChatDisplay,
 		})
 	}
+	fl.Unlock()
 
 	return contentBuilder.String(), reasoningBuilder.String(), mapToToolCallList(toolCallMap), nil
 }

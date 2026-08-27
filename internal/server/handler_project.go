@@ -131,6 +131,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		st.FullHistory = nil
 		st.ChatDisplay = nil
 		st.UndoStack = nil
@@ -146,6 +148,7 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		project.SaveEditHistory(projectID, nil, s.CurrentTaskID, legacy)
 		project.SaveHistory(projectID, nil, s.MidiFiles, s.CurrentTaskID, legacy)
+		fl.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})
 
 	case sub == "messages/edit" && req.Method == http.MethodPost:
@@ -159,19 +162,24 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 
 		if in.Index < 0 || in.Index >= len(st.ChatDisplay) {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, "消息位置无效")
 			return
 		}
 		// 只能编辑用户消息（Python 版同样检查 role == "user"）
 		if role, _ := st.ChatDisplay[in.Index]["role"].(string); role != "user" {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, "只能编辑用户消息")
 			return
 		}
 
 		histIdx, err := project.LocateUserInHistory(st.FullHistory, st.ChatDisplay, in.Index)
 		if err != nil {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -187,10 +195,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		st.FullHistory = st.FullHistory[:histIdx+1]
 		st.ChatDisplay = st.ChatDisplay[:in.Index+1]
 
-		writeJSON(w, http.StatusOK, map[string]any{
-			"messages": st.ChatDisplay,
+		resp := map[string]any{
+			"messages": chat.SnapshotDisplay(st.ChatDisplay),
 			"text":     origText,
-		})
+		}
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "messages/recall" && req.Method == http.MethodPost:
 		if tasks.TaskHasActive(projectID) {
@@ -199,6 +209,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		if st.PendingEdit != nil {
 			// 撤回修改时移入回收站的文件/移除的目录，放弃撤回时一并恢复
 			if rb, ok := st.PendingEdit["_rollback"].(map[string]any); ok && rb != nil {
@@ -213,11 +225,13 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			st.PendingEdit = nil
 			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, s.CurrentTaskID, false)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"messages": st.ChatDisplay,
-			"files":    s.MidiFiles,
+		resp := map[string]any{
+			"messages": chat.SnapshotDisplay(st.ChatDisplay),
+			"files":    chat.SnapshotMidiFiles(s.MidiFiles),
 			"dirs":     project.ScanDirs(project.GetMidiBaseDir(projectID)),
-		})
+		}
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "messages/edit-info" && req.Method == http.MethodPost:
 		var in struct {
@@ -226,8 +240,11 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
+		fl := chat.GetSessionLock(projectID)
+		fl.RLock()
 
 		if in.Index < 0 || in.Index >= len(st.ChatDisplay) {
+			fl.RUnlock()
 			writeJSON(w, http.StatusOK, map[string]any{
 				"has_edit_history":    false,
 				"has_ai_file_changes": false,
@@ -236,6 +253,7 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		// 只对用户消息查询编辑信息（Python 版同样检查 role == "user"）
 		if role, _ := st.ChatDisplay[in.Index]["role"].(string); role != "user" {
+			fl.RUnlock()
 			writeJSON(w, http.StatusOK, map[string]any{
 				"has_edit_history":    false,
 				"has_ai_file_changes": false,
@@ -247,6 +265,7 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		hasEditHistory := project.FindEditHistory(st.EditHistory, histIdx)
 		entries := project.ExtractAICreatedEntries(st.FullHistory, histIdx)
 		hasAIChanges := len(entries["files"]) > 0 || len(entries["dirs"]) > 0 || len(entries["deleted"]) > 0
+		fl.RUnlock()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"has_edit_history":    hasEditHistory,
 			"has_ai_file_changes": hasAIChanges,
@@ -263,25 +282,30 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 
 		if in.Index < 0 || in.Index >= len(st.ChatDisplay) {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, "消息位置无效")
 			return
 		}
 		// 只能撤回用户消息的修改（Python 版同样检查 role == "user"）
 		if role, _ := st.ChatDisplay[in.Index]["role"].(string); role != "user" {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, "只能撤回用户消息的修改")
 			return
 		}
 
 		histIdx, err := project.LocateUserInHistory(st.FullHistory, st.ChatDisplay, in.Index)
 		if err != nil {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		entries := project.ExtractAICreatedEntries(st.FullHistory, histIdx)
-		originalFiles := s.MidiFiles
+		originalFiles := chat.SnapshotMidiFiles(s.MidiFiles)
 		updatedFiles, removalInfo := project.RemoveAICreatedFiles(projectID, s.MidiFiles, entries)
 		s.MidiFiles = updatedFiles
 		// 记录撤回前的文件清单，放弃撤回时原样恢复（含 NoteTable 等元数据）
@@ -301,14 +325,15 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		st.ChatDisplay = st.ChatDisplay[:in.Index+1]
 
 		resp := map[string]any{
-			"messages": st.ChatDisplay,
+			"messages": chat.SnapshotDisplay(st.ChatDisplay),
 			"text":     origText,
-			"files":    s.MidiFiles,
+			"files":    chat.SnapshotMidiFiles(s.MidiFiles),
 			"dirs":     project.ScanDirs(project.GetMidiBaseDir(projectID)),
 		}
 		if delRels, ok := removalInfo["deleted_rels"].([]string); ok && len(delRels) > 0 {
 			resp["note"] = fmt.Sprintf("AI 删除的 %d 个文件已被 AI 删除且无备份，无法恢复。", len(delRels))
 		}
+		fl.Unlock()
 		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "files" && req.Method == http.MethodPost:
@@ -382,6 +407,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		s := chat.GetSession(projectID)
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		for i := range s.MidiFiles {
 			if s.MidiFiles[i].Name == in.Name {
 				s.MidiFiles[i].Size = int64(len(midiBytes))
@@ -390,10 +417,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		project.SaveMidiManifest(projectID, s.MidiFiles)
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"ok":    true,
-			"files": s.MidiFiles,
-		})
+			"files": chat.SnapshotMidiFiles(s.MidiFiles),
+		}
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "folders" && req.Method == http.MethodPost:
 		var in struct {
@@ -455,10 +484,14 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		if newRel == oldRel {
 			s := chat.GetSession(projectID)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"files": s.MidiFiles,
+			fl := chat.GetSessionLock(projectID)
+			fl.RLock()
+			resp := map[string]any{
+				"files": chat.SnapshotMidiFiles(s.MidiFiles),
 				"dirs":  project.ScanDirs(baseDir),
-			})
+			}
+			fl.RUnlock()
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 		dst := filepath.Join(baseDir, filepath.FromSlash(newRel))
@@ -488,6 +521,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 
 		// 清单前缀替换（保留 note_table，与 Python 一致；ScanMidiFiles 会丢 note_table）
 		s := chat.GetSession(projectID)
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		prefix := oldRel + "/"
 		for i := range s.MidiFiles {
 			fname := s.MidiFiles[i].Name
@@ -498,10 +533,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		project.SaveMidiManifest(projectID, s.MidiFiles)
 
-		writeJSON(w, http.StatusOK, map[string]any{
-			"files": s.MidiFiles,
+		resp := map[string]any{
+			"files": chat.SnapshotMidiFiles(s.MidiFiles),
 			"dirs":  project.ScanDirs(baseDir),
-		})
+		}
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "folders/delete" && req.Method == http.MethodPost:
 		var in struct {
@@ -527,6 +564,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 
 		s := chat.GetSession(projectID)
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		prefix := folderRel + "/"
 		// 文件夹内文件逐个移入回收站（保留相对路径，撤销时自动重建层级）
 		// 失败（被占用）时回滚已移入的文件，保持「失败时文件夹原样保留」契约
@@ -549,6 +588,7 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			trashRels = append(trashRels, rel)
 		}
 		if failedFile {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, "无法删除被占用的文件: "+failed)
 			return
 		}
@@ -576,10 +616,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		})
 		project.SaveMidiManifest(projectID, s.MidiFiles)
 
-		writeJSON(w, http.StatusOK, map[string]any{
-			"files": s.MidiFiles,
+		resp := map[string]any{
+			"files": chat.SnapshotMidiFiles(s.MidiFiles),
 			"dirs":  project.ScanDirs(baseDir),
-		})
+		}
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "download" && req.Method == http.MethodGet:
 		r.handleProjectDownload(w, req, projectID)
@@ -587,6 +629,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 	case sub == "undo" && req.Method == http.MethodPost:
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		if len(st.UndoStack) > 0 {
 			entry := st.UndoStack[len(st.UndoStack)-1]
 			st.UndoStack = st.UndoStack[:len(st.UndoStack)-1]
@@ -594,10 +638,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			project.RestoreFromTrash(projectID, entry.Trash)
 			project.SaveMidiManifest(projectID, s.MidiFiles)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"files": s.MidiFiles,
+		resp := map[string]any{
+			"files": chat.SnapshotMidiFiles(s.MidiFiles),
 			"dirs":  project.ScanDirs(project.GetMidiBaseDir(projectID)),
-		})
+		}
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "workspace/pick-folder" && req.Method == http.MethodPost:
 		path := ""
@@ -623,9 +669,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		s := chat.GetSession(projectID)
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		if mf, ok := res["midi_files"].([]project.MidiFileInfo); ok {
 			s.MidiFiles = mf
 		}
+		fl.Unlock()
 		// 前端 applyFiles(renderWorkspace) 依赖 path/dirs；
 		// 缺失会导致绑定后路径显示空、目录树不刷新
 		res["path"] = project.GetWorkspaceDir(projectID)
@@ -635,7 +684,10 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 	case sub == "workspace/unbind" && req.Method == http.MethodPost:
 		mf := project.UnbindWorkspace(projectID)
 		s := chat.GetSession(projectID)
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		s.MidiFiles = mf
+		fl.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"midi_files": mf,
 			"dirs":       project.ScanDirs(project.GetMidiBaseDir(projectID)),
@@ -643,11 +695,15 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 
 	case sub == "workspace/refresh" && req.Method == http.MethodPost:
 		s := chat.GetSession(projectID)
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
 		s.MidiFiles = project.SyncWorkspaceToProjects(projectID, s.MidiFiles)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"midi_files": s.MidiFiles,
+		resp := map[string]any{
+			"midi_files": chat.SnapshotMidiFiles(s.MidiFiles),
 			"dirs":       project.ScanDirs(project.GetMidiBaseDir(projectID)),
-		})
+		}
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "workspace/open" && req.Method == http.MethodPost:
 		base := project.GetMidiBaseDir(projectID)
@@ -696,12 +752,20 @@ func buildProjectPayload(meta project.ProjectMeta) map[string]any {
 
 	settings := config.LoadSettings()
 
+	// 会话读锁下取一致快照：流式回复期间前端会轮询本接口，
+	// 若无锁直接读 ChatDisplay/MidiFiles 会与写入方并发读写 map
+	// 触发 Go runtime fatal（recover 拦不住，整个应用退出）
+	fl := chat.GetSessionLock(projectID)
+	fl.RLock()
+	midiFiles := chat.SnapshotMidiFiles(s.MidiFiles)
+	display := chat.SnapshotDisplay(st.ChatDisplay)
+	currentTaskID := s.CurrentTaskID
+	fl.RUnlock()
+
 	// 空列表序列化为 [] 而非 null（前端虽有 || [] 兜底，统一更稳）
-	midiFiles := s.MidiFiles
 	if midiFiles == nil {
 		midiFiles = []project.MidiFileInfo{}
 	}
-	display := st.ChatDisplay
 	if display == nil {
 		display = []map[string]any{}
 	}
@@ -716,7 +780,7 @@ func buildProjectPayload(meta project.ProjectMeta) map[string]any {
 
 	return map[string]any{
 		"meta":             meta,
-		"current_task_id":  s.CurrentTaskID,
+		"current_task_id":  currentTaskID,
 		"midi_files":       midiFiles,
 		"display_messages": display,
 		"settings":         map[string]any{"model": settings.Model},
@@ -803,6 +867,8 @@ func (r *Router) handleProjectUploadFiles(w http.ResponseWriter, req *http.Reque
 	}
 
 	// 撤销快照（与 Python _on_upload 一致：有新文件才入栈）
+	fl := chat.GetSessionLock(projectID)
+	fl.Lock()
 	if len(added) > 0 {
 		st := s.GetTaskState("")
 		st.UndoStack = append(st.UndoStack, chat.UndoEntry{
@@ -814,12 +880,13 @@ func (r *Router) handleProjectUploadFiles(w http.ResponseWriter, req *http.Reque
 		s.MidiFiles = append(s.MidiFiles, a)
 	}
 	project.SaveMidiManifest(projectID, s.MidiFiles)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"files": s.MidiFiles,
+	resp := map[string]any{
+		"files": chat.SnapshotMidiFiles(s.MidiFiles),
 		"added": len(added),
 		"dirs":  project.ScanDirs(baseDir),
-	})
+	}
+	fl.Unlock()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // uniqueDestPath 重名文件加序号（与 Python _unique_dest_path 一致）
@@ -849,6 +916,8 @@ func (r *Router) handleProjectDeleteFiles(w http.ResponseWriter, req *http.Reque
 		nameSet[n] = true
 	}
 
+	fl := chat.GetSessionLock(projectID)
+	fl.Lock()
 	var kept []project.MidiFileInfo
 	var trashRels []string
 
@@ -872,10 +941,12 @@ func (r *Router) handleProjectDeleteFiles(w http.ResponseWriter, req *http.Reque
 	s.MidiFiles = kept
 	project.SaveMidiManifest(projectID, s.MidiFiles)
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"files": s.MidiFiles,
+	resp := map[string]any{
+		"files": chat.SnapshotMidiFiles(s.MidiFiles),
 		"dirs":  project.ScanDirs(project.GetMidiBaseDir(projectID)),
-	})
+	}
+	fl.Unlock()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (r *Router) handleProjectMoveFiles(w http.ResponseWriter, req *http.Request, projectID string) {
@@ -891,17 +962,40 @@ func (r *Router) handleProjectMoveFiles(w http.ResponseWriter, req *http.Request
 		srcRel := m["src"]
 		dstFolder := m["target"]
 
+		// dstFolder 来自请求体：与 srcRel 同样做逃逸校验，
+		// 否则 "..\\..\\" 可把项目文件 Rename 到任意可写目录
+		dstFolder = strings.TrimSpace(strings.Trim(filepath.ToSlash(dstFolder), "/"))
+		if dstFolder == ".." || strings.Contains(dstFolder, "../") || strings.Contains(dstFolder, "..\\") {
+			continue
+		}
+
 		srcPath, err := mcp.SafeJoin(baseDir, srcRel)
 		if err != nil {
 			continue
 		}
-		dstPath := filepath.Join(baseDir, dstFolder, filepath.Base(srcRel))
+		var dstPath string
+		if dstFolder == "" {
+			dstPath = filepath.Join(baseDir, filepath.Base(srcRel))
+		} else {
+			dstPath = filepath.Join(baseDir, filepath.FromSlash(dstFolder), filepath.Base(srcRel))
+			if rel, relErr := filepath.Rel(baseDir, filepath.Dir(dstPath)); relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+		}
 		_ = os.MkdirAll(filepath.Dir(dstPath), 0755)
 		_ = os.Rename(srcPath, dstPath)
 
 		if mirrorDir != "" {
 			if mSrc, err := mcp.SafeJoin(mirrorDir, srcRel); err == nil {
-				mDst := filepath.Join(mirrorDir, dstFolder, filepath.Base(srcRel))
+				var mDst string
+				if dstFolder == "" {
+					mDst = filepath.Join(mirrorDir, filepath.Base(srcRel))
+				} else {
+					mDst = filepath.Join(mirrorDir, filepath.FromSlash(dstFolder), filepath.Base(srcRel))
+					if rel, relErr := filepath.Rel(mirrorDir, filepath.Dir(mDst)); relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+						continue
+					}
+				}
 				_ = os.MkdirAll(filepath.Dir(mDst), 0755)
 				_ = os.Rename(mSrc, mDst)
 			}
@@ -910,19 +1004,24 @@ func (r *Router) handleProjectMoveFiles(w http.ResponseWriter, req *http.Request
 
 	s := chat.GetSession(projectID)
 	// 重扫清单保留原音符表（此前直接 ScanMidiFiles 会把 note_table 丢光）
+	fl := chat.GetSessionLock(projectID)
+	fl.Lock()
 	s.MidiFiles = project.ScanMidiFilesKeepNotes(baseDir, s.MidiFiles)
 	project.SaveMidiManifest(projectID, s.MidiFiles)
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"files": s.MidiFiles,
+	resp := map[string]any{
+		"files": chat.SnapshotMidiFiles(s.MidiFiles),
 		"dirs":  project.ScanDirs(baseDir),
-	})
+	}
+	fl.Unlock()
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (r *Router) handleProjectDownload(w http.ResponseWriter, req *http.Request, projectID string) {
 	namesParam := req.URL.Query().Get("names")
 	s := chat.GetSession(projectID)
 
+	fl := chat.GetSessionLock(projectID)
+	fl.RLock()
 	var targets []project.MidiFileInfo
 	if namesParam != "" {
 		names := strings.Split(namesParam, ",")
@@ -936,8 +1035,9 @@ func (r *Router) handleProjectDownload(w http.ResponseWriter, req *http.Request,
 			}
 		}
 	} else {
-		targets = s.MidiFiles
+		targets = chat.SnapshotMidiFiles(s.MidiFiles)
 	}
+	fl.RUnlock()
 
 	if len(targets) == 0 {
 		writeError(w, http.StatusNotFound, "没有可下载的文件")

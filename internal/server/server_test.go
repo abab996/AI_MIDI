@@ -249,7 +249,7 @@ func TestModelsEndpointPOST(t *testing.T) {
 func TestRecoverPanicBeforeWrite(t *testing.T) {
 	rec := httptest.NewRecorder()
 	cw := &capturingWriter{ResponseWriter: rec}
-	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req := newLocalRequest(http.MethodGet, "/api/health", nil)
 
 	func() {
 		defer recoverPanic(cw, req)
@@ -274,7 +274,7 @@ func TestRecoverPanicAfterSSEStart(t *testing.T) {
 	cw := &capturingWriter{ResponseWriter: rec}
 	cw.WriteHeader(http.StatusOK)
 	_, _ = cw.Write([]byte("data: {\"type\":\"progress\"}\n\n"))
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+	req := newLocalRequest(http.MethodPost, "/api/chat", nil)
 
 	func() {
 		defer recoverPanic(cw, req)
@@ -290,7 +290,7 @@ func TestRecoverPanicNoPanic(t *testing.T) {
 	/* 无 panic 时 recoverPanic 直接返回，不影响正常响应 */
 	rec := httptest.NewRecorder()
 	cw := &capturingWriter{ResponseWriter: rec}
-	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req := newLocalRequest(http.MethodGet, "/api/health", nil)
 	writeJSON(cw, http.StatusOK, map[string]any{"ok": true})
 	recoverPanic(cw, req)
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte(`"ok":true`)) {

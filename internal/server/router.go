@@ -38,6 +38,41 @@ func NewRouter(assetsFS fs.FS, dialogFn func() (string, error)) *Router {
 // 但不再对任意网站开放——CORS * 会让恶意页面读取本机 API 响应）
 var localOriginRe = regexp.MustCompile(`^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$`)
 
+// wailsOriginRe Wails WebView2 的固定来源（http://wails.localhost）
+var wailsOriginRe = regexp.MustCompile(`^https?://wails\.localhost/?$`)
+
+// isAllowedHost 校验 Host 头。本服务无鉴权且持有删除项目、读取设置等
+// 高危端点，必须只接受本机界面使用的主机名——DNS rebinding 攻击会把
+// Host 换成攻击者域名指向 127.0.0.1，这里直接拒绝。
+func isAllowedHost(hostPort string) bool {
+	host := strings.ToLower(strings.TrimSpace(hostPort))
+	if host == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.Trim(host, "[]")
+	}
+	switch host {
+	case "127.0.0.1", "localhost", "::1", "wails.localhost":
+		return true
+	default:
+		return false
+	}
+}
+
+// isAllowedOrigin 校验 Origin 头。空 Origin = 非浏览器客户端或同源 GET
+// （同源 fetch 不携带 Origin），放行；其余仅接受本机回环与 Wails 来源。
+// 挡掉恶意网页借"简单请求"（GET/POST + 表单编码，不触发预检）直接
+// 驱动删除项目/改设置/烧 API Key 等 CSRF 面。
+func isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	return localOriginRe.MatchString(origin) || wailsOriginRe.MatchString(origin)
+}
+
 // capturingWriter 记录响应是否已开始写出：panic 发生在 SSE 流中途时无法
 // 再补写 500，此时仅记日志并断开；未写出时兜底返回统一 JSON 错误。
 type capturingWriter struct {
@@ -73,6 +108,16 @@ func (c *capturingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// 来源校验（含 OPTIONS 预检）：非法 Host/Origin 一律 403
+	if !isAllowedHost(req.Host) {
+		writeError(w, http.StatusForbidden, "非法 Host")
+		return
+	}
+	if !isAllowedOrigin(req.Header.Get("Origin")) {
+		writeError(w, http.StatusForbidden, "非法来源")
+		return
+	}
+
 	if origin := req.Header.Get("Origin"); origin != "" && localOriginRe.MatchString(origin) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")

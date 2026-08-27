@@ -406,11 +406,11 @@ func (r *Router) handleAudioBounceFile(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusBadRequest, "缺少 path")
 		return
 	}
-	// 仅允许 output 目录下的文件
+	// 仅允许 output 目录下的文件（此前 cwd 整目录放行会让
+	// ?path=settings.json 回读含明文 API Key 的配置，绕过设置接口的掩码）
 	abs, _ := filepath.Abs(path)
-	cwd, _ := os.Getwd()
 	outDir, _ := filepath.Abs("output")
-	if !isSubPath(abs, outDir) && !isSubPath(abs, cwd) {
+	if !isSubPath(abs, outDir) {
 		writeError(w, http.StatusForbidden, "非法路径")
 		return
 	}

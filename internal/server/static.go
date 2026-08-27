@@ -50,10 +50,10 @@ func (g *gzipResponseWriter) WriteHeader(code int) {
 func (r *Router) registerStaticRoutes() {
 	var fileServer http.Handler
 
-	if r.assetsFS != nil {
-		fileServer = http.FileServer(http.FS(r.assetsFS))
-	} else if _, err := os.Stat(config.WebDir); err == nil {
+	if _, err := os.Stat(config.WebDir); err == nil {
 		fileServer = http.FileServer(http.Dir(config.WebDir))
+	} else if r.assetsFS != nil {
+		fileServer = http.FileServer(http.FS(r.assetsFS))
 	} else {
 		return
 	}
@@ -63,15 +63,11 @@ func (r *Router) registerStaticRoutes() {
 			strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".svg")
 	}
 
-	wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// HTML/入口：no-cache（改版立即生效）；版本化静态资源：短缓存
-		if textAsset(req.URL.Path) && req.URL.Path != "/" {
-			w.Header().Set("Cache-Control", "public, max-age=60")
-		} else {
+		wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			// 开发/热更模式：所有 HTML/CSS/JS 禁用强缓存，确保改动立即生效
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Header().Set("Pragma", "no-cache")
 			w.Header().Set("Expires", "0")
-		}
 
 		// 文本资源且客户端支持且非 Range 请求：gzip 压缩
 		if textAsset(req.URL.Path) && req.Method == http.MethodGet &&

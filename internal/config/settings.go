@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -52,6 +53,25 @@ func DefaultSettings() Settings {
 	}
 }
 
+func cloneSettings(s *Settings) Settings {
+	if s == nil {
+		return DefaultSettings()
+	}
+	cp := *s
+	if s.MaterialDirs != nil {
+		cp.MaterialDirs = append([]string(nil), s.MaterialDirs...)
+	}
+	if s.MaxTokens != nil {
+		v := *s.MaxTokens
+		cp.MaxTokens = &v
+	}
+	if s.MaxCompletionTokens != nil {
+		v := *s.MaxCompletionTokens
+		cp.MaxCompletionTokens = &v
+	}
+	return cp
+}
+
 // LoadSettings 从 settings.json 加载配置，缺失字段使用默认值。
 // 命中缓存（文件 mtime/size 未变）时直接返回，避免每请求读盘解析。
 func LoadSettings() Settings {
@@ -61,7 +81,7 @@ func LoadSettings() Settings {
 		match := cached != nil && fi.ModTime() == settingsMod && fi.Size() == settingsSize
 		settingsMu.RUnlock()
 		if match {
-			return *cached
+			return cloneSettings(cached)
 		}
 	} else {
 		// 文件不存在（首启）：同样允许缓存命中，避免重复读盘
@@ -69,12 +89,22 @@ func LoadSettings() Settings {
 		cached := settingsCache
 		settingsMu.RUnlock()
 		if cached != nil {
-			return *cached
+			return cloneSettings(cached)
 		}
 	}
 
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
+	// 二次校验：Held Lock 后再次检查，避免 SaveSettings 并发更新后被旧盘覆盖
+	if fi, err := os.Stat(SettingsFile); err == nil {
+		if settingsCache != nil && fi.ModTime() == settingsMod && fi.Size() == settingsSize {
+			return cloneSettings(settingsCache)
+		}
+	} else {
+		if settingsCache != nil {
+			return cloneSettings(settingsCache)
+		}
+	}
 
 	res := DefaultSettings()
 	data, err := os.ReadFile(SettingsFile)
@@ -83,12 +113,13 @@ func LoadSettings() Settings {
 		// 只在文件存在且可读时更新缓存（缺失/损坏时返回默认值且不缓存，
 		// 文件恢复后下一次调用即可读到）
 		if fi, statErr := os.Stat(SettingsFile); statErr == nil {
-			settingsCache = &res
+			cp := cloneSettings(&res)
+			settingsCache = &cp
 			settingsMod = fi.ModTime()
 			settingsSize = fi.Size()
 		}
 	}
-	return res
+	return cloneSettings(&res)
 }
 
 // parseSettings 解析 settings.json 内容为 Settings（未提供的字段取默认值）
@@ -180,17 +211,25 @@ func SaveSettings(s Settings) error {
 	settingsMu.Lock()
 	defer settingsMu.Unlock()
 
-	_ = os.MkdirAll(filepath.Dir(SettingsFile), 0755)
+	if err := os.MkdirAll(filepath.Dir(SettingsFile), 0755); err != nil {
+		slog.Error("创建设置目录失败", "err", err)
+		return err
+	}
 
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	tmp := SettingsFile + ".tmp"
+	tmp := fmt.Sprintf("%s.tmp.%d.%d", SettingsFile, os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		slog.Error("写入临时设置文件失败", "err", err)
 		return err
+	}
+	// 尝试 fsync 目录（最佳努力，失败不阻断）
+	if f, err := os.OpenFile(tmp, os.O_RDONLY, 0644); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
 	}
 
 	if err := os.Rename(tmp, SettingsFile); err != nil {
@@ -198,11 +237,15 @@ func SaveSettings(s Settings) error {
 		slog.Error("原子替换设置文件失败", "err", err)
 		return err
 	}
+	if dir, err := os.Open(filepath.Dir(SettingsFile)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
 
-	// 写穿缓存：保存的即磁盘上的最新状态
+	// 写穿缓存：保存的即磁盘上的最新状态（深拷贝避免外部后续改动污染缓存）
 	if fi, statErr := os.Stat(SettingsFile); statErr == nil {
-		saved := s
-		settingsCache = &saved
+		cp := cloneSettings(&s)
+		settingsCache = &cp
 		settingsMod = fi.ModTime()
 		settingsSize = fi.Size()
 	}

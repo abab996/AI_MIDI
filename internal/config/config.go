@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ===== 路径常量 =====
@@ -99,11 +100,17 @@ func isTempDir(dir string) bool {
 	clean := filepath.Clean(dir)
 	tmp := filepath.Clean(os.TempDir())
 	rel, err := filepath.Rel(tmp, clean)
-	// rel == "."：可执行文件直接位于临时目录根部，同样视为开发/临时环境
-	if err == nil && rel != "." && rel[:2] != ".." {
+	if err != nil {
+		return false
+	}
+	if rel == "." {
 		return true
 	}
-	return false
+	// rel 以 ".." 开头表示在 tmp 之外
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // SetupLogging 初始化 slog 文件与控制台双写日志

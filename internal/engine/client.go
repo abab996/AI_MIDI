@@ -20,7 +20,8 @@ import (
 // （带缓冲，满则丢弃——事件均为可刷新的状态类信息）。
 type Client struct {
 	conn     *os.File
-	mu       sync.Mutex
+	mu       sync.Mutex // 保护 Request 事务（写+读）
+	writeMu  sync.Mutex // 保护实时 MIDI 写入，避免被长 Request 阻塞
 	nextID   float64
 	dead     chan struct{}
 	deadOnce sync.Once
@@ -75,6 +76,9 @@ func (c *Client) Events() <-chan Event { return c.events }
 // Request 发送 JSON 控制请求并等待匹配的响应。
 // 返回的 error 仅为传输层错误；业务失败（ok=false）需调用方检查 resp.Err()。
 func (c *Client) Request(method string, params map[string]any, timeout time.Duration) (*Response, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -89,7 +93,7 @@ func (c *Client) Request(method string, params map[string]any, timeout time.Dura
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	if err := c.writeFrame(MsgRequest, body); err != nil {
+	if err := c.writeFrameWithTimeout(MsgRequest, body, timeout); err != nil {
 		c.markDead()
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
@@ -101,10 +105,9 @@ func (c *Client) Request(method string, params map[string]any, timeout time.Dura
 // 线格式：payload = [类型0x04][status][data1][data2]（status 为完整 MIDI 状态字节）。
 // 兼容旧单轨；新多轨请用 SendMidiTrack。
 func (c *Client) SendMidi(status, data1, data2 byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.writeFrame(MsgMidi, []byte{status, data1, data2})
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.writeFrameWithTimeout(MsgMidi, []byte{status, data1, data2}, 2*time.Second)
 }
 
 // SendMidiTrack 发送带 track 的 MIDI 帧（每轨独立 tsf）。
@@ -116,9 +119,9 @@ func (c *Client) SendMidiTrack(track int, status, data1, data2 byte) error {
 	if track > 31 {
 		track = 31
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.writeFrame(MsgMidi, []byte{byte(track), status, data1, data2})
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.writeFrameWithTimeout(MsgMidi, []byte{byte(track), status, data1, data2}, 2*time.Second)
 }
 
 // Ping 心跳探测
@@ -131,6 +134,32 @@ func (c *Client) Ping(timeout time.Duration) error {
 		return resp.Err()
 	}
 	return nil
+}
+
+// TryPing 非阻塞心跳：若有长请求占用 mu 则跳过本次，避免被 Bounce 等长任务饿死
+func (c *Client) TryPing(timeout time.Duration) (bool, error) {
+	if !c.mu.TryLock() {
+		return false, nil // 跳过
+	}
+	defer c.mu.Unlock()
+	// 手动构造 ping 请求（复用 writeFrameWithTimeout / awaitResponse 逻辑，但已持锁）
+	req := Request{ID: c.nextRequestID(), Method: "ping", Params: nil}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return true, err
+	}
+	if err := c.writeFrameWithTimeout(MsgRequest, body, timeout); err != nil {
+		c.markDead()
+		return true, err
+	}
+	resp, err := c.awaitResponse(req.ID, timeout)
+	if err != nil {
+		return true, err
+	}
+	if !resp.OK {
+		return true, resp.Err()
+	}
+	return true, nil
 }
 
 // NoteOn 实时音符按下（二进制帧，track 0 兼容）
@@ -301,6 +330,13 @@ func (c *Client) nextRequestID() float64 {
 // writeFrame 按协议编码并写入一帧：[uint32 LE 长度(含类型字节)][类型][载荷]。
 // 写入由看门狗计时，超时判定连接不可信。
 func (c *Client) writeFrame(typ byte, body []byte) error {
+	return c.writeFrameWithTimeout(typ, body, 5*time.Second)
+}
+
+func (c *Client) writeFrameWithTimeout(typ byte, body []byte, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
 	frame := EncodeFrame(typ, body)
 
 	done := make(chan error, 1)
@@ -312,7 +348,7 @@ func (c *Client) writeFrame(typ byte, body []byte) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(5 * time.Second):
+	case <-time.After(timeout):
 		return fmt.Errorf("写入超时")
 	}
 }
@@ -321,17 +357,20 @@ func (c *Client) writeFrame(typ byte, body []byte) error {
 // 读循环放在辅助 goroutine 中以便 deadline 生效；超时后连接已不可信，
 // markDead 并由调用方（supervisor）负责重建。
 func (c *Client) awaitResponse(id float64, timeout time.Duration) (*Response, error) {
-	deadline := time.After(timeout)
+	deadline := time.Now().Add(timeout)
 
 	for {
-		select {
-		case <-deadline:
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			c.markDead()
 			return nil, fmt.Errorf("等待响应超时 (id=%v)", id)
-		default:
 		}
-
-		frame, err := c.readFrame()
+		// 单次 read 的超时不超过剩余时间，避免 5s 固定覆盖长请求
+		readTimeout := remaining
+		if readTimeout > 5*time.Second {
+			readTimeout = 5 * time.Second
+		}
+		frame, err := c.readFrameWithTimeout(readTimeout)
 		if err != nil {
 			c.markDead()
 			return nil, fmt.Errorf("读取帧失败: %w", err)
@@ -367,6 +406,13 @@ type frameResult struct {
 // readFrame 读取一帧（带看门狗）。帧格式与 DecodeFrame 一致：
 // [uint32 LE 总长 n(含类型字节)][n 字节 payload]，payload[0] 为类型。
 func (c *Client) readFrame() (*Frame, error) {
+	return c.readFrameWithTimeout(5 * time.Second)
+}
+
+func (c *Client) readFrameWithTimeout(timeout time.Duration) (*Frame, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
 	res := make(chan frameResult, 1)
 	go func() {
 		var lenBuf [4]byte
@@ -390,7 +436,7 @@ func (c *Client) readFrame() (*Frame, error) {
 	select {
 	case r := <-res:
 		return r.frame, r.err
-	case <-time.After(5 * time.Second):
+	case <-time.After(timeout):
 		return nil, fmt.Errorf("读取超时")
 	}
 }

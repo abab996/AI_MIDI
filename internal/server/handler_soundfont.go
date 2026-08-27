@@ -22,6 +22,7 @@ func (r *Router) handleAudioSoundfonts(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
+	req.Body = http.MaxBytesReader(w, req.Body, 32<<20) // 32MB 上限
 
 	name := strings.TrimSpace(req.URL.Query().Get("name"))
 	if name == "" {

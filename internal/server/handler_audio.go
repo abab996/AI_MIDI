@@ -215,6 +215,7 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
+	req.Body = http.MaxBytesReader(w, req.Body, 5<<20) // 5MB 上限，防超大 tracks
 	sup := engine.Get()
 	if sup == nil {
 		writeError(w, http.StatusServiceUnavailable, "音频引擎未启用")

@@ -556,8 +556,12 @@ func (s *Supervisor) runOnce() {
 			case <-heartbeatStop:
 				return
 			case <-ticker.C:
-				// 慢请求排队时心跳会顺延；连续失败才判定失联
-				if err := cli.Ping(5 * time.Second); err != nil {
+				// 长请求（如 Bounce 30s）期间跳过本次，避免被大任务饿死
+				ok, err := cli.TryPing(5 * time.Second)
+				if !ok && err == nil {
+					continue
+				}
+				if err != nil {
 					failures++
 					if failures >= 2 {
 						slog.Warn("[engine] 心跳连续失败，判定会话失效", "failures", failures)

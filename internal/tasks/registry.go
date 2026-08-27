@@ -384,8 +384,8 @@ func TaskRename(taskID, newName string) (bool, string) {
 
 // TaskGet 返回任务记录副本（不存在返回 nil）
 func TaskGet(taskID string) *TaskRecord {
-	mu.RLock()
-	defer mu.RUnlock()
+	mu.Lock()
+	defer mu.Unlock()
 	ensureLoadedLocked()
 
 	if t, ok := taskList[taskID]; ok {

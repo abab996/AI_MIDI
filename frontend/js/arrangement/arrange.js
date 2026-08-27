@@ -109,10 +109,11 @@
       "arrHomeBtn", "arrPlayBtn", "arrPlayIconPath", "arrPlayLabel", "arrStopBtn", "arrLoopBtn", "arrMetroBtn", "arrResumeBtn",
       "arrBpmInput", "arrPosDisplay", "arrSnapDropdown", "arrSnapBtn", "arrSnapMenu",
       "arrZoomOutBtn", "arrZoomRange", "arrZoomInBtn", "arrUndoBtn", "arrRedoBtn",
-      "arrSaveStamp", "arrShortcutsBtn", "arrHudBadge",
+      "arrSaveStamp", "arrShortcutsBtn", "arrRackBtn", "arrHudBadge",
       "arrMidiCount", "arrMidiList",
       "arrTracksScroll", "arrInner", "arrRulerCanvas", "arrLanes", "arrAddTrackRow", "arrAddTrackBtn", "arrPlayline",
-      "arrFileTree", "arrAddDirBtn"];    for (var i = 0; i < ids.length; i++) {
+      "arrFileTree", "arrAddDirBtn"];
+    for (var i = 0; i < ids.length; i++) {
       this.el[ids[i]] = document.getElementById(ids[i]);
     }
     this.el.rulerSticky = this.el.arrRulerCanvas ? this.el.arrRulerCanvas.parentElement : null;
@@ -128,6 +129,7 @@
     this.bindTracksArea();
     this.bindPanels();
     this.bindModals();
+    this.bindOutputRack();
     this.bindKeyboard();
     this.bindFocusManager();
 
@@ -2421,10 +2423,10 @@
     ], e.clientX, e.clientY);
   };
 
-  /** 轨道音源菜单：内置合成器 + 内置音色 + SF2 音源库（异步追加） */
+  /** 轨道音源菜单：内置合成器 + 内置音色 + SF2 音源库（优先使用同步缓存，消除闪烁） */
   Arrange.prototype.openSourceMenu = function (track, x, y) {
     var self = this;
-    var items = [
+    var baseItems = [
       { heading: "🎹 音源 · " + track.name },
       { label: "合成器 · 锯齿波", iconHtml: this._srcDot("#00B8CC"), action: function () { self.setTrackSource(track, { type: "synth", wave: "sawtooth", label: "合成器 · 锯齿波" }); } },
       { label: "合成器 · 方波", iconHtml: this._srcDot("#5B8DEF"), action: function () { self.setTrackSource(track, { type: "synth", wave: "square", label: "合成器 · 方波" }); } },
@@ -2434,29 +2436,36 @@
       { label: "内置音色 · 温暖钢琴", action: function () { self.setTrackSource(track, { type: "builtin", tone: "piano", label: "内置 · 温暖钢琴" }); } },
       { label: "内置音色 · 弦乐群", action: function () { self.setTrackSource(track, { type: "builtin", tone: "strings", label: "内置 · 弦乐群" }); } }
     ];
-    this.showMenu(items, x, y);
 
-    // 异步追加 SF2 音源库预设（菜单保持打开时原地刷新）
-    if (window.SoundLibrary) {
-      window.SoundLibrary.listSoundFonts().then(function (fonts) {
-        if (!fonts.length || !self.menuEl) return;
-        var extra = [{ heading: "SF2 音源库（在钢琴卷帘音源库中管理）" }];
-        fonts.forEach(function (f) {
-          (f.presets || []).slice(0, 24).forEach(function (p) {
-            extra.push({
-              label: (f.name + " › " + (p.name || "Preset")).slice(0, 46),
-              action: function () {
-                self.setTrackSource(track, { type: "sf2", libId: f.id, presetId: p.id, label: (p.name || f.name).slice(0, 24) });
-              }
-            });
+    function buildExtraItems(fonts) {
+      if (!fonts || !fonts.length) return [];
+      var extra = [{ heading: "SF2 音源库（在钢琴卷帘音源库中管理）" }];
+      fonts.forEach(function (f) {
+        (f.presets || []).slice(0, 24).forEach(function (p) {
+          extra.push({
+            label: (f.name + " › " + (p.name || "Preset")).slice(0, 46),
+            action: function () {
+              self.setTrackSource(track, { type: "sf2", libId: f.id, presetId: p.id, label: (p.name || f.name).slice(0, 24) });
+            }
           });
         });
-        extra.push("-");
-        extra.push({ label: "（无预设的音源请先在钢琴卷帘「音源库」上传 .sf2）", disabled: true });
-        // 菜单仍打开：重建内容
-        if (self.menuEl) {
+      });
+      return extra;
+    }
+
+    // 优先读取缓存，一次性完整渲染，避免先弹出一半又闪烁重绘
+    var cachedFonts = window.SoundLibrary && window.SoundLibrary.getCachedSoundFonts ? window.SoundLibrary.getCachedSoundFonts() : [];
+    var initialItems = baseItems.concat(buildExtraItems(cachedFonts));
+    this.showMenu(initialItems, x, y);
+
+    // 后台静默校验，仅在列表有变化且菜单仍打开时平滑更新
+    if (window.SoundLibrary) {
+      window.SoundLibrary.listSoundFonts().then(function (fonts) {
+        if (!self.menuEl) return;
+        if (JSON.stringify(fonts) !== JSON.stringify(cachedFonts)) {
+          var updatedItems = baseItems.concat(buildExtraItems(fonts));
           var rect = self.menuEl.getBoundingClientRect();
-          self.showMenu(items.concat(extra), rect.left, rect.top);
+          self.showMenu(updatedItems, rect.left, rect.top);
         }
       }).catch(function () {});
     }
@@ -2601,16 +2610,48 @@
     if (!raw) return;
     var data;
     try { data = JSON.parse(raw); } catch (err) { return; }
-    if (!data || (data.kind !== "arr-midi" && data.kind !== "arr-audio")) return;
+    if (!data || (data.kind !== "arr-midi" && data.kind !== "arr-audio" && data.kind !== "arr-source")) return;
 
     // 落点与剪影同一份计算（resolveDropTarget），放置位置即拖动所见
     var target = this.resolveDropTarget(e);
 
-    if (data.kind === "arr-midi") {
+    if (data.kind === "arr-source") {
+      this.replaceTrackSourceFromDrop(target.trackIdx, data.source);
+    } else if (data.kind === "arr-midi") {
       this.addMidiClipFromDrop(target.trackIdx, data.name, target.startBeat);
     } else {
       this.addAudioClipFromDrop(target.trackIdx, data.p, data.name, target.startBeat);
     }
+  };
+
+  /** 拖拽音源 → 替换指定轨道音源 */
+  Arrange.prototype.replaceTrackSourceFromDrop = function (trackIdx, source) {
+    if (!source) return;
+    var track = this.tracks[trackIdx];
+    if (!track) {
+      // 拖到空白区域则新增一条轨道
+      track = this.makeTrack(this.tracks.length + 1);
+      track.source = source;
+      track.name = source.label ? source.label.replace(/^.*?·\s*/, "") : "Track " + this.tracks.length;
+      this.pushHistory();
+      this.tracks.push(track);
+      this.engine.ensureTrack(track);
+      this.applyMixSafe();
+      this.renderTracks();
+      this.scheduleSave();
+      this.showHUD("➕ 新建轨道并设置音源: " + (source.label || "音源"));
+      return;
+    }
+    this.pushHistory();
+    track.source = source;
+    // 与 setTrackSource 相同的引擎重建：置空 sourceKey 让 ensureTrack 重建该轨发声链
+    var nodes = this.engine.trackNodes[track.id];
+    if (nodes) nodes.sourceKey = null;
+    this.engine.ensureTrack(track);
+    this.applyMixSafe();
+    this.renderTracks();
+    this.scheduleSave();
+    this.showHUD("🎛 轨道 [" + track.name + "] 音源已替换为: " + (source.label || "音源"));
   };
 
   /** 拖入 MIDI 文件 → 下载字节 → 前端解析 → 创建 MIDI Clip */
@@ -3256,6 +3297,413 @@
 
   Arrange.prototype.setFocus = function (focused) {
     this.isFocused = !!(focused && this.isOpen);
+  };
+
+  /* ═══════════ 输出机架 (FL Studio 风格 Channel / Output Rack 悬浮窗口) ═══════════ */
+
+  Arrange.prototype.bindOutputRack = function () {
+    var self = this;
+    var win = document.getElementById("arrRackWindow");
+    var titlebar = document.getElementById("arrRackTitlebar");
+    var btn = this.el.arrRackBtn || document.getElementById("arrRackBtn");
+    var studioBtn = document.getElementById("studioRackBtn");
+    var closeBtn = document.getElementById("arrRackCloseBtn");
+    var collapseBtn = document.getElementById("arrRackCollapseBtn");
+    var addSf2Btn = document.getElementById("arrRackAddSf2Btn");
+
+    var toggleFn = function (e) {
+      if (e) e.stopPropagation();
+      self.toggleOutputRack();
+    };
+
+    if (btn) {
+      btn.addEventListener("click", toggleFn);
+    }
+    if (studioBtn) {
+      studioBtn.addEventListener("click", toggleFn);
+    }
+
+    if (closeBtn && win) {
+      closeBtn.addEventListener("click", function () {
+        win.hidden = true;
+      });
+    }
+
+    if (collapseBtn && win) {
+      collapseBtn.addEventListener("click", function () {
+        var body = document.getElementById("arrRackBody");
+        if (body) {
+          body.style.display = body.style.display === "none" ? "flex" : "none";
+        }
+      });
+    }
+
+    // 窗口自由拖拽移动 (按住标题栏)
+    if (titlebar && win) {
+      var isDragging = false;
+      var startX = 0, startY = 0;
+      var initLeft = 0, initTop = 0;
+
+      titlebar.addEventListener("mousedown", function (e) {
+        if (e.target.closest(".rack-win-btn")) return;
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        var rect = win.getBoundingClientRect();
+        initLeft = rect.left;
+        initTop = rect.top;
+        document.body.style.userSelect = "none";
+      });
+
+      window.addEventListener("mousemove", function (e) {
+        if (!isDragging) return;
+        var dx = e.clientX - startX;
+        var dy = e.clientY - startY;
+        var newLeft = Math.max(10, Math.min(window.innerWidth - win.offsetWidth - 10, initLeft + dx));
+        var newTop = Math.max(10, Math.min(window.innerHeight - win.offsetHeight - 10, initTop + dy));
+        win.style.left = newLeft + "px";
+        win.style.top = newTop + "px";
+      });
+
+      window.addEventListener("mouseup", function () {
+        if (isDragging) {
+          isDragging = false;
+          document.body.style.userSelect = "";
+        }
+      });
+    }
+
+    // 标签页过滤切换
+    var filterBtns = document.querySelectorAll(".rack-filter-btn");
+    filterBtns.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        filterBtns.forEach(function (t) { t.classList.remove("active"); });
+        tab.classList.add("active");
+        var filter = tab.getAttribute("data-tab") || "all";
+        self.renderOutputRack(filter);
+      });
+    });
+
+    if (addSf2Btn) {
+      addSf2Btn.addEventListener("click", function () {
+        var refreshRack = function () {
+          self.showHUD("✅ 已导入音色库，可在 SF2 分类中查看");
+          self.renderOutputRack(self._currentRackFilter || "all");
+        };
+        if (window.SoundLibrary && window.SoundLibrary.showImportDialog) {
+          window.SoundLibrary.showImportDialog(refreshRack);
+        } else {
+          var input = document.createElement("input");
+          input.type = "file";
+          input.accept = ".sf2";
+          input.onchange = function (e) {
+            var file = e.target.files && e.target.files[0];
+            if (!file) return;
+            if (!window.SoundLibrary) return;
+            var reader = new FileReader();
+            reader.onload = function () {
+              var buf = reader.result;
+              try {
+                // 解析 presets（与聊天页音源库上传一致），失败不阻断保存
+                var presets = [];
+                if (window.PianoRoll && window.PianoRoll.soundfont && window.PianoRoll.soundfont.parseSF2) {
+                  presets = window.PianoRoll.soundfont.parseSF2(buf).presets || [];
+                }
+                window.SoundLibrary.saveSoundFont(file.name, buf, presets).then(refreshRack);
+              } catch (err) {
+                // 解析失败仍按无预设保存，保证基础导入可用
+                window.SoundLibrary.saveSoundFont(file.name, buf, []).then(refreshRack);
+              }
+            };
+            reader.readAsArrayBuffer(file);
+          };
+          input.click();
+        }
+      });
+    }
+  };
+
+  Arrange.prototype.toggleOutputRack = function () {
+    var win = document.getElementById("arrRackWindow");
+    if (!win) return;
+    if (win.hidden) {
+      this.openOutputRack();
+    } else {
+      win.hidden = true;
+    }
+  };
+
+  Arrange.prototype.openOutputRack = function () {
+    var win = document.getElementById("arrRackWindow");
+    if (!win) return;
+    win.hidden = false;
+    this._currentRackFilter = "all";
+    var filterBtns = document.querySelectorAll(".rack-filter-btn");
+    filterBtns.forEach(function (t) {
+      if (t.getAttribute("data-tab") === "all") t.classList.add("active");
+      else t.classList.remove("active");
+    });
+    this.renderOutputRack("all");
+  };
+
+  Arrange.prototype.renderOutputRack = function (filter) {
+    var self = this;
+    this._currentRackFilter = filter || "all";
+    var listEl = document.getElementById("arrRackList");
+    var statusEl = document.getElementById("arrRackStatusText");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+
+    var items = [];
+
+    // 1. 虚拟合成器
+    if (filter === "all" || filter === "synth") {
+      items.push({
+        type: "source",
+        subType: "synth",
+        id: "source-synth",
+        badge: "SYNTH",
+        badgeClass: "arr-rack-badge-synth",
+        title: "内置多波形合成器 · Synth",
+        desc: "支持正弦/锯齿/方波通用合成器音色",
+        source: { type: "synth", wave: "sawtooth", label: "合成器 · 锯齿波" }
+      });
+    }
+
+    // 2. SoundFont 预设与扩展
+    if (filter === "all" || filter === "sf2") {
+      items.push({
+        type: "source",
+        subType: "sf2",
+        id: "source-piano",
+        badge: "SF2 PIANO",
+        badgeClass: "arr-rack-badge-sf2",
+        title: "预设钢琴 · Warm Piano",
+        desc: "原声大三角钢琴 SoundFont 音色库",
+        source: { type: "builtin", tone: "piano", label: "内置 · 温暖钢琴" }
+      });
+      items.push({
+        type: "source",
+        subType: "sf2",
+        id: "source-strings",
+        badge: "SF2 STRINGS",
+        badgeClass: "arr-rack-badge-sf2",
+        title: "预设弦乐 · String Ensemble",
+        desc: "管弦乐合奏组 SoundFont 音色库",
+        source: { type: "builtin", tone: "strings", label: "内置 · 弦乐群" }
+      });
+
+      var cachedFonts = window.SoundLibrary ? window.SoundLibrary.getCachedSoundFonts() : [];
+      cachedFonts.forEach(function (sf) {
+        var firstPreset = (sf.presets && sf.presets.length) ? sf.presets[0].id : null;
+        items.push({
+          type: "source",
+          subType: "sf2",
+          id: "sf2-" + sf.id,
+          badge: "SF2 扩展",
+          badgeClass: "arr-rack-badge-sf2",
+          title: sf.name || "自定义音色库",
+          desc: firstPreset ? "预设: " + ((sf.presets[0].name || "Preset")) : "已挂载自定义 SoundFont 音色",
+          source: { type: "sf2", libId: sf.id, presetId: firstPreset, label: (sf.name || "自定义音色").slice(0, 24) }
+        });
+      });
+    }
+
+    // 3. 采样素材
+    if (filter === "all" || filter === "samples") {
+      var sampleMap = {};
+      for (var t = 0; t < self.tracks.length; t++) {
+        var trk = self.tracks[t];
+        for (var c = 0; c < trk.clips.length; c++) {
+          var clip = trk.clips[c];
+          if (clip.type === "audio" && clip.src && clip.src.p) {
+            var path = clip.src.p;
+            if (!sampleMap[path]) {
+              sampleMap[path] = {
+                type: "sample",
+                subType: "audio",
+                id: "sample-" + path,
+                badge: "SAMPLE",
+                badgeClass: "arr-rack-badge-sample",
+                title: clip.name || path.split("/").pop(),
+                desc: "音频采样: " + path,
+                path: path,
+                name: clip.name || path.split("/").pop()
+              };
+            }
+          }
+        }
+      }
+      for (var p in sampleMap) {
+        items.push(sampleMap[p]);
+      }
+    }
+
+    if (statusEl) {
+      statusEl.textContent = "已挂载 " + items.length + " 个通道 (" + (filter === "all" ? "全部" : filter.toUpperCase()) + ")";
+    }
+
+    if (items.length === 0) {
+      listEl.innerHTML = '<div style="text-align:center; padding:24px 10px; color:var(--color-ink-dim); font-size:12px">当前分类下暂无已挂载通道条目</div>';
+      return;
+    }
+
+    // 渲染 FL Studio 通道条目卡片
+    items.forEach(function (item) {
+      var card = document.createElement("div");
+      card.className = "arr-rack-item";
+      card.draggable = true;
+
+      // 拖拽把手图标
+      var handle = document.createElement("span");
+      handle.className = "arr-rack-item-drag-handle";
+      handle.innerHTML = "⋮⋮";
+      handle.title = "按住拖拽至轨道";
+      card.appendChild(handle);
+
+      // 类型徽标
+      var badge = document.createElement("span");
+      badge.className = "arr-rack-item-badge " + (item.badgeClass || "");
+      badge.textContent = item.badge;
+      card.appendChild(badge);
+
+      // 信息区
+      var info = document.createElement("div");
+      info.className = "arr-rack-item-info";
+
+      var nameEl = document.createElement("div");
+      nameEl.className = "arr-rack-item-name";
+      nameEl.textContent = item.title;
+      info.appendChild(nameEl);
+
+      var descEl = document.createElement("div");
+      descEl.className = "arr-rack-item-desc";
+      descEl.textContent = item.desc;
+      info.appendChild(descEl);
+
+      card.appendChild(info);
+
+      // 操作按钮区 (全自定义 CSS 按钮，拒绝原生)
+      var actions = document.createElement("div");
+      actions.className = "arr-rack-item-actions";
+
+      var previewBtn = document.createElement("button");
+      previewBtn.type = "button";
+      previewBtn.className = "arr-rack-preview-btn";
+      previewBtn.innerHTML = "▶ 试听";
+      previewBtn.title = "预览试听发声";
+      previewBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (item.type === "source") {
+          self.previewRackSource(item.source);
+        } else {
+          self.previewRackSample(item.path);
+        }
+      });
+      actions.appendChild(previewBtn);
+
+      var assignBtn = document.createElement("button");
+      assignBtn.type = "button";
+      assignBtn.className = "arr-rack-assign-btn";
+      assignBtn.innerHTML = "分配";
+      assignBtn.title = "分配到当前选中的轨道";
+      assignBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (item.type === "source") {
+          self.replaceTrackSourceFromDrop(self.selectedTrackIdx, item.source);
+        } else {
+          self.addAudioClipFromDrop(self.selectedTrackIdx, item.path, item.name, self.playheadBeat);
+        }
+      });
+      actions.appendChild(assignBtn);
+
+      card.appendChild(actions);
+
+      // 拖拽数据绑定 (application/x-arrange)
+      card.addEventListener("dragstart", function (e) {
+        card.classList.add("dragging");
+        var dragData;
+        if (item.type === "source") {
+          dragData = { kind: "arr-source", source: item.source };
+        } else {
+          dragData = { kind: "arr-audio", p: item.path, name: item.name };
+        }
+        e.dataTransfer.setData("application/x-arrange", JSON.stringify(dragData));
+        e.dataTransfer.setData("text/plain", JSON.stringify(dragData));
+        e.dataTransfer.effectAllowed = "copyMove";
+      });
+
+      card.addEventListener("dragend", function () {
+        card.classList.remove("dragging");
+      });
+
+      listEl.appendChild(card);
+    });
+  };
+
+  /** 预览机架音源 (在编曲引擎的 AudioContext 上播放一个 C4 音符) */
+  Arrange.prototype.previewRackSource = function (source) {
+    var self = this;
+    if (!source) return;
+    try {
+      this.engine.resume();
+      var ctx = this.engine.ctx;
+      if (!ctx) return;
+      var gain = ctx.createGain();
+      gain.gain.value = 0.8;
+      gain.connect(ctx.destination);
+      var cleanup = function () {
+        setTimeout(function () {
+          try { gain.disconnect(); } catch (e) {}
+        }, 600);
+      };
+      var playNote = function (player) {
+        player.noteOn(60, 100);
+        setTimeout(function () {
+          try { player.noteOff(60); } catch (e) {}
+        }, 600);
+        cleanup();
+      };
+      if (source.type === "synth") {
+        var synth = new window.SynthEngine(ctx, gain);
+        synth.init();
+        synth.setWaveform(source.wave || "sawtooth");
+        synth._forceWebAudio = true; // 试听强制走 Web Audio，避免直发原生引擎轨道
+        playNote(synth);
+      } else if (source.type === "sf2" && source.libId && window.SoundLibrary) {
+        window.SoundLibrary.getSoundFont(source.libId).then(function (rec) {
+          if (!rec || !rec.data) throw new Error("音源数据不存在");
+          var player = new window.SoundFontPlayer(ctx, gain);
+          player.init();
+          player.parseSF2(rec.data);
+          if (source.presetId) player.setPreset(source.presetId);
+          playNote(player);
+        }).catch(function (err) {
+          cleanup();
+          if (self.showHUD) self.showHUD("✗ 试听失败: " + err.message);
+        });
+      } else {
+        // builtin 预设音色
+        var player = new window.SoundFontPlayer(ctx, gain);
+        player.init();
+        player.setPreset(source.tone || "piano");
+        playNote(player);
+      }
+    } catch (err) {
+      console.warn("试听音源失败:", err);
+      this.showHUD("✗ 试听失败: " + (err.message || err));
+    }
+  };
+
+  /** 预览机架采样音频（与文件树双击试听同一链路 /api/arrangement/audio） */
+  Arrange.prototype.previewRackSample = function (path) {
+    if (!path) return;
+    this.engine.resume();
+    this.engine.previewSample(path).catch(function () {
+      if (window.Arrange && window.Arrange.showHUD) {
+        window.Arrange.showHUD("✗ 音频试听失败（文件不存在或格式不支持）");
+      }
+    });
   };
 
   /* ═══════════ 启动 ═══════════ */

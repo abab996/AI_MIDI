@@ -2647,6 +2647,350 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
   .task-panel { transition: none; }
 }
 
+/* ==========================================================================
+   输出机架 (FL Studio 风格 Channel / Output Rack 浮动窗口) 样式
+   ========================================================================== */
+.rack-window {
+  position: fixed;
+  top: 100px;
+  left: calc(50% - 320px);
+  width: 640px;
+  max-width: 95vw;
+  background: var(--color-bg-card, #112038);
+  border: 1px solid var(--color-border-strong, rgba(0, 184, 204, 0.6));
+  border-radius: 8px;
+  box-shadow: 0 12px 36px var(--color-shadow, rgba(0,0,0,0.65)), 0 0 16px var(--color-glow, rgba(0, 184, 204, 0.25));
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+  backdrop-filter: blur(8px);
+}
+
+.rack-window[hidden] {
+  display: none !important;
+}
+
+/* 机架标题栏 (可拖拽区域) */
+.rack-win-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(0,0,0,0.2) 100%), var(--color-bg-console, #060e1a);
+  border-bottom: 1px solid var(--color-border, rgba(0, 184, 204, 0.36));
+  cursor: move;
+}
+
+.rack-win-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rack-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00ffcc;
+  box-shadow: 0 0 8px #00ffcc;
+  animation: rackPulse 2s infinite ease-in-out;
+}
+
+@keyframes rackPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+
+.rack-win-name {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--color-ink, #e0f7fc);
+}
+
+.rack-win-sub {
+  font-size: 11px;
+  color: var(--color-ink-dim, rgba(224, 247, 252, 0.55));
+}
+
+.rack-win-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rack-win-btn {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--color-border, rgba(0, 184, 204, 0.3));
+  border-radius: 4px;
+  color: var(--color-ink, #e0f7fc);
+  font-size: 11px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.rack-win-btn:hover {
+  background: rgba(0, 184, 204, 0.2);
+  border-color: var(--color-primary, #00b8cc);
+  color: #fff;
+}
+
+.rack-win-close:hover {
+  background: rgba(255, 107, 107, 0.25);
+  border-color: var(--color-danger, #ff6b6b);
+  color: #ff6b6b;
+}
+
+/* 机架内容区 */
+.rack-win-body {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 14px;
+  background: var(--color-bg-card, #112038);
+}
+
+/* 工具与分类栏 */
+.rack-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.rack-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--color-bg-console, #060e1a);
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, rgba(0, 184, 204, 0.3));
+}
+
+.rack-filter-btn {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-dim, rgba(224, 247, 252, 0.6));
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.rack-filter-btn:hover {
+  color: var(--color-ink, #e0f7fc);
+  background: rgba(255,255,255,0.05);
+}
+
+.rack-filter-btn.active {
+  background: var(--color-primary, #00b8cc);
+  color: var(--color-on-primary, #060e1a);
+  font-weight: 700;
+  box-shadow: 0 0 8px rgba(0, 184, 204, 0.4);
+}
+
+.rack-action-btn {
+  background: linear-gradient(180deg, rgba(255, 140, 0, 0.2) 0%, rgba(204, 102, 0, 0.15) 100%);
+  border: 1px solid var(--color-accent, #ff8c00);
+  border-radius: 6px;
+  color: var(--color-accent, #ff8c00);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+
+.rack-action-btn:hover {
+  background: var(--color-accent, #ff8c00);
+  color: #1a0e00;
+  box-shadow: 0 0 10px rgba(255, 140, 0, 0.5);
+}
+
+/* 提示栏 */
+.rack-hint-bar {
+  font-size: 11px;
+  color: var(--color-ink-dim, rgba(224, 247, 252, 0.55));
+  padding: 4px 8px;
+  background: rgba(0, 184, 204, 0.05);
+  border-left: 3px solid var(--color-primary, #00b8cc);
+  margin-bottom: 8px;
+  border-radius: 0 4px 4px 0;
+}
+
+/* 通道列表容器 */
+.rack-channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 380px;
+  min-height: 160px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* 通道条目卡片 (FL Studio 质感) */
+.arr-rack-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(0,0,0,0.15) 100%), var(--color-bg-console, #060e1a);
+  border: 1px solid var(--color-border, rgba(0, 184, 204, 0.3));
+  border-radius: 6px;
+  cursor: grab;
+  user-select: none;
+  transition: all 0.15s;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.arr-rack-item:hover {
+  background: linear-gradient(90deg, rgba(0, 184, 204, 0.1) 0%, rgba(0,0,0,0.2) 100%), var(--color-bg-console, #060e1a);
+  border-color: var(--color-primary, #00b8cc);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 184, 204, 0.2);
+}
+
+.arr-rack-item:active {
+  cursor: grabbing;
+  transform: translateY(0);
+}
+
+.arr-rack-item-drag-handle {
+  color: var(--color-ink-dim, rgba(224, 247, 252, 0.4));
+  font-size: 14px;
+  line-height: 1;
+}
+
+.arr-rack-item-badge {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.arr-rack-badge-synth {
+  background: rgba(0, 184, 204, 0.15);
+  color: #00d0e0;
+  border: 1px solid rgba(0, 184, 204, 0.45);
+}
+
+.arr-rack-badge-sf2 {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.45);
+}
+
+.arr-rack-badge-sample {
+  background: rgba(255, 140, 0, 0.15);
+  color: #ffaa33;
+  border: 1px solid rgba(255, 140, 0, 0.45);
+}
+
+.arr-rack-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.arr-rack-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink, #e0f7fc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arr-rack-item-desc {
+  font-size: 11px;
+  color: var(--color-ink-dim, rgba(224, 247, 252, 0.55));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arr-rack-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.arr-rack-preview-btn {
+  background: rgba(0, 184, 204, 0.12);
+  border: 1px solid var(--color-border, rgba(0, 184, 204, 0.4));
+  border-radius: 4px;
+  color: var(--color-primary, #00b8cc);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.arr-rack-preview-btn:hover {
+  background: var(--color-primary, #00b8cc);
+  color: var(--color-on-primary, #060e1a);
+  box-shadow: 0 0 8px rgba(0, 184, 204, 0.4);
+}
+
+.arr-rack-assign-btn {
+  background: rgba(255, 140, 0, 0.12);
+  border: 1px solid rgba(255, 140, 0, 0.4);
+  border-radius: 4px;
+  color: var(--color-accent, #ff8c00);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.arr-rack-assign-btn:hover {
+  background: var(--color-accent, #ff8c00);
+  color: #1a0e00;
+  box-shadow: 0 0 8px rgba(255, 140, 0, 0.4);
+}
+
+/* 机架底部状态条 */
+.rack-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border, rgba(0, 184, 204, 0.2));
+  font-size: 11px;
+  color: var(--color-ink-dim, rgba(224, 247, 252, 0.5));
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.rack-indicator {
+  font-weight: 700;
+  color: var(--color-primary, #00b8cc);
+}
+
+.arr-track-head.drag-over-source,
+.arr-lane.drag-over-source {
+  outline: 2px dashed var(--color-primary, #00b8cc) !important;
+  background: rgba(0, 184, 204, 0.18) !important;
+}
+
+
 .task-panel-head {
   display: flex;
   align-items: center;

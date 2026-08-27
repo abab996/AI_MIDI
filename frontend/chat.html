@@ -90,6 +90,7 @@
       <span class="stamp" id="apiStamp">API: --</span>
       <span class="stamp" id="engineStamp" title="音频引擎状态">ENGINE: --</span>
       <div class="nav-right">
+        <button class="btn btn-secondary btn-sm" id="studioRackBtn" title="打开工程输出机架 (Channel / Output Rack)">🎛 输出机架</button>
         <button class="btn btn-secondary btn-sm" id="arrangeToggleBtn" title="展开 / 收起编曲窗">▦ 编曲窗</button>
         <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
         <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>
@@ -254,6 +255,7 @@
 
         <div class="arr-actions">
           <span class="stamp ok" id="arrSaveStamp">SAVED</span>
+          <button type="button" class="btn btn-sm btn-secondary" id="arrRackBtn" title="打开工程输出机架 (Channel / Output Rack)，可试听并拖拽音源与采样到轨道">🎛 输出机架</button>
           <button type="button" class="btn btn-sm btn-primary" id="arrExportWavBtn" title="离线导出 WAV（按全局采样率，尾音到静默不截断）">⬇ WAV</button>
           <button type="button" class="btn btn-sm btn-secondary" id="arrShortcutsBtn" title="快捷键一览">⌨ 快捷键</button>
         </div>
@@ -636,6 +638,48 @@
     </div>
     <div class="modal-actions">
       <button class="btn btn-primary btn-sm" id="prShortcutsClose">我知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- 输出机架 (Channel / Output Rack) 独立浮动窗口：FL Studio 通道机架设计，支持自由拖动与直接拖拽音源/采样到轨道 -->
+<div class="rack-window" id="arrRackWindow" hidden>
+  <div class="rack-win-titlebar" id="arrRackTitlebar">
+    <div class="rack-win-title">
+      <span class="rack-status-dot"></span>
+      <span class="rack-win-name">OUTPUT RACK</span>
+      <span class="rack-win-sub">通道与输出机架</span>
+    </div>
+    <div class="rack-win-controls">
+      <button type="button" class="rack-win-btn rack-win-collapse" id="arrRackCollapseBtn" title="折叠/展开">―</button>
+      <button type="button" class="rack-win-btn rack-win-close" id="arrRackCloseBtn" title="关闭机架窗口">✕</button>
+    </div>
+  </div>
+
+  <div class="rack-win-body" id="arrRackBody">
+    <div class="rack-toolbar">
+      <div class="rack-filter-group">
+        <button type="button" class="rack-filter-btn active" data-tab="all">全部 (ALL)</button>
+        <button type="button" class="rack-filter-btn" data-tab="synth">🎹 虚拟音源</button>
+        <button type="button" class="rack-filter-btn" data-tab="sf2">📦 SOUNDFONT</button>
+        <button type="button" class="rack-filter-btn" data-tab="samples">🌊 采样素材</button>
+      </div>
+      <div class="rack-toolbar-actions">
+        <button type="button" class="rack-action-btn" id="arrRackAddSf2Btn" title="导入自定义 SF2 音源文件">＋ 导入 SF2</button>
+      </div>
+    </div>
+
+    <div class="rack-hint-bar">
+      <span>💡 按住通道条直接拖拽到编曲窗轨道头，即可替换音源或放置采样</span>
+    </div>
+
+    <div class="rack-channel-list" id="arrRackList">
+      <!-- 动态渲染 FL 通道条目 -->
+    </div>
+
+    <div class="rack-statusbar">
+      <span id="arrRackStatusText">已挂载 0 个通道</span>
+      <span class="rack-indicator">CHANNEL RACK READY</span>
     </div>
   </div>
 </div>

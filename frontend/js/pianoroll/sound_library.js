@@ -8,11 +8,14 @@
 
   function SoundLibrary() {
     this.db = null;
+    this._cachedFonts = [];
+    this._initPromise = null;
   }
 
   SoundLibrary.prototype.init = function () {
     var self = this;
-    return new Promise(function (resolve, reject) {
+    if (this._initPromise) return this._initPromise;
+    this._initPromise = new Promise(function (resolve, reject) {
       if (self.db) { resolve(self.db); return; }
       var req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = function (e) {
@@ -31,6 +34,11 @@
         reject(e.target.error);
       };
     });
+    return this._initPromise;
+  };
+
+  SoundLibrary.prototype.getCachedSoundFonts = function () {
+    return this._cachedFonts || [];
   };
 
   SoundLibrary.prototype.listSoundFonts = function () {
@@ -45,7 +53,11 @@
         var cursorReq = store.openCursor();
         cursorReq.onsuccess = function () {
           var cursor = cursorReq.result;
-          if (!cursor) { resolve(list); return; }
+          if (!cursor) {
+            self._cachedFonts = list;
+            resolve(list);
+            return;
+          }
           var item = cursor.value;
           list.push({
             id: item.id,
@@ -88,7 +100,10 @@
           createdAt: Date.now()
         };
         var req = store.put(record);
-        req.onsuccess = function () { resolve(record); };
+        req.onsuccess = function () {
+          self.listSoundFonts().catch(function () {});
+          resolve(record);
+        };
         req.onerror = function () { reject(req.error); };
       });
     });
@@ -114,11 +129,18 @@
         var tx = db.transaction(STORE_NAME, "readwrite");
         var store = tx.objectStore(STORE_NAME);
         var req = store.delete(id);
-        req.onsuccess = function () { resolve(true); };
+        req.onsuccess = function () {
+          self.listSoundFonts().catch(function () {});
+          resolve(true);
+        };
         req.onerror = function () { reject(req.error); };
       });
     });
   };
 
   window.SoundLibrary = new SoundLibrary();
+  // 页面加载时自动预热音源库缓存
+  try {
+    window.SoundLibrary.listSoundFonts().catch(function () {});
+  } catch (e) {}
 })(window);

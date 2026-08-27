@@ -2268,10 +2268,24 @@
     var message = input.value.trim();
     if (!message) return;
     /* 修改模式发送：替换被编辑的消息（AI 上下文止于截断点），
-       发送瞬间退出编辑态，撤回条随之隐藏 */
+       发送瞬间退出编辑态，撤回条随之隐藏，并立刻移除被修改消息及其之后的所有旧消息 */
     var isEdit = editingIndex >= 0;
+    var editIdx = editingIndex;
     editingIndex = -1;
     $("#editBar").hidden = true;
+    if (isEdit && editIdx >= 0) {
+      if (currentMessages.length > editIdx) {
+        currentMessages = currentMessages.slice(0, editIdx);
+      }
+      var chatContainer = $("#chat");
+      var oldEls = chatContainer.querySelectorAll(".msg, .tool-call, .question-card");
+      oldEls.forEach(function (el) {
+        var idx = parseInt(el.dataset.index, 10);
+        if (!isNaN(idx) && idx >= editIdx) {
+          el.remove();
+        }
+      });
+    }
     /* 消息发出后立即清空输入框（不等回复结束） */
     input.value = "";
     draftDirty = false;

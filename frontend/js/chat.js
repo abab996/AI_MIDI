@@ -988,64 +988,56 @@
     return { blocks: blocks, answer: rest };
   }
 
-  /* 单帧渐显动画的最大字符数：超过部分直接以纯文本追加（不建动画节点），
-     避免大块文本一次性创建数千个动画元素卡死浏览器 */
-  var FADE_CHAR_CAP = 200;
-  /* 渐显分组大小：每 FADE_GROUP 个字符一组（一个 span 一个动画）。
-     逐字建 span 在长回复时会累积上千个并发 CSS 动画导致卡顿；
-     分组后每帧最多 20 个动画，视觉仍保留「打字渐显」感 */
-  var FADE_GROUP = 10;
+  /* 流式渲染节流：delta 到达即累积、按固定间隔合并渲染一次。
+     80ms（≈12fps）高于人眼对"流式输出连续性"的感知阈值，
+     且显著低于逐 delta 渲染的 DOM/解析开销 */
+  var STREAM_RENDER_MS = 80;
+  /* 增量累计器 + 渲染定时器：每个流式回合由后端 msg_index 区分 */
+  var streamAccum = null;          /* { msgIndex, reasoning, content } */
+  var streamRenderTimer = null;
 
-  function makeFadeSpan(text, groupIdx) {
-    var span = document.createElement("span");
-    span.className = "char-fade";
-    span.style.setProperty("--d", Math.min(groupIdx * 40, 400) + "ms");
-    span.textContent = text;
-    return span;
+  /* 把原始推理/正文两股流包成与后端 FormatDisplayMessage 同构的串
+     （<details> 思考块 + 正文），复用既有的 parseStreamContent 解析路径 */
+  function formatRawStream(reasoning, content) {
+    var s = "";
+    if (reasoning) {
+      s += "<details>\n<summary>思考过程</summary>\n\n" + reasoning + "\n</details>\n\n";
+    }
+    return s + content;
   }
 
-  /* 把文本分组追加为渐显 span（流式期间以纯文本呈现，结束后整体走 markdown 重渲染）。
-     按码点迭代，避免 emoji 等代理对字符被拆成两个坏字；单帧超过 FADE_CHAR_CAP
-     后剩余部分整体作为纯文本追加。
-     动画完成后由 #chat 上的 animationend 委托把 span 还原为纯文本节点，
-     避免长对话积累数千个动画元素导致卡死 */
-  function appendFadeChars(container, text) {
-    if (!text) return;
-    if (reducedMotion) {
-      /* 降动态模式：CSS 禁用动画后 animationend 永不触发，span 会滞留
-         DOM（长对话积累大量节点）；直接追加纯文本节点 */
-      container.appendChild(document.createTextNode(text));
-      return;
+  /* 收到一条增量事件：累积到当前回合的累计器并安排一次节流渲染 */
+  function applyStreamDeltaEvent(ev) {
+    if (!liveStreaming || chatEpoch !== streamEpoch) return;
+    var idx = typeof ev.msg_index === "number" ? ev.msg_index : currentMessages.length - 1;
+    if (!streamAccum || streamAccum.msgIndex !== idx) {
+      streamAccum = { msgIndex: idx, reasoning: "", content: "" };
     }
-    var frag = document.createDocumentFragment();
-    var added = 0;
-    var groupIdx = 0;
-    var group = "";
-    var remaining = text;
-    while (remaining.length) {
-      if (added >= FADE_CHAR_CAP) {
-        if (group) frag.appendChild(makeFadeSpan(group, groupIdx++));
-        /* 超限：剩余部分整体作为纯文本追加，不做渐显动画 */
-        frag.appendChild(document.createTextNode(remaining));
-        break;
-      }
-      var cp = remaining.codePointAt(0);
-      var ch = String.fromCodePoint(cp);
-      remaining = remaining.slice(ch.length);
-      group += ch;
-      added++;
-      if (group.length >= FADE_GROUP) {
-        frag.appendChild(makeFadeSpan(group, groupIdx++));
-        group = "";
-      }
-    }
-    if (group) frag.appendChild(makeFadeSpan(group, groupIdx));
-    container.appendChild(frag);
+    var r = ev.reasoning_delta || "";
+    var c = ev.content_delta || "";
+    if (!r && !c) return;
+    streamAccum.reasoning += r;
+    streamAccum.content += c;
+    if (streamRenderTimer) return;
+    streamRenderTimer = setTimeout(function () {
+      streamRenderTimer = null;
+      if (!streamAccum || !liveStreaming || chatEpoch !== streamEpoch) return;
+      renderStreamingTail(
+        formatRawStream(streamAccum.reasoning, streamAccum.content),
+        streamAccum.msgIndex,
+        lastMessages.length
+      );
+    }, STREAM_RENDER_MS);
   }
 
-  /* 构建流式消息元素：结构只建一次，字符逐字渐显；
-     每个 <details> 折叠块独立成块（默认折叠），正文独立；
-     返回 { el, parsed }，后续帧用 updateStreamingMessage 追加增量 */
+  function resetStreamDelta() {
+    if (streamRenderTimer) { clearTimeout(streamRenderTimer); streamRenderTimer = null; }
+    streamAccum = null;
+  }
+
+  /* 构建流式消息元素：思考块与正文全程 markdown 渲染（结束后不再有
+     "纯文本→markdown"的整体跳变）；返回 { el, parsed }，
+     后续帧用 updateStreamingMessage 刷新内容 */
   function buildStreamingMessage(content) {
     var parsed = parseStreamContent(content);
     var el = document.createElement("div");
@@ -1055,73 +1047,73 @@
     label.textContent = "AI · 乐理专家";
     el.appendChild(label);
     parsed.blocks.forEach(function (b) {
-      var det = document.createElement("details");
-      var sum = document.createElement("summary");
-      sum.textContent = b.summary;
-      det.appendChild(sum);
-      var body = document.createElement("div");
-      body.className = "details-body";
-      var inner = document.createElement("div");
-      inner.className = "details-inner";
-      var txt = document.createElement("div");
-      txt.className = "stream-text";
-      inner.appendChild(txt);
-      body.appendChild(inner);
-      det.appendChild(body);
-      el.appendChild(det);
-      appendFadeChars(txt, b.body);
+      el.appendChild(buildDetailsBlock(b.summary));
     });
     var ans = document.createElement("div");
     ans.className = "stream-answer";
+    ans.innerHTML = UI.md(parsed.answer);
+    ans._mdSrc = UI.md(parsed.answer);
     el.appendChild(ans);
-    appendFadeChars(ans, parsed.answer);
     return { el: el, parsed: parsed };
   }
 
-  /* 流式消息增量更新：按块索引追加新增的推理/正文字符（渐显 span 得以存活，
-     不会被整表重渲染打断——上游一次返回大量内容时逐字渐显依然生效）；
-     折叠块数量增长时新建对应块 */
+  /* 单个折叠块骨架（思考过程/工具调用共用），内文 markdown 渲染进 .stream-text */
+  function buildDetailsBlock(summaryText) {
+    var det = document.createElement("details");
+    var sum = document.createElement("summary");
+    sum.textContent = summaryText;
+    det.appendChild(sum);
+    var body = document.createElement("div");
+    body.className = "details-body";
+    var inner = document.createElement("div");
+    inner.className = "details-inner";
+    var txt = document.createElement("div");
+    txt.className = "stream-text";
+    inner.appendChild(txt);
+    body.appendChild(inner);
+    det.appendChild(body);
+    return det;
+  }
+
+  /* 流式消息内容刷新：块数对齐 + 各块正文 markdown 全量替换。
+     内容不变的部分靠 _mdSrc 缓存跳过 innerHTML 写入；
+     复用既有 details 元素——用户手动开合状态自然保留 */
   function updateStreamingMessage(entry, content) {
     var parsed = parseStreamContent(content);
     var el = entry.el;
     var answerEl = el.querySelector(".stream-answer");
+
     /* 块数增长：在正文前插入新块 */
-    while (el.querySelectorAll(".details-body .stream-text").length < parsed.blocks.length) {
-      var idx = el.querySelectorAll(".details-body .stream-text").length;
-      var b = parsed.blocks[idx];
-      var det = document.createElement("details");
-      var sum = document.createElement("summary");
-      sum.textContent = b.summary;
-      det.appendChild(sum);
-      var body = document.createElement("div");
-      body.className = "details-body";
-      var inner = document.createElement("div");
-      inner.className = "details-inner";
-      var txt = document.createElement("div");
-      txt.className = "stream-text";
-      inner.appendChild(txt);
-      body.appendChild(inner);
-      det.appendChild(body);
+    var dets = [];
+    el.querySelectorAll(":scope > details").forEach(function (d) { dets.push(d); });
+    while (dets.length < parsed.blocks.length) {
+      var b = parsed.blocks[dets.length];
+      var det = buildDetailsBlock(b.summary);
+      det.querySelector(".stream-text").innerHTML = UI.md(b.body);
+      det.querySelector(".stream-text")._mdSrc = UI.md(b.body);
       el.insertBefore(det, answerEl);
-      appendFadeChars(txt, b.body);
+      dets.push(det);
     }
-    /* 块数减少（内容形态变化）：移除尾部多余的旧块，避免陈旧内容残留 */
-    var blockDets = el.querySelectorAll("details");
-    for (var i = parsed.blocks.length; i < blockDets.length; i++) {
-      if (detailsClosing === blockDets[i]) detailsClosing = null;  /* 移除的块取消延迟关闭 */
-      blockDets[i].remove();
+    /* 块数减少（内容形态变化）：移除尾部多余的旧块 */
+    for (var i = parsed.blocks.length; i < dets.length; i++) {
+      if (detailsClosing === dets[i]) detailsClosing = null;
+      dets[i].remove();
     }
-    var texts = el.querySelectorAll(".details-body .stream-text");
-    for (var i = 0; i < parsed.blocks.length; i++) {
-      var old = entry.parsed.blocks[i];
-      if (!old) continue;
-      var txt = texts[i];
-      if (txt && parsed.blocks[i].body.length > old.body.length) {
-        appendFadeChars(txt, parsed.blocks[i].body.slice(old.body.length));
+    for (var j = 0; j < parsed.blocks.length && j < dets.length; j++) {
+      var txt = dets[j].querySelector(".stream-text");
+      if (!txt) continue;
+      var html = UI.md(parsed.blocks[j].body);
+      if (txt._mdSrc !== html) {
+        txt.innerHTML = html;
+        txt._mdSrc = html;
       }
     }
-    if (answerEl && parsed.answer.length > entry.parsed.answer.length) {
-      appendFadeChars(answerEl, parsed.answer.slice(entry.parsed.answer.length));
+    if (answerEl) {
+      var ah = UI.md(parsed.answer);
+      if (answerEl._mdSrc !== ah) {
+        answerEl.innerHTML = ah;
+        answerEl._mdSrc = ah;
+      }
     }
     entry.parsed = parsed;
   }
@@ -1141,146 +1133,12 @@
     currentMessages = list;
     editMenuIndex = -1;   /* 整表重建：修改菜单随之销毁，状态复位 */
 
-    /* ── 实时流式：最后一条消息用增量结构（逐字渐显不被打断） ──
-       提问卡片消息（type=question，无 content）不走文本流式路径——
-       否则被当空文本渲染成空气泡，用户永远看不到问题；改走下方
-       全量渲染路径由 buildQuestionCard 生成卡片 */
+    /* ── 实时流式：最后一条消息用增量结构 ──
+       提问卡片消息（type=question，无 content）不走文本流式路径 */
     if (liveStreaming && list.length) {
       var last = list[list.length - 1];
       if (last && last.role === "assistant" && last.type !== "question") {
-        var content = last.content || "";
-        var norm = normalizeThinking(content);
-        var same = !!streamTrack.el && !!streamTrack.norm
-          && (norm === streamTrack.norm || norm.indexOf(streamTrack.norm) === 0);
-
-        if (same && chat.lastElementChild === streamTrack.el) {
-          /* 同一消息持续流式：只追加新增字符 */
-          updateStreamingMessage(streamTrack, content);
-        } else {
-          /* 新消息（新一轮思考/工具块/首帧）：重建全部，最后一条用流式结构。
-             若聊天内有正在播放动画的 details（如上一轮思考块自动收起动画
-             尚未播完、工具块消息就到了）或消息入场动画（用户消息滑入
-             尚未播完），先等动画播完再重建——否则整表重建会销毁动画，
-             思考块表现为瞬间收起/展开、用户消息滑入被掐断 */
-          if (hasRunningDetailsAnim(chat) || hasRunningMsgEnter(chat)) {
-            if (!rebuildDeferred) {
-              rebuildDeferred = true;
-              var epochAtRebuild = chatEpoch;
-              setTimeout(function () {
-                rebuildDeferred = false;
-                if (chatEpoch !== epochAtRebuild) return; /* 延迟期间已开始新会话，放弃旧重建 */
-                renderMessages(lastMessages.length ? lastMessages : messages);
-              }, DETAILS_CLOSE_DELAY_MS);
-            }
-            return;
-          }
-          rebuildDeferred = false;
-          /* 本条 AI 消息是否首次出现（首帧）：是 → 播放入场动画；
-             工具块/新思考块触发的同消息重建 → 跳过（已入场过） */
-          var aiIndex = list.length - 1;
-          var isNewAiMsg = !streamTrack.el ||
-            streamTrack.el.dataset.index !== String(aiIndex);
-          /* 重建前记录已展开的 details，重建后恢复（避免每帧把用户
-             展开的思考块/工具块重新收起）。历史消息按 (消息下标, 消息内
-             相对索引) 恢复；本条流式消息的块内容随流变化（下标不可靠），
-             用 summary 文本匹配恢复——否则同消息重建后思考块/工具块会
-             悄悄合拢 */
-          var openDetails = collectOpenDetails(chat, true);
-          var streamOpenSummaries = [];
-          if (streamTrack.el) {
-            streamTrack.el.querySelectorAll("details").forEach(function (d) {
-              if (!d.open) return;
-              var s = d.querySelector("summary");
-              if (s) streamOpenSummaries.push(s.textContent);
-            });
-          }
-          detailsAnimBusy = 0;   /* 旧元素即将销毁，其过渡被取消且不再触发 transitionend */
-          detailsClosing = null; /* 旧元素销毁，延迟关闭状态随之失效 */
-          chat.innerHTML = "";
-          for (var i = 0; i < list.length - 1; i++) {
-            var mEl = renderMessageCached(list[i]);
-            mEl.dataset.index = i;
-            chat.appendChild(mEl);
-          }
-          restoreOpenDetails(chat, openDetails);
-          streamTrack = buildStreamingMessage(content);
-          streamTrack.norm = norm;
-          streamTrack.el.dataset.index = aiIndex;
-          chat.appendChild(streamTrack.el);
-          /* 恢复本条流式消息内仍存在的已展开块（summary 文本匹配） */
-          if (streamOpenSummaries.length) {
-            streamTrack.el.querySelectorAll("details").forEach(function (d) {
-              var s = d.querySelector("summary");
-              if (s && streamOpenSummaries.indexOf(s.textContent) !== -1) {
-                /* 思考块：用户手动收起过则跳过恢复——收起动画播放期间
-                   d.open 仍为 true 会被上面的收集逻辑记录，无条件恢复
-                   会把用户的收起静默撤销（表现为"收不起来"） */
-                if (s.textContent.indexOf("思考过程") !== -1 && thinkUserCollapsed) return;
-                d.open = true;
-                var b = d.querySelector(":scope > .details-body");
-                if (b) {
-                  b.classList.add("open");
-                  b.style.maxHeight = "none";  /* 恢复展开=立即全开 */
-                }
-              }
-            });
-          }
-          /* AI 消息入场动画：从下往上渐显飞入（仅首次出现时） */
-          if (isNewAiMsg) animateMsgEnter(streamTrack.el, false);
-        }
-
-        /* 思考块自动展开/收起：仅针对「思考过程」块（工具调用块保持折叠、
-           不参与自动逻辑）；推理增长 → 展开；推理停顿超过 THINK_SETTLE_MS
-           才收起——「思考→正文→再思考」交错流式时推理会在帧间短暂不变，
-           立即收起会在推理恢复时立刻展开。自动开合为瞬时（autoExpand/
-           autoCollapse，无动画），动画只保留给用户手动开合——思考中反复
-           开合播动画 = 聊天框抽搐。
-           跟踪最后一个思考块：元素引用（区分同段重建/新段落）+ 文本长度 */
-        var thinkDet = null;
-        var dets = streamTrack.el.querySelectorAll("details");
-        for (var di = dets.length - 1; di >= 0; di--) {
-          var sum = dets[di].querySelector("summary");
-          if (sum && sum.textContent.indexOf("思考过程") !== -1) {
-            thinkDet = dets[di];
-            break;
-          }
-        }
-        if (thinkDet) {
-          var st = thinkDet.querySelector(".stream-text");
-          var reasoning = (st ? st.textContent : "").trim();
-          if (thinkDet !== thinkingTrack.det) {
-            /* 思考块元素变化：整表重建（同段，推理未断）或多段思考的新段落。
-               同段重建沿用原基线不强行展开；新段落重置基线并展开跟随 */
-            var sameSegment = thinkingTrack.reasoning.length > 0 &&
-              reasoning.length >= thinkingTrack.reasoning.length &&
-              reasoning.indexOf(thinkingTrack.reasoning.slice(0, 40)) === 0;
-            thinkingTrack.det = thinkDet;
-            thinkingTrack.reasoning = reasoning;
-            thinkingTrack.lastGrowAt = Date.now();
-            if (!sameSegment && !userToggledStream) autoExpand(thinkDet);
-          } else if (reasoning.length > thinkingTrack.reasoning.length) {
-            thinkingTrack.reasoning = reasoning;
-            thinkingTrack.lastGrowAt = Date.now();
-            if (!userToggledStream) autoExpand(thinkDet);
-          } else if (reasoning.length && reasoning.length === thinkingTrack.reasoning.length && !userToggledStream) {
-            /* 推理停顿：静默超过 THINK_SETTLE_MS 才瞬时收起（无动画——
-               思考中反复开合动画=抽搐；手动收起动画由 collapseDetails
-               提供）。手动收起动画播放期间（detailsClosing）不重复触发 */
-            if (Date.now() - thinkingTrack.lastGrowAt >= THINK_SETTLE_MS &&
-                thinkDet !== detailsClosing) {
-              autoCollapse(thinkDet);
-            }
-          }
-        } else {
-          thinkingTrack.det = null;
-          thinkingTrack.reasoning = "";
-          thinkingTrack.lastGrowAt = 0;
-        }
-
-        /* 折叠块展开/收起动画同步（自动展开/收起与手动点击后都生效） */
-        syncDetailsBodies(chat);
-        if (nearBottom) chat.scrollTop = chat.scrollHeight;
-        updateScrollBtn();
+        renderStreamingTail(last.content || "", list.length - 1, list.length - 1);
         return;
       }
     }
@@ -1314,6 +1172,162 @@
 
     if (nearBottom) chat.scrollTop = chat.scrollHeight;
     updateScrollBtn();
+  }
+
+  /* 流式尾部渲染：全量 chat 帧（renderMessages 委托）与增量 delta 帧
+     （applyStreamDeltaEvent 的节流定时器）共用同一条路径。
+     content = formatted 串（<details> 思考块 + 正文，与后端 FormatDisplayMessage
+     同构）；aiIndex = 本条消息在服务端列表中的下标；histLen = 历史区长度，
+     整表重建时只渲染 [0, histLen)，正在流式的这条单独构建。
+     增量模式下服务端列表尚未包含本轮占位消息 → histLen 用调用方传入的
+     lastMessages.length，历史区与"当前流式尾"天然分离开 */
+  function renderStreamingTail(content, aiIndex, histLen) {
+    var chat = $("#chat");
+    var norm = normalizeThinking(content);
+    var same = !!streamTrack.el && !!streamTrack.norm
+      && (norm === streamTrack.norm || norm.indexOf(streamTrack.norm) === 0);
+
+        if (same && chat.lastElementChild === streamTrack.el) {
+          /* 同一消息持续流式：只刷新内容（updateStreamingMessage 内部按
+             markdown 源串缓存跳过未变化部分） */
+          updateStreamingMessage(streamTrack, content);
+        } else {
+          /* 新消息（新一轮思考/工具块/首帧）：重建全部，最后一条用流式结构。
+             若聊天内有正在播放动画的 details（如上一轮思考块自动收起动画
+             尚未播完、工具块消息就到了）或消息入场动画（用户消息滑入
+             尚未播完），先等动画播完再重建——否则整表重建会销毁动画，
+             思考块表现为瞬间收起/展开、用户消息滑入被掐断 */
+          if (hasRunningDetailsAnim(chat) || hasRunningMsgEnter(chat)) {
+            if (!rebuildDeferred) {
+              rebuildDeferred = true;
+              var epochAtRebuild = chatEpoch;
+              setTimeout(function () {
+                rebuildDeferred = false;
+                if (chatEpoch !== epochAtRebuild) return; /* 延迟期间已开始新会话，放弃旧重建 */
+                if (lastMessages.length) renderMessages(lastMessages);
+              }, DETAILS_CLOSE_DELAY_MS);
+            }
+            return;
+          }
+          rebuildDeferred = false;
+          /* 本条 AI 消息是否首次出现（首帧）：是 → 播放入场动画；
+             工具块/新思考块触发的同消息重建 → 跳过（已入场过） */
+          var isNewAiMsg = !streamTrack.el ||
+            streamTrack.el.dataset.index !== String(aiIndex);
+          /* 重建前记录已展开的 details，重建后恢复（避免每帧把用户
+             展开的思考块/工具块重新收起）。历史消息按 (消息下标, 消息内
+             相对索引) 恢复；本条流式消息的块内容随流变化（下标不可靠），
+             用 summary 文本匹配恢复——否则同消息重建后思考块/工具块会
+             悄悄合拢 */
+          var openDetails = collectOpenDetails(chat, true);
+          var streamOpenSummaries = [];
+          if (streamTrack.el) {
+            streamTrack.el.querySelectorAll("details").forEach(function (d) {
+              if (!d.open) return;
+              var s = d.querySelector("summary");
+              if (s) streamOpenSummaries.push(s.textContent);
+            });
+          }
+          detailsAnimBusy = 0;   /* 旧元素即将销毁，其过渡被取消且不再触发 transitionend */
+          detailsClosing = null; /* 旧元素销毁，延迟关闭状态随之失效 */
+          chat.innerHTML = "";
+          for (var i = 0; i < histLen; i++) {
+            var mEl = renderMessageCached(lastMessages[i]);
+            mEl.dataset.index = i;
+            chat.appendChild(mEl);
+          }
+          restoreOpenDetails(chat, openDetails);
+          streamTrack = buildStreamingMessage(content);
+          streamTrack.norm = norm;
+          streamTrack.el.dataset.index = String(aiIndex);
+          chat.appendChild(streamTrack.el);
+          /* 恢复本条流式消息内仍存在的已展开块（summary 文本匹配） */
+          if (streamOpenSummaries.length) {
+            streamTrack.el.querySelectorAll("details").forEach(function (d) {
+              var s = d.querySelector("summary");
+              if (s && streamOpenSummaries.indexOf(s.textContent) !== -1) {
+                /* 思考块：用户手动收起过则跳过恢复——收起动画播放期间
+                   d.open 仍为 true 会被上面的收集逻辑记录，无条件恢复
+                   会把用户的收起静默撤销（表现为"收不起来"） */
+                if (s.textContent.indexOf("思考过程") !== -1 && thinkUserCollapsed) return;
+                d.open = true;
+                var b = d.querySelector(":scope > .details-body");
+                if (b) {
+                  b.classList.add("open");
+                  b.style.maxHeight = "none";  /* 恢复展开=立即全开 */
+                }
+              }
+            });
+          }
+          /* AI 消息入场动画：从下往上渐显飞入（仅首次出现时） */
+          if (isNewAiMsg) animateMsgEnter(streamTrack.el, false);
+        }
+
+        /* 思考块自动展开/收起（带动画版）：推理增长 → 平滑展开；推理停顿
+           超过 THINK_SETTLE_MS → 平滑收起。动画节流护栏：
+           - 用户手动操作过思考块（userToggledStream）后自动逻辑完全让位；
+           - 同一段推理持续增长期间保持展开不重复播动画（开合振荡防线），
+             只有"新段落出现"或"收起后再增长"才重新播展开动画；
+           - 收起方向统一走 collapseDetails（含 Chromium 冻结补丁与
+             detailsClosing 防重入），手动/自动共用同一套动画路径 */
+        var thinkDet = null;
+        var dets = streamTrack.el.querySelectorAll("details");
+        for (var di = dets.length - 1; di >= 0; di--) {
+          var sum = dets[di].querySelector("summary");
+          if (sum && sum.textContent.indexOf("思考过程") !== -1) {
+            thinkDet = dets[di];
+            break;
+          }
+        }
+        if (thinkDet) {
+          /* 推理文本与长度一律取原始流数据（entry.parsed 的 body），
+             不用渲染后的 textContent——markdown 会增删字符破坏
+             长度单调性，导致停顿判定失灵 */
+          var reasoning = "";
+          if (streamTrack.parsed) {
+            for (var pi = 0; pi < streamTrack.parsed.blocks.length; pi++) {
+              var psum = streamTrack.parsed.blocks[pi].summary;
+              if (psum && psum.indexOf("思考过程") !== -1) {
+                reasoning = (streamTrack.parsed.blocks[pi].body || "").trim();
+              }
+            }
+          }
+          if (thinkDet !== thinkingTrack.det) {
+            /* 思考块元素变化：整表重建（同段，推理未断）或多段思考的新段落。
+               新段落重置基线并播展开动画跟随 */
+            var sameSegment = thinkingTrack.reasoning.length > 0 &&
+              reasoning.length >= thinkingTrack.reasoning.length &&
+              reasoning.indexOf(thinkingTrack.reasoning.slice(0, 40)) === 0;
+            thinkingTrack.det = thinkDet;
+            thinkingTrack.reasoning = reasoning;
+            thinkingTrack.lastGrowAt = Date.now();
+            if (!sameSegment && !userToggledStream) autoExpand(thinkDet, true);
+          } else if (reasoning.length > thinkingTrack.reasoning.length) {
+            var wasSettled = Date.now() - thinkingTrack.lastGrowAt >= THINK_SETTLE_MS;
+            thinkingTrack.reasoning = reasoning;
+            thinkingTrack.lastGrowAt = Date.now();
+            /* 持续增长且仍展开时无需动作（autoExpand 对已开块是幂等 no-op）；
+               只有"收起停顿后恢复增长"才平滑重新展开 */
+            if (!userToggledStream && wasSettled) {
+              autoExpand(thinkDet, true);
+            }
+          } else if (reasoning.length && reasoning.length === thinkingTrack.reasoning.length && !userToggledStream) {
+            /* 推理停顿：静默超过 THINK_SETTLE_MS 才平滑收起 */
+            if (Date.now() - thinkingTrack.lastGrowAt >= THINK_SETTLE_MS &&
+                thinkDet !== detailsClosing) {
+              autoCollapse(thinkDet);
+            }
+          }
+        } else {
+          thinkingTrack.det = null;
+          thinkingTrack.reasoning = "";
+          thinkingTrack.lastGrowAt = 0;
+        }
+
+        /* 折叠块展开/收起动画同步（自动展开/收起与手动点击后都生效） */
+        syncDetailsBodies(chat);
+        if (nearBottom) chat.scrollTop = chat.scrollHeight;
+        updateScrollBtn();
   }
 
   /* 一键滚动到底部按钮显隐：仅在滚动离开底部(>40px)时浮现，
@@ -1473,24 +1487,47 @@
     d.open = true;              /* 撤销关闭：保持内部可渲染直到动画播完 */
   }
 
-  /* 思考块自动展开（流式推理出现/恢复增长）：瞬时展开，不播动画——
-     思考中推理停顿-恢复会反复触发开合，0.3s 动画来回播 = 聊天框抽搐；
+  /* 思考块自动展开：推理出现/新段落/收起后恢复增长时调用。
+     animate=true 播展开动画（0.3s max-height 过渡，与手动点击一致）；
+     false 保留瞬时全开（同段持续增长时调用方不再触发，不会振荡）。
      手动点击的开合动画由 syncDetailsBodies/collapseDetails 提供 */
-  function autoExpand(d) {
+  function autoExpand(d, animate) {
     if (!d || !d.querySelector) return;
     var body = d.querySelector(":scope > .details-body");
     if (!body) return;
-    if (!body.classList.contains("open")) body.classList.add("open");
-    body.style.maxHeight = "none";   /* 立即全开（流式增长自然撑开） */
+    if (body.classList.contains("open")) {   /* 已展开：保持即可 */
+      d.open = true;
+      body.style.maxHeight = "none";
+      return;
+    }
     d.open = true;
+    if (!animate || reducedMotion) {
+      /* 瞬时全开（流式增长自然撑开） */
+      body.classList.add("open");
+      body.style.maxHeight = "none";
+      return;
+    }
+    /* 平滑展开：与 syncDetailsBodies 的过渡路径一致——先建立
+       max-height 起始值，再测内容高触发过渡；transitionend 后由
+       过渡委托解除限制 */
+    body.style.maxHeight = "0px";
+    void body.offsetWidth;   /* reflow 建立起始态 */
+    var inner = body.querySelector(".details-inner");
+    body.classList.add("open");
+    body.style.maxHeight = ((inner ? inner.scrollHeight : body.scrollHeight)) + "px";
   }
 
-  /* 思考块自动收起（推理停顿超阈值）：瞬时收起，不播动画（同 autoExpand
-     理由）。直接关闭 open 属性 + 清掉 max-height 内联（回 CSS 基态 0） */
+  /* 思考块自动收起（推理停顿超阈值）：走 collapseDetails 的动画路径
+     （含 Chromium 冻结补丁与 detailsClosing 防重入），手动/自动统一；
+     直接关闭 open 属性 + 清掉 max-height 内联的瞬时版仅降动态时发生 */
   function autoCollapse(d) {
     if (!d || !d.querySelector) return;
     var body = d.querySelector(":scope > .details-body");
     if (!body) return;
+    if (body.classList.contains("open") && !reducedMotion) {
+      collapseDetails(d);          /* 平滑收起（动画播放期间防重入） */
+      return;
+    }
     if (detailsClosing === d) detailsClosing = null;   /* 打断手动收起动画的延迟关闭 */
     body.classList.remove("open");
     body.style.maxHeight = "";
@@ -1929,6 +1966,14 @@
     } else {
       card.open = false;
     }
+    /* 回答流与主对话一样是增量流式：初始化同一套流式状态，
+       否则 chat_delta 帧会被 liveStreaming 守卫丢弃 */
+    liveStreaming = true;
+    resetStreamDelta();
+    streamTrack = { el: null, norm: "", parsed: null };
+    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };
+    userToggledStream = false;
+    thinkUserCollapsed = false;
     lastMessages = [];
     streamSysLines = [];
 
@@ -1942,6 +1987,8 @@
         var messages = ev.messages || [];
         lastMessages = messages;
         renderMessages(messages);
+      } else if (ev.type === "chat_delta") {
+        applyStreamDeltaEvent(ev);
       } else if (ev.type === "files") {
         applyFiles(ev.files, ev.dirs);
       } else if (ev.type === "download") {
@@ -2163,7 +2210,11 @@
     UI.postJSON("/api/projects/" + currentProjectId + "/messages/recall", {})
       .then(function (data) {
         renderMessages(data.messages);
-        if (data.files || data.dirs) applyFiles(data.files, data.dirs);
+        if (data.files || data.dirs) {
+          applyFiles(data.files, data.dirs);
+        } else {
+          loadProjectFiles(currentProjectId);
+        }
         editingIndex = -1;
         $("#editBar").hidden = true;
         var input = $("#msgInput");
@@ -2238,8 +2289,9 @@
     sendBtn.title = "停止生成（保留已输出的内容）";
     sendBtn.classList.add("stop");
 
-    /* 进入实时流式模式：重置逐字渐显与思考块跟踪 */
+    /* 进入实时流式模式：重置增量累计器与思考块跟踪 */
     liveStreaming = true;
+    resetStreamDelta();
     streamTrack = { el: null, norm: "", parsed: null };
     thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };
     userToggledStream = false;
@@ -2282,6 +2334,10 @@
         messages = ev.messages || [];
         lastMessages = messages;
         renderMessages(messages);
+      } else if (ev.type === "chat_delta") {
+        /* 增量帧：LLM 每个输出 chunk 的轻量推送（绝对实时流式的主通道）。
+           累积到 streamAccum，节流后走与全量帧相同的渲染路径 */
+        applyStreamDeltaEvent(ev);
       } else if (ev.type === "files") {
         applyFiles(ev.files, ev.dirs);
       } else if (ev.type === "download") {
@@ -2323,6 +2379,7 @@
   function chatDone() {
     if (streamEnded) return;   /* 幂等：error/done/兜底/catch 可能多次触发收尾 */
     streamEnded = true;
+    resetStreamDelta();        /* 停掉未触发的增量渲染定时器，防止收尾后补帧 */
     /* 视图切换（openProject/enterProject/backToArchive）或新流开始
        （submitAnswer）都会递增 chatEpoch：此后旧流的收尾一律跳过，
        不清输入框/不动按钮/不重渲染——防止把上一个项目/任务/流的
@@ -2334,20 +2391,19 @@
     /* 思考完成（流结束）的确定性收起：自动收起依赖"推理停顿帧"判定，
        流末帧时序差异（末帧推理为空/重建重置 thinkingTrack）会导致
        autoCollapse 不触发——一会儿收起一会儿不收起。流结束=思考必然
-       完成，未手动操作过思考块时强制瞬时收起（随后整表重建的
-       collectOpenDetails 不会记录它，重建后保持默认折叠） */
+       完成，未手动操作过思考块时平滑收起（与自动路径同一动画体系；
+       降动态偏好下 collapseDetails 内部退化为瞬时）。随后整表重建的
+       collectOpenDetails 不记录关闭中的块，重建后保持默认折叠 */
     if (!userToggledStream && streamTrack.el) {
       streamTrack.el.querySelectorAll("details").forEach(function (d) {
         if (!d.open) return;
         var sum = d.querySelector("summary");
         if (sum && sum.textContent.indexOf("思考过程") !== -1) {
-          var body = d.querySelector(":scope > .details-body");
-          if (body) body.classList.remove("open");
-          d.open = false;
+          autoCollapse(d);
         }
       });
     }
-    /* 流式期间以纯文本逐字渐显，结束后整体用 markdown 重渲染；
+    /* 流式期间已全程 markdown 渲染，结束后用最终内容刷新一遍即可；
        流期间追加的系统行（错误提示等）在重建后按序恢复——此前一旦
        追加过提示行就整体跳过重渲染，提问卡片等非流式消息会永远缺失 */
     var chat = $("#chat");
@@ -3438,14 +3494,6 @@
         return;
       }
       smoothScrollToBottom(c);
-    });
-    /* 渐显完成后的 span 还原为纯文本节点（事件委托，避免长文本积累动画元素卡死） */
-    $("#chat").addEventListener("animationend", function (e) {
-      var t = e.target;
-      if (t && t.classList && t.classList.contains("char-fade") && t.parentNode) {
-        var tn = document.createTextNode(t.textContent);
-        t.parentNode.replaceChild(tn, t);
-      }
     });
     $("#msgInput").addEventListener("keydown", function (e) {
       /* Enter 发送；Shift+Enter 换行（textarea 默认行为）；isComposing 防止

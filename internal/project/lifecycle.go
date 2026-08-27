@@ -250,78 +250,141 @@ func ExtractAICreatedEntries(fullHistory []map[string]any, fromHistIdx int) map[
 				var args map[string]any
 				_ = json.Unmarshal([]byte(argsStr), &args)
 
-				switch fnName {
-				case "create_midi":
-					fn, _ := args["filename"].(string)
-					fn = strings.Trim(strings.TrimSpace(fn), "/")
-					if fn != "" {
-						files = append(files, fn)
-					}
-				case "create_folder":
-					dn, _ := args["name"].(string)
-					dn = strings.Trim(strings.TrimSpace(dn), "/")
-					if dn != "" {
-						dirs = append(dirs, dn)
-					}
-				case "delete_midi":
-					fn, _ := args["filename"].(string)
-					fn = strings.Trim(strings.TrimSpace(fn), "/")
-					if fn != "" {
-						deleted = append(deleted, fn)
+					switch fnName {
+					case "create_midi", "create_file", "write_file":
+						fn, _ := args["filename"].(string)
+						if fn == "" {
+							fn, _ = args["path"].(string)
+						}
+						fn = strings.Trim(strings.TrimSpace(fn), "/")
+						if fn != "" {
+							files = append(files, fn)
+						}
+					case "create_folder":
+						dn, _ := args["name"].(string)
+						if dn == "" {
+							dn, _ = args["path"].(string)
+						}
+						dn = strings.Trim(strings.TrimSpace(dn), "/")
+						if dn != "" {
+							dirs = append(dirs, dn)
+						}
+					case "delete_midi", "delete_file":
+						fn, _ := args["filename"].(string)
+						if fn == "" {
+							fn, _ = args["path"].(string)
+						}
+						fn = strings.Trim(strings.TrimSpace(fn), "/")
+						if fn != "" {
+							deleted = append(deleted, fn)
+						}
 					}
 				}
 			}
 		}
+
+		return map[string][]string{
+			"files":   files,
+			"dirs":    dirs,
+			"deleted": deleted,
+		}
 	}
 
-	return map[string][]string{
-		"files":   files,
-		"dirs":    dirs,
-		"deleted": deleted,
-	}
-}
+	// RemoveAICreatedFiles 撤回 AI 创建的文件（移入回收站）与空文件夹
+	func RemoveAICreatedFiles(projectID string, currentFiles []MidiFileInfo, entries map[string][]string) ([]MidiFileInfo, map[string]any) {
+		var trashRels []string
+		var removedDirs []string
+		var kept []MidiFileInfo
+		targetFiles := make(map[string]bool)
+		for _, f := range entries["files"] {
+			targetFiles[filepath.ToSlash(f)] = true
+		}
 
-// RemoveAICreatedFiles 撤回 AI 创建的文件（移入回收站）与空文件夹
-func RemoveAICreatedFiles(projectID string, currentFiles []MidiFileInfo, entries map[string][]string) ([]MidiFileInfo, map[string]any) {
-	var trashRels []string
-	var removedDirs []string
-	var kept []MidiFileInfo
-	targetFiles := make(map[string]bool)
-	for _, f := range entries["files"] {
-		targetFiles[filepath.ToSlash(f)] = true
-	}
+		for _, f := range currentFiles {
+			cleanName := filepath.ToSlash(f.Name)
+			baseName := filepath.Base(f.Name)
+			if targetFiles[cleanName] || targetFiles[baseName] {
+				rel := MoveToTrash(projectID, f)
+				if rel != "" {
+					trashRels = append(trashRels, rel)
+					continue
+				}
+			}
+			kept = append(kept, f)
+		}
 
-	for _, f := range currentFiles {
-		cleanName := filepath.ToSlash(f.Name)
-		baseName := filepath.Base(f.Name)
-		if targetFiles[cleanName] || targetFiles[baseName] {
-			rel := MoveToTrash(projectID, f)
-			if rel != "" {
-				trashRels = append(trashRels, rel)
-				continue
+		baseDir := GetMidiBaseDir(projectID)
+		for _, rel := range entries["dirs"] {
+			target := filepath.Join(baseDir, filepath.FromSlash(rel))
+			if entries, err := os.ReadDir(target); err == nil && len(entries) == 0 {
+				_ = os.Remove(target)
+				removedDirs = append(removedDirs, rel)
 			}
 		}
-		kept = append(kept, f)
-	}
 
-	baseDir := GetMidiBaseDir(projectID)
-	for _, rel := range entries["dirs"] {
-		target := filepath.Join(baseDir, filepath.FromSlash(rel))
-		if entries, err := os.ReadDir(target); err == nil && len(entries) == 0 {
-			_ = os.Remove(target)
-			removedDirs = append(removedDirs, rel)
+		SaveMidiManifest(projectID, kept)
+
+		return kept, map[string]any{
+			"trash_rels":    trashRels,
+			"removed_dirs":  removedDirs,
+			"removed_count": len(trashRels),
+			"deleted_rels":  entries["deleted"],
 		}
 	}
 
-	SaveMidiManifest(projectID, kept)
+	// RestoreAICreatedFiles 放弃撤回修改时恢复 AI 创建的文件（从回收站移回）与目录，
+	// 返回恢复后的文件清单。rollback 为 RemoveAICreatedFiles 返回的信息。
+	func RestoreAICreatedFiles(projectID string, rollback map[string]any) []MidiFileInfo {
+		var trashRels []string
+		if raw, ok := rollback["trash_rels"].([]string); ok {
+			trashRels = raw
+		} else if rawAny, ok := rollback["trash_rels"].([]any); ok {
+			for _, item := range rawAny {
+				if s, ok := item.(string); ok && s != "" {
+					trashRels = append(trashRels, s)
+				}
+			}
+		}
+		if len(trashRels) > 0 {
+			RestoreFromTrash(projectID, trashRels)
+		}
 
-	return kept, map[string]any{
-		"trash_rels":    trashRels,
-		"removed_dirs":  removedDirs,
-		"removed_count": len(trashRels),
-		"deleted_rels":  entries["deleted"],
+		baseDir := GetMidiBaseDir(projectID)
+		var removedDirs []string
+		if raw, ok := rollback["removed_dirs"].([]string); ok {
+			removedDirs = raw
+		} else if rawAny, ok := rollback["removed_dirs"].([]any); ok {
+			for _, item := range rawAny {
+				if s, ok := item.(string); ok && s != "" {
+					removedDirs = append(removedDirs, s)
+				}
+			}
+		}
+		for _, rel := range removedDirs {
+			if rel == "" {
+				continue
+			}
+			_ = os.MkdirAll(filepath.Join(baseDir, filepath.FromSlash(rel)), 0755)
+		}
+
+		if origFiles, ok := rollback["original_files"].([]MidiFileInfo); ok && origFiles != nil {
+			SaveMidiManifest(projectID, origFiles)
+			return origFiles
+		} else if origAny, ok := rollback["original_files"].([]any); ok && len(origAny) > 0 {
+			var origList []MidiFileInfo
+			if b, err := json.Marshal(origAny); err == nil {
+				if err := json.Unmarshal(b, &origList); err == nil && len(origList) > 0 {
+					SaveMidiManifest(projectID, origList)
+					return origList
+				}
+			}
+		}
+
+		// 重新扫描目录生成完整清单并持久化
+		manifest := ScanMidiFilesKeepNotes(baseDir, nil)
+		SaveMidiManifest(projectID, manifest)
+		return manifest
 	}
-}
 
 // FindEditHistory 查找该消息（full_history 下标 histIdx）是否有编辑历史快照。
 //

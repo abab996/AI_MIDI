@@ -66,11 +66,12 @@
     this.clipboard = null;
 
     this.midiFiles = [];
-    this.dirs = [];
-    this.activeDir = null;
-    this.browseSub = "";
+    this.dirs = [];               // 已注册素材根目录（settings.material_dirs 镜像）
+    this._treeCache = {};         // 素材树各层目录内容缓存
+    this.expandedMap = null;      // 素材树展开态（懒加载自 localStorage）
 
     this.playheadBeat = 0;
+    this.playbackOriginBeat = 0;  // 本次播放的起始位置（暂停回退目标）
     this.isPlaying = false;
 
     this.engine = new window.ArrangeEngine();
@@ -105,14 +106,13 @@
     this.initialized = true;
 
     var ids = ["arrStage", "chatFoldPane", "arrangeToggleBtn",
-      "arrHomeBtn", "arrPlayBtn", "arrPlayIconPath", "arrPlayLabel", "arrStopBtn", "arrLoopBtn", "arrMetroBtn",
+      "arrHomeBtn", "arrPlayBtn", "arrPlayIconPath", "arrPlayLabel", "arrStopBtn", "arrLoopBtn", "arrMetroBtn", "arrResumeBtn",
       "arrBpmInput", "arrPosDisplay", "arrSnapDropdown", "arrSnapBtn", "arrSnapMenu",
       "arrZoomOutBtn", "arrZoomRange", "arrZoomInBtn", "arrUndoBtn", "arrRedoBtn",
       "arrSaveStamp", "arrShortcutsBtn", "arrHudBadge",
       "arrMidiCount", "arrMidiList",
       "arrTracksScroll", "arrInner", "arrRulerCanvas", "arrLanes", "arrAddTrackRow", "arrAddTrackBtn", "arrPlayline",
-      "arrDirChips", "arrFileTree", "arrAddDirBtn"];
-    for (var i = 0; i < ids.length; i++) {
+      "arrFileTree", "arrAddDirBtn"];    for (var i = 0; i < ids.length; i++) {
       this.el[ids[i]] = document.getElementById(ids[i]);
     }
     this.el.rulerSticky = this.el.arrRulerCanvas ? this.el.arrRulerCanvas.parentElement : null;
@@ -135,6 +135,11 @@
     window.addEventListener("resize", function () {
       if (self.isOpen) { self.resizeRulerCanvas(); self.renderRuler(); }
     });
+
+    /* 走带偏好异步载入后点亮「暂停回起点」按钮（含后续变化） */
+    if (UI.onTransportPrefs) {
+      UI.onTransportPrefs(function (p) { self.syncResumeUI(p); });
+    }
     if (this.el.arrTracksScroll) {
       this.el.arrTracksScroll.addEventListener("scroll", function () {
         if (self.isOpen) self.renderRuler();
@@ -313,7 +318,8 @@
               length: c.length,
               mute: !!c.mute,
               fadeIn: c.fadeIn || 0,
-              fadeOut: c.fadeOut || 0
+              fadeOut: c.fadeOut || 0,
+              gain: c.gain !== undefined ? c.gain : 1
             };
             if (c.type === "midi") {
               clip.fullName = c.fullName || "";
@@ -370,6 +376,7 @@
         } else {
           clip.src = c.src || null;
           clip.offset = Math.max(0, Number(c.offset) || 0);
+          clip.gain = clamp(Number(c.gain !== undefined ? c.gain : 1), 0, 4);
         }
         return clip;
       });
@@ -447,6 +454,7 @@
     this.engine.loop = this.loop;   // 撤销/重做同步循环边界（此前播放中撤销循环改动仍按旧边界跑）
     this.syncTransportUI();
     this.renderAll();
+    this.rescheduleSamplesDebounced();   // 撤销/重做同样要把音频调度表拉回当前快照
   };
 
   Arrange.prototype.pushHistory = function () {
@@ -489,6 +497,7 @@
     on("arrStopBtn", function () { self.stopPlayback(true); });
     on("arrLoopBtn", function () { self.toggleLoop(); });
     on("arrMetroBtn", function () { self.toggleMetro(); });
+    on("arrResumeBtn", function () { self.toggleResumeOnPause(); });
     on("arrUndoBtn", function () { self.undo(); });
     on("arrRedoBtn", function () { self.redo(); });
     on("arrExportWavBtn", function () { self.exportWav(); });
@@ -506,12 +515,14 @@
       });
     }
 
-    // Ctrl+滚轮缩放 / Shift+滚轮横滚（原生滚轮默认纵向滚动）
+    // Ctrl+滚轮缩放 / Shift+滚轮或触摸板横滚：横向滚动时挂起播放头跟随 2s
     if (this.el.arrTracksScroll) {
       this.el.arrTracksScroll.addEventListener("wheel", function (e) {
         if (e.ctrlKey) {
           e.preventDefault();
           self.setPpb(self.ppb + (e.deltaY < 0 ? 3 : -3));
+        } else if (e.shiftKey || e.deltaX) {
+          self._followSuspendUntil = performance.now() + 2000;
         }
       }, { passive: false });
     }
@@ -541,6 +552,8 @@
     this.engine.metronome = this.metronome;
     this.engine.loop = this.loop;
     this.engine.bpm = this.bpm;
+    // 记录本次播放的起始位置（「暂停后恢复光标位置」回退目标）
+    this.playbackOriginBeat = Math.max(0, this.playheadBeat);
     this.isPlaying = true;
     this.engine.play(this.playheadBeat);
     // 原生优先时：同步 JUCE 走带与素材调度（全走JUCE，尾音自然不截断）
@@ -551,25 +564,27 @@
         try { window.EngineBridge.locate(this.playheadBeat); } catch(e) {}
         try { window.EngineBridge.play(); } catch(e) {}
         // 批量调度音频素材（按全局采样率，引擎内重采样+包络，统一尾音）
-        var clips = [];
-        for (var ti = 0; ti < this.tracks.length; ti++) {
-          var tr = this.tracks[ti];
-          for (var ci = 0; ci < tr.clips.length; ci++) {
-            var c = tr.clips[ci];
-            if (c.mute || c.type !== "audio" || !c.src || !c.src.p) continue;
-            clips.push({ track: ti, path: c.src.p, start: c.start, length: c.length, offset: c.offset || 0, fadeIn: c.fadeIn || 0, fadeOut: c.fadeOut || 0, gain: c.gain !== undefined ? c.gain : 1 });
-          }
-        }
-        if (clips.length) { try { window.EngineBridge.scheduleSamples(clips, this.bpm); } catch(e) {} }
+        this.sendSampleSchedule();
+        this._lastSampleSig = this.sampleScheduleSig();
       }
     } catch(e) {}
     this.updatePlayButton();
   };
 
-  Arrange.prototype.pausePlayback = function () {
-    this.playheadBeat = Math.max(0, this.engine.currentBeat());
+  /** tempSuspend=true：为拖拽走带等操作临时停摆，不执行「回退到起点」 */
+  Arrange.prototype.pausePlayback = function (tempSuspend) {
+    var at = Math.max(0, this.engine.currentBeat());
     this.stopEngineClock();
+    /* 「暂停后恢复光标位置」开启时回退到本次播放起点；
+       关闭时停在暂停处（原行为） */
+    var resumeOnPause = UI.transportPrefs ? UI.transportPrefs().resumeOnPause : false;
+    if (!tempSuspend && resumeOnPause && this.playbackOriginBeat !== undefined) {
+      at = this.playbackOriginBeat;
+      this.showHUD("⏪ 光标已回到本次播放起点");
+    }
+    this.playheadBeat = Math.max(0, at);
     this.updatePlayline();
+    this.updatePosDisplay();
     this.updatePlayButton();
   };
 
@@ -589,6 +604,7 @@
   Arrange.prototype.stopEngineClock = function () {
     this.engine.stopSchedule();
     this.isPlaying = false;
+    if (this._reschedTimer) { clearTimeout(this._reschedTimer); this._reschedTimer = null; }
     try {
       if (window.EngineBridge) {
         try { window.EngineBridge.stop(); } catch(e) {}
@@ -634,6 +650,30 @@
     this.engine.metronome = this.metronome;
     this.syncTransportUI();
     this.showHUD(this.metronome ? "节拍器: 开启" : "节拍器: 关闭");
+  };
+
+  /** 走带条上的「暂停后光标回起点」开关：就地切换并持久化。
+      钢琴窗共用同一份 UI.transportPrefs 缓存，两窗口行为即时一致 */
+  Arrange.prototype.toggleResumeOnPause = function () {
+    var prefs = UI.transportPrefs ? UI.transportPrefs() : { resumeOnPause: false };
+    var next = !prefs.resumeOnPause;
+    UI.setTransportPref("resumeOnPause", next);
+    this.showHUD(next ? "⏪ 已开启：暂停后光标回到本次播放起点"
+                      : "已关闭：暂停后光标停在当前位置");
+    var self = this;
+    UI.postJSON("/api/transport/prefs", { resume_on_pause: next }).then(function (r) {
+      if (!r || !r.ok) throw new Error((r && r.message) || "保存失败");
+    }).catch(function (err) {
+      if (UI.toast) UI.toast("⚠ 走带偏好保存失败：" + err.message, "warn");
+      self._resumeSaveFailed = true;   /* 重开应用时会重新读取旧值 */
+    });
+  };
+
+  /** 按钮高亮与设置值同步（init 订阅初值/后续变化，切换时也会调用） */
+  Arrange.prototype.syncResumeUI = function (prefs) {
+    if (!this.el.arrResumeBtn) return;
+    this.el.arrResumeBtn.classList.toggle("active",
+      !!(prefs && prefs.resumeOnPause));
   };
 
   Arrange.prototype.setBpm = function (val) {
@@ -833,6 +873,11 @@
     // 双击：MIDI 片段在钢琴卷帘打开源文件；音频片段试听
     inner.addEventListener("dblclick", function (e) {
       var clipEl = e.target.closest(".arr-clip");
+      /* 兜底：target 因任何原因落在轨道容器上时，按坐标重新命中 */
+      if (!clipEl && typeof document.elementFromPoint === "function") {
+        var hit = document.elementFromPoint(e.clientX, e.clientY);
+        if (hit && hit.closest) clipEl = hit.closest(".arr-clip");
+      }
       if (!clipEl) return;
       var found = self.locateClip(clipEl);
       if (!found) return;
@@ -959,7 +1004,7 @@
         self.renderRuler();
       } else {
         var wasPlaying = self.isPlaying;
-        if (wasPlaying) self.pausePlayback();
+        if (wasPlaying) self.pausePlayback(true);
         self.seekTo(self.snapBeat(Math.max(0, beat)), false);
         self.rulerDrag = { mode: "seek", wasPlaying: wasPlaying };
       }
@@ -1037,14 +1082,14 @@
     var clipRect = clipEl.getBoundingClientRect();
     grabOffsetPx = e.clientX - clipRect.left;
 
-    /* 手势起点快照（移动/裁剪/渐变共用）——必须在克隆等一切变异
-       之前抓取，否则快照里已包含克隆，撤销后克隆残留 */
-    this.pushHistory();
-
     /* Ctrl+拖动 = 克隆（FL Playlist 惯例；Alt 为旧版肌肉记忆兼容）。
        延迟到位移超阈值才真正克隆：Ctrl+点击（不拖动）不产生副本 */
     var wantClone = mode === "move" && (e.ctrlKey || e.metaKey || e.altKey);
 
+    /* 手势起点快照（移动/裁剪/渐变共用）——必须在克隆等一切变异
+       之前抓取，否则快照里已包含克隆，撤销后克隆残留。
+       只暂存不压栈：真正产生了变更（finish 判定）才入撤销栈，
+       避免"点一下没动"也污染撤销记录 */
     this.dragState = {
       mode: mode,
       clipEl: clipEl,
@@ -1061,11 +1106,15 @@
       changed: false,
       movedToTrackIdx: found.trackIdx,
       clonePending: wantClone,
+      peOff: false,
+      pendingHistory: this.snapshot(),
       /* Alt 按下 = 临时禁用网格吸附（FL 惯例；Alt 曾被克隆占用，
          克隆已改回 Ctrl，与 FL Playlist 一致） */
       freeSnap: e.altKey && !wantClone
     };
-    if (clipEl) clipEl.style.pointerEvents = "none";
+    /* pointerEvents 不在按下瞬间隐藏：click/dblclick 的 target 取
+       mousedown 与 mouseup 命中点的公共祖先，提前隐藏会把双击重定向到
+       轨道容器（双击打开钢琴窗/试听失灵的根因）。真正拖起来才隐藏 */
   };
 
   /** 手势期间吸附：Alt 按下时跳过吸附（与钢琴窗 freeSnap 同语义） */
@@ -1090,6 +1139,13 @@
     var clip = d.found.clip;
     var el = d.clipEl;
     var now = performance.now();
+
+    /* 位移超过阈值才算真的在拖：此时才隐藏 clip 的指针命中，
+       elementFromPoint（跨轨判定）才能看到下方的轨道 */
+    if (!d.peOff && (Math.abs(e.clientX - d.startX) > 3 || Math.abs(e.clientY - d.startY) > 3)) {
+      d.peOff = true;
+      if (el) el.style.pointerEvents = "none";
+    }
 
     if (d.mode === "move") {
       /* 延迟克隆：Ctrl 按下后位移超过阈值（4px）才克隆选中 Clip 并
@@ -1166,7 +1222,13 @@
       this.positionClipEl(el, clip);
     } else if (d.mode === "trimL") {
       var endFixed = d.origStart + d.origLength;
-      var newStart = clamp(this.gestureSnap(this.clientXToBeat(e.clientX), e), 0, endFixed - MIN_CLIP_LEN);
+      /* 音频素材不能裁到文件头之前：可向左恢复的量 = 当前 offset（秒）
+         换算成拍；越界会造成"画面帧界与实际发声内容错位" */
+      var minStart = d.origStart;
+      if (clip.type === "audio") {
+        minStart = d.origStart - Math.max(0, clip.offset || 0) / d.spb;
+      }
+      var newStart = clamp(this.gestureSnap(this.clientXToBeat(e.clientX), e), Math.max(0, minStart), endFixed - MIN_CLIP_LEN);
       var delta = newStart - d.origStart;
       if (Math.abs(delta) > 1e-6) {
         clip.start = newStart;
@@ -1208,6 +1270,13 @@
     if (!d) return;
     if (d.clipEl) d.clipEl.style.pointerEvents = "";
     if (!d.changed) return;
+    /* 变更已发生 → 手势起点的暂存快照此刻才入撤销栈 */
+    if (d.pendingHistory !== undefined && d.pendingHistory !== null) {
+      this.undoStack.push(d.pendingHistory);
+      if (this.undoStack.length > 50) this.undoStack.shift();
+      this.redoStack = [];
+      d.pendingHistory = null;
+    }
     this.drawThumbFor(d.clipEl);
     this.applyMixSafe();
     this.showHUD(d.mode === "move" ? ("位置: " + (d.found.clip.start / BAR_BEATS + 1).toFixed(2) + " 小节")
@@ -1242,6 +1311,65 @@
         }
       }, 80);
     }
+    this.rescheduleSamplesDebounced();
+  };
+
+  /** 汇总当前全部音频 clip → 引擎调度表。scheduleSamples 为全量重建语义，
+      SamplePool 按路径缓存已解码样本，重复下发只做表重建不重新解码 */
+  Arrange.prototype.sendSampleSchedule = function () {
+    if (!window.EngineBridge) return;
+    var clips = [];
+    for (var ti = 0; ti < this.tracks.length; ti++) {
+      var tr = this.tracks[ti];
+      for (var ci = 0; ci < tr.clips.length; ci++) {
+        var c = tr.clips[ci];
+        if (c.mute || c.type !== "audio" || !c.src || !c.src.p) continue;
+        clips.push({ track: ti, path: c.src.p, start: c.start, length: c.length, offset: c.offset || 0, fadeIn: c.fadeIn || 0, fadeOut: c.fadeOut || 0, gain: c.gain !== undefined ? c.gain : 1 });
+      }
+    }
+    try {
+      var p = window.EngineBridge.scheduleSamples(clips, this.bpm);
+      if (p && typeof p.catch === "function") {
+        p.catch(function (err) {
+          if (UI.toast) UI.toast("⚠ 音频素材调度失败：" + (err && err.message || err), "warn");
+        });
+      }
+    } catch (e) {}
+  };
+
+  /** 调度签名：坐标/长度/offset/mute/fade 任一变化都算——用于跳过
+      音量拖动等不影响素材表的 applyMixSafe 调用 */
+  Arrange.prototype.sampleScheduleSig = function () {
+    var parts = [];
+    for (var ti = 0; ti < this.tracks.length; ti++) {
+      var tr = this.tracks[ti];
+      for (var ci = 0; ci < tr.clips.length; ci++) {
+        var c = tr.clips[ci];
+        if (c.type !== "audio" || !c.src || !c.src.p) continue;
+        parts.push(ti + ":" + c.start.toFixed(3) + ":" + c.length.toFixed(3) + ":" +
+          Math.round(c.offset || 0) + ":" + (c.mute ? 1 : 0) + ":" +
+          (c.fadeIn || 0).toFixed(2) + ":" + (c.fadeOut || 0).toFixed(2));
+      }
+    }
+    return parts.join("|");
+  };
+
+  /** 播放中的结构编辑必须重发调度表：原生引擎的音频只在按下播放那一刻
+      的快照上发声，此后移动/裁剪/删增 clip 若不重发，轨道要么在旧坐标
+      出声、要么整段静音（MIDI 不受影响——音符是心跳实时注入的） */
+  Arrange.prototype.rescheduleSamplesDebounced = function () {
+    if (!this.isPlaying) return;
+    if (!(window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred())) return;
+    var self = this;
+    if (this._reschedTimer) clearTimeout(this._reschedTimer);
+    this._reschedTimer = setTimeout(function () {
+      self._reschedTimer = null;
+      if (!self.isPlaying) return;
+      var sig = self.sampleScheduleSig();
+      if (sig === self._lastSampleSig) return; // 表没变（音量调节等），跳过
+      self._lastSampleSig = sig;
+      self.sendSampleSchedule();
+    }, 120);
   };
 
   /* ═══════════ 渲染管线 ═══════════ */
@@ -1727,6 +1855,7 @@
         self.playheadBeat = b;
         self.updatePlayline();
         self.updatePosDisplay();
+        self.followPlayhead(b);
       }
       // 电平表 ~20fps 节流
       if (self.isPlaying && self.frameCount % 3 === 0) self.updateMeters();
@@ -1734,6 +1863,20 @@
       self.rafId = requestAnimationFrame(step);
     };
     this.rafId = requestAnimationFrame(step);
+  };
+
+  /** 播放头自动跟随：指针越过视口右侧 90% 时把视窗推到其前方 15% 处。
+      用户主动横滚（滚轮 Shift/deltaX）后挂起 2 秒不抢滚动条 */
+  Arrange.prototype.followPlayhead = function (beat) {
+    var sc = this.el.arrTracksScroll;
+    if (!sc) return;
+    var now = performance.now();
+    if (this._followSuspendUntil && now < this._followSuspendUntil) return;
+    var contentX = HEADER_W + beat * this.ppb;
+    var rel = contentX - sc.scrollLeft;
+    if (rel >= sc.clientWidth * 0.9 && contentX > sc.clientWidth * 0.15) {
+      sc.scrollLeft = contentX - sc.clientWidth * 0.15;
+    }
   };
 
   Arrange.prototype.stopUILoop = function () {
@@ -1852,19 +1995,27 @@
     if (cut) this.pushHistory();
     var ids = this.selectedClips.slice();
     var minStart = Infinity;
-    var copies = [];
+    var entries = [];
+    var self = this;
+    /* 记录每个片段的源轨道：粘贴时按相对轨距落轨，跨轨信息不再丢失 */
     this.forEachSelectedClip(function (track, clip) {
+      var ti = self.tracks.indexOf(track);
       minStart = Math.min(minStart, clip.start);
-      copies.push(JSON.parse(JSON.stringify(clip)));
+      entries.push({ clip: JSON.parse(JSON.stringify(clip)), srcTrack: ti });
     });
+    var baseSrc = Infinity;
+    entries.forEach(function (en) { baseSrc = Math.min(baseSrc, en.srcTrack); });
     // 相对最早片段起点归零，粘贴时落到播放头
-    copies.forEach(function (c) { c.start -= minStart; delete c._rev; delete c._peaks; });
-    this.clipboard = { clips: copies, type: cut ? "cut" : "copy" };
+    entries.forEach(function (en) {
+      en.clip.start -= minStart;
+      delete en.clip._rev; delete en.clip._peaks;
+    });
+    this.clipboard = { entries: entries, baseSrc: Math.max(0, baseSrc), type: cut ? "cut" : "copy" };
     if (cut) {
       this.deleteSelectedSilent(ids);
-      this.showHUD("✂ 已剪切 " + copies.length + " 个片段");
+      this.showHUD("✂ 已剪切 " + entries.length + " 个片段");
     } else {
-      this.showHUD("⧉ 已复制 " + copies.length + " 个片段");
+      this.showHUD("⧉ 已复制 " + entries.length + " 个片段");
     }
   };
 
@@ -1881,25 +2032,29 @@
   };
 
   Arrange.prototype.pasteClipboard = function () {
-    if (!this.clipboard || !this.clipboard.clips || !this.clipboard.clips.length) {
+    var cb = this.clipboard;
+    if (!cb || !cb.entries || !cb.entries.length) {
       this.showHUD("剪贴板为空");
       return;
     }
     this.pushHistory();
     var base = this.snapBeat(this.playheadBeat);
     var targetIdx = clamp(this.selectedTrackIdx, 0, this.tracks.length - 1);
-    var track = this.tracks[targetIdx];
     var self = this;
-    this.clipboard.clips.forEach(function (c) {
-      var copy = JSON.parse(JSON.stringify(c));
+    cb.entries.forEach(function (en) {
+      /* 按相对源轨距落轨（FL Playlist 惯例）：跨轨复制的片段回到对应轨；
+         轨道不足时收敛到底部可用轨 */
+      var ti = clamp(targetIdx + (en.srcTrack - cb.baseSrc), 0, self.tracks.length - 1);
+      var copy = JSON.parse(JSON.stringify(en.clip));
       copy.id = uid("clip");
-      copy.start = Math.max(0, base + c.start);
+      copy.start = Math.max(0, base + copy.start);
       delete copy._peaks;
-      track.clips.push(copy);
+      self.tracks[ti].clips.push(copy);
     });
     this.renderTracks();
     this.updateContentWidth();
-    this.showHUD("⎘ 已粘贴到 " + track.name + " @ " + this.fmtPos(base));
+    this.applyMixSafe();
+    this.showHUD("⎘ 已粘贴 " + cb.entries.length + " 个片段 @ " + this.fmtPos(base));
     this.scheduleSave();
   };
 
@@ -1939,6 +2094,79 @@
     this.updateContentWidth();
     this.showHUD("⇥ 向右顺延复制");
     this.scheduleSave();
+  };
+
+  /** 片段内相对拍 rel 是否可分割（两侧至少留 MIN_CLIP_LEN） */
+  Arrange.prototype.canSplitRel = function (clip, rel) {
+    return rel > MIN_CLIP_LEN && rel < clip.length - MIN_CLIP_LEN;
+  };
+
+  /** 在绝对拍 atBeat 处把 track 上第 i 个 clip 切成两段。
+      audio：右半 offset 前移；midi：跨界音符左右各截一段。
+      成功返回 true（含 pushHistory 与视图/引擎同步） */
+  Arrange.prototype.splitClipAtBeat = function (track, clip, atBeat) {
+    var rel = atBeat - clip.start;
+    if (!this.canSplitRel(clip, rel)) return false;
+
+    this.pushHistory();
+    var right = JSON.parse(JSON.stringify(clip));
+    delete right._peaks; delete right._rev;
+    right.id = uid("clip");
+    right.start = clip.start + rel;
+    right.length = clip.length - rel;
+    right._rev = 0;
+    clip.length = rel;
+
+    if (clip.type === "midi") {
+      var leftNotes = [], rightNotes = [];
+      (clip.notes || []).forEach(function (n) {
+        if (n.end <= rel) { leftNotes.push(n); return; }
+        if (n.start >= rel) { rightNotes.push({ note: n.note, start: n.start - rel, end: n.end - rel, velocity: n.velocity }); return; }
+        /* 跨界音符：左侧截尾，右侧截头 */
+        leftNotes.push({ note: n.note, start: n.start, end: rel, velocity: n.velocity });
+        rightNotes.push({ note: n.note, start: 0, end: n.end - rel, velocity: n.velocity });
+      });
+      clip.notes = leftNotes;
+      right.notes = rightNotes;
+    } else if (right.src) {
+      right.offset = Math.max(0, (right.offset || 0) + rel * this.secondsPerBeat());
+    }
+
+    track.clips.push(right);   // 追加到同轨末尾；渲染按 start 定位
+    this.renderTracks();
+    this.updateContentWidth();
+    this.applyMixSafe();
+    this.scheduleSave();
+    return true;
+  };
+
+  /** 右键菜单入口：在点击拍点拆分单个片段 */
+  Arrange.prototype.splitClipAtCursor = function (track, clip, beatAtCursor) {
+    if (!track || !clip) return false;
+    /* 落点吸附到网格再尝试；太贴边时退回未吸附值 */
+    var snapped = this.snapBeat(Math.max(0, beatAtCursor));
+    if (this.splitClipAtBeat(track, clip, snapped)) return true;
+    if (this.splitClipAtBeat(track, clip, Math.max(0, beatAtCursor))) return true;
+    this.showHUD("⚠ 拆分点太靠近边缘");
+    return false;
+  };
+
+  /** S 键入口：在播放头处拆分所有被选中的片段 */
+  Arrange.prototype.splitSelectedAtPlayhead = function () {
+    if (!this.selectedClips.length) { this.showHUD("先选中要拆分的片段"); return; }
+    var playhead = this.playheadBeat;
+    var hits = 0, misses = 0;
+    var self = this;
+    this.forEachSelectedClip(function (track, clip) {
+      var rel = playhead - clip.start;
+      if (self.canSplitRel(clip, rel)) {
+        if (self.splitClipAtBeat(track, clip, playhead)) hits++;
+      } else {
+        misses++;
+      }
+    });
+    if (hits) this.showHUD("✂ 已在播放头拆分 " + hits + " 个片段" + (misses ? "（" + misses + " 个不可拆）" : ""));
+    else this.showHUD("播放头不在所选片段内部，无法拆分");
   };
 
   /* ═══════════ 轨道操作 ═══════════ */
@@ -2152,7 +2380,7 @@
     ];
     if (this.clipboard) {
       items.push("-");
-      items.push({ label: "⎘ 粘贴到选中轨道", action: function () { self.pasteClipboard(); } });
+      items.push({ label: "⎘ 粘贴", action: function () { self.pasteClipboard(); } });
     }
     this.showMenu(items, e.clientX, e.clientY);
   };
@@ -2163,7 +2391,13 @@
     var found = this.locateClip(clipEl);
     if (!found) return;
     var clip = found.clip;
+    var beatAtCursor = this.clientXToBeat(e.clientX);
+    var relAtCursor = beatAtCursor - clip.start;
     this.showMenu([
+      { label: "✂ 在此拆分 (S)", disabled: !this.canSplitRel(clip, Math.max(0, relAtCursor)), action: function () {
+        self.splitClipAtCursor(found.track, clip, beatAtCursor);
+      } },
+      "-",
       { label: clip.mute ? "🔇 取消片段静音" : "🔇 片段静音", action: function () {
         self.pushHistory();
         clip.mute = !clip.mute;
@@ -2520,68 +2754,231 @@
     });
   };
 
-  /* ═══════════ 右栏：素材库 ═══════════ */
+  /* ═══════════ 右栏：素材库（树状浏览器，FL Browser 式多根惰性展开） ═══════════ */
+
+  Arrange.prototype.TREE_EXPANDED_KEY = "arr-tree-expanded";
+
+  Arrange.prototype.nodeKey = function (dir, sub) {
+    return sub ? dir + "/" + sub : dir;
+  };
+
+  Arrange.prototype.loadExpandedMap = function () {
+    try { return JSON.parse(localStorage.getItem(this.TREE_EXPANDED_KEY) || "{}") || {}; }
+    catch (e) { return {}; }
+  };
+
+  Arrange.prototype.saveExpandedMap = function () {
+    try { localStorage.setItem(this.TREE_EXPANDED_KEY, JSON.stringify(this.expandedMap || {})); } catch (e) {}
+  };
+
+  /** 单层目录内容拉取（Go API 即单层语义），成功后写入节点缓存 */
+  Arrange.prototype.fetchTreeNode = function (dir, sub, cb) {
+    var self = this;
+    var url = "/api/arrangement/files?dir=" + encodeURIComponent(dir);
+    if (sub) url += "&sub=" + encodeURIComponent(sub);
+    UI.getJSON(url).then(function (r) {
+      self._treeCache[self.nodeKey(dir, sub)] = { dirs: r.dirs || [], files: r.files || [] };
+      cb(null);
+    }).catch(function (err) {
+      cb(err);
+    });
+  };
 
   Arrange.prototype.loadMaterialDirs = function () {
     var self = this;
     UI.getJSON("/api/arrangement/dirs").then(function (r) {
       self.dirs = r.dirs || [];
-      self.renderDirChips();
-      if (!self.activeDir && self.dirs.length) {
-        self.browseDir(self.dirs[0], "");
-      } else if (!self.dirs.length) {
-        self.renderFileTreeEmpty();
-      }
+      self.renderMaterialTree();
+      self.refreshOpenTreeNodes();
     }).catch(function () {});
   };
 
-  Arrange.prototype.renderDirChips = function () {
-    var wrap = this.el.arrDirChips;
-    if (!wrap) return;
+  /** 上次会话记住了「已展开」但缺缓存的根目录 → 静默补拉并重绘 */
+  Arrange.prototype.refreshOpenTreeNodes = function () {
     var self = this;
-    wrap.innerHTML = "";
+    var touched = false;
+    for (var i = 0; i < this.dirs.length; i++) {
+      var d = this.dirs[i];
+      if (this.expandedMap && this.expandedMap[d] && !this._treeCache[d]) {
+        touched = true;
+        this._treeCache[d] = { dirs: [], files: [], _loading: true };
+        /* 捕获当前根，回调里只清理自己的占位 */
+        (function (root) {
+          self.fetchTreeNode(root, "", function () { });
+        })(d);
+      }
+    }
+    if (touched) this.renderMaterialTree();
+  };
+
+  Arrange.prototype.removeMaterialDir = function (d) {
+    var self = this;
+    UI.delJSON("/api/arrangement/dirs", { path: d }).then(function (r) {
+      self.dirs = r.dirs || [];
+      [self._treeCache, self.expandedMap].forEach(function (m) {
+        Object.keys(m || {}).forEach(function (k) {
+          if (k === d || k.indexOf(d + "/") === 0) delete m[k];
+        });
+      });
+      self.saveExpandedMap();
+      self.renderMaterialTree();
+    }).catch(function (err) {
+      UI.toast("✗ 移除失败: " + err.message, "err");
+    });
+  };
+
+  Arrange.prototype.toggleTreeNode = function (dir, sub) {
+    var self = this;
+    if (!this.expandedMap) this.expandedMap = this.loadExpandedMap();
+    var key = this.nodeKey(dir, sub);
+    if (this.expandedMap[key]) {
+      delete this.expandedMap[key];
+      this.saveExpandedMap();
+      this.renderMaterialTree();
+      return;
+    }
+    this.expandedMap[key] = true;
+    this.saveExpandedMap();
+    if (this._treeCache[key]) {
+      this.renderMaterialTree();
+      return;
+    }
+    /* 占位缓存让箭头先转为"加载中"，取回后统一重绘 */
+    this._treeCache[key] = { dirs: [], files: [], _loading: true };
+    this.renderMaterialTree();
+    this.fetchTreeNode(dir, sub, function (err) {
+      if (err) {
+        delete self._treeCache[key];
+        delete self.expandedMap[key];
+        self.saveExpandedMap();
+        UI.toast("✗ 读取目录失败", "err");
+      }
+      self.renderMaterialTree();
+    });
+  };
+
+  Arrange.prototype.renderMaterialTree = function () {
+    var tree = this.el.arrFileTree;
+    if (!tree) return;
+    tree.innerHTML = "";
+    if (!this.expandedMap) this.expandedMap = this.loadExpandedMap();
+
     if (!this.dirs.length) {
       var tip = document.createElement("div");
       tip.className = "arr-empty-tip";
-      tip.textContent = "尚未添加采样包文件夹";
-      wrap.appendChild(tip);
+      tip.innerHTML = "点击「＋ 文件夹」添加本地<br>采样包目录（wav / mp3 / ogg / flac）";
+      tree.appendChild(tip);
       return;
     }
-    this.dirs.forEach(function (d) {
-      var chip = document.createElement("div");
-      chip.className = "arr-dir-chip" + (d === self.activeDir ? " active" : "");
-      chip.title = d;
 
-      var span = document.createElement("span");
-      span.textContent = baseName(d) || d;
-      chip.appendChild(span);
+    for (var i = 0; i < this.dirs.length; i++) {
+      this.appendTreeNode(tree, this.dirs[i], "", 0);
+    }
+  };
 
+  /** 一个目录节点行；展开且缓存就绪时在下方递归挂载子节点 */
+  Arrange.prototype.appendTreeNode = function (container, dir, sub, depth) {
+    var self = this;
+    var key = this.nodeKey(dir, sub);
+    var expanded = !!this.expandedMap[key];
+    var cached = this._treeCache[key];
+
+    var row = document.createElement("div");
+    row.className = "arr-file-item dir" + (expanded ? " open" : "");
+    row.style.paddingLeft = (8 + depth * 14) + "px";
+    row.title = key;
+
+    var arrow = document.createElement("span");
+    arrow.className = "fi-glyph";
+    arrow.textContent = cached && cached._loading ? "…" : (expanded ? "▾" : "▸");
+    row.appendChild(arrow);
+
+    var nameSpan = document.createElement("span");
+    nameSpan.className = "fi-name";
+    nameSpan.textContent = baseName(sub || dir) || dir;
+    row.appendChild(nameSpan);
+
+    row.addEventListener("click", function () {
+      self.toggleTreeNode(dir, sub);
+    });
+
+    if (depth === 0) {
       var del = document.createElement("span");
       del.className = "chip-del";
       del.textContent = "✕";
-      del.title = "移除该目录（不删除磁盘文件）";
+      del.title = "从素材库移除该目录（不删除磁盘文件）";
       del.addEventListener("click", function (e) {
         e.stopPropagation();
-        UI.delJSON("/api/arrangement/dirs", { path: d }).then(function (r) {
-          self.dirs = r.dirs || [];
-          if (self.activeDir === d) {
-            self.activeDir = null;
-            self.browseSub = "";
-            if (self.dirs.length) self.browseDir(self.dirs[0], "");
-            else self.renderFileTreeEmpty();
-          }
-          self.renderDirChips();
-        }).catch(function (err) {
-          UI.toast("✗ 移除失败: " + err.message, "err");
-        });
+        self.removeMaterialDir(dir);
       });
-      chip.appendChild(del);
+      row.appendChild(del);
+    }
 
-      chip.addEventListener("click", function () {
-        self.browseDir(d, "");
-      });
-      wrap.appendChild(chip);
+    container.appendChild(row);
+    if (!expanded || !cached || cached._loading) return;
+
+    var childWrap = document.createElement("div");
+    childWrap.className = "arr-tree-children";
+    container.appendChild(childWrap);
+
+    if (!cached.dirs.length && !cached.files.length) {
+      var empty = document.createElement("div");
+      empty.className = "arr-empty-tip";
+      empty.style.paddingLeft = (8 + (depth + 1) * 14) + "px";
+      empty.textContent = "空文件夹";
+      childWrap.appendChild(empty);
+    }
+    for (var i = 0; i < cached.dirs.length; i++) {
+      this.appendTreeNode(childWrap, dir, sub ? sub + "/" + cached.dirs[i].name : cached.dirs[i].name, depth + 1);
+    }
+    for (var j = 0; j < cached.files.length; j++) {
+      childWrap.appendChild(this.buildSampleRow(dir, sub, cached.files[j], depth + 1));
+    }
+  };
+
+  /** 音频叶子行：拖拽入轨 payload 与旧行为完全一致 */
+  Arrange.prototype.buildSampleRow = function (dir, sub, f, depth) {
+    var self = this;
+    var absPath = this.joinAbs(dir, sub, f.name);
+    var item = document.createElement("div");
+    item.className = "arr-file-item sample";
+    item.draggable = true;
+    item.style.paddingLeft = (8 + depth * 14) + "px";
+    item.title = f.name + "（拖到轨道创建音频 Clip，双击试听）";
+
+    var glyph = document.createElement("span");
+    glyph.className = "fi-glyph";
+    glyph.textContent = "♫";
+    var nameSpan = document.createElement("span");
+    nameSpan.className = "fi-name";
+    nameSpan.textContent = f.name;
+    var sizeSpan = document.createElement("span");
+    sizeSpan.className = "fi-size";
+    sizeSpan.textContent = UI.fmtSize(f.size || 0);
+
+    item.appendChild(glyph);
+    item.appendChild(nameSpan);
+    item.appendChild(sizeSpan);
+
+    item.addEventListener("dragstart", function (e) {
+      var payload = JSON.stringify({ kind: "arr-audio", p: absPath, name: f.name });
+      e.dataTransfer.setData("application/x-arrange", payload);
+      e.dataTransfer.setData("text/plain", payload);
+      e.dataTransfer.effectAllowed = "copy";
+      item.classList.add("dragging");
+      var clear = function () {
+        item.classList.remove("dragging");
+        item.removeEventListener("dragend", clear);
+      };
+      item.addEventListener("dragend", clear);
     });
+    item.addEventListener("dblclick", function () {
+      self.engine.resume();
+      self.engine.previewSample(absPath).catch(function () {
+        if (UI.toast) UI.toast("✗ 音频试听失败（文件不存在或格式不支持）", "err");
+      });
+    });
+    return item;
   };
 
   Arrange.prototype.bindPanels = function () {
@@ -2592,8 +2989,10 @@
           if (!r.path) return; // 用户取消
           UI.postJSON("/api/arrangement/dirs", { path: r.path }).then(function (r2) {
             self.dirs = r2.dirs || [];
-            self.renderDirChips();
-            self.browseDir(r.path, "");
+            if (!self.expandedMap) self.expandedMap = self.loadExpandedMap();
+            self.expandedMap[r.path] = true;
+            self.saveExpandedMap();
+            self.renderMaterialTree();
             UI.toast("✓ 已添加素材目录", "ok");
           }).catch(function (err) {
             UI.toast("✗ 添加目录失败: " + err.message, "err");
@@ -2607,134 +3006,11 @@
     this.initRulerPointer();
   };
 
-  Arrange.prototype.browseDir = function (dir, sub) {
-    var self = this;
-    this.activeDir = dir;
-    this.browseSub = sub || "";
-    this.renderDirChips();
-    var tree = this.el.arrFileTree;
-    if (!tree) return;
-    tree.innerHTML = '<div class="arr-empty-tip">读取中…</div>';
-    var url = "/api/arrangement/files?dir=" + encodeURIComponent(dir);
-    if (sub) url += "&sub=" + encodeURIComponent(sub);
-    UI.getJSON(url).then(function (r) {
-      self.renderFileTree(dir, r.sub || "", r.dirs || [], r.files || []);
-    }).catch(function (e) {
-      tree.innerHTML = '<div class="arr-empty-tip">✗ 读取目录失败</div>';
-    });
-  };
-
   Arrange.prototype.joinAbs = function (dir, sub, name) {
     var parts = [dir];
     if (sub) parts.push(sub);
     parts.push(name);
     return parts.filter(Boolean).join("/");
-  };
-
-  Arrange.prototype.renderFileTreeEmpty = function () {
-    var tree = this.el.arrFileTree;
-    if (tree) {
-      tree.innerHTML = '<div class="arr-empty-tip">点击「＋ 文件夹」添加本地<br>采样包目录（wav / mp3 / ogg / flac）</div>';
-    }
-  };
-
-  Arrange.prototype.renderFileTree = function (dir, sub, dirs, files) {
-    var tree = this.el.arrFileTree;
-    if (!tree) return;
-    var self = this;
-    tree.innerHTML = "";
-
-    // 面包屑导航
-    var crumbs = document.createElement("div");
-    crumbs.className = "arr-tree-crumbs";
-    var rootCrumb = document.createElement("span");
-    rootCrumb.className = "arr-tree-crumb";
-    rootCrumb.textContent = baseName(dir) || dir;
-    rootCrumb.addEventListener("click", function () { self.browseDir(dir, ""); });
-    crumbs.appendChild(rootCrumb);
-    if (sub) {
-      var segs = sub.split("/");
-      var acc = "";
-      segs.forEach(function (seg) {
-        acc = acc ? acc + "/" + seg : seg;
-        var arrow = document.createElement("span");
-        arrow.textContent = " › ";
-        crumbs.appendChild(arrow);
-        (function (target) {
-          var crumb = document.createElement("span");
-          crumb.className = "arr-tree-crumb";
-          crumb.textContent = seg;
-          crumb.addEventListener("click", function () { self.browseDir(dir, target); });
-          crumbs.appendChild(crumb);
-        })(acc);
-      });
-    }
-    tree.appendChild(crumbs);
-
-    if (!dirs.length && !files.length) {
-      var empty = document.createElement("div");
-      empty.className = "arr-empty-tip";
-      empty.textContent = "此文件夹没有音频文件";
-      tree.appendChild(empty);
-      return;
-    }
-
-    dirs.forEach(function (d) {
-      var item = document.createElement("div");
-      item.className = "arr-file-item dir";
-      item.innerHTML = '<span class="fi-glyph">▸</span>';
-      var n = document.createElement("span");
-      n.className = "fi-name";
-      n.textContent = d.name;
-      item.appendChild(n);
-      item.addEventListener("click", function () {
-        self.browseDir(dir, sub ? sub + "/" + d.name : d.name);
-      });
-      tree.appendChild(item);
-    });
-
-    files.forEach(function (f) {
-      var absPath = self.joinAbs(dir, sub, f.name);
-      var item = document.createElement("div");
-      item.className = "arr-file-item sample";
-      item.draggable = true;
-      item.title = f.name + "（拖到轨道创建音频 Clip，双击试听）";
-
-      var glyph = document.createElement("span");
-      glyph.className = "fi-glyph";
-      glyph.textContent = "♫";
-      var nameSpan = document.createElement("span");
-      nameSpan.className = "fi-name";
-      nameSpan.textContent = f.name;
-      var sizeSpan = document.createElement("span");
-      sizeSpan.className = "fi-size";
-      sizeSpan.textContent = UI.fmtSize(f.size || 0);
-
-      item.appendChild(glyph);
-      item.appendChild(nameSpan);
-      item.appendChild(sizeSpan);
-
-      item.addEventListener("dragstart", function (e) {
-        var payload = JSON.stringify({ kind: "arr-audio", p: absPath, name: f.name });
-        e.dataTransfer.setData("application/x-arrange", payload);
-        e.dataTransfer.setData("text/plain", payload);
-        e.dataTransfer.effectAllowed = "copy";
-        item.classList.add("dragging");
-        var clear = function () {
-          item.classList.remove("dragging");
-          item.removeEventListener("dragend", clear);
-        };
-        item.addEventListener("dragend", clear);
-      });
-      item.addEventListener("dblclick", function () {
-        self.engine.resume();
-        self.engine.previewSample(absPath).catch(function () {
-          if (UI.toast) UI.toast("✗ 音频试听失败（文件不存在或格式不支持）", "err");
-        });
-      });
-
-      tree.appendChild(item);
-    });
   };
 
   /* ═══════════ 弹窗（重命名 / 确认 / 快捷键） ═══════════ */
@@ -2915,7 +3191,8 @@
         return;
       }
       if (!ctrl && (k === "m" || k === "M")) { self.toggleMute(self.selectedTrackIdx); return; }
-      if (!ctrl && (k === "s" || k === "S")) { self.toggleSolo(self.selectedTrackIdx); return; }
+      if (!ctrl && e.shiftKey && (k === "s" || k === "S")) { self.toggleSolo(self.selectedTrackIdx); return; }
+      if (!ctrl && !e.shiftKey && (k === "s" || k === "S")) { self.splitSelectedAtPlayhead(); return; }
       if (!ctrl && (k === "l" || k === "L")) { self.toggleLoop(); return; }
       if (k === "F2") { e.preventDefault(); self.openRenameModal(self.selectedTrackIdx); return; }
 

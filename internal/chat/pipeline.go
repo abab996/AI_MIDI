@@ -697,6 +697,7 @@ func processStreamChunks(resp *http.Response, st *TaskState, onEvent StreamCallb
 	})
 
 	lastEmit := time.Now()
+	sentReasoning, sentContent := 0, 0
 
 	for {
 		if tasks.TaskIsCancelled(tid) {
@@ -769,14 +770,21 @@ func processStreamChunks(resp *http.Response, st *TaskState, onEvent StreamCallb
 			}
 		}
 
-		if time.Since(lastEmit) > 25*time.Millisecond {
+		// 增量推送：只发新增的推理/正文片段（轻量、逐 chunk 级实时），
+		// 替代旧版每 25ms 重传整个 ChatDisplay 数组（O(n²)，长回复越到
+		// 后面越卡）。小窗口合并减少 IPC 帧率；msg_index 让前端区分回合。
+		if time.Since(lastEmit) > 8*time.Millisecond {
 			lastEmit = time.Now()
-			formatted := llm.FormatDisplayMessage(reasoningBuilder.String(), contentBuilder.String())
-			if len(st.ChatDisplay) > 0 {
-				st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = formatted
+			r := reasoningBuilder.String()
+			c := contentBuilder.String()
+			rd, cd := r[sentReasoning:], c[sentContent:]
+			if rd != "" || cd != "" {
+				sentReasoning, sentContent = len(r), len(c)
 				_ = onEvent(map[string]any{
-					"type":     "chat",
-					"messages": st.ChatDisplay,
+					"type":            "chat_delta",
+					"msg_index":       len(st.ChatDisplay) - 1,
+					"reasoning_delta": rd,
+					"content_delta":   cd,
 				})
 			}
 		}

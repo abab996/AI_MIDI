@@ -10,8 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
-	"aimidi/internal/project"
+		"aimidi/internal/chat"
+		"aimidi/internal/config"
+		"aimidi/internal/project"
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, func()) {
@@ -348,7 +349,107 @@ func TestVersionEndpoint(t *testing.T) {
 	if res["version"] != "dev" {
 		t.Errorf("version = %v, want dev", res["version"])
 	}
-	if res["name"] != config.WindowTitle {
-		t.Errorf("name = %v", res["name"])
+		if res["name"] != config.WindowTitle {
+			t.Errorf("name = %v", res["name"])
+		}
 	}
-}
+
+	func TestUndoEditAndRestoreEndpoints(t *testing.T) {
+		ts, cleanup := setupTestServer(t)
+		defer cleanup()
+
+		// 1. 创建项目
+		createPayload := map[string]any{"name": "UndoRestoreProject"}
+		cb, _ := json.Marshal(createPayload)
+		resp, err := http.Post(ts.URL+"/api/projects", "application/json", bytes.NewReader(cb))
+		if err != nil {
+			t.Fatalf("POST /api/projects failed: %v", err)
+		}
+		defer resp.Body.Close()
+		var createRes map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&createRes)
+		metaMap, _ := createRes["meta"].(map[string]any)
+		projectID, _ := metaMap["id"].(string)
+		if projectID == "" {
+			t.Fatalf("创建项目失败，未返回 ID: %+v", createRes)
+		}
+
+		// 2. 模拟写入一个 MIDI 文件
+		midiDir := project.MidiDir(projectID)
+		_ = os.MkdirAll(midiDir, 0755)
+		midiFile := filepath.Join(midiDir, "ai_generated.mid")
+		_ = os.WriteFile(midiFile, []byte("midi data"), 0644)
+		project.SaveMidiManifest(projectID, []project.MidiFileInfo{
+			{Name: "ai_generated.mid", Path: midiFile, Size: 9},
+		})
+
+		// 3. 设置 session 消息历史并调用撤回修改接口（messages/undo-edit 模式：删除/移入回收站）
+		sess := chat.GetSession(projectID)
+		st := sess.GetTaskState("")
+		sess.MidiFiles = []project.MidiFileInfo{
+			{Name: "ai_generated.mid", Path: midiFile, Size: 9},
+		}
+		st.ChatDisplay = []map[string]any{
+			{"role": "user", "content": "生成 midi", "timestamp": float64(100)},
+			{"role": "assistant", "content": "已生成", "timestamp": float64(101)},
+		}
+		st.FullHistory = []map[string]any{
+			{"role": "user", "content": "生成 midi", "timestamp": float64(100)},
+			{
+				"role":    "assistant",
+				"content": "已生成",
+				"tool_calls": []any{
+					map[string]any{
+						"function": map[string]any{
+							"name": "create_midi",
+							"arguments": `{"filename":"ai_generated.mid"}`,
+						},
+					},
+				},
+			},
+		}
+
+		undoPayload := map[string]any{
+			"index": 0,
+		}
+		ub, _ := json.Marshal(undoPayload)
+		undoReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/projects/"+projectID+"/messages/undo-edit", bytes.NewReader(ub))
+		undoReq.Header.Set("Content-Type", "application/json")
+		undoResp, err := http.DefaultClient.Do(undoReq)
+		if err != nil {
+			t.Fatalf("POST messages/undo-edit failed: %v", err)
+		}
+		defer undoResp.Body.Close()
+		if undoResp.StatusCode != http.StatusOK {
+			t.Fatalf("POST messages/undo-edit status = %d, want 200", undoResp.StatusCode)
+		}
+		var undoRes map[string]any
+		_ = json.NewDecoder(undoResp.Body).Decode(&undoRes)
+		undoFiles, _ := undoRes["files"].([]any)
+		if len(undoFiles) != 0 {
+			t.Fatalf("撤回修改后文件列表应为空，实际: %d", len(undoFiles))
+		}
+		if _, err := os.Stat(midiFile); !os.IsNotExist(err) {
+			t.Fatalf("文件应当已被移入回收站")
+		}
+
+		// 4. 调用放弃撤回接口（messages/recall：恢复文件与历史）
+		restoreReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/projects/"+projectID+"/messages/recall", nil)
+		restoreResp, err := http.DefaultClient.Do(restoreReq)
+		if err != nil {
+			t.Fatalf("POST messages/recall failed: %v", err)
+		}
+		defer restoreResp.Body.Close()
+		if restoreResp.StatusCode != http.StatusOK {
+			t.Fatalf("POST messages/recall status = %d, want 200", restoreResp.StatusCode)
+		}
+		var restoreRes map[string]any
+		_ = json.NewDecoder(restoreResp.Body).Decode(&restoreRes)
+		files, _ := restoreRes["files"].([]any)
+		if len(files) != 1 {
+			t.Fatalf("恢复后期望 1 个文件，实际: %d", len(files))
+		}
+		if _, err := os.Stat(midiFile); err != nil {
+			t.Fatalf("原文件应当已被恢复: %v", err)
+		}
+	}

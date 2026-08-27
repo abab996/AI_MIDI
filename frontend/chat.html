@@ -211,6 +211,9 @@
           <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrMetroBtn" title="节拍器">
             <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 1a.5.5 0 0 1 .5.5v2.072l3.414 8.536A2 2 0 0 1 10.05 15H5.95a2 2 0 0 1-1.864-2.892L7.5 3.572V1.5A.5.5 0 0 1 8 1zm-2.92 11.455a1 1 0 0 0 .932 1.445h4.1a1 1 0 0 0 .932-1.445L8 4.708 5.08 12.455z"/><circle cx="8" cy="8" r="1.5"/></svg>
           </button>
+          <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrResumeBtn" title="暂停后光标回到本次播放起点">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M12.5 3a.75.75 0 0 1 .75.75v8.5a.75.75 0 0 1-1.5 0v-8.5A.75.75 0 0 1 12.5 3z"/><path d="M10.02 7.178 3.653 3.572C3.046 3.229 2.3 3.669 2.3 4.368v7.264c0 .7.754 1.139 1.353.796l6.367-3.606a.92.92 0 0 0 0-1.244z"/></svg>
+          </button>
         </div>
 
         <div class="pr-divider"></div>
@@ -292,13 +295,12 @@
           </div>
         </div>
 
-        <!-- 右：素材库 -->
+        <!-- 右：素材库（树状浏览器） -->
         <aside class="arr-side-panel arr-sample-panel">
           <div class="sec-head">
             <span class="sec-name">素材库</span>
             <button type="button" class="btn btn-secondary btn-sm" id="arrAddDirBtn">＋ 文件夹</button>
           </div>
-          <div class="arr-dir-chips" id="arrDirChips"></div>
           <div class="arr-file-tree" id="arrFileTree"></div>
           <div class="arr-panel-hint">⇱ 拖拽音频到轨道创建音频 Clip<br>拖动 Clip 角部手柄调整渐入渐出</div>
         </aside>
@@ -781,15 +783,16 @@
       <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">播放头与轨道导航：</div>
       <div><code>← / →</code>: 播放头按吸附步进 ｜ <code>Shift + ← / →</code>: 按小节步进 ｜ <code>↑ / ↓</code>: 切换选中轨道</div>
       <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">轨道操作：</div>
-      <div><code>M</code>: 当前轨静音 ｜ <code>S</code>: 当前轨独奏 ｜ <code>F2</code>: 重命名当前轨道</div>
+      <div><code>M</code>: 当前轨静音 ｜ <code>Shift + S</code>: 当前轨独奏 ｜ <code>F2</code>: 重命名当前轨道</div>
       <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">Clip 编辑：</div>
-      <div><code>Ctrl + Z / Y</code>: 撤销 / 重做 ｜ <code>Ctrl + C / X / V</code>: 复制 / 剪切 / 粘贴（粘贴至播放头所在轨）</div>
+      <div><code>S</code>: 在播放头处拆分所选 Clip ｜ <code>Ctrl + Z / Y</code>: 撤销 / 重做 ｜ <code>Ctrl + C / X / V</code>: 复制 / 剪切 / 粘贴（保持源轨道）</div>
       <div><code>Ctrl + D</code>: 原地克隆选中 Clip ｜ <code>Ctrl + B</code>: 向右顺延复制 ｜ <code>Del / Backspace</code>: 删除选中</div>
       <div><code>Ctrl + A</code>: 全选 ｜ <code>Esc</code>: 取消选择 / 关闭菜单</div>
       <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">鼠标手势：</div>
       <div><code>拖动 Clip</code>: 移动（自动吸附）｜ <code>Ctrl + 拖动</code>: 克隆副本（FL 惯例）｜ <code>Alt + 拖动</code>: 临时禁用吸附</div>
       <div><code>拖动 Clip 边缘</code>: 裁剪长度 ｜ <code>拖入 MIDI/音频文件</code>: 剪影指示真实落点，松手即放置</div>
       <div><code>拖动 Clip 角部三角</code>: 渐入渐出曲线 ｜ <code>双击 MIDI Clip</code>: 在底部钢琴卷帘打开源文件</div>
+      <div><code>右键 Clip → 在此拆分</code>: 按点击位置拆分 ｜ 播放中编辑内容立即生效</div>
       <div><code>标尺下半部拖拽</code>: 移动播放头 ｜ <code>标尺上半部拖拽</code>: 拉出循环区间（双击清除）</div>
       <div><code>+ / -</code> 或 <code>Ctrl+滚轮</code>: 横向缩放 ｜ <code>Shift+滚轮</code>: 横向滚动</div>
       <div style="margin-top:10px; color:var(--color-ink-faint)">※ 快捷键按焦点区域生效：聊天输入框、钢琴卷帘、编排窗口各自独立，与 FL Studio 多窗口逻辑一致。单键快捷键在输入框聚焦或中文输入法组合时不触发。</div>

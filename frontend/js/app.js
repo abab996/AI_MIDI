@@ -347,11 +347,51 @@
     return card;
   }
 
+  /* ---- 走带偏好：暂停后光标是否回退到本次播放起点 ----
+     编曲窗与钢琴窗共用；从 /api/settings 读一次并缓存。
+     onTransportPrefs 供走带条开关订阅初始值与后续变化 */
+  var transportPrefs = { resumeOnPause: false, loaded: false };
+  var transportSubs = [];
+
+  function notifyTransportSubs() {
+    for (var i = 0; i < transportSubs.length; i++) {
+      try { transportSubs[i](transportPrefs); } catch (e) { /* 订阅者异常不阻断 */ }
+    }
+  }
+
+  function getTransportPrefs() {
+    if (!transportPrefs.loaded) {
+      transportPrefs.loaded = true;
+      getJSON("/api/settings").then(function (s) {
+        if (s && typeof s.transport_resume_on_pause === "boolean") {
+          transportPrefs.resumeOnPause = s.transport_resume_on_pause;
+          notifyTransportSubs();
+        }
+      }).catch(function () { /* 读取失败保持默认（不回退） */ });
+    }
+    return transportPrefs;
+  }
+
+  /* 走带条开关写入：先改本地缓存（编曲窗/钢琴窗即时一致），
+     持久化由调用方经 /api/transport/prefs 完成 */
+  function setTransportPref(key, val) {
+    transportPrefs[key] = val;
+    notifyTransportSubs();
+  }
+
+  function onTransportPrefs(fn) {
+    transportSubs.push(fn);
+    if (transportPrefs.loaded) fn(transportPrefs);
+  }
+
   global.UI = {
     qs: qs, qsa: qsa, toast: toast, esc: esc,
     fmtSize: fmtSize, fmtDate: fmtDate, friendlyText: friendlyText,
     getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
     ssePost: ssePost, md: md, mdInline: mdInline, projectCard: projectCard,
+    transportPrefs: getTransportPrefs,
+    setTransportPref: setTransportPref,
+    onTransportPrefs: onTransportPrefs,
   };
 
   document.addEventListener("DOMContentLoaded", initNavDirections);

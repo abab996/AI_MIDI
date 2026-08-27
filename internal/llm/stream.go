@@ -2,7 +2,17 @@ package llm
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+)
+
+// thinkTagRe 匹配 <think> 变体：允许大小写、标签内空白与单个属性
+// （<THINK> / <think > / <think id="x"> 等）。此前只匹配精确小写
+// "<think>"，部分模型输出变体时整个 think 块漏进正文，前端表现为
+// 思考块拆分错位、markdown 渲染整段转义失效
+var (
+	thinkOpenRe  = regexp.MustCompile(`(?i)<think(\s[^>]*)?>`)
+	thinkCloseRe = regexp.MustCompile(`(?i)</think\s*>`)
 )
 
 // ExtractThinkBlocks 从正文中提取所有 <think>...</think> 片段并剔除标签
@@ -12,20 +22,21 @@ func ExtractThinkBlocks(content string) (string, []string) {
 	rest := content
 
 	for {
-		start := strings.Index(rest, "<think>")
-		if start == -1 {
+		loc := thinkOpenRe.FindStringIndex(rest)
+		if loc == nil {
 			answerParts = append(answerParts, rest)
 			break
 		}
+		start := loc[0]
 		answerParts = append(answerParts, rest[:start])
-		tail := rest[start+len("<think>"):]
-		end := strings.Index(tail, "</think>")
-		if end == -1 {
+		tail := rest[loc[1]:]
+		endLoc := thinkCloseRe.FindStringIndex(tail)
+		if endLoc == nil {
 			thinkParts = append(thinkParts, strings.TrimSpace(tail))
 			break
 		}
-		thinkParts = append(thinkParts, strings.TrimSpace(tail[:end]))
-		rest = tail[end+len("</think>"):]
+		thinkParts = append(thinkParts, strings.TrimSpace(tail[:endLoc[0]]))
+		rest = tail[endLoc[1]:]
 	}
 
 	return strings.Join(answerParts, ""), thinkParts

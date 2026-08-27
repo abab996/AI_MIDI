@@ -33,8 +33,11 @@ func ClearTrash(projectID string) {
 func MoveToTrash(projectID string, fileInfo MidiFileInfo) string {
 	src := fileInfo.Path
 	name := fileInfo.Name
-	if src == "" || name == "" {
+	if name == "" {
 		return ""
+	}
+	if src == "" {
+		src = filepath.Join(GetMidiBaseDir(projectID), filepath.FromSlash(name))
 	}
 	if fi, err := os.Stat(src); err != nil || fi.IsDir() {
 		return ""

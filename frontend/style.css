@@ -1987,17 +1987,6 @@ a.btn {
   word-break: break-word;
 }
 
-/* ---------- AI 输出分组渐显（仅实时流式）：每 10 字符一组一个动画，
-   避免逐字建 span 导致上千个并发动画卡顿 ---------- */
-.char-fade {
-  animation: char-fade 0.45s ease-out both;
-  animation-delay: var(--d, 0ms);
-}
-
-@keyframes char-fade {
-  from { opacity: 0; }
-}
-
 .typing-dots {
   display: inline-flex;
   gap: 5px;
@@ -3623,6 +3612,14 @@ body.is-panning *,
   padding-right: 8px;
 }
 
+/* 走带区开关类按钮（循环/节拍器/暂停回起点）的激活态：
+   此前无对应规则，.active 类加上也没有视觉反馈 */
+.arr-transport .btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
 .arr-play-btn {
   min-width: 74px;
   justify-content: center;
@@ -4228,17 +4225,6 @@ body.is-panning *,
   overflow: auto;
 }
 
-.arr-tree-crumbs {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 2px 2px 6px;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 10px;
-  color: var(--color-ink-faint);
-}
-
 .arr-tree-crumb { cursor: pointer; color: var(--color-primary); }
 .arr-tree-crumb:hover { text-decoration: underline; }
 
@@ -4292,6 +4278,26 @@ body.is-panning *,
   font-size: 11px;
   color: var(--color-ink-dim);
 }
+
+/* ---------- 素材库树状浏览器 ---------- */
+.arr-file-item.dir.open { color: var(--color-ink); }
+
+/* 根节点的 ✕ 常显于 hover；子层级目录不带删除钮 */
+.arr-file-item.dir > .chip-del {
+  margin-left: auto;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  line-height: 15px;
+  text-align: center;
+  border-radius: 3px;
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+.arr-file-item.dir:hover > .chip-del { opacity: 0.75; }
+.arr-file-item.dir > .chip-del:hover { opacity: 1; color: var(--color-danger); background: var(--color-danger-soft); }
 
 /* ---------- 无障碍：减少动态 ---------- */
 @media (prefers-reduced-motion: reduce) {

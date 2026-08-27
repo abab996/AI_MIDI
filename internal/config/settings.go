@@ -28,6 +28,9 @@ type Settings struct {
 	ThinkingEnabled     bool          `json:"thinking_enabled"`
 	MaterialDirs        []string      `json:"material_dirs,omitempty"`
 	Audio               AudioSettings `json:"audio"`
+	// TransportResumeOnPause 暂停后播放光标回退到本次播放的起始位置
+	//（关闭时暂停在当前位置，保持原行为）
+	TransportResumeOnPause bool `json:"transport_resume_on_pause"`
 }
 
 var (
@@ -148,6 +151,9 @@ func parseSettings(data []byte) Settings {
 	}
 	if v, ok := raw["thinking_enabled"].(bool); ok {
 		res.ThinkingEnabled = v
+	}
+	if v, ok := raw["transport_resume_on_pause"].(bool); ok {
+		res.TransportResumeOnPause = v
 	}
 	if v, ok := raw["material_dirs"].([]interface{}); ok {
 		for _, item := range v {

@@ -200,6 +200,10 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
 		if st.PendingEdit != nil {
+			// 撤回修改时移入回收站的文件/移除的目录，放弃撤回时一并恢复
+			if rb, ok := st.PendingEdit["_rollback"].(map[string]any); ok && rb != nil {
+				s.MidiFiles = project.RestoreAICreatedFiles(projectID, rb)
+			}
 			if fh, ok := st.PendingEdit["full_history"].([]map[string]any); ok {
 				st.FullHistory = fh
 			}
@@ -277,8 +281,11 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 
 		entries := project.ExtractAICreatedEntries(st.FullHistory, histIdx)
+		originalFiles := s.MidiFiles
 		updatedFiles, removalInfo := project.RemoveAICreatedFiles(projectID, s.MidiFiles, entries)
 		s.MidiFiles = updatedFiles
+		// 记录撤回前的文件清单，放弃撤回时原样恢复（含 NoteTable 等元数据）
+		removalInfo["original_files"] = originalFiles
 
 		origText, _ := st.ChatDisplay[in.Index]["content"].(string)
 		st.PendingEdit = map[string]any{

@@ -833,6 +833,8 @@
     this.synth.resume();
     this.soundfont.resume();
     this.synth.init();
+    // 记录本次播放起点（「暂停后恢复光标位置」回退目标；循环跳转在前）
+    this.playbackOriginBeat = Math.max(0, this.playheadBeat);
     this.isPlaying = true;
 
     var btn = document.getElementById("prPlayBtn");
@@ -1006,6 +1008,13 @@
     if (this.isRecording) {
       this.stopRecording();
       return;
+    }
+
+    /* 「暂停后恢复光标位置」开启时回退到本次播放起点（录制流程除外） */
+    var prefs = UI.transportPrefs ? UI.transportPrefs() : null;
+    if (prefs && prefs.resumeOnPause && this.playbackOriginBeat !== undefined) {
+      this.playheadBeat = Math.max(0, this.playbackOriginBeat);
+      this.showHUD("⏪ 光标已回到本次播放起点");
     }
 
     var btn = document.getElementById("prPlayBtn");

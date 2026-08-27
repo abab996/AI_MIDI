@@ -37,26 +37,28 @@ func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 	case http.MethodGet:
 		s := config.LoadSettings()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"api_key":               maskAPIKey(s.APIKey),
-			"base_url":              s.BaseURL,
-			"api_path":              s.APIPath,
-			"model":                 s.Model,
-			"max_tokens":            s.MaxTokens,
-			"max_completion_tokens": s.MaxCompletionTokens,
-			"reasoning_effort":      s.ReasoningEffort,
-			"thinking_enabled":      s.ThinkingEnabled,
+			"api_key":                   maskAPIKey(s.APIKey),
+			"base_url":                  s.BaseURL,
+			"api_path":                  s.APIPath,
+			"model":                     s.Model,
+			"max_tokens":                s.MaxTokens,
+			"max_completion_tokens":     s.MaxCompletionTokens,
+			"reasoning_effort":          s.ReasoningEffort,
+			"thinking_enabled":          s.ThinkingEnabled,
+			"transport_resume_on_pause": s.TransportResumeOnPause,
 		})
 
 	case http.MethodPut:
 		var in struct {
-			APIKey              string `json:"api_key"`
-			BaseURL             string `json:"base_url"`
-			APIPath             string `json:"api_path"`
-			Model               string `json:"model"`
-			MaxTokens           any    `json:"max_tokens"`
-			MaxCompletionTokens any    `json:"max_completion_tokens"`
-			ReasoningEffort     string `json:"reasoning_effort"`
-			ThinkingEnabled     bool   `json:"thinking_enabled"`
+			APIKey                 string `json:"api_key"`
+			BaseURL                string `json:"base_url"`
+			APIPath                string `json:"api_path"`
+			Model                  string `json:"model"`
+			MaxTokens              any    `json:"max_tokens"`
+			MaxCompletionTokens    any    `json:"max_completion_tokens"`
+			ReasoningEffort        string `json:"reasoning_effort"`
+			ThinkingEnabled        bool   `json:"thinking_enabled"`
+			TransportResumeOnPause *bool  `json:"transport_resume_on_pause"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
@@ -88,16 +90,20 @@ func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 			apiKey = config.LoadSettings().APIKey
 		}
 
-		s := config.Settings{
-			APIKey:              apiKey,
-			BaseURL:             strings.TrimSpace(in.BaseURL),
-			APIPath:             strings.TrimSpace(in.APIPath),
-			Model:               strings.TrimSpace(in.Model),
-			MaxTokens:           toIntPtr(in.MaxTokens),
-			MaxCompletionTokens: toIntPtr(in.MaxCompletionTokens),
-			ReasoningEffort:     strings.TrimSpace(in.ReasoningEffort),
-			ThinkingEnabled:     in.ThinkingEnabled,
-		}
+		// 基于已保存配置做覆盖式合并：设置页表单只包含 API/生成参数，
+		// 直接新建结构体会把 material_dirs、audio 等未在表单里的字段抹掉
+		s := config.LoadSettings()
+		s.APIKey = apiKey
+		s.BaseURL = strings.TrimSpace(in.BaseURL)
+		s.APIPath = strings.TrimSpace(in.APIPath)
+		s.Model = strings.TrimSpace(in.Model)
+		s.MaxTokens = toIntPtr(in.MaxTokens)
+		s.MaxCompletionTokens = toIntPtr(in.MaxCompletionTokens)
+		s.ReasoningEffort = strings.TrimSpace(in.ReasoningEffort)
+		s.ThinkingEnabled = in.ThinkingEnabled
+		if in.TransportResumeOnPause != nil {
+			s.TransportResumeOnPause = *in.TransportResumeOnPause
+		} /* 未提供（设置页表单已不包含此字段）时保持原值，避免覆盖走带条上的开关 */
 
 		if err := config.SaveSettings(s); err != nil {
 			writeError(w, http.StatusInternalServerError, "保存配置失败")
@@ -109,6 +115,35 @@ func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+// handleTransportPrefs 走带偏好：编曲窗走带条上的「暂停后光标回起点」
+// 开关直接写这里。独立轻量端点——不走 /api/settings 的表单校验，
+// 也避免与设置页整单保存互相干扰
+func (r *Router) handleTransportPrefs(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var in struct {
+		ResumeOnPause *bool `json:"resume_on_pause"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
+		return
+	}
+	if in.ResumeOnPause == nil {
+		writeError(w, http.StatusBadRequest, "缺少 resume_on_pause")
+		return
+	}
+
+	s := config.LoadSettings()
+	s.TransportResumeOnPause = *in.ResumeOnPause
+	if err := config.SaveSettings(s); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存配置失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {

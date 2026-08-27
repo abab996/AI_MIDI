@@ -11,6 +11,9 @@ ThirdParty/
 asio_sdk/
 ASIO*SDK*/
 
+# ---------- 大体积音色（本地使用，不入库：历史已清理） ----------
+Library/soundfonts/*.sf2
+
 # ---------- 二进制与构建产物 ----------
 *.exe
 *.dll
@@ -41,6 +44,7 @@ frontend/wailsjs/
 .zcode/
 .agents/
 .omo/
+.trae/
 
 # ---------- 旧版 Python 后端（自带独立 git 仓库，不混入本仓库） ----------
 原版Python后端/

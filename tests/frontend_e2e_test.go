@@ -4,9 +4,25 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// repoRoot 返回仓库根目录（以本测试文件位置为锚，任何 CWD 下均可工作）
+func repoRoot() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Dir(filepath.Dir(thisFile))
+}
+
+func readRepoFile(t *testing.T, rel string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(), filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	return data
+}
 
 func TestAllDefaultIsJUCE(t *testing.T) {
 	// 验证所有默认路径都经 JUCE，而非 WebAudio
@@ -42,16 +58,7 @@ func TestAllDefaultIsJUCE(t *testing.T) {
 		},
 	}
 	for _, c := range checks {
-		data, err := os.ReadFile(filepath.Join("..", c.file))
-		if err != nil {
-			// 从 tests 目录执行时，.. 是 D:\pyx\AI_MIDI-go
-			// 尝试绝对路径
-			data, err = os.ReadFile(filepath.Join("D:\\pyx\\AI_MIDI-go", c.file))
-			if err != nil {
-				t.Fatalf("read %s: %v", c.file, err)
-			}
-		}
-		s := string(data)
+		s := string(readRepoFile(t, c.file))
 		for _, want := range c.mustContain {
 			if !strings.Contains(s, want) {
 				t.Errorf("%s should contain %q", c.file, want)
@@ -66,31 +73,18 @@ func TestAllDefaultIsJUCE(t *testing.T) {
 }
 
 func TestSettingsButtonUnified(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "frontend", "settings.html"))
-	if err != nil {
-		data, err = os.ReadFile("D:\\pyx\\AI_MIDI-go\\frontend\\settings.html")
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
+	data := readRepoFile(t, "frontend/settings.html")
 	if bytes.Contains(data, []byte(`style="background:#2a3b4c`)) {
 		t.Fatal("ASIO button should be unified, not hardcoded dark")
 	}
-	css, err := os.ReadFile(filepath.Join("..", "frontend", "style.css"))
-	if err != nil {
-		css, _ = os.ReadFile("D:\\pyx\\AI_MIDI-go\\frontend\\style.css")
-	}
+	css := readRepoFile(t, "frontend/style.css")
 	if bytes.Contains(css, []byte("#openPanelBtn")) && bytes.Contains(css, []byte("#2a3b4c")) {
 		t.Fatal("style.css should not have dark override for #openPanelBtn after unification")
 	}
 }
 
 func TestM4LatencyAndHotplug(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "frontend", "settings.html"))
-	if err != nil {
-		data, _ = os.ReadFile("D:\\pyx\\AI_MIDI-go\\frontend\\settings.html")
-	}
-	s := string(data)
+	s := string(readRepoFile(t, "frontend/settings.html"))
 	if !strings.Contains(s, "updateLatency") || !strings.Contains(s, "buffer/sampleRate") {
 		t.Fatal("settings.html should have latency calculation")
 	}

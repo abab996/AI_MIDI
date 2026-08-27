@@ -7,11 +7,14 @@
   "max_completion_tokens": null,
   "reasoning_effort": "max",
   "thinking_enabled": true,
+  "material_dirs": [],
+  "transport_resume_on_pause": false,
   "audio": {
     "engine_enabled": true,
     "driver": "",
     "device": "",
     "sample_rate": 48000,
-    "buffer_size": 256
+    "buffer_size": 256,
+    "backend": "auto"
   }
 }

@@ -7,19 +7,18 @@
  * 用法：node record.js <url> <out.mp4> <durationSec> [setupUrl]
  */
 const path = require("path");
+const os = require("os");
 const fs = require("fs");
 const { execFileSync } = require("child_process");
-const CANDIDATES = [
-  path.join(__dirname, "node_modules", "playwright-core"),
-  "D:/tmp_go/rec/node_modules/playwright-core",
-];
-const pwDir = CANDIDATES.find((p) => fs.existsSync(p));
-if (!pwDir) { console.error("playwright-core 未安装"); process.exit(1); }
+const pwDir = path.join(__dirname, "node_modules", "playwright-core");
+if (!fs.existsSync(pwDir)) { console.error("playwright-core 未安装"); process.exit(1); }
 const { chromium } = require(pwDir);
 
-/* C 盘满时把 Chrome 临时目录重定向到 D 盘 */
-process.env.TMP = "D:\\tmp_go";
-process.env.TEMP = "D:\\tmp_go";
+/* 系统盘空间紧张时可用 TMP_DIR 环境变量把 Chrome 临时目录重定向 */
+if (process.env.TMP_DIR) {
+  process.env.TMP = process.env.TMP_DIR;
+  process.env.TEMP = process.env.TMP_DIR;
+}
 
 const FFBIN = process.env.FFBIN || path.join(
   process.env.LOCALAPPDATA,
@@ -37,7 +36,7 @@ const W = 1920, H = 1080, FPS = 60;
   const durationMs = parseInt(process.argv[4] || "75", 10) * 1000;
   const setupUrl = process.argv[5] || "";
 
-  const frameDir = "D:/tmp_go/frames_" + Date.now();
+  const frameDir = path.join(process.env.TMP_DIR || os.tmpdir(), "aimidi_frames_" + Date.now());
   fs.mkdirSync(frameDir, { recursive: true });
 
   const browser = await chromium.launch({

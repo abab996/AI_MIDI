@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-ROOT = Path(r"D:\pyx\AI_MIDI-go")
+ROOT = Path(__file__).resolve().parents[2]
 
 print("=== internal subdirs ===")
 for p in (ROOT / "internal").iterdir():

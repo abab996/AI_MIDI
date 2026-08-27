@@ -4,7 +4,7 @@ import subprocess
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(r"D:\pyx\AI_MIDI-go")
+ROOT = Path(__file__).resolve().parents[2]
 
 def is_comment(line, ext):
     line = line.strip()

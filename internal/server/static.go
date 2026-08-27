@@ -50,12 +50,23 @@ func (g *gzipResponseWriter) WriteHeader(code int) {
 func (r *Router) registerStaticRoutes() {
 	var fileServer http.Handler
 
-	if _, err := os.Stat(config.WebDir); err == nil {
-		fileServer = http.FileServer(http.Dir(config.WebDir))
-	} else if r.assetsFS != nil {
+	// 资源来源：默认内嵌 FS（打包产物自包含，不受磁盘残留旧前端影响）。
+	// 仅当设置 AIMIDI_FRONTEND_DIR 时改从磁盘热更服务（开发调试用）；
+	// 兜底：无内嵌资源且磁盘目录存在时用磁盘（旧版行为）。
+	if dir := os.Getenv("AIMIDI_FRONTEND_DIR"); dir != "" {
+		if _, err := os.Stat(dir); err == nil {
+			fileServer = http.FileServer(http.Dir(dir))
+		}
+	}
+	if fileServer == nil && r.assetsFS != nil {
 		fileServer = http.FileServer(http.FS(r.assetsFS))
-	} else {
-		return
+	}
+	if fileServer == nil {
+		if _, err := os.Stat(config.WebDir); err == nil {
+			fileServer = http.FileServer(http.Dir(config.WebDir))
+		} else {
+			return
+		}
 	}
 
 	textAsset := func(p string) bool {
@@ -63,11 +74,16 @@ func (r *Router) registerStaticRoutes() {
 			strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".svg")
 	}
 
-		wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			// 开发/热更模式：所有 HTML/CSS/JS 禁用强缓存，确保改动立即生效
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// HTML/开发目录资源禁用强缓存，确保改动立即生效；
+		// 内嵌版本化资源走指纹文件名，可安全长缓存
+		if os.Getenv("AIMIDI_FRONTEND_DIR") != "" || strings.HasSuffix(req.URL.Path, ".html") {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Header().Set("Pragma", "no-cache")
 			w.Header().Set("Expires", "0")
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=60")
+		}
 
 		// 文本资源且客户端支持且非 Range 请求：gzip 压缩
 		if textAsset(req.URL.Path) && req.Method == http.MethodGet &&

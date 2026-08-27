@@ -2,7 +2,7 @@ import os
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(r"D:\pyx\AI_MIDI-go")
+ROOT = Path(__file__).resolve().parents[2]
 
 dirs_count = defaultdict(int)
 for root, dirs, files in os.walk(ROOT):

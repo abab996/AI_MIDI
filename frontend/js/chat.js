@@ -3139,17 +3139,27 @@
         var reader = new FileReader();
         reader.onload = function () {
           var buf = reader.result;
+          var presets;
           try {
             if (window.PianoRoll && window.SoundLibrary) {
-              var parsed = window.PianoRoll.soundfont.parseSF2(buf);
-              window.SoundLibrary.saveSoundFont(file.name, buf, parsed.presets).then(function () {
-                UI.toast("✓ 成功导入音色库: " + file.name, "ok");
-                window.PianoRoll.refreshSoundLibraryList();
-              });
+              presets = window.PianoRoll.soundfont.parseSF2(buf).presets;
+            } else {
+              return;
             }
           } catch (err) {
             UI.toast("✗ 解析 SF2 失败: " + err.message, "err");
+            return;
           }
+          sUploadBtn.disabled = true;
+          window.SoundLibrary.saveSoundFont(file.name, buf, presets).then(function () {
+            UI.toast("✓ 成功导入音色库: " + file.name, "ok");
+            window.PianoRoll.refreshSoundLibraryList();
+          }).catch(function (err) {
+            /* 大 SF2 常见 IndexedDB 配额错误：必须给出可见反馈 */
+            UI.toast("✗ 导入失败: " + (err && err.message ? err.message : "存储空间不足"), "err");
+          }).finally(function () {
+            sUploadBtn.disabled = false;
+          });
         };
         reader.readAsArrayBuffer(file);
       });

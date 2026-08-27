@@ -2653,7 +2653,8 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
 .rack-window {
   position: fixed;
   top: 100px;
-  left: calc(50% - 320px);
+  /* 窄视口下钳制左缘不出屏（与拖拽 clamp 的 10px 下限一致） */
+  left: max(10px, calc(50% - 320px));
   width: 640px;
   max-width: 95vw;
   background: var(--color-bg-card, #112038);
@@ -2984,10 +2985,11 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
   color: var(--color-primary, #00b8cc);
 }
 
-.arr-track-head.drag-over-source,
-.arr-lane.drag-over-source {
-  outline: 2px dashed var(--color-primary, #00b8cc) !important;
-  background: rgba(0, 184, 204, 0.18) !important;
+/* 音源拖拽悬停：整行虚线框示意「替换该轨音源」（行内含轨道头与内容区） */
+.arr-lane-row.drag-over-source {
+  outline: 2px dashed var(--color-primary, #00b8cc);
+  outline-offset: -2px;
+  background: rgba(0, 184, 204, 0.12) !important;
 }
 
 

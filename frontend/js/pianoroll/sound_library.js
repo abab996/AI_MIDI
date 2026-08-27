@@ -100,11 +100,17 @@
           createdAt: Date.now()
         };
         var req = store.put(record);
-        req.onsuccess = function () {
-          self.listSoundFonts().catch(function () {});
-          resolve(record);
-        };
+        req.onsuccess = function () { /* 等 tx.oncomplete 再 resolve */ };
         req.onerror = function () { reject(req.error); };
+        tx.onabort = function () { reject(tx.error || new Error("音色库写入被中止")); };
+        // 事务提交（而非 put 成功）才算落库——IndexedDB 配额错误在
+        // commit 阶段才暴露；随后刷新缓存，调用方拿到的列表即包含新条目
+        tx.oncomplete = function () {
+          self.listSoundFonts().then(
+            function () { resolve(record); },
+            function () { resolve(record); }
+          );
+        };
       });
     });
   };
@@ -129,11 +135,15 @@
         var tx = db.transaction(STORE_NAME, "readwrite");
         var store = tx.objectStore(STORE_NAME);
         var req = store.delete(id);
-        req.onsuccess = function () {
-          self.listSoundFonts().catch(function () {});
-          resolve(true);
-        };
+        req.onsuccess = function () { /* 等 tx.oncomplete 再 resolve */ };
         req.onerror = function () { reject(req.error); };
+        tx.onabort = function () { reject(tx.error || new Error("音色库删除被中止")); };
+        tx.oncomplete = function () {
+          self.listSoundFonts().then(
+            function () { resolve(true); },
+            function () { resolve(true); }
+          );
+        };
       });
     });
   };

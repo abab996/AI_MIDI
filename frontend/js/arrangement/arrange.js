@@ -713,6 +713,11 @@
 
   Arrange.prototype.exportWav = function () {
     var self = this;
+    // 渲染期间防重复点击（离线渲染耗时数秒，连点会排队多个渲染任务）
+    if (this._exporting) {
+      if (window.UI && window.UI.toast) window.UI.toast("⏳ 正在导出中，请等待完成", "warn");
+      return;
+    }
     // 仅 AUTO+JUCE就绪时可离线导出（保证按全局采样率+尾音不截断）
     var useNative = false;
     try { useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred(); } catch(e) {}
@@ -724,6 +729,14 @@
       if (window.UI && window.UI.toast) window.UI.toast("⚠ 无轨道可导出", "warn");
       return;
     }
+    this._exporting = true;
+    var btn = document.getElementById("arrExportWavBtn");
+    var origLabel = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "渲染中…"; }
+    var finish = function () {
+      self._exporting = false;
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+    };
     this.showHUD("⏳ 正在离线渲染 WAV（尾音到静默）…");
     var payload = { bpm: this.bpm, tracks: this.tracks };
     // 优先走 Wails 直通（低延迟），失败回退 HTTP
@@ -753,7 +766,7 @@
     }).catch(function(err){
       self.showHUD("✗ 导出失败");
       if (window.UI && window.UI.toast) window.UI.toast("✗ 导出失败: " + (err && err.message || err), "err");
-    });
+    }).finally(finish);
   };
 
   /* ═══════════ 缩放 ═══════════ */
@@ -922,6 +935,13 @@
         if (!self.isArrangeDrag(e)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
+        if (self.isSourceDrag(e)) {
+          /* 音源拖拽 = 替换轨道音源：整行高亮示意，不放 clip 剪影
+             （剪影会让人误以为要创建 MIDI Clip） */
+          self.hideDropGhost();
+          self.updateSourceHighlight(e);
+          return;
+        }
         self.updateDropHighlight(e);
         /* 剪影预览：与 drop 用同一份 resolveDropTarget 计算，
            拖动所见位置 = 松手放置位置 */
@@ -929,11 +949,13 @@
       });
       scroller.addEventListener("dragleave", function (e) {
         self.clearDropHighlight();
+        self.clearSourceHighlight();
       });
       scroller.addEventListener("drop", function (e) {
         if (!self.isArrangeDrag(e)) return;
         e.preventDefault();
         self.clearDropHighlight();
+        self.clearSourceHighlight();
         self.handleDrop(e);
       });
     }
@@ -2515,9 +2537,45 @@
     var types = e.dataTransfer && e.dataTransfer.types;
     if (!types) return false;
     for (var i = 0; i < types.length; i++) {
-      if (types[i] === "text/plain" || types[i] === "application/x-arrange") return true;
+      if (types[i] === "text/plain" || types[i] === "application/x-arrange" || types[i] === "application/x-arrange-source") return true;
     }
     return false;
+  };
+
+  /** 本次拖拽是否为机架音源（替换轨道音源），而非 MIDI/音频素材入库 */
+  Arrange.prototype.isSourceDrag = function (e) {
+    var types = e.dataTransfer && e.dataTransfer.types;
+    if (!types) return false;
+    for (var i = 0; i < types.length; i++) {
+      if (types[i] === "application/x-arrange-source") return true;
+    }
+    return false;
+  };
+
+  /** 音源拖拽反馈：高亮悬停轨道整行（行 = 头 + 轨道内容），示意「替换该轨音源」 */
+  Arrange.prototype.updateSourceHighlight = function (e) {
+    var row = null;
+    if (e.target && e.target.closest) {
+      var headEl = e.target.closest(".arr-track-head");
+      var contentEl = headEl ? null : e.target.closest(".arr-lane-content");
+      if (headEl) row = headEl.closest(".arr-lane-row");
+      else if (contentEl) row = contentEl.closest(".arr-lane-row");
+    }
+    if (this.hoverSourceEl && this.hoverSourceEl !== row) {
+      this.hoverSourceEl.classList.remove("drag-over-source");
+      this.hoverSourceEl = null;
+    }
+    if (row && row !== this.hoverSourceEl) {
+      row.classList.add("drag-over-source");
+      this.hoverSourceEl = row;
+    }
+  };
+
+  Arrange.prototype.clearSourceHighlight = function () {
+    if (this.hoverSourceEl) {
+      this.hoverSourceEl.classList.remove("drag-over-source");
+      this.hoverSourceEl = null;
+    }
   };
 
   Arrange.prototype.updateDropHighlight = function (e) {
@@ -3181,6 +3239,14 @@
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
   };
 
+  /** 焦点位于可激活控件（按钮/链接）上：空格让位给浏览器默认点击语义 */
+  Arrange.prototype.isActivatableTarget = function (t) {
+    if (!t || !t.closest) return false;
+    var tag = t.tagName;
+    if (tag === "BUTTON" || tag === "A") return true;
+    return !!t.closest('button, a, [role="button"]');
+  };
+
   /** 钢琴卷帘抽屉持有焦点时让位（三域仲裁：最后点击区域优先） */
   Arrange.prototype.pianoRollOwnsKeys = function () {
     var pr = window.PianoRoll;
@@ -3210,8 +3276,19 @@
       var ctrl = e.ctrlKey || e.metaKey;
       var k = String(e.key || "");
 
-      // Space 在按钮聚焦时会触发点击，统一接管
+      // Esc 分层：确认/重命名弹窗（上方分支）→ 输出机架窗口
+      if (k === "Escape" || k === "Esc") {
+        var rackWin = document.getElementById("arrRackWindow");
+        if (rackWin && !rackWin.hidden) {
+          rackWin.hidden = true;
+          return;
+        }
+      }
+
+      // Space 走走带停；焦点在按钮/链接上时让位给浏览器激活语义
+      // （否则机架的试听/分配等按钮无法用空格操作）
       if (e.code === "Space") {
+        if (self.isActivatableTarget(e.target)) return;
         e.preventDefault();
         self.togglePlay();
         return;
@@ -3390,6 +3467,10 @@
           self.showHUD("✅ 已导入音色库，可在 SF2 分类中查看");
           self.renderOutputRack(self._currentRackFilter || "all");
         };
+        var fail = function (err) {
+          self.showHUD("✗ 导入音色库失败: " + (err && err.message ? err.message : "存储空间不足或文件损坏"));
+          if (window.UI && UI.toast) UI.toast("✗ 导入音色库失败: " + (err && err.message ? err.message : "未知错误"), "err");
+        };
         if (window.SoundLibrary && window.SoundLibrary.showImportDialog) {
           window.SoundLibrary.showImportDialog(refreshRack);
         } else {
@@ -3403,17 +3484,28 @@
             var reader = new FileReader();
             reader.onload = function () {
               var buf = reader.result;
+              var presets = [];
               try {
                 // 解析 presets（与聊天页音源库上传一致），失败不阻断保存
-                var presets = [];
                 if (window.PianoRoll && window.PianoRoll.soundfont && window.PianoRoll.soundfont.parseSF2) {
                   presets = window.PianoRoll.soundfont.parseSF2(buf).presets || [];
                 }
-                window.SoundLibrary.saveSoundFont(file.name, buf, presets).then(refreshRack);
               } catch (err) {
                 // 解析失败仍按无预设保存，保证基础导入可用
-                window.SoundLibrary.saveSoundFont(file.name, buf, []).then(refreshRack);
+                presets = [];
               }
+              // 大文件写入 IndexedDB 可能触发配额错误：禁用按钮 + 补 catch，
+              // 失败必须给出可见反馈（此前静默吞掉，HUD 却显示成功）
+              var origLabel = addSf2Btn.textContent;
+              addSf2Btn.disabled = true;
+              addSf2Btn.textContent = "导入中…";
+              window.SoundLibrary.saveSoundFont(file.name, buf, presets)
+                .then(refreshRack)
+                .catch(fail)
+                .finally(function () {
+                  addSf2Btn.disabled = false;
+                  addSf2Btn.textContent = origLabel;
+                });
             };
             reader.readAsArrayBuffer(file);
           };
@@ -3630,6 +3722,11 @@
         }
         e.dataTransfer.setData("application/x-arrange", JSON.stringify(dragData));
         e.dataTransfer.setData("text/plain", JSON.stringify(dragData));
+        // 独立标记类型：dragover 阶段读不到 data 内容（浏览器安全限制），
+        // 只能凭 types 区分「替换音源」与「放入素材」，给出各自的视觉反馈
+        if (item.type === "source") {
+          e.dataTransfer.setData("application/x-arrange-source", "1");
+        }
         e.dataTransfer.effectAllowed = "copyMove";
       });
 

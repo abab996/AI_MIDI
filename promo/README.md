@@ -63,18 +63,18 @@ frontend/demo/
 ## 重制流程
 
 ```bash
-# 0) 依赖：Go、Python312+numpy、Node+playwright-core(D:/tmp_go/rec)、ffmpeg(winget Gyan.FFmpeg)
+# 0) 依赖：Go、Python312+numpy、Node+playwright-core（在 promo/ 下 npm i playwright-core）、ffmpeg(winget Gyan.FFmpeg)
 # 1) 资产
 python promo/compose_music.py && python promo/make_sfx.py && python promo/render_audio.py
 # 2) 启动产品（浏览器模式，端口 7860）
-go build -o D:/tmp_go/aimidi_test.exe . && D:/tmp_go/aimidi_test.exe -browser -port 7860
-# 3) 录制（首次需先访问 shot=0 建工程/传素材；clean=1 隐藏导播 UI）
-node promo/record.js "http://127.0.0.1:7860/demo/intro.html"  D:/tmp_go/final/intro.webm 9
-node promo/record.js "http://127.0.0.1:7860/chat.html?demo=1&shot=0"  D:/tmp_go/final/prep.webm 12
-node promo/record.js "http://127.0.0.1:7860/chat.html?demo=1&auto=1&clean=1" D:/tmp_go/final/main.webm 78 "http://127.0.0.1:7860/chat.html?demo=1&shot=0"
-node promo/record.js "http://127.0.0.1:7860/chat.html?demo=1&shot=4&clean=1" D:/tmp_go/final/shot4.webm 34
-node promo/record.js "http://127.0.0.1:7860/demo/outro.html" D:/tmp_go/final/outro.webm 6
-# 4) 合成（剪辑点见 build_video.py 的 CUTS，按 85 BPM 卡点）
+go build -o build/promo_test.exe . && build/promo_test.exe -browser -port 7860
+# 3) 录制（首次需先访问 shot=0 建工程/传素材；clean=1 隐藏导播 UI；产物统一放 promo/out/）
+node promo/record.js "http://127.0.0.1:7860/demo/intro.html"  promo/out/intro.webm 9
+node promo/record.js "http://127.0.0.1:7860/chat.html?demo=1&shot=0"  promo/out/prep.webm 12
+node promo/record.js "http://127.0.0.1:7860/chat.html?demo=1&auto=1&clean=1" promo/out/main.webm 78 "http://127.0.0.1:7860/chat.html?demo=1&shot=0"
+node promo/record.js "http://127.0.0.1:7860/chat.html?demo=1&shot=4&clean=1" promo/out/shot4.webm 34
+node promo/record.js "http://127.0.0.1:7860/demo/outro.html" promo/out/outro.webm 6
+# 4) 合成（剪辑点见 build_video.py 的 CUTS，按 85 BPM 卡点；源目录用 PROMO_SRC 覆盖）
 python promo/build_video.py
 ```
 
@@ -85,7 +85,6 @@ python promo/build_video.py
 
 ## 注意事项
 
-- 录制机 C 盘需留少量空间给命令行临时文件；Chrome/playwright 临时目录已重定向到 D 盘。
-- `record.js` 依赖 `D:/tmp_go/rec/node_modules/playwright-core` 与
-  `PLAYWRIGHT_BROWSERS_PATH=D:/tmp_go/pw-browsers`（内含 ffmpeg-win64.exe，由 winget 版 ffmpeg 复制充当）。
+- 录制机系统盘需留少量空间给命令行临时文件；可用 `TMP_DIR` 环境变量把 Chrome/playwright 临时目录重定向到其它盘。
+- `record.js` 依赖 `promo/node_modules/playwright-core`（`cd promo && npm i playwright-core`）；如需指定浏览器目录，设置 `PLAYWRIGHT_BROWSERS_PATH` 环境变量（内含 ffmpeg-win64.exe，可由 winget 版 ffmpeg 复制充当）。
 - 演示工程的 AI 回复为确定性剧本，与真实后端 `llm.FormatSingleToolEntry` 的工具块格式逐字段对齐。

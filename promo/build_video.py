@@ -21,7 +21,7 @@ FFBIN = os.environ.get(
     os.path.expandvars(r"%LOCALAPPDATA%/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-9.0-full_build/bin"),
 )
 FFMPEG = os.path.join(FFBIN, "ffmpeg.exe")
-SRC = "D:/tmp_go/final"
+SRC = os.environ.get("PROMO_SRC", os.path.join(os.path.dirname(os.path.abspath(__file__)), "out"))
 AUDIO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio")
 SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")

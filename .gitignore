@@ -63,3 +63,20 @@ promo/*.ttc
 frontend/demo/assets/shots/
 promo/msyhbd.ttc
 build/release/
+
+# ---------- 补充：音色其他格式（与 .sf2 同类的大体积采样） ----------
+Library/soundfonts/*.sf3
+
+# ---------- 补充：Python/Node 运行时产物 ----------
+__pycache__/
+*.py[cod]
+node_modules/
+
+# ---------- 补充：环境变量变体（.env.local 等同样含密钥） ----------
+.env.*
+!.env.example
+
+# ---------- 补充：操作系统垃圾文件 ----------
+Thumbs.db
+Desktop.ini
+.DS_Store

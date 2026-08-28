@@ -77,7 +77,7 @@ Source: "RUN.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "settings.example.json"; DestDir: "{app}"; Flags: ignoreversion
 ; 文档
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "README_EN.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "README_zh.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

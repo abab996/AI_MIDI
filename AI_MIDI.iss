@@ -2,6 +2,10 @@
 ; 编译命令: ISCC.exe AI_MIDI.iss
 ; 产物: dist\installer\AI_MIDI_Setup_3.0.0.exe
 ;
+; 发布物约定（长期规范）:
+;   - Windows 版仅上传本安装包（AI_MIDI_Setup_<ver>.exe），不再分发便携压缩包
+;   - Linux 版仅上传 tar.gz 压缩包（AI_MIDI_v<ver>_linux_amd64.tar.gz）
+;
 ; 设计说明（沿用 v2.0.1 安装脚本约定）:
 ;   - per-user 安装（默认 {localappdata}\Programs\AI_MIDI）：运行数据
 ;     （settings.json / projects / output）写在 exe 同级目录，装到

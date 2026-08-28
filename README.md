@@ -42,8 +42,7 @@ AI_MIDI 是一个 Windows 桌面应用（Go + Wails v2），把「AI 生成」�
 
 ### Windows
 
-- **安装包（推荐）**：从 [Releases](../../releases) 下载 `AI_MIDI_Setup_3.0.0.exe`，双击安装（per-user 免管理员，含中文向导与 JUCE 引擎）。
-- **便携版**：下载 `AI_MIDI_v3.0.0_windows_amd64.zip` 解压，双击 `RUN.bat` 启动。
+- 从 [Releases](../../releases) 下载 `AI_MIDI_Setup_3.0.0.exe`，双击安装（per-user 免管理员，含中文向导与 JUCE 引擎）。
 - 首次启动进入设置页，填入 API Key 并保存。
 
 ### Linux

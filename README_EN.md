@@ -42,8 +42,7 @@ The audio engine is a separate JUCE C++ project whose **sources are private** (n
 
 ### Windows
 
-- **Installer (recommended)**: grab `AI_MIDI_Setup_3.0.0.exe` from [Releases](../../releases) and run it (per-user, no admin required, includes the JUCE engine).
-- **Portable**: download `AI_MIDI_v3.0.0_windows_amd64.zip`, unzip, and run `RUN.bat`.
+- Grab `AI_MIDI_Setup_3.0.0.exe` from [Releases](../../releases) and run it (per-user, no admin required, includes the JUCE engine).
 - On first launch, open Settings and enter your API key.
 
 ### Linux

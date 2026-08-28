@@ -43,7 +43,7 @@
 ## 🚀 Quick Start
 
 ### Windows (recommended)
-1. Grab `AI_MIDI_Setup_3.0.0.exe` from [Releases](../../releases) and run it — no admin rights needed
+1. Grab `AI_MIDI_Setup_3.0.0_windows_amd64.exe` from [Releases](../../releases) and run it — no admin rights needed
 2. On first launch, read the usage notice, then open **Settings** and enter your API key
 3. Create a project and start composing!
 

@@ -43,7 +43,7 @@
 ## 🚀 快速开始
 
 ### Windows（推荐）
-1. 从 [Releases](../../releases) 下载 `AI_MIDI_Setup_3.0.0.exe`，双击安装（免管理员权限）
+1. 从 [Releases](../../releases) 下载 `AI_MIDI_Setup_3.0.0_windows_amd64.exe`，双击安装（免管理员权限）
 2. 首次启动阅读使用声明，然后打开 **设置** 页填入 API Key
 3. 新建档案，开始创作！
 

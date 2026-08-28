@@ -43,7 +43,8 @@ UninstallDisplayName={#MyAppName} {#MyAppVersion}
 
 ; 输出与压缩
 OutputDir=dist\installer
-OutputBaseFilename=AI_MIDI_Setup_{#MyAppVersion}
+; 文件名带平台标识，与 Linux 包（_linux_amd64）命名规则对齐
+OutputBaseFilename=AI_MIDI_Setup_{#MyAppVersion}_windows_amd64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

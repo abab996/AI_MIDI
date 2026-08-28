@@ -51,7 +51,7 @@ AI_MIDI 是一个 Windows 桌面应用（Go + Wails v2），把「AI 生成」�
 环境要求：**Go ≥ 1.27**、**Wails v2**（`go install github.com/wailsapp/wails/v2/cmd/wails@latest`）、Windows 10+。
 
 ```bat
-git clone https://github.com/<你的用户名>/AI_MIDI-go.git
+git clone https://github.com/abab996/AI_MIDI-go.git
 cd AI_MIDI-go
 wails build
 copy build\bin\AI_MIDI.exe AI_MIDI.exe

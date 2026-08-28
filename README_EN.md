@@ -51,7 +51,7 @@ The audio engine is a separate JUCE C++ project whose **sources are private** (n
 Requirements: **Go ≥ 1.27**, **Wails v2** (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), Windows 10+.
 
 ```bat
-git clone https://github.com/<your-username>/AI_MIDI-go.git
+git clone https://github.com/abab996/AI_MIDI-go.git
 cd AI_MIDI-go
 wails build
 copy build\bin\AI_MIDI.exe AI_MIDI.exe

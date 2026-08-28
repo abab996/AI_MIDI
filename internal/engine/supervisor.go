@@ -43,6 +43,7 @@ type Supervisor struct {
 	parked     bool   // 引擎文件缺失等不可重试错误：驻留失败态直至退出
 	sessionCnt int    // 已建立的会话数（Restarts = sessionCnt - 1）
 	lastApply  *map[string]any // 最近一次 applySetup 参数（重启后重放）
+	lastGood   AudioSettings   // 最近一次成功应用的音频设置（applySetup 超时后回退目标）
 	lastSoundFont string // 兼容旧单轨（track 0）
 	lastSoundFonts map[int]string // 每轨独立 SF2（重启后重放）
 	exePath    string
@@ -65,11 +66,16 @@ func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 	if cfg.PingInterval <= 0 {
 		cfg.PingInterval = 2 * time.Second
 	}
-	sup := &Supervisor{cfg: cfg, audio: audio, lastSoundFonts: make(map[int]string)}
+	sup := &Supervisor{cfg: cfg, audio: audio, lastGood: audio, lastSoundFonts: make(map[int]string)}
 	sup.exePath = ResolveEnginePath(audio.EnginePath)
 	sup.startedEnabled = audio.EngineEnabled
 	return sup
 }
+
+// applySetupTimeout 驱动切换专用超时：正常切换 2-5s 完成；个别驱动
+// （如 ASIO Link Pro）打开会永久卡死——超过该时限即判定卡死并回退，
+// 不让用户对着无响应的界面无限等待
+const applySetupTimeout = 15 * time.Second
 
 // StartedWithEnabled 当前守护会话启动时的启用状态（判断设置变更是否需重启）
 func (s *Supervisor) StartedWithEnabled() bool {
@@ -224,17 +230,34 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 		// 未就绪：设置已保存，引擎就绪后会由 loop 自动重放
 		return nil
 	}
-	resp, err := cli.Request("applySetup", params, s.cfg.RequestTimeout)
+	resp, err := cli.Request("applySetup", params, applySetupTimeout)
 	if err != nil {
-		// 请求超时 = 驱动在引擎内卡死。清掉重放标记：否则会话被判死
-		// 重启后，runOnce 会重放这份"坏设置"再次卡死引擎，形成
-		// 卡死→重启→重放→再卡死的循环
+		// 超时 = 驱动在引擎内卡死（消息线程阻塞在驱动打开上，进程无法恢复）。
+		// 回滚内存设置到最近一次可用配置并清掉重放标记：否则会话判死重启后
+		// 会重放这份坏设置再次卡死，UI 永远停在"检测中"。引擎进程由
+		// supervisor 现有的会话失效→重启机制拉起，落在可用设备上。
 		s.mu.Lock()
+		s.audio = s.lastGood
 		s.lastApply = nil
 		s.mu.Unlock()
 		return err
 	}
-	return resp.Err()
+	if err := resp.Err(); err != nil {
+		return err
+	}
+	// 成功：记录为新的回退目标
+	s.mu.Lock()
+	s.lastGood = audio
+	s.mu.Unlock()
+	return nil
+}
+
+// CurrentAudio 返回当前生效的音频设置（ApplySettings 超时回退后
+// 调用方可据此持久化 settings.json，保持 UI 与实际设备一致）
+func (s *Supervisor) CurrentAudio() AudioSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.audio
 }
 
 // TestTone 测试音开关
@@ -509,14 +532,25 @@ func (s *Supervisor) runOnce() string {
 		}
 	}
 	if len(params) > 0 {
-		if resp, err := cli.Request("applySetup", params, 30*time.Second); err != nil {
+		if resp, err := cli.Request("applySetup", params, applySetupTimeout); err != nil {
 			slog.Warn("[engine] 应用音频设置失败", "err", err)
+			// 冷启动重放卡死（驱动消息线程阻塞无法恢复）：回滚到系统默认
+			// 设备并清重放标记，本会话落在可用设备上；下次完整重启再试
+			s.mu.Lock()
+			s.audio = AudioSettings{
+				EngineEnabled: s.audio.EngineEnabled,
+				Backend:       s.audio.Backend,
+			}
+			s.lastApply = nil
+			s.lastGood = s.audio
+			s.mu.Unlock()
 		} else if err := resp.Err(); err != nil {
 			slog.Warn("[engine] 应用音频设置失败", "err", err)
 		} else {
 			s.mu.Lock()
 			p := params
 			s.lastApply = &p
+			s.lastGood = audio
 			s.mu.Unlock()
 		}
 	}

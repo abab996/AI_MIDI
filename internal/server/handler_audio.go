@@ -148,12 +148,20 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 	sup := engine.Get()
 	restartRequired := sup != nil && sup.StartedWithEnabled() != s.Audio.EngineEnabled
 	if !restartRequired && sup != nil {
+		attemptedDriver := s.Audio.Driver
+		attemptedDevice := s.Audio.Device
 		if err := sup.ApplySettings(s.Audio); err != nil {
 			// 超时类失败 = 驱动在引擎内卡死（个别 ASIO 驱动打开永不返回）。
-			// 此时引擎进程本身健康，只是卡在这一个调用上；重启引擎反而会
-			// 重放坏设置再次卡死。给出针对性提示，设置保留待换驱动后生效。
+			// ApplySettings 已把内存设置回滚到最近可用配置，这里持久化之，
+			// 保持 settings.json 与实际设备一致
 			if isEngineTimeoutErr(err) {
-				writeError(w, http.StatusGatewayTimeout, "ASIO Link Pro 未响应")
+				s.Audio = sup.CurrentAudio()
+				_ = config.SaveSettings(s)
+				name := attemptedDevice
+				if name == "" {
+					name = attemptedDriver
+				}
+				writeError(w, http.StatusGatewayTimeout, name+" 未响应")
 				return
 			}
 			writeError(w, http.StatusBadGateway, "设置已保存，但下发引擎失败: "+err.Error())

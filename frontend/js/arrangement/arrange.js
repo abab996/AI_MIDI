@@ -3383,7 +3383,6 @@
     var win = document.getElementById("arrRackWindow");
     var titlebar = document.getElementById("arrRackTitlebar");
     var btn = this.el.arrRackBtn || document.getElementById("arrRackBtn");
-    var studioBtn = document.getElementById("studioRackBtn");
     var closeBtn = document.getElementById("arrRackCloseBtn");
     var collapseBtn = document.getElementById("arrRackCollapseBtn");
     var addSf2Btn = document.getElementById("arrRackAddSf2Btn");
@@ -3395,9 +3394,6 @@
 
     if (btn) {
       btn.addEventListener("click", toggleFn);
-    }
-    if (studioBtn) {
-      studioBtn.addEventListener("click", toggleFn);
     }
 
     if (closeBtn && win) {

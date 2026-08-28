@@ -6,8 +6,6 @@ import (
 	"sync"
 
 	"aimidi/internal/engine"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App Wails 应用程序结构
@@ -26,22 +24,6 @@ func (a *App) Startup(ctx context.Context) {
 	a.ctxMu.Lock()
 	defer a.ctxMu.Unlock()
 	a.ctx = ctx
-}
-
-// SelectFolderDialog 打开原生文件夹选择对话框。
-// 桌面模式走 Wails 对话框（自动挂主窗口）；浏览器模式（-browser）
-// 没有 Wails 运行时，直接调 Win32 弹窗——两种模式后端都能弹。
-func (a *App) SelectFolderDialog() (string, error) {
-	a.ctxMu.RLock()
-	ctx := a.ctx
-	a.ctxMu.RUnlock()
-
-	if ctx != nil {
-		return runtime.OpenDirectoryDialog(ctx, runtime.OpenDialogOptions{
-			Title: "选择工作区目录",
-		})
-	}
-	return SelectFolderNative("选择工作区目录")
 }
 
 // ===== 原生音频引擎绑定（M2）：前端经 window.go.app.App.* 直达，绕过 HTTP =====

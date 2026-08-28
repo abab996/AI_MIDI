@@ -62,3 +62,4 @@ promo/sfx/
 promo/*.ttc
 frontend/demo/assets/shots/
 promo/msyhbd.ttc
+build/release/

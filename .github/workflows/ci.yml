@@ -1,5 +1,5 @@
-# 最小 CI：vet + test + build（Windows，与桌面目标平台一致）
-# wails build 的完整打包（WebView2/NSIS）留给本地/Release 流程，
+# 最小 CI：vet + test + build（Windows 桌面主平台 + Linux 浏览器模式）
+# wails 的完整打包（WebView2 等）留给本地/Release 流程，
 # 这里只保证 Go 侧编译与测试始终可过（洞察报告 P0-5）。
 name: CI
 
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -37,4 +37,34 @@ jobs:
         with:
           name: AI_MIDI-windows
           path: AI_MIDI.exe
+          retention-days: 14
+
+  linux:
+    # Linux 无 JUCE 原生引擎（闭源引擎仅 Windows 附件分发），
+    # 走 -browser 浏览器模式（Web Audio 降级），本地 HTTP 服务
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build (browser mode binary)
+        run: go build -trimpath -ldflags "-s -w" -o AI_MIDI-linux-amd64 .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI_MIDI-linux
+          path: AI_MIDI-linux-amd64
           retention-days: 14

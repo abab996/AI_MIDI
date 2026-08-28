@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -424,11 +423,9 @@ func (s *Supervisor) runOnce() {
 	cmd := exec.Command(s.exePath, "--parent", strconv.Itoa(os.Getpid()))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// 隐藏引擎的控制台窗口（JUCE 引擎为 console 子系统，默认会弹出黑窗）
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-	}
+	// 隐藏引擎的控制台窗口（JUCE 引擎为 console 子系统，默认会弹出黑窗）；
+	// 平台相关属性收敛到 engineSysProcAttr（非 Windows 返回 nil）
+	cmd.SysProcAttr = engineSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		s.setState(StateFailed, "启动失败: "+err.Error())
 		// 引擎文件缺失属于部署问题，重试无意义：驻留失败态直至主程序退出或文件出现

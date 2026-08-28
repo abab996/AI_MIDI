@@ -47,9 +47,14 @@ func TestAllDefaultIsJUCE(t *testing.T) {
 			mustNotContain: []string{},
 		},
 		{
-			file: "internal/engine/supervisor.go",
+			file: "internal/engine/procattr_windows.go",
 			mustContain: []string{"HideWindow", "CREATE_NO_WINDOW"},
 			mustNotContain: []string{},
+		},
+		{
+			file: "internal/engine/supervisor.go",
+			mustContain: []string{"engineSysProcAttr()"},
+			mustNotContain: []string{"HideWindow:"},
 		},
 		{
 			file: "main.go",

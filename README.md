@@ -2,7 +2,7 @@
 
 > 对话式 AI 编曲工作台：用自然语言生成 MIDI，在 FL Studio 风格的编曲窗口里编排、试听并导出。
 
-**版本** v3.0.0 · **平台** Windows · **协议** Apache-2.0（附闭源音频引擎，见 [许可](#许可)）
+**版本** v3.0.0 · **平台** Windows / Linux · **协议** Apache-2.0（附闭源音频引擎，见 [许可](#许可)）
 
 [English](README_EN.md)
 
@@ -40,15 +40,21 @@ AI_MIDI 是一个 Windows 桌面应用（Go + Wails v2），把「AI 生成」�
 
 ## 快速开始
 
-### 方式一：下载预编译包（推荐）
+### Windows
 
-1. 从 [Releases](../../releases) 下载最新 `AI_MIDI_v3.0.0_windows_amd64.zip`（含主程序与 `aimidi-engine.exe`）并解压。
-2. 双击 `RUN.bat` 启动。
-3. 首次启动进入设置页，填入 API Key 并保存。
+- **安装包（推荐）**：从 [Releases](../../releases) 下载 `AI_MIDI_Setup_3.0.0.exe`，双击安装（per-user 免管理员，含中文向导与 JUCE 引擎）。
+- **便携版**：下载 `AI_MIDI_v3.0.0_windows_amd64.zip` 解压，双击 `RUN.bat` 启动。
+- 首次启动进入设置页，填入 API Key 并保存。
 
-### 方式二：从源码构建
+### Linux
 
-环境要求：**Go ≥ 1.27**、**Wails v2**（`go install github.com/wailsapp/wails/v2/cmd/wails@latest`）、Windows 10+。
+1. 从 [Releases](../../releases) 下载 `AI_MIDI_v3.0.0_linux_amd64.tar.gz` 并解压。
+2. `chmod +x RUN.sh && ./RUN.sh`（桌面模式需要 webkit2gtk；缺失时用 `./AI_MIDI -browser` 走浏览器模式）。
+3. 闭源 JUCE 引擎仅随 Windows 版分发，Linux 自动降级 Web Audio（功能完整，延迟略高）。
+
+### 从源码构建
+
+环境要求：**Go ≥ 1.27**、**Wails v2**（`go install github.com/wailsapp/wails/v2/cmd/wails@latest`）、Windows 10+（Linux 见下方说明）。
 
 ```bat
 git clone https://github.com/abab996/AI_MIDI-go.git

@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"unsafe"
 
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"aimidi/internal/config"
 )
 
@@ -52,6 +54,22 @@ func AcquireSingleInstanceLock(name string) bool {
 	singleInstanceHandle = h
 	lastErr, _, _ := procGetLastError.Call()
 	return lastErr != 183 // ERROR_ALREADY_EXISTS = 183
+}
+
+// SelectFolderDialog 打开原生文件夹选择对话框（Windows）。
+// 桌面模式走 Wails 对话框（自动挂主窗口）；浏览器模式（-browser）
+// 没有 Wails 运行时，直接调 Win32 弹窗——两种模式后端都能弹。
+func (a *App) SelectFolderDialog() (string, error) {
+	a.ctxMu.RLock()
+	ctx := a.ctx
+	a.ctxMu.RUnlock()
+
+	if ctx != nil {
+		return wailsruntime.OpenDirectoryDialog(ctx, wailsruntime.OpenDialogOptions{
+			Title: "选择工作区目录",
+		})
+	}
+	return SelectFolderNative("选择工作区目录")
 }
 
 // ShowErrorDialog 弹出 Windows 原生错误消息框

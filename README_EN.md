@@ -2,7 +2,7 @@
 
 > A conversational AI arrangement workbench: generate MIDI with natural language, then arrange, audition and export it in an FL Studio–style arrangement window.
 
-**Version** v3.0.0 · **Platform** Windows · **License** Apache-2.0 (bundled closed-source audio engine, see [License](#license))
+**Version** v3.0.0 · **Platform** Windows / Linux · **License** Apache-2.0 (bundled closed-source audio engine, see [License](#license))
 
 [中文说明](README.md)
 
@@ -40,15 +40,21 @@ The audio engine is a separate JUCE C++ project whose **sources are private** (n
 
 ## Quick Start
 
-### Option 1: Download a prebuilt package (recommended)
+### Windows
 
-1. Grab the latest `AI_MIDI_v3.0.0_windows_amd64.zip` from [Releases](../../releases) (includes the main program and `aimidi-engine.exe`) and unzip it.
-2. Run `RUN.bat`.
-3. On first launch, open Settings and enter your API key.
+- **Installer (recommended)**: grab `AI_MIDI_Setup_3.0.0.exe` from [Releases](../../releases) and run it (per-user, no admin required, includes the JUCE engine).
+- **Portable**: download `AI_MIDI_v3.0.0_windows_amd64.zip`, unzip, and run `RUN.bat`.
+- On first launch, open Settings and enter your API key.
 
-### Option 2: Build from source
+### Linux
 
-Requirements: **Go ≥ 1.27**, **Wails v2** (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), Windows 10+.
+1. Download `AI_MIDI_v3.0.0_linux_amd64.tar.gz` from [Releases](../../releases) and unzip it.
+2. `chmod +x RUN.sh && ./RUN.sh` (desktop mode needs webkit2gtk; otherwise run `./AI_MIDI -browser` for browser mode).
+3. The closed-source JUCE engine ships with Windows builds only; Linux automatically falls back to Web Audio (fully functional, slightly higher latency).
+
+### Build from source
+
+Requirements: **Go ≥ 1.27**, **Wails v2** (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), Windows 10+ (see Linux notes above).
 
 ```bat
 git clone https://github.com/abab996/AI_MIDI-go.git

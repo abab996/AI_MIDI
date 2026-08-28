@@ -15,7 +15,9 @@ const noteTableIntro = `由于无法直接上传midi文件，我们会使用类�
 表示音符对应的按键是C4，演奏力度80，时间是第一拍到第二拍。`
 
 // BuildSystemPrompt 构建包含乐理知识库与工具调用铁律的 System Prompt。
-// globalBPM 为项目全局 BPM（<=0 时按 120 提示），AI 生成新 MIDI 必须优先采用。
+// BuildSystemPrompt 构建包含乐理知识库与工具调用铁律的 System Prompt。
+// globalBPM 为项目全局 BPM（<=0 时按 120 提示）：BPM 遵循顺序为
+// 用户当前消息明确指定 > 全局 BPM 兜底；已存在文件不改写其 BPM。
 func BuildSystemPrompt(files []project.MidiFileInfo, globalBPM int) string {
 	libraryFiles := mcp.ListLibraryFiles()
 	if globalBPM <= 0 {
@@ -31,7 +33,7 @@ func BuildSystemPrompt(files []project.MidiFileInfo, globalBPM int) string {
 	sb.WriteString("2. **禁止跳过工具**：如果用户要求你创作音乐（配和弦、写旋律、设计转音、编曲等），你的**第一步**必须是读取相关知识文件，否则你无法获得正确的创作指导。\n")
 	sb.WriteString("3. **多文件并行**：可以一次性调用多个 `read_library_file` 同时读取多个相关文件。\n")
 	sb.WriteString("4. **内容优先**：读取文件后，必须严格遵循文件中的方法论和指导原则进行创作。\n")
-	sb.WriteString(fmt.Sprintf("5. **全局 BPM 优先**：本工程的全局 BPM 为 **%d**。调用 `create_midi` 生成**新** MIDI 时，`bpm` 参数必须使用该值——仅当用户在当前消息中明确要求了其他速度才可覆盖。**已存在的 MIDI 文件保持其自身 BPM，不要改写、不要按全局 BPM 重算**。\n\n", globalBPM))
+	sb.WriteString(fmt.Sprintf("5. **BPM 遵循顺序（用户优先，全局兜底）**：用户在当前消息中明确提出的 BPM 要求**永远最优先**，必须原样采用；用户未提及时，使用本工程的全局 BPM **%d** 作为 `create_midi` 的 `bpm` 参数。该规则只约束**新建** MIDI；**已存在的 MIDI 文件保持其自身 BPM，不要改写、不要重算**。\n\n", globalBPM))
 
 	sb.WriteString("## 标准工作流程\n")
 	sb.WriteString("1. 用户提出请求（如'帮我配和弦'）\n")
@@ -81,7 +83,7 @@ func BuildSystemPrompt(files []project.MidiFileInfo, globalBPM int) string {
 	sb.WriteString("- **`read_library_file`**：**[最常用]** 读取知识文件。参数：`filename`（文件名，如 `02_配和弦指南.md`）\n")
 	sb.WriteString("- **`list_midi_files`**：列出当前项目的 MIDI 文件。无参数。\n")
 	sb.WriteString("- **`parse_midi`**：解析 MIDI 文件为 note_table。参数：`filename`\n")
-	sb.WriteString(fmt.Sprintf("- **`create_midi`**：从 note_table 创建 MIDI 文件。参数：`filename`, `bpm`（**默认必须用全局 BPM %d**，除非用户当前消息明确指定）, `notes`\n", globalBPM))
+	sb.WriteString(fmt.Sprintf("- **`create_midi`**：从 note_table 创建 MIDI 文件。参数：`filename`, `bpm`（用户本次消息指定了就用用户的；未指定则用全局 BPM %d）, `notes`\n", globalBPM))
 	sb.WriteString("- **`delete_midi`**：删除 MIDI 文件。参数：`filename`\n")
 	sb.WriteString("- **`create_folder`**：创建文件夹（支持多级子目录）。参数：`name`（如 `drums`、`sectionA/drums`）\n")
 	sb.WriteString("- **`list_project_structure`**：以树状图查看项目所有 MIDI 文件的目录层级。无参数。\n")

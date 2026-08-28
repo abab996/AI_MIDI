@@ -3241,33 +3241,21 @@
         })
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
     });
-    /* 工作区绑定入口：Wails 原生模式突出"选择目录"（选完即绑），
-       手输路径折叠为次要入口；-browser 模式无原生对话框，手输为主。
-       （洞察报告 §2.3：桌面应用强制手打路径属反人类，但 browser 模式必须保留） */
-    var hasNativeFolderDialog = !!(window.go && window.go.app &&
-      window.go.app.App && window.go.app.App.SelectFolderDialog);
+    /* 工作区绑定入口：「选择目录」为主入口——后端在桌面（Wails）与
+       浏览器（Win32 兜底）模式下都能弹出系统目录选择器，选完即绑；
+       手输路径折叠为次要入口。（洞察报告 §2.3：桌面应用强制手打路径属反人类） */
     var wsManualRow = $("#wsManualRow");
     var wsManualToggle = $("#wsManualToggle");
-    if (hasNativeFolderDialog) {
-      if (wsManualRow) wsManualRow.style.display = "none";
-      if (wsManualToggle) {
-        wsManualToggle.hidden = false;
-        wsManualToggle.addEventListener("click", function () {
-          wsManualRow.style.display = (wsManualRow.style.display === "none") ? "flex" : "none";
-        });
-      }
-    } else {
-      if (wsManualRow) wsManualRow.style.display = "flex";
-      if ($("#pickFolderBtn")) $("#pickFolderBtn").style.display = "none";
+    if (wsManualRow) wsManualRow.style.display = "none";
+    if (wsManualToggle) {
+      wsManualToggle.hidden = false;
+      wsManualToggle.addEventListener("click", function () {
+        wsManualRow.style.display = (wsManualRow.style.display === "none") ? "flex" : "none";
+      });
     }
 
     function bindWorkspace(path) {
-      if (!path) {
-        UI.toast(hasNativeFolderDialog
-          ? "请选择或输入工作区目录路径"
-          : "浏览器模式无法弹出系统对话框，请手动输入本机目录路径", "warn");
-        return;
-      }
+      if (!path) { UI.toast("请选择或输入工作区目录路径", "warn"); return; }
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/bind", { path: path })
         .then(function (data) {
           applyFiles(data.midi_files, data.dirs);
@@ -3286,19 +3274,14 @@
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/pick-folder", {})
         .then(function (data) {
           if (!data.path) return; /* 用户取消选择 */
-          if (hasNativeFolderDialog) {
-            bindWorkspace(data.path); /* 原生模式：选完即绑，省一步 */
-          } else {
-            $("#wsPathInput").value = data.path;
-          }
+          bindWorkspace(data.path); /* 选完即绑，省一步 */
         })
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
     });
     $("#bindBtn").addEventListener("click", function () {
       var path = $("#wsPathInput").value.trim();
-      if (!path && hasNativeFolderDialog) {
-        /* 输入框留空 = 直接弹系统目录选择器（桌面模式）；
-           browser 模式无系统对话框，仍走手输提示 */
+      if (!path) {
+        /* 输入框留空 = 直接弹系统目录选择器（后端 Win32 兜底，两种模式均可用） */
         $("#pickFolderBtn").click();
         return;
       }

@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -21,13 +22,18 @@ var (
 	procMessageBoxW           = user32.NewProc("MessageBoxW")
 	procGetDC                 = user32.NewProc("GetDC")
 	procReleaseDC             = user32.NewProc("ReleaseDC")
-	procGetDeviceCaps         = gdi32.NewProc("GetDeviceCaps")
+	procGetDeviceCaps         = gdi32.NewProc("GetDeviceCaps") // GetDeviceCaps 是 GDI 函数（原误挂 user32，桌面模式启动即 panic）
 	procSystemParametersInfoW = user32.NewProc("SystemParametersInfoW")
 	procSetProcessDPIAware    = user32.NewProc("SetProcessDPIAware")
 	procSetAppUserModelID     = shell32.NewProc("SetCurrentProcessExplicitAppUserModelID")
 	procFindWindowW           = user32.NewProc("FindWindowW")
 	procLoadImageW            = user32.NewProc("LoadImageW")
 	procSendMessageW          = user32.NewProc("SendMessageW")
+	procSHBrowseForFolderW    = shell32.NewProc("SHBrowseForFolderW")
+	procSHGetPathFromIDListW  = shell32.NewProc("SHGetPathFromIDListW")
+	procCoInitializeEx        = ole32.NewProc("CoInitializeEx")
+	procCoUninitialize        = ole32.NewProc("CoUninitialize")
+	procCoTaskMemFree         = ole32.NewProc("CoTaskMemFree")
 )
 
 type rect struct {
@@ -53,6 +59,64 @@ func ShowErrorDialog(title, message string) {
 	tPtr, _ := syscall.UTF16PtrFromString(title)
 	mPtr, _ := syscall.UTF16PtrFromString(message)
 	_, _, _ = procMessageBoxW.Call(0, uintptr(unsafe.Pointer(mPtr)), uintptr(unsafe.Pointer(tPtr)), 0x10) // MB_ICONERROR
+}
+
+// browseInfoW Win32 BROWSEINFOW（目录选择对话框参数）
+type browseInfoW struct {
+	hwndOwner      uintptr
+	pidlRoot       uintptr
+	pszDisplayName uintptr
+	lpszTitle      uintptr
+	ulFlags        uint32
+	lpfn           uintptr
+	lParam         uintptr
+	iImage         int32
+}
+
+// SelectFolderNative 纯 Win32 目录选择对话框（SHBrowseForFolder）。
+// 不依赖 Wails 运行时——浏览器模式（-browser，无 Wails ctx）下
+// 后端仍可直接弹出系统目录选择器；返回空串表示用户取消。
+func SelectFolderNative(title string) (string, error) {
+	// COM 对话框要求单线程套间；锁住 OS 线程避免 goroutine 迁移导致
+	// CoInitializeEx 与弹窗落在不同线程
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	const coinitAPARTMENTTHREADED = 0x2
+	hr, _, _ := procCoInitializeEx.Call(0, coinitAPARTMENTTHREADED)
+	if hr == 0 || hr == 1 { // S_OK / S_FALSE：本次调用负责反初始化
+		defer procCoUninitialize.Call()
+	}
+
+	titlePtr, err := syscall.UTF16PtrFromString(title)
+	if err != nil {
+		return "", err
+	}
+	display := make([]uint16, 260)
+
+	const (
+		bifReturnOnlyFSDirs = 0x0001
+		bifEditBox          = 0x0010
+		bifNewDialogStyle   = 0x0040
+	)
+	bi := browseInfoW{
+		lpszTitle:      uintptr(unsafe.Pointer(titlePtr)),
+		pszDisplayName: uintptr(unsafe.Pointer(&display[0])),
+		ulFlags:        bifReturnOnlyFSDirs | bifEditBox | bifNewDialogStyle,
+	}
+
+	pidl, _, _ := procSHBrowseForFolderW.Call(uintptr(unsafe.Pointer(&bi)))
+	if pidl == 0 {
+		return "", nil // 用户取消
+	}
+	defer procCoTaskMemFree.Call(pidl)
+
+	pathBuf := make([]uint16, 32768)
+	ret, _, _ := procSHGetPathFromIDListW.Call(pidl, uintptr(unsafe.Pointer(&pathBuf[0])))
+	if ret == 0 {
+		return "", nil
+	}
+	return syscall.UTF16ToString(pathBuf), nil
 }
 
 // SetCurrentProcessAppID 为当前进程设置显式 AppUserModelID

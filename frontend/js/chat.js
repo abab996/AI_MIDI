@@ -3290,7 +3290,14 @@
         .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
     });
     $("#bindBtn").addEventListener("click", function () {
-      bindWorkspace($("#wsPathInput").value.trim());
+      var path = $("#wsPathInput").value.trim();
+      if (!path && hasNativeFolderDialog) {
+        /* 输入框留空 = 直接弹系统目录选择器（桌面模式）；
+           browser 模式无系统对话框，仍走手输提示 */
+        $("#pickFolderBtn").click();
+        return;
+      }
+      bindWorkspace(path);
     });
     $("#unbindBtn").addEventListener("click", function () {
       /* 解绑即从工作区回到项目内文件清单（界面立变），给一次确认 */

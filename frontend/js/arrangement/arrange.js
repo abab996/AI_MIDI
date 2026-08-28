@@ -194,6 +194,17 @@
 
     this.engine.resume();
     var self = this;
+    /* 早期测试版提示：每次启动首次打开编曲窗时弹出（点「知道了」后本会话不再弹） */
+    var betaOverlay = document.getElementById("arrBetaModal");
+    if (betaOverlay && betaOverlay.hidden) {
+      try {
+        if (sessionStorage.getItem("aimidi_arr_beta_v1") !== "1") {
+          setTimeout(function () {
+            if (self.isOpen) self.showOverlay(betaOverlay);
+          }, 500);
+        }
+      } catch (e) { /* sessionStorage 不可用时每次打开都提示 */ }
+    }
     // 等折叠动画落定再测量画布（380~520ms 大型窗口动效区间）
     setTimeout(function () {
       self.resizeRulerCanvas();
@@ -3160,6 +3171,16 @@
     var self = this;
     this._modalToken = 0;
 
+    /* 早期测试版提示：sessionStorage 记忆（Esc 关闭不记，点「知道了」后本会话不再弹） */
+    var betaOverlay = document.getElementById("arrBetaModal");
+    var betaOk = document.getElementById("arrBetaOk");
+    if (betaOverlay && betaOk) {
+      betaOk.addEventListener("click", function () {
+        try { sessionStorage.setItem("aimidi_arr_beta_v1", "1"); } catch (e) {}
+        self.hideOverlay(betaOverlay);
+      });
+    }
+
     var renameOverlay = document.getElementById("arrRenameModal");
     var renameInput = document.getElementById("arrRenameInput");
     if (renameOverlay) {
@@ -3233,7 +3254,7 @@
 
   /** 当前可见的最上层编排弹窗（无则 null） */
   Arrange.prototype._topOverlay = function () {
-    var ids = ["arrConfirmModal", "arrRenameModal", "arrShortcutsModal"];
+    var ids = ["arrConfirmModal", "arrRenameModal", "arrShortcutsModal", "arrBetaModal"];
     for (var i = ids.length - 1; i >= 0; i--) {
       var m = document.getElementById(ids[i]);
       if (m && !m.hidden) return m;

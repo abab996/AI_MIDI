@@ -700,6 +700,24 @@
   </div>
 </div>
 
+<!-- 首次启动使用声明（localStorage 记忆，点击「我已阅读并知悉」后不再弹出） -->
+<div class="modal-overlay" id="disclaimerOverlay" hidden role="dialog" aria-modal="true" aria-label="使用声明">
+  <div class="modal card brackets" style="max-width:520px">
+    <div class="modal-title">📜 使用声明 · Disclaimer</div>
+    <div class="confirm-text" style="text-align:left; line-height:1.9; font-size:12.5px">
+      欢迎使用 AI_MIDI！开始前请阅读以下说明：<br><br>
+      1. 本软件<b>仅供音乐创作辅助与学习交流</b>使用；<br>
+      2. 本软件<b>完全免费并开源</b>（Apache-2.0），任何人不得将其用于收费分发或捆绑销售；<br>
+      3. AI 生成内容仅供参考，生成结果可能与你熟悉的作品存在相似之处，<b>商用前请自行核实并承担相应责任</b>；<br>
+      4. 软件内导入的第三方音色（SF2 等）与素材<b>版权归各自权利人所有</b>，请在授权范围内使用；<br>
+      5. 软件按「现状」提供，不附带任何明示或默示的担保，因使用本软件产生的风险由用户自行承担。
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="disclaimerOk">我已阅读并知悉</button>
+    </div>
+  </div>
+</div>
+
 <!-- 新建 / 重命名 弹窗 -->
 <div class="modal-overlay" id="modalOverlay" hidden role="dialog" aria-modal="true" aria-label="输入弹窗">
   <div class="modal card brackets">
@@ -811,6 +829,22 @@
     <div class="modal-actions">
       <button class="btn btn-secondary btn-sm" id="arrConfirmCancel">取消</button>
       <button class="btn btn-danger btn-sm" id="arrConfirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 编曲窗早期测试版提示（sessionStorage 记忆，每次启动首次打开时弹出） -->
+<div class="modal-overlay" id="arrBetaModal" hidden role="dialog" aria-modal="true" aria-label="编曲窗测试版提示">
+  <div class="modal card brackets" style="max-width:480px">
+    <div class="modal-title">🧪 编曲窗 · 早期测试版</div>
+    <div class="confirm-text" style="text-align:left; line-height:1.9; font-size:12.5px">
+      编曲窗口目前处于<b>早期测试版（Beta）</b>，可能存在不稳定、表现异常等问题，仅供体验使用。<br><br>
+      · 暂不支持 <b>VST 插件</b>加载；<br>
+      · 暂不支持与 <b>AI 对话联动</b>（AI 生成的 MIDI 文件可从左栏拖入轨道使用）；<br><br>
+      编排数据会自动保存，重要工程仍建议留存备份。
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary btn-sm" id="arrBetaOk">知道了</button>
     </div>
   </div>
 </div>

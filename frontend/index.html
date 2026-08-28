@@ -146,5 +146,22 @@
 <script src="/js/app.js"></script>
 <script src="/js/theme.js"></script>
 <script src="/js/workbench.js"></script>
+<script>
+  /* 旧快捷操作页引导：本页功能已集成进多轮对话页的「快速任务」，
+     每个会话提示一次（避免反复打扰） */
+  (function () {
+    try {
+      if (sessionStorage.getItem("aimidi_legacy_page_tip_v1") === "1") return;
+      sessionStorage.setItem("aimidi_legacy_page_tip_v1", "1");
+    } catch (e) {}
+    document.addEventListener("DOMContentLoaded", function () {
+      setTimeout(function () {
+        if (window.UI && UI.toast) {
+          UI.toast("ℹ 本页面已集成进「快速任务」：前往多轮对话页，点击顶部 ⚡ 快速任务 即可使用", "warn");
+        }
+      }, 600);
+    });
+  })();
+</script>
 </body>
 </html>

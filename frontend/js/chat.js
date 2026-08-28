@@ -2807,9 +2807,12 @@
     }
   }
 
-  /* Esc 关闭弹窗（与右键菜单 Esc 行为一致） */
+  /* Esc 关闭弹窗（与右键菜单 Esc 行为一致）；
+     使用声明为最上层，Esc 仅关闭本次显示（未点「知悉」下次启动仍会弹出） */
   function escCloseOverlays(e) {
     if (e.key !== "Escape") return;
+    var disclaimer = $("#disclaimerOverlay");
+    if (disclaimer && !disclaimer.hidden) { hideDisclaimer(); return; }
     var modal = $("#modalOverlay");
     var confirm = $("#confirmOverlay");
     var quick = $("#quickTaskOverlay");
@@ -2818,9 +2821,32 @@
     else if (quick && !quick.hidden) { closeQuickTask(); }
   }
 
+  /* 首次启动使用声明：localStorage 记忆（点「我已阅读并知悉」后不再弹出） */
+  function initDisclaimer() {
+    var overlay = $("#disclaimerOverlay");
+    if (!overlay) return;
+    try {
+      if (localStorage.getItem("aimidi_disclaimer_v1") === "1") return;
+    } catch (e) { /* localStorage 不可用（隐私模式）时每次启动都显示 */ }
+    overlay.hidden = false;
+    var ok = $("#disclaimerOk");
+    if (ok) {
+      ok.addEventListener("click", function () {
+        try { localStorage.setItem("aimidi_disclaimer_v1", "1"); } catch (e) {}
+        overlay.hidden = true;
+      });
+    }
+  }
+  function hideDisclaimer() {
+    var overlay = $("#disclaimerOverlay");
+    if (overlay) overlay.hidden = true;
+  }
+
   /* ═══════════ 初始化 ═══════════ */
 
   function init() {
+    initDisclaimer();
+
     reloadProjects().catch(function (e) {
       UI.toast("✗ 加载项目列表失败: " + e.message, "err");
     });

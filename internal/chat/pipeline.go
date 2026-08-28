@@ -59,6 +59,8 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 	s := GetSession(projectID)
 	s.SwitchTask(tid)
 	st := s.GetTaskState(tid)
+	// 项目全局 BPM：AI 生成新 MIDI 的默认速度（已存在文件不改写）
+	globalBPM := project.GetProjectBPM(projectID)
 	// 会话状态锁：ChatDisplay/MidiFiles 的所有读写（含 HTTP 处理器里的
 	// 读路径）都必须经过它，否则流式写入与 GET 载荷快照并发读写 map
 	// 会触发 Go runtime fatal（recover 无法拦截，整个应用崩溃）
@@ -122,7 +124,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 		var msgs []llm.ChatCompletionMessage
 		msgs = append(msgs, llm.ChatCompletionMessage{
 			Role:    "system",
-			Content: BuildSystemPrompt(midiFiles),
+			Content: BuildSystemPrompt(midiFiles, globalBPM),
 		})
 
 		for _, m := range history {
@@ -276,6 +278,12 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 			fnName := tc.Function.Name
 			var rawArgs map[string]any
 			_ = json.Unmarshal([]byte(tc.Function.Arguments), &rawArgs)
+
+			// create_midi 未带 bpm 时兜底注入全局 BPM（提示词已要求 AI
+			// 使用全局值，这里保证漏参时生成结果仍然一致）
+			if fnName == "create_midi" && rawArgs["bpm"] == nil {
+				rawArgs["bpm"] = globalBPM
+			}
 
 			if fnName == "ask_user_question" {
 				questions := NormalizeQuestions(rawArgs["questions"])
@@ -501,6 +509,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 	s.SwitchTask(tid)
 	st := s.GetTaskState(tid)
 	fl := GetSessionLock(projectID)
+	globalBPM := project.GetProjectBPM(projectID)
 
 	if st.PendingQuestion == nil {
 		lock.Unlock()
@@ -552,6 +561,11 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 		argsStr, _ := fnMap["arguments"].(string)
 		var args map[string]any
 		_ = json.Unmarshal([]byte(argsStr), &args)
+
+		// 与主循环一致：create_midi 缺 bpm 时兜底注入全局 BPM
+		if fnName == "create_midi" && args["bpm"] == nil {
+			args["bpm"] = globalBPM
+		}
 
 		// 占位 + 执行 + 完成块（与主循环一致，用户能看到补执行的即时反馈）
 		pendingEntry := llm.FormatPendingToolEntry(fnName, args)

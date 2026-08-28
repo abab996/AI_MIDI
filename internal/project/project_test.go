@@ -123,3 +123,41 @@ func TestProjectLifecycle(t *testing.T) {
 		t.Fatalf("ListProjects after delete got %+v", remList)
 	}
 }
+
+func TestProjectGlobalBPM(t *testing.T) {
+	tmpDir := setupTestProjectDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	meta, err := CreateProject("BPM测试项目")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	// 未设置时回退默认 120
+	if got := GetProjectBPM(meta.ID); got != DefaultBPM {
+		t.Fatalf("default BPM = %d, want %d", got, DefaultBPM)
+	}
+
+	// 写入后可读回
+	SaveProjectBPM(meta.ID, 96)
+	if got := GetProjectBPM(meta.ID); got != 96 {
+		t.Fatalf("BPM after save = %d, want 96", got)
+	}
+
+	// SaveMidiManifest 不得覆盖 bpm 字段
+	files := []MidiFileInfo{{Name: "a.mid", Path: "x/a.mid", Size: 10}}
+	SaveMidiManifest(meta.ID, files)
+	if got := GetProjectBPM(meta.ID); got != 96 {
+		t.Fatalf("BPM after manifest save = %d, want 96 (manifest must preserve bpm)", got)
+	}
+	loaded := LoadMidiManifest(meta.ID)
+	if len(loaded) != 1 || loaded[0].Name != "a.mid" {
+		t.Fatalf("manifest files lost after bpm save: %+v", loaded)
+	}
+
+	// 非法值拒绝写入
+	SaveProjectBPM(meta.ID, 9999)
+	if got := GetProjectBPM(meta.ID); got != 96 {
+		t.Fatalf("out-of-range BPM should be rejected, got %d", got)
+	}
+}

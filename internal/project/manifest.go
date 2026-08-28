@@ -127,7 +127,62 @@ func removeEmptyDirsRecursive(dir, stopDir string) {
 	}
 }
 
-// SaveMidiManifest 保存项目 MIDI 清单
+// DefaultBPM 项目全局 BPM 默认值（新建工程 / 未设置时）
+const DefaultBPM = 120
+
+// GetProjectBPM 读取项目全局 BPM（存于 midi.json 根级 bpm 字段）。
+// 未设置 / 非法 / 超出 30-300 时回退 DefaultBPM。
+func GetProjectBPM(projectID string) int {
+	pdir, err := ProjectDir(projectID)
+	if err != nil {
+		return DefaultBPM
+	}
+	mfile := filepath.Join(pdir, "midi.json")
+	if data, err := os.ReadFile(mfile); err == nil {
+		var root struct {
+			BPM int `json:"bpm"`
+		}
+		if err := json.Unmarshal(data, &root); err == nil && root.BPM >= 30 && root.BPM <= 300 {
+			return root.BPM
+		}
+	}
+	return DefaultBPM
+}
+
+// SaveProjectBPM 写入项目全局 BPM，保留清单中已有的 midi_files。
+// 与清单保存相同的 原子写（tmp+rename）策略。
+func SaveProjectBPM(projectID string, bpm int) {
+	if bpm < 30 || bpm > 300 {
+		return
+	}
+	pdir, err := ProjectDir(projectID)
+	if err != nil {
+		return
+	}
+	mfile := filepath.Join(pdir, "midi.json")
+
+	root := map[string]any{"bpm": bpm}
+	if data, err := os.ReadFile(mfile); err == nil {
+		var existing map[string]json.RawMessage
+		if err := json.Unmarshal(data, &existing); err == nil {
+			if mf, ok := existing["midi_files"]; ok {
+				root["midi_files"] = mf
+			}
+		}
+	}
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := mfile + ".tmp"
+	if err := os.WriteFile(tmp, out, 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, mfile)
+}
+
+// SaveMidiManifest 保存项目 MIDI 清单（保留根级全局 bpm 字段）
 func SaveMidiManifest(projectID string, files []MidiFileInfo) {
 	pdir, err := ProjectDir(projectID)
 	if err != nil {
@@ -136,7 +191,11 @@ func SaveMidiManifest(projectID string, files []MidiFileInfo) {
 	mfile := filepath.Join(pdir, "midi.json")
 	tmp := mfile + ".tmp"
 
-	data, err := json.MarshalIndent(map[string]any{"midi_files": files}, "", "  ")
+	root := map[string]any{"midi_files": files}
+	if bpm := GetProjectBPM(projectID); bpm != DefaultBPM {
+		root["bpm"] = bpm
+	}
+	data, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return
 	}

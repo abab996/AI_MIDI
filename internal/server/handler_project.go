@@ -386,7 +386,8 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		if in.BPM <= 0 {
-			in.BPM = 120
+			// 未指定 BPM 时跟随项目全局 BPM（此前固定 120，与全局速度脱节）
+			in.BPM = project.GetProjectBPM(projectID)
 		}
 		baseDir := project.GetMidiBaseDir(projectID)
 		targetPath, err := mcp.SafeJoin(baseDir, in.Name)
@@ -712,6 +713,26 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		_ = exec.Command("explorer", base).Start()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": base})
 
+	case sub == "bpm" && req.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"bpm": project.GetProjectBPM(projectID)})
+
+	case sub == "bpm" && req.Method == http.MethodPost:
+		// 项目全局 BPM：编曲窗 BPM 输入框为主编辑入口，AI 生成新 MIDI
+		// 时优先采用该速度（已存在文件不改写）
+		var in struct {
+			BPM int `json:"bpm"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.BPM < 30 || in.BPM > 300 {
+			writeError(w, http.StatusBadRequest, "BPM 需在 30-300 之间")
+			return
+		}
+		// 与清单保存共用会话锁，避免和 SaveMidiManifest 并发互相覆盖
+		fl := chat.GetSessionLock(projectID)
+		fl.Lock()
+		project.SaveProjectBPM(projectID, in.BPM)
+		fl.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bpm": in.BPM})
+
 	case sub == "tasks" && req.Method == http.MethodPost:
 		task := tasks.TaskCreate(projectID, "新任务", false)
 		s := chat.GetSession(projectID)
@@ -781,6 +802,7 @@ func buildProjectPayload(meta project.ProjectMeta) map[string]any {
 	return map[string]any{
 		"meta":             meta,
 		"current_task_id":  currentTaskID,
+		"bpm":              project.GetProjectBPM(projectID),
 		"midi_files":       midiFiles,
 		"display_messages": display,
 		"settings":         map[string]any{"model": settings.Model},

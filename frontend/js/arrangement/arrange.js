@@ -247,16 +247,29 @@
     }
 
     var self = this;
-    UI.getJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement")
-      .then(function (data) {
+    /* 全局 BPM 与编排数据并行加载：全局 BPM 是唯一事实，
+       覆盖编排快照里的本地 bpm（旧版数据迁移兼容） */
+    var bpmReq = UI.getJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/bpm")
+      .catch(function () { return null; });
+    Promise.all([
+      UI.getJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement"),
+      bpmReq
+    ]).then(function (results) {
+        var data = results[0];
+        var bpmData = results[1];
         if (data && data.tracks) {
           self.deserialize(data);
         } else {
           self.defaultState();
         }
+        if (bpmData && bpmData.bpm) {
+          self.bpm = clamp(Number(bpmData.bpm) || 120, 30, 300);
+          self.engine.bpm = self.bpm;
+        }
         self.loadedProjectId = self.projectId;
         self.dirty = false;
         self.setSaveStamp("SAVED", false);
+        self.syncTransportUI();
         if (self.isOpen) self.renderAll();
       })
       .catch(function (e) {
@@ -699,6 +712,13 @@
     this.renderAllThumbsSoon();
     this.showHUD("BPM: " + val);
     this.scheduleSave();
+    /* 同步项目全局 BPM：AI 生成新 MIDI、保存音符表等所有链路跟随此值 */
+    if (this.projectId && window.UI && UI.postJSON) {
+      UI.postJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/bpm", { bpm: val })
+        .catch(function (e) {
+          if (UI.toast) UI.toast("⚠ 全局 BPM 保存失败: " + ((e && e.message) || ""), "warn");
+        });
+    }
   };
 
   Arrange.prototype.seekTo = function (beat, restartIfPlaying) {

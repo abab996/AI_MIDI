@@ -56,6 +56,14 @@ func getIndexFile() string {
 	return filepath.Join(config.ProjectsDir, "index.json")
 }
 
+// ResetProjectsIndexCache 清空内存索引镜像。测试切换 config.ProjectsDir
+// 后必须调用，否则旧目录的条目会被写进新目录的 index.json。
+func ResetProjectsIndexCache() {
+	indexLock.Lock()
+	defer indexLock.Unlock()
+	indexCache = nil
+}
+
 func loadIndexLocked() []ProjectEntry {
 	if indexCache != nil {
 		return indexCache

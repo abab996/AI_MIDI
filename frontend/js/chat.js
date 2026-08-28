@@ -3262,7 +3262,12 @@
     }
 
     function bindWorkspace(path) {
-      if (!path) { UI.toast("请输入工作区目录路径", "warn"); return; }
+      if (!path) {
+        UI.toast(hasNativeFolderDialog
+          ? "请选择或输入工作区目录路径"
+          : "浏览器模式无法弹出系统对话框，请手动输入本机目录路径", "warn");
+        return;
+      }
       UI.postJSON("/api/projects/" + currentProjectId + "/workspace/bind", { path: path })
         .then(function (data) {
           applyFiles(data.midi_files, data.dirs);

@@ -105,7 +105,8 @@ func TestProjectLifecycle(t *testing.T) {
 	if err == nil {
 		t.Errorf("ResolveMidiPath with ../ should fail")
 	}
-	_, err = ResolveMidiPath(meta.ID, "C:\\Windows\\System32")
+	// 跨平台绝对路径（Linux 上 C:\... 不是绝对路径，会被当作相对名放行）
+	_, err = ResolveMidiPath(meta.ID, filepath.Join(os.TempDir(), "evil.mid"))
 	if err == nil {
 		t.Errorf("ResolveMidiPath with abs path should fail")
 	}

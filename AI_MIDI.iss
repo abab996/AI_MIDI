@@ -90,6 +90,19 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
+[Code]
+// 安装前结束运行中的主程序与引擎，避免文件被占用导致覆盖失败
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  Exec('taskkill.exe', '/F /IM AI_MIDI.exe /IM aimidi-engine.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode = 128 then // 128 = 进程未找到，属正常
+    Sleep(300);
+end;
+
 [UninstallRun]
 ; 卸载前先终止运行中的主程序与引擎（数据文件保留）
 Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExeName} /IM aimidi-engine.exe"; Flags: runhidden; RunOnceId: "KillApps"

@@ -63,6 +63,21 @@
 
 ---
 
+## 🛠 从源码构建（开发者）
+
+环境要求：**Go ≥ 1.27**、**Wails v2**（`go install github.com/wailsapp/wails/v2/cmd/wails@latest`）、Windows 10+（Linux 桌面模式需 webkit2gtk）。
+
+```bat
+git clone https://github.com/abab996/AI_MIDI.git
+cd AI_MIDI
+wails build        :: Windows，产物 buildin\AI_MIDI.exe
+RUN.bat
+```
+
+Linux：`go build -o AI_MIDI . && chmod +x RUN.sh && ./RUN.sh`。架构与设计文档见 [`docs/`](docs/)。
+
+---
+
 ## 📖 使用指引
 
 ### 快速任务

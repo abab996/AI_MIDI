@@ -75,7 +75,7 @@
 ## 3. 目录结构规划（基于现有项目增量）
 
 ```
-AI_MIDI-go/
+AI_MIDI/
 ├─ engine/                          ★新增：JUCE 引擎源码（独立构建单元）
 │  ├─ CMakeLists.txt
 │  ├─ Source/

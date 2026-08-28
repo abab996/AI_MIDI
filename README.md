@@ -63,6 +63,21 @@ Open the **Settings** page and fill in your API key. The default connects to Dee
 
 ---
 
+## 🛠 Build from Source (developers)
+
+Requirements: **Go ≥ 1.27**, **Wails v2** (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), Windows 10+ (Linux: webkit2gtk for desktop mode).
+
+```bat
+git clone https://github.com/abab996/AI_MIDI.git
+cd AI_MIDI
+wails build        :: Windows -> buildin\AI_MIDI.exe
+RUN.bat
+```
+
+Linux: `go build -o AI_MIDI . && chmod +x RUN.sh && ./RUN.sh`. Architecture & design documents live in [`docs/`](docs/).
+
+---
+
 ## 📖 Usage Guide
 
 ### Quick Tasks

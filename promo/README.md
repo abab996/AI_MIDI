@@ -1,9 +1,9 @@
-# AI_MIDI-go 宣传视频制作管线
+# AI_MIDI 宣传视频制作管线
 
 本目录包含宣传视频的完整制作管线：作曲、音效合成、演示导播、虚拟舞台、录屏与后期剪辑。
 成片输出：
-- `out/AI_MIDI-go_promo.mp4`（1920×1080@25fps 主版本，87.5s = 31.25 小节 @85 BPM，双语字幕）
-- `out/AI_MIDI-go_promo_4K.mp4`（3840×2160 lanczos 超采样 + 轻锐化衍生版）
+- `out/AI_MIDI_promo.mp4`（1920×1080@25fps 主版本，87.5s = 31.25 小节 @85 BPM，双语字幕）
+- `out/AI_MIDI_promo_4K.mp4`（3840×2160 lanczos 超采样 + 轻锐化衍生版）
 
 ## 成片结构（v5 · AI 交互为主角）
 

@@ -14,9 +14,11 @@ import (
 //
 // I/O 模型约束：os.OpenFile 打开的命名管道是同步（非重叠）句柄，
 // 不支持 deadline，且不允许读写并发执行。因此本客户端把「写请求 +
-// 读到匹配响应」作为一次完整事务，用互斥锁串行化；单次读写均由
-// 看门狗 goroutine 计时，超时即判定连接不可信（markDead），由
-// supervisor 负责重建会话。期间收到的事件帧转发到 Events 通道
+// 读到匹配响应」作为一次完整事务，用互斥锁串行化；单次读由看门狗
+// goroutine 计时，超时上限取该请求的剩余总超时——**不得再设 5s 之类
+// 的固定封顶**：ASIO Link Pro 等驱动打开耗时 5-20s，封顶会把正常的
+// 慢设备操作误判为会话失效，引发引擎重启风暴。会话终结由 markDead +
+// supervisor 重建负责。事务期间收到的事件帧转发到 Events 通道
 // （带缓冲，满则丢弃——事件均为可刷新的状态类信息）。
 type Client struct {
 	conn     *os.File
@@ -365,12 +367,9 @@ func (c *Client) awaitResponse(id float64, timeout time.Duration) (*Response, er
 			c.markDead()
 			return nil, fmt.Errorf("等待响应超时 (id=%v)", id)
 		}
-		// 单次 read 的超时不超过剩余时间，避免 5s 固定覆盖长请求
-		readTimeout := remaining
-		if readTimeout > 5*time.Second {
-			readTimeout = 5 * time.Second
-		}
-		frame, err := c.readFrameWithTimeout(readTimeout)
+		// 单次读超时 = 剩余总超时：慢设备操作（如 ASIO 驱动打开 5-20s）
+		// 是合法长请求，任何固定封顶都会把它误判为会话失效
+		frame, err := c.readFrameWithTimeout(remaining)
 		if err != nil {
 			c.markDead()
 			return nil, fmt.Errorf("读取帧失败: %w", err)
@@ -403,12 +402,11 @@ type frameResult struct {
 	err   error
 }
 
-// readFrame 读取一帧（带看门狗）。帧格式与 DecodeFrame 一致：
+// readFrameWithTimeout 读取一帧（带看门狗）。帧格式与 DecodeFrame 一致：
 // [uint32 LE 总长 n(含类型字节)][n 字节 payload]，payload[0] 为类型。
-func (c *Client) readFrame() (*Frame, error) {
-	return c.readFrameWithTimeout(5 * time.Second)
-}
-
+// 看门狗超时后调用方判死会话；遗留的读 goroutine 阻塞在已关闭的
+// conn 上自然退出（同步管道句柄不支持读写并发，事务模型下每连接
+// 同一时刻至多一个此类读者，不会与新读者抢帧）。
 func (c *Client) readFrameWithTimeout(timeout time.Duration) (*Frame, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second

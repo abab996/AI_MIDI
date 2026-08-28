@@ -326,8 +326,15 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
-    }).then(function (r) { return r.json(); }).then(function (j) {
-      $("applyHint").textContent = j.saved ? "✅ 已应用" : "❌ 失败";
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      if (res.j.saved) {
+        $("applyHint").textContent = "✅ 已应用";
+      } else {
+        $("applyHint").textContent = "❌ " + (res.j.detail || "失败");
+        if (res.j.detail) UI.toast("✗ " + res.j.detail, "err");
+      }
       setTimeout(function () { $("applyHint").textContent = ""; refreshStatus(); }, 2500);
     }).catch(function () { $("applyHint").textContent = "❌ 网络错误"; });
   });

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"aimidi/internal/config"
@@ -148,6 +149,13 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 	restartRequired := sup != nil && sup.StartedWithEnabled() != s.Audio.EngineEnabled
 	if !restartRequired && sup != nil {
 		if err := sup.ApplySettings(s.Audio); err != nil {
+			// 超时类失败 = 驱动在引擎内卡死（个别 ASIO 驱动打开永不返回）。
+			// 此时引擎进程本身健康，只是卡在这一个调用上；重启引擎反而会
+			// 重放坏设置再次卡死。给出针对性提示，设置保留待换驱动后生效。
+			if isEngineTimeoutErr(err) {
+				writeError(w, http.StatusGatewayTimeout, "ASIO Link Pro 未响应")
+				return
+			}
 			writeError(w, http.StatusBadGateway, "设置已保存，但下发引擎失败: "+err.Error())
 			return
 		}
@@ -158,6 +166,16 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 		"audio":            s.Audio,
 		"restart_required": restartRequired,
 	})
+}
+
+// isEngineTimeoutErr 判定错误是否为引擎请求超时（读取/写入/等待超时）。
+// 驱动在引擎内卡死时的典型表现即此类错误。
+func isEngineTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "超时") || strings.Contains(msg, "timeout")
 }
 
 // handleTestTone 测试音开关

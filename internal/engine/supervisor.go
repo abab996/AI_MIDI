@@ -53,10 +53,11 @@ type Supervisor struct {
 // NewSupervisor 创建守护器（不启动；调用 Start）
 func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 	if cfg.DialTimeout <= 0 {
-		cfg.DialTimeout = 10 * time.Second
+		cfg.DialTimeout = 20 * time.Second
 	}
 	if cfg.HandshakeTimeout <= 0 {
-		cfg.HandshakeTimeout = 5 * time.Second
+		// ASIO Link Pro 等驱动首次打开可达 10-20s，引擎就绪前无法应答握手
+		cfg.HandshakeTimeout = 20 * time.Second
 	}
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = 30 * time.Second // listDevices 首次枚举可能达数秒
@@ -225,6 +226,12 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 	}
 	resp, err := cli.Request("applySetup", params, s.cfg.RequestTimeout)
 	if err != nil {
+		// 请求超时 = 驱动在引擎内卡死。清掉重放标记：否则会话被判死
+		// 重启后，runOnce 会重放这份"坏设置"再次卡死引擎，形成
+		// 卡死→重启→重放→再卡死的循环
+		s.mu.Lock()
+		s.lastApply = nil
+		s.mu.Unlock()
 		return err
 	}
 	return resp.Err()
@@ -368,7 +375,7 @@ func (s *Supervisor) loop() {
 		default:
 		}
 
-		s.runOnce()
+		reason := s.runOnce()
 		// runOnce 返回即意味着会话失效（进程退出 / 心跳失败 / ctx 取消）
 
 		select {
@@ -381,7 +388,7 @@ func (s *Supervisor) loop() {
 
 		consecutiveFail++
 		s.setState(StateRestarting,
-			fmt.Sprintf("第 %d 次重启", consecutiveFail))
+			fmt.Sprintf("第 %d 次重启: %s", consecutiveFail, reason))
 
 		// 连续快速失败的退避：500ms 起，封顶 3s
 		backoff := time.Duration(consecutiveFail) * 500 * time.Millisecond
@@ -416,8 +423,9 @@ func isExecNotFound(err error) bool {
 	return os.IsNotExist(err)
 }
 
-// runOnce 单次完整会话：拉起进程 → 连接握手 → 心跳监控 → 会话失效返回
-func (s *Supervisor) runOnce() {
+// runOnce 单次完整会话：拉起进程 → 连接握手 → 心跳监控 → 会话失效返回。
+// 返回失败原因（空串 = ctx 取消），供重启消息展示真实原因
+func (s *Supervisor) runOnce() string {
 	s.setState(StateStarting, "")
 
 	cmd := exec.Command(s.exePath, "--parent", strconv.Itoa(os.Getpid()))
@@ -427,14 +435,15 @@ func (s *Supervisor) runOnce() {
 	// 平台相关属性收敛到 engineSysProcAttr（非 Windows 返回 nil）
 	cmd.SysProcAttr = engineSysProcAttr()
 	if err := cmd.Start(); err != nil {
-		s.setState(StateFailed, "启动失败: "+err.Error())
+		reason := "启动失败: " + err.Error()
+		s.setState(StateFailed, reason)
 		// 引擎文件缺失属于部署问题，重试无意义：驻留失败态直至主程序退出或文件出现
 		if os.IsNotExist(err) || isExecNotFound(err) {
 			s.parkUntilDone()
-			return
+			return reason
 		}
 		time.Sleep(time.Second)
-		return
+		return reason
 	}
 
 	s.mu.Lock()
@@ -450,7 +459,8 @@ func (s *Supervisor) runOnce() {
 
 	cli, err := Dial(cmd.Process.Pid, s.cfg.DialTimeout, s.cfg.HandshakeTimeout)
 	if err != nil {
-		s.setState(StateFailed, "连接失败: "+err.Error())
+		reason := "连接失败: " + err.Error()
+		s.setState(StateFailed, reason)
 		if kerr := cmd.Process.Kill(); kerr != nil {
 			slog.Warn("[engine] 连接失败后终止引擎出错（可能已退出）", "pid", cmd.Process.Pid, "err", kerr.Error())
 		}
@@ -462,7 +472,7 @@ func (s *Supervisor) runOnce() {
 			slog.Warn("[engine] 引擎终止确认超时，继续重启流程", "pid", cmd.Process.Pid)
 			_ = cmd.Process.Kill()
 		}
-		return
+		return reason
 	}
 
 	s.mu.Lock()
@@ -560,7 +570,11 @@ func (s *Supervisor) runOnce() {
 				}
 				if err != nil {
 					failures++
-					if failures >= 2 {
+					// 引擎阻塞在慢驱动操作（ASIO Link Pro 首次打开可达
+					// 10-20s）时无法应答心跳，须给足容忍——阈值过低会把
+					// 正常的设备切换误判为会话失效，陷入重启风暴。
+					// 真崩溃走 waitCh 进程退出通道，秒级检测不受影响。
+					if failures >= 15 {
 						slog.Warn("[engine] 心跳连续失败，判定会话失效", "failures", failures)
 						cli.Close() // 触发下方 cli.Done() 路径
 						return
@@ -598,6 +612,7 @@ func (s *Supervisor) runOnce() {
 		case <-time.After(2 * time.Second):
 		}
 	}
+	return failReason
 }
 
 // LoadSoundFont 加载音色文件到引擎（track 0 兼容）

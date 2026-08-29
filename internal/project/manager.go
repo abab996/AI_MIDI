@@ -11,12 +11,16 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
 	"aimidi/internal/config"
 )
+
+// corruptBackupSeq 损坏索引备份名的进程内序号（见 loadIndexLocked）
+var corruptBackupSeq atomic.Uint32
 
 var (
 	indexLock sync.Mutex
@@ -80,7 +84,10 @@ func loadIndexLocked() ([]ProjectEntry, error) {
 		Projects []ProjectEntry `json:"projects"`
 	}
 	if err := json.Unmarshal(data, &root); err != nil {
-		backup := idxFile + ".corrupt-" + time.Now().Format("20060102-150405.000")
+		// 备份名带进程内原子序号：同毫秒连续损坏时纯时间戳会撞名，
+		// 后一次 rename 覆盖前一次备份（Linux CI 实测踩中过）
+		backup := fmt.Sprintf("%s.corrupt-%s-p%d-%d", idxFile,
+			time.Now().Format("20060102-150405"), os.Getpid(), corruptBackupSeq.Add(1))
 		if rerr := os.Rename(idxFile, backup); rerr == nil {
 			slog.Error("index.json 损坏，已备份待人工恢复；本次操作跳过索引写入", "backup", backup, "err", err)
 		} else {

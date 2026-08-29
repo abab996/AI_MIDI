@@ -3,8 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"aimidi/internal/chat"
 	"aimidi/internal/engine"
 )
 
@@ -12,6 +17,9 @@ import (
 type App struct {
 	ctx   context.Context
 	ctxMu sync.RWMutex
+
+	// emitter 桥事件出口（测试注入用）；nil = 生产路径（Wails EventsEmit）
+	emitter func(streamID string, event map[string]any)
 }
 
 // NewApp 创建 App 实例
@@ -185,4 +193,112 @@ func (a *App) EngineSetLoop(on bool, start, end float64) error {
 		return errEngineUnavailable
 	}
 	return sup.SetLoop(on, start, end)
+}
+
+// ===== 聊天流事件桥（桌面模式专用）=====
+//
+// Wails Windows 的 assetserver 用 bytes.Buffer 缓存整个响应体，到
+// Finish() 才一次性 PutByteContent 交给 WebView2（responsewriter_windows.go），
+// 且包装层不实现 http.Flusher——HTTP SSE 在桌面模式物理上无法流式，
+// 所有 chat_delta 攒到生成结束一起到达。因此桌面模式经 Wails 事件桥
+// （runtime.EventsEmit → 前端 EventsOn，原生 IPC 即时送达）推送流式事件；
+// 浏览器模式（-browser）仍走 HTTP SSE。事件协议（type 字段与载荷）与
+// SSE 完全一致，前端消费代码共用。
+
+// emitChatEvent 向指定流的订阅者推送一条事件
+func (a *App) emitChatEvent(streamID string, event map[string]any) {
+	if a.emitter != nil {
+		a.emitter(streamID, event)
+		return
+	}
+	a.ctxMu.RLock()
+	ctx := a.ctx
+	a.ctxMu.RUnlock()
+	if ctx == nil {
+		return
+	}
+	wailsruntime.EventsEmit(ctx, "chat:evt:"+streamID, event)
+}
+
+// emitChatEnd 通知流结束并清理订阅
+func (a *App) emitChatEnd(streamID string) {
+	a.emitChatEvent(streamID, map[string]any{"type": "done"})
+	if a.emitter != nil {
+		a.emitter(streamID, map[string]any{"__end": true})
+		return
+	}
+	a.ctxMu.RLock()
+	ctx := a.ctx
+	a.ctxMu.RUnlock()
+	if ctx == nil {
+		return
+	}
+	wailsruntime.EventsEmit(ctx, "chat:end:"+streamID)
+}
+
+// chatEventSink 把流式回调包装为事件桥推送（SSE 回调的 error 语义在
+// 桥模式下不存在——没有可失败的客户端连接）
+func (a *App) chatEventSink(streamID string) chat.StreamCallback {
+	return func(event map[string]any) error {
+		a.emitChatEvent(streamID, event)
+		return nil
+	}
+}
+
+// ChatStreamStart 启动一轮聊天流（桌面模式）。立即返回，事件经
+// "chat:evt:<streamID>" 推送，结束时补发 done 并 emit "chat:end:<streamID>"。
+// 同一 streamID 重复启动忽略（前端保证唯一）。
+func (a *App) ChatStreamStart(projectID, message string, edit bool, taskID, streamID string) error {
+	a.ctxMu.RLock()
+	ctx := a.ctx
+	a.ctxMu.RUnlock()
+	if ctx == nil {
+		return errors.New("应用尚未就绪")
+	}
+	if projectID == "" || streamID == "" {
+		return errors.New("缺少 project_id 或 stream_id")
+	}
+	go func() {
+		defer a.emitChatEnd(streamID)
+		// 管线解析的是模型输出的不可信内容，panic 时不能拖垮整个应用：
+		// 捕获后向前端补一条 error 事件（emitChatEnd 由上方 defer 保证）
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("[chat] 聊天流 panic（已拦截）", "stream", streamID, "panic", r, "stack", string(debug.Stack()))
+				a.emitChatEvent(streamID, map[string]any{"type": "error", "message": "内部错误，聊天流异常终止，请重试"})
+			}
+		}()
+		// ctx 用 Background：桌面模式没有 SSE 连接可断，任务后台续跑；
+		// 用户停止经 tasks.TaskCancelChan 传导（与 HTTP 路径一致）
+		if err := chat.ChatStream(context.Background(), projectID, message, edit, false, &taskID, a.chatEventSink(streamID)); err != nil {
+			slog.Warn("[chat] 事件桥聊天流异常结束", "stream", streamID, "err", err)
+		}
+	}()
+	return nil
+}
+
+// AnswerStreamStart 启动提问回答流（桌面模式），语义同 ChatStreamStart
+func (a *App) AnswerStreamStart(projectID, questionID string, answers interface{}, streamID string) error {
+	a.ctxMu.RLock()
+	ctx := a.ctx
+	a.ctxMu.RUnlock()
+	if ctx == nil {
+		return errors.New("应用尚未就绪")
+	}
+	if projectID == "" || questionID == "" || streamID == "" {
+		return errors.New("缺少 project_id/question_id/stream_id")
+	}
+	go func() {
+		defer a.emitChatEnd(streamID)
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("[chat] 回答流 panic（已拦截）", "stream", streamID, "panic", r, "stack", string(debug.Stack()))
+				a.emitChatEvent(streamID, map[string]any{"type": "error", "message": "内部错误，回答流异常终止，请重试"})
+			}
+		}()
+		if err := chat.AnswerStream(context.Background(), projectID, questionID, answers, a.chatEventSink(streamID)); err != nil {
+			slog.Warn("[chat] 事件桥回答流异常结束", "stream", streamID, "err", err)
+		}
+	}()
+	return nil
 }

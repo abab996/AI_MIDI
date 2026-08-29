@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,11 +249,11 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	var body struct {
-		Bpm       *float64 `json:"bpm"`
-		Beats     *float64 `json:"beats"`
-		TailSec   *float64 `json:"tailSec"`
-		Tracks    any      `json:"tracks"`
-		SampleRate *int    `json:"sampleRate"`
+		Bpm        *float64 `json:"bpm"`
+		Beats      *float64 `json:"beats"`
+		TailSec    *float64 `json:"tailSec"`
+		Tracks     any      `json:"tracks"`
+		SampleRate *int     `json:"sampleRate"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "请求体解析失败: "+err.Error())
@@ -318,11 +319,13 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 			beats = maxEnd
 		}
 	}
-	// 输出路径：output/bounce_<ts>.wav（全局生效采样率，尾音已含）
+	// 输出路径：output/bounce_<ts>.wav（全局生效采样率，尾音已含）。
+	// 固定用 config.OutputDir（exe 目录），与下载白名单一致；避免从
+	// 其他工作目录启动时文件落到预期外位置
 	ts := time.Now().Format("20060102_150405")
-	outPath := filepath.Join("output", fmt.Sprintf("bounce_%s.wav", ts))
+	outPath := filepath.Join(config.OutputDir, fmt.Sprintf("bounce_%s.wav", ts))
 	_ = os.MkdirAll(filepath.Dir(outPath), 0755)
-	abs, _ := filepath.Abs(outPath)
+	abs := outPath
 	params := map[string]any{
 		"bpm":        bpm,
 		"beats":      beats,
@@ -381,14 +384,14 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 											gv = 1
 										}
 										flatClips = append(flatClips, map[string]any{
-											"track":  ti,
-											"path":   p,
-											"start":  sv,
-											"length": lv,
-											"offset": off,
-											"fadeIn": fi,
+											"track":   ti,
+											"path":    p,
+											"start":   sv,
+											"length":  lv,
+											"offset":  off,
+											"fadeIn":  fi,
 											"fadeOut": fo,
-											"gain":   gv,
+											"gain":    gv,
 										})
 									}
 								}
@@ -416,11 +419,11 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 		retPath = abs
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":   true,
-		"path": retPath,
-		"url":  "/api/audio/bounce/file?path=" + retPath,
-		"beats": beats,
-		"tailSec": tailSec,
+		"ok":         true,
+		"path":       retPath,
+		"url":        "/api/audio/bounce/file?path=" + url.QueryEscape(retPath),
+		"beats":      beats,
+		"tailSec":    tailSec,
 		"sampleRate": sampleRate,
 	})
 }
@@ -435,7 +438,7 @@ func (r *Router) handleAudioBounceFile(w http.ResponseWriter, req *http.Request)
 	// 仅允许 output 目录下的文件（此前 cwd 整目录放行会让
 	// ?path=settings.json 回读含明文 API Key 的配置，绕过设置接口的掩码）
 	abs, _ := filepath.Abs(path)
-	outDir, _ := filepath.Abs("output")
+	outDir, _ := filepath.Abs(config.OutputDir)
 	if !isSubPath(abs, outDir) {
 		writeError(w, http.StatusForbidden, "非法路径")
 		return

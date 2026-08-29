@@ -20,7 +20,6 @@ var (
 	ole32    = syscall.NewLazyDLL("ole32.dll")
 
 	procCreateMutexW          = kernel32.NewProc("CreateMutexW")
-	procGetLastError          = kernel32.NewProc("GetLastError")
 	procMessageBoxW           = user32.NewProc("MessageBoxW")
 	procGetDC                 = user32.NewProc("GetDC")
 	procReleaseDC             = user32.NewProc("ReleaseDC")
@@ -50,10 +49,15 @@ var singleInstanceHandle uintptr
 // AcquireSingleInstanceLock 获取 Windows 全局单实例互斥锁
 func AcquireSingleInstanceLock(name string) bool {
 	namePtr, _ := syscall.UTF16PtrFromString(name)
-	h, _, _ := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(namePtr)))
+	// 用 proc.Call 返回的 errno 判断结果（此前再调 procGetLastError 是
+	// 反模式——中间任何 Go runtime 调用都可能覆盖 last error）
+	h, _, err := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(namePtr)))
 	singleInstanceHandle = h
-	lastErr, _, _ := procGetLastError.Call()
-	return lastErr != 183 // ERROR_ALREADY_EXISTS = 183
+	if h == 0 {
+		return false // CreateMutexW 本身失败：不能放行，否则单实例保护失效
+	}
+	const errorAlreadyExists = 183
+	return err != syscall.Errno(errorAlreadyExists)
 }
 
 // SelectFolderDialog 打开原生文件夹选择对话框（Windows）。

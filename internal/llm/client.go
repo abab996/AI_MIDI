@@ -80,10 +80,10 @@ type ChatCompletionChunk struct {
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
-			Role             string          `json:"role"`
-			Content          any             `json:"content"`
-			ReasoningContent string          `json:"reasoning_content"`
-			ToolCalls        []ToolCallChunk `json:"tool_calls"`
+			Role             string           `json:"role"`
+			Content          any              `json:"content"`
+			ReasoningContent string           `json:"reasoning_content"`
+			ToolCalls        []ToolCallChunk  `json:"tool_calls"`
 			ExtraContent     *GoogleExtraBody `json:"extra_content"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`

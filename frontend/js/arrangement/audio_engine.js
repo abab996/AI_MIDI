@@ -221,12 +221,17 @@
         var tracks = self.getTracks ? self.getTracks() : [];
         var idx = trackIndexOf(track.id, tracks);
         if (idx < 0) idx = 0;
-        // 仿 handler_soundfont.go 的 safe 规则
-        var rawName = rec.name || src.name || "soundfont";
-        var safe = rawName.replace(/[^\p{L}\p{N}_\-\.]/gu, "_");
-        safe = safe.replace(/\.[^/.]+$/, "");
-        if (!safe) safe = "soundfont";
-        var diskPath = "Library/soundfonts/" + safe + ".sf2";
+        // 服务器落盘的绝对路径优先（上传时由 /api/audio/soundfonts 的
+        // saved 字段存入记录）；旧记录无 diskPath 时按 safe 规则推导相对
+        // 路径——后者依赖引擎进程 CWD 恰为 exe 目录，CWD 不同则加载失败
+        var diskPath = rec.diskPath;
+        if (!diskPath) {
+          var rawName = rec.name || src.name || "soundfont";
+          var safe = rawName.replace(/[^\p{L}\p{N}_\-\.]/gu, "_");
+          safe = safe.replace(/\.[^/.]+$/, "");
+          if (!safe) safe = "soundfont";
+          diskPath = "Library/soundfonts/" + safe + ".sf2";
+        }
         // 优先用磁盘路径（已镜像），失败则回退 Web 解析
         return window.EngineBridge.loadSoundFont(diskPath, idx).then(function(){
           nodes.sfLoading = false;
@@ -444,6 +449,12 @@
     var self = this;
     this.resume().then(function () {
       self._beginPlay(startBeat);
+    }).catch(function (e) {
+      /* AudioContext 创建/恢复失败（设备被独占/禁用等）：此前无 catch，
+         UI 已先置播放态——永久卡在"暂停"且无任何提示 */
+      self.isPlaying = false;
+      console.warn("[ArrangeEngine] 播放启动失败:", e);
+      if (window.UI && UI.toast) UI.toast("✗ 音频设备启动失败: " + (e && e.message ? e.message : "请检查音频输出设备"), "err");
     });
   };
 
@@ -865,7 +876,9 @@
   /** 单次试听素材（素材库双击）——即时触发，包络天然近端 */
   ArrangeEngine.prototype.previewSample = function (absPath) {
     var self = this;
-    this.resume();
+    this.resume().catch(function (e) {
+      console.warn("[ArrangeEngine] 试听前 AudioContext 恢复失败:", e);
+    });
     return this.getSampleEntry(absPath).then(function (entry) {
       if (!entry || !entry.buffer) return;
       if (self._previewSrc) {

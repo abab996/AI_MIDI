@@ -11,9 +11,17 @@ echo └────────────────────────
 if not exist "AI_MIDI.exe" (
     echo [提示] 未找到预编译可执行文件，正在执行 Wails 构建...
     call wails build
-    if exist "build\bin\AI_MIDI.exe" (
-        copy /y "build\bin\AI_MIDI.exe" "AI_MIDI.exe" >nul
+    if errorlevel 1 (
+        echo [错误] Wails 构建失败，请检查上方错误信息后重试。
+        pause
+        exit /b 1
     )
+    if not exist "build\bin\AI_MIDI.exe" (
+        echo [错误] 构建未产出 build\bin\AI_MIDI.exe，无法继续。
+        pause
+        exit /b 1
+    )
+    copy /y "build\bin\AI_MIDI.exe" "AI_MIDI.exe" >nul
 )
 
 if not exist "bin\aimidi-engine.exe" (

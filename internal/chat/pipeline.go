@@ -3,6 +3,7 @@ package chat
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,8 +27,27 @@ import (
 // StreamCallback 流式事件推送回调函数
 type StreamCallback func(event map[string]any) error
 
+// parseToolArgs 解析工具调用参数。模型可能输出畸形 JSON、空串或字面量
+// "null"，任一情况都返回非 nil 空 map，保证调用方写入键（如 bpm 兜底）
+// 不会触发 assignment to entry in nil map panic（该 panic 在桌面事件桥
+// goroutine 里无法被 recover 拦截，会直接杀死整个应用）
+func parseToolArgs(argsStr string) map[string]any {
+	args := map[string]any{}
+	if strings.TrimSpace(argsStr) == "" {
+		return args
+	}
+	_ = json.Unmarshal([]byte(argsStr), &args)
+	if args == nil {
+		return map[string]any{}
+	}
+	return args
+}
+
 // ChatStream 多轮对话流式执行引擎
-func ChatStream(projectID, message string, edit bool, resume bool, taskID *string, onEvent StreamCallback) error {
+func ChatStream(ctx context.Context, projectID, message string, edit bool, resume bool, taskID *string, onEvent StreamCallback) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !resume && strings.TrimSpace(message) == "" {
 		_ = onEvent(map[string]any{"type": "error", "message": "消息不能为空"})
 		_ = onEvent(map[string]any{"type": "done"})
@@ -44,6 +64,25 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 	taskRec := tasks.TaskEnsure(projectID, taskID, message)
 	tid := taskRec.ID
 	tasks.TaskMarkRunning(tid)
+
+	// 任务停止信号 → ctx：用户点停止时立即取消在途 LLM 请求（而非只靠
+	// 两个 chunk 之间的轮询——上游停滞时 ReadString 会无限阻塞，项目锁
+	// 被持有导致该项目的后续对话永久挂起）。
+	// 基座用 WithoutCancel：前端断开 SSE/切换视图 = 取消**订阅**而非取消
+	// 任务——任务转后台续跑（openProject 的既定设计），轮次正常完成并
+	// 落盘，重进可见完整回复。若用 req.Context() 直接传播，断开即中止
+	// 生成：半截回复丢失，且下方 defer TaskFinish 把任务强标"已完成"
+	taskCtx, cancelTask := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelTask()
+	if ch := tasks.TaskCancelChan(tid); ch != nil {
+		go func() {
+			select {
+			case <-ch:
+				cancelTask()
+			case <-taskCtx.Done():
+			}
+		}()
+	}
 
 	lock := GetProjectChatLock(projectID)
 	lock.Lock()
@@ -198,18 +237,49 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 		tools = append(tools, mcp.GetLocalTools()...)
 
 		// 发起流式请求
-		streamResp, err := streamChatCompletion(settings, apiMessages, tools, isGemini)
+		streamResp, err := streamChatCompletion(taskCtx, settings, apiMessages, tools, isGemini)
 		if err != nil {
 			slog.Error("调用 AI 流式接口失败", "err", err)
-			_ = onEvent(map[string]any{"type": "error", "message": fmt.Sprintf("AI 调用失败: %v", err)})
+			if taskCtx.Err() == nil {
+				_ = onEvent(map[string]any{"type": "error", "message": fmt.Sprintf("AI 调用失败: %v", err)})
+			} else {
+				_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
+				_ = onEvent(map[string]any{"type": "done"})
+			}
+			// 用户消息与上下文已入内存：落盘，避免重启后从历史中消失
+			fl.Lock()
+			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+			fl.Unlock()
 			break
 		}
 
 		// 消费流式响应
 		deltaContent, deltaReasoning, toolCalls, err := processStreamChunks(streamResp, st, fl, onEvent, tid)
 		_ = streamResp.Body.Close()
+		cancelled := tasks.TaskIsCancelled(tid) || taskCtx.Err() != nil
 		if err != nil {
 			slog.Error("处理流式响应失败", "err", err)
+		}
+		if err != nil || cancelled {
+			// 停止/断流：保留已生成的部分内容并落盘（停止按钮的语义就是
+			// "终止并保留已输出的内容"；断流同理，避免已生成内容丢失），
+			// 丢弃半截工具调用（参数 JSON 可能被截断，执行会产生意外副作用）
+			fl.Lock()
+			if deltaContent != "" || deltaReasoning != "" {
+				st.FullHistory = append(st.FullHistory, map[string]any{
+					"role":              "assistant",
+					"content":           deltaContent,
+					"reasoning_content": deltaReasoning,
+				})
+			}
+			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+			fl.Unlock()
+			if cancelled {
+				_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
+			} else if err != nil {
+				_ = onEvent(map[string]any{"type": "error", "message": fmt.Sprintf("AI 调用失败: %v", err)})
+			}
+			_ = onEvent(map[string]any{"type": "done"})
 			break
 		}
 
@@ -275,9 +345,12 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 		mirrorDir := project.GetMidiMirrorDir(projectID)
 
 		for i, tc := range toolCalls {
+			// 停止信号：跳过剩余工具执行
+			if tasks.TaskIsCancelled(tid) || taskCtx.Err() != nil {
+				break
+			}
 			fnName := tc.Function.Name
-			var rawArgs map[string]any
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &rawArgs)
+			rawArgs := parseToolArgs(tc.Function.Arguments)
 
 			// create_midi 未带 bpm 时兜底注入全局 BPM（提示词已要求 AI
 			// 使用全局值，这里保证漏参时生成结果仍然一致）
@@ -490,7 +563,7 @@ func ChatStream(projectID, message string, edit bool, resume bool, taskID *strin
 }
 
 // AnswerStream 用户回答提问后恢复对话流
-func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallback) error {
+func AnswerStream(ctx context.Context, projectID, questionID string, answers any, onEvent StreamCallback) error {
 	taskRec := tasks.TaskResumeByQuestion(projectID, questionID)
 	if taskRec == nil {
 		_ = onEvent(map[string]any{"type": "error", "message": "未找到对应的待回答任务"})
@@ -559,8 +632,7 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 		fnMap, _ := call["function"].(map[string]any)
 		fnName, _ := fnMap["name"].(string)
 		argsStr, _ := fnMap["arguments"].(string)
-		var args map[string]any
-		_ = json.Unmarshal([]byte(argsStr), &args)
+		args := parseToolArgs(argsStr)
 
 		// 与主循环一致：create_midi 缺 bpm 时兜底注入全局 BPM
 		if fnName == "create_midi" && args["bpm"] == nil {
@@ -652,10 +724,10 @@ func AnswerStream(projectID, questionID string, answers any, onEvent StreamCallb
 	lock.Unlock()
 
 	// resume 模式续跑（ChatStream 内部自行获取项目对话锁）
-	return ChatStream(projectID, "", false, true, &tid, onEvent)
+	return ChatStream(ctx, projectID, "", false, true, &tid, onEvent)
 }
 
-func streamChatCompletion(s config.Settings, messages []llm.ChatCompletionMessage, tools []llm.ToolDefinition, isGemini bool) (*http.Response, error) {
+func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm.ChatCompletionMessage, tools []llm.ToolDefinition, isGemini bool) (*http.Response, error) {
 	validatedURL, err := config.ValidateBaseURL(s.BaseURL, s.APIPath)
 	if err != nil {
 		return nil, err
@@ -694,7 +766,7 @@ func streamChatCompletion(s config.Settings, messages []llm.ChatCompletionMessag
 			return nil, err
 		}
 
-		httpReq, err := http.NewRequest("POST", endpoint, bytes.NewReader(data))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(data))
 		if err != nil {
 			return nil, err
 		}
@@ -753,6 +825,7 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 
 	lastEmit := time.Now()
 	sentReasoning, sentContent := 0, 0
+	var streamErr error
 
 	for {
 		if tasks.TaskIsCancelled(tid) {
@@ -761,10 +834,12 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
-				break
+			if err != io.EOF {
+				// 上游断流/连接中断（含用户停止导致的 ctx 取消）：
+				// 与正常结束一样走统一收尾——已生成的部分内容保留展示并落盘
+				streamErr = err
 			}
-			return contentBuilder.String(), reasoningBuilder.String(), mapToToolCallList(toolCallMap), err
+			break
 		}
 
 		line = strings.TrimSpace(line)
@@ -860,7 +935,7 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 	}
 	fl.Unlock()
 
-	return contentBuilder.String(), reasoningBuilder.String(), mapToToolCallList(toolCallMap), nil
+	return contentBuilder.String(), reasoningBuilder.String(), mapToToolCallList(toolCallMap), streamErr
 }
 
 func mapToToolCallList(m map[int]*llm.ToolCall) []llm.ToolCall {

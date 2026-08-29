@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,6 +24,9 @@ type Config struct {
 	HandshakeTimeout time.Duration
 	RequestTimeout   time.Duration
 	PingInterval     time.Duration // 心跳周期；0 = 默认 2s
+	// Dirs 返回路径白名单目录（音色库 / bounce 输出 / 已注册素材目录）。
+	// 由 main 注入；未注入时路径校验 fail-closed（见 paths.go）。
+	Dirs func() (soundFontDir, outputDir string, materialDirs []string)
 }
 
 // Supervisor 引擎进程守护：启动、心跳、崩溃自动重启、优雅回收。
@@ -36,19 +40,20 @@ type Supervisor struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	status     EngineStatus
-	client     *Client
-	cmd        *exec.Cmd
-	startedEnabled bool // 当前守护会话是否以启用状态启动
-	parked     bool   // 引擎文件缺失等不可重试错误：驻留失败态直至退出
-	sessionCnt int    // 已建立的会话数（Restarts = sessionCnt - 1）
-	lastApply  *map[string]any // 最近一次 applySetup 参数（重启后重放）
-	lastGood   AudioSettings   // 最近一次成功应用的音频设置（applySetup 超时后回退目标）
-	lastSoundFont string // 兼容旧单轨（track 0）
-	lastSoundFonts map[int]string // 每轨独立 SF2（重启后重放）
-	exePath    string
-	stopOnce   sync.Once
-	doneCh     chan struct{} // 关闭表示主循环退出
+	status         EngineStatus
+	client         *Client
+	cmd            *exec.Cmd
+	startedEnabled bool            // 当前守护会话是否以启用状态启动
+	parked         bool            // 引擎文件缺失等不可重试错误：驻留失败态直至退出
+	sessionCnt     int             // 已建立的会话数（Restarts = sessionCnt - 1）
+	lastApply      *map[string]any // 最近一次 applySetup 参数（重启后重放）
+	lastGood       AudioSettings   // 最近一次成功应用的音频设置（applySetup 超时后回退目标）
+	lastSoundFont  string          // 兼容旧单轨（track 0）
+	lastSoundFonts map[int]string  // 每轨独立 SF2（重启后重放）
+	exePath        string
+	stopOnce       sync.Once
+	doneCh         chan struct{} // 关闭表示主循环退出
+	wakeCh         chan struct{} // StateDisabled 驻留时由 ApplySettings 启用引擎唤醒
 }
 
 // NewSupervisor 创建守护器（不启动；调用 Start）
@@ -66,7 +71,7 @@ func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 	if cfg.PingInterval <= 0 {
 		cfg.PingInterval = 2 * time.Second
 	}
-	sup := &Supervisor{cfg: cfg, audio: audio, lastGood: audio, lastSoundFonts: make(map[int]string)}
+	sup := &Supervisor{cfg: cfg, audio: audio, lastGood: audio, lastSoundFonts: make(map[int]string), wakeCh: make(chan struct{}, 1)}
 	sup.exePath = ResolveEnginePath(audio.EnginePath)
 	sup.startedEnabled = audio.EngineEnabled
 	return sup
@@ -134,15 +139,22 @@ func (s *Supervisor) Stop() {
 		cli := s.client
 		s.mu.Unlock()
 
-		// 先尝试协议层优雅退出
-		if cli != nil {
-			_, _ = cli.Request("shutdown", nil, 1*time.Second)
-			_ = cli.Close()
-		}
+		// 先取消上下文，再尝试协议层优雅退出：shutdown 请求走 Request
+		// 需要拿事务锁，而 bounce（最长 30s）等在途请求会占住锁——先发
+		// 请求会让应用退出卡顿到该请求超时。TryRequest 拿不到锁立即返回，
+		// 引擎进程由下方 doneCh 兜底 / killProcess / Job Object 收尾
 		if cancel != nil {
 			cancel()
 		}
-		// 等主循环收尾（其内部会 Kill 残留进程）
+		if cli != nil {
+			_, _ = cli.TryRequest("shutdown", nil, 1*time.Second)
+			_ = cli.Close()
+		}
+		// 等主循环收尾（其内部会 Kill 残留进程）；从未 Start 时 doneCh
+		// 为 nil，直接跳过等待
+		if s.doneCh == nil {
+			return
+		}
 		select {
 		case <-s.doneCh:
 		case <-time.After(3 * time.Second):
@@ -199,8 +211,17 @@ func (s *Supervisor) LastError() string {
 // ApplySettings 更新音频设置；引擎就绪时立即下发 applySetup
 func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 	s.mu.Lock()
+	wasEnabled := s.audio.EngineEnabled
 	s.audio = audio
 	s.mu.Unlock()
+
+	// 守护循环处于 StateDisabled 驻留时，启用引擎需要唤醒它拉起进程
+	if audio.EngineEnabled && !wasEnabled {
+		select {
+		case s.wakeCh <- struct{}{}:
+		default:
+		}
+	}
 
 	params := map[string]any{}
 	if audio.Driver != "" {
@@ -382,10 +403,24 @@ func (s *Supervisor) killProcess() {
 func (s *Supervisor) loop() {
 	defer close(s.doneCh)
 
-	if !s.audio.EngineEnabled {
+	// 禁用启动时驻留，等待"设置页启用引擎"唤醒（此前一旦禁用启动，
+	// 后续启用也不会拉起守护循环）。醒来后若仍禁用（唤醒间隙又被关掉）
+	// 必须重新驻留而非退出：本 goroutine 是唯一能拉起引擎的执行流，
+	// 退出后 wakeCh 再无读者，引擎直到重启应用都无法再启动
+	for {
+		// 快照后判读：此前无锁读 s.audio，与 ApplySettings 的持锁写构成数据竞态
+		s.mu.RLock()
+		enabled := s.audio.EngineEnabled
+		s.mu.RUnlock()
+		if enabled {
+			break
+		}
 		s.setState(StateDisabled, "")
-		<-s.ctx.Done()
-		return
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.wakeCh:
+		}
 	}
 
 	consecutiveFail := 0
@@ -446,21 +481,49 @@ func isExecNotFound(err error) bool {
 	return os.IsNotExist(err)
 }
 
+// openEngineLog 打开引擎输出日志（output/engine.log，追加模式）。
+// 引擎 stdout/stderr 不能透传 os.Stdout/Stderr：windowsgui（-H windowsgui）
+// 构建里这两个句柄无效，cmd.Start 直接报 "The handle is invalid"，
+// 引擎永远启动失败并陷入重启风暴。打开失败返回 nil（调用方保持
+// Stdout/Stderr 为 nil，等效丢弃）。outputDir 取自 cfg.Dirs 注入，
+// 避免 engine→config 循环导入
+func (s *Supervisor) openEngineLog() *os.File {
+	if s.cfg.Dirs == nil {
+		return nil
+	}
+	_, outputDir, _ := s.cfg.Dirs()
+	if outputDir == "" {
+		return nil
+	}
+	_ = os.MkdirAll(outputDir, 0755)
+	f, err := os.OpenFile(filepath.Join(outputDir, "engine.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		slog.Warn("[engine] 引擎日志文件打开失败，本次会话输出丢弃", "err", err)
+		return nil
+	}
+	return f
+}
+
 // runOnce 单次完整会话：拉起进程 → 连接握手 → 心跳监控 → 会话失效返回。
 // 返回失败原因（空串 = ctx 取消），供重启消息展示真实原因
 func (s *Supervisor) runOnce() string {
 	s.setState(StateStarting, "")
 
 	cmd := exec.Command(s.exePath, "--parent", strconv.Itoa(os.Getpid()))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if outF := s.openEngineLog(); outF != nil {
+		cmd.Stdout = outF
+		cmd.Stderr = outF
+		// 会话结束时关闭父进程侧句柄；子进程持有继承句柄，不受影响
+		defer outF.Close()
+	}
 	// 隐藏引擎的控制台窗口（JUCE 引擎为 console 子系统，默认会弹出黑窗）；
 	// 平台相关属性收敛到 engineSysProcAttr（非 Windows 返回 nil）
 	cmd.SysProcAttr = engineSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		reason := "启动失败: " + err.Error()
 		s.setState(StateFailed, reason)
-		// 引擎文件缺失属于部署问题，重试无意义：驻留失败态直至主程序退出或文件出现
+		// 引擎文件缺失属于部署问题，重试无意义：驻留失败态直至主程序退出
+		// （parkUntilDone 不会检测文件重新出现；装好引擎后需重启应用）
 		if os.IsNotExist(err) || isExecNotFound(err) {
 			s.parkUntilDone()
 			return reason
@@ -531,6 +594,7 @@ func (s *Supervisor) runOnce() string {
 			params["bufferSize"] = audio.BufferSize
 		}
 	}
+	failReason := ""
 	if len(params) > 0 {
 		if resp, err := cli.Request("applySetup", params, applySetupTimeout); err != nil {
 			slog.Warn("[engine] 应用音频设置失败", "err", err)
@@ -544,6 +608,15 @@ func (s *Supervisor) runOnce() string {
 			s.lastApply = nil
 			s.lastGood = s.audio
 			s.mu.Unlock()
+			// 传输层失败意味着会话已判死（Request 出错路径必然 markDead）：
+			// 立即走下方清场重启。此前会继续在死会话上逐轨重放音色（每轨
+			// 烧满 30s），而 StateReady 已置位——UI 显示就绪实际引擎卡死，
+			// 恢复延迟 15+30×N 秒
+			select {
+			case <-cli.Done():
+				failReason = "冷启动重放失败: 应用音频设置超时"
+			default:
+			}
 		} else if err := resp.Err(); err != nil {
 			slog.Warn("[engine] 应用音频设置失败", "err", err)
 		} else {
@@ -574,60 +647,73 @@ func (s *Supervisor) runOnce() string {
 			fonts[0] = def
 		}
 	}
-	if len(fonts) > 0 {
-		for tr, p := range fonts {
-			if err := s.loadSoundFontWithTrack(cli, tr, p); err != nil {
-				slog.Warn("[engine] 加载音色失败（track)", "track", tr, "path", p, "err", err)
-			} else {
-				slog.Info("[engine] 已加载音色", "track", tr, "path", p)
+	if failReason == "" {
+		if len(fonts) > 0 {
+			for tr, p := range fonts {
+				if err := s.loadSoundFontWithTrack(cli, tr, p); err != nil {
+					// 会话失效（如上一请求期间判死）：中止重放走清场重启，
+					// 不再逐轨烧满 30s 超时
+					select {
+					case <-cli.Done():
+						failReason = "冷启动重放失败: IPC 会话失效"
+					default:
+						slog.Warn("[engine] 加载音色失败（track)", "track", tr, "path", p, "err", err)
+					}
+				} else {
+					slog.Info("[engine] 已加载音色", "track", tr, "path", p)
+				}
+				if failReason != "" {
+					break
+				}
 			}
+		} else {
+			slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），原生演奏静默")
 		}
-	} else {
-		slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），原生演奏静默")
 	}
 
 	// 心跳 + 进程退出 + IPC 失联三通道监控
 	heartbeatStop := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(s.cfg.PingInterval)
-		defer ticker.Stop()
-		failures := 0
-		for {
-			select {
-			case <-heartbeatStop:
-				return
-			case <-ticker.C:
-				// 长请求（如 Bounce 30s）期间跳过本次，避免被大任务饿死
-				ok, err := cli.TryPing(5 * time.Second)
-				if !ok && err == nil {
-					continue
-				}
-				if err != nil {
-					failures++
-					// 引擎阻塞在慢驱动操作（ASIO Link Pro 首次打开可达
-					// 10-20s）时无法应答心跳，须给足容忍——阈值过低会把
-					// 正常的设备切换误判为会话失效，陷入重启风暴。
-					// 真崩溃走 waitCh 进程退出通道，秒级检测不受影响。
-					if failures >= 15 {
-						slog.Warn("[engine] 心跳连续失败，判定会话失效", "failures", failures)
-						cli.Close() // 触发下方 cli.Done() 路径
-						return
+	if failReason == "" {
+		go func() {
+			ticker := time.NewTicker(s.cfg.PingInterval)
+			defer ticker.Stop()
+			failures := 0
+			for {
+				select {
+				case <-heartbeatStop:
+					return
+				case <-ticker.C:
+					// 长请求（如 Bounce 30s）期间跳过本次，避免被大任务饿死
+					ok, err := cli.TryPing(5 * time.Second)
+					if !ok && err == nil {
+						continue
 					}
-				} else {
-					failures = 0
+					if err != nil {
+						failures++
+						// 引擎阻塞在慢驱动操作（ASIO Link Pro 首次打开可达
+						// 10-20s）时无法应答心跳，须给足容忍——阈值过低会把
+						// 正常的设备切换误判为会话失效，陷入重启风暴。
+						// 真崩溃走 waitCh 进程退出通道，秒级检测不受影响。
+						if failures >= 15 {
+							slog.Warn("[engine] 心跳连续失败，判定会话失效", "failures", failures)
+							cli.Close() // 触发下方 cli.Done() 路径
+							return
+						}
+					} else {
+						failures = 0
+					}
 				}
 			}
-		}
-	}()
+		}()
 
-	var failReason string
-	select {
-	case <-s.ctx.Done():
-		failReason = ""
-	case werr := <-waitCh:
-		failReason = fmt.Sprintf("引擎进程退出: %v", werr)
-	case <-cli.Done():
-		failReason = "IPC 会话失效"
+		select {
+		case <-s.ctx.Done():
+			failReason = ""
+		case werr := <-waitCh:
+			failReason = fmt.Sprintf("引擎进程退出: %v", werr)
+		case <-cli.Done():
+			failReason = "IPC 会话失效"
+		}
 	}
 
 	close(heartbeatStop)
@@ -656,6 +742,9 @@ func (s *Supervisor) LoadSoundFont(path string) error {
 
 // LoadSoundFontTrack 指定轨道加载音色
 func (s *Supervisor) LoadSoundFontTrack(track int, path string) error {
+	if err := s.validateSoundFontPath(path); err != nil {
+		return err
+	}
 	cli, err := s.Ready(5 * time.Second)
 	if err != nil {
 		return err
@@ -765,6 +854,10 @@ func (s *Supervisor) NoteOffTrack(track, key int) {
 
 // ScheduleSamples 批量调度音频素材（走带位置驱动，统一尾音）
 func (s *Supervisor) ScheduleSamples(clips []map[string]any, bpm float64) error {
+	_, _, materialDirs := s.dirs()
+	if err := validateClipsPaths(materialDirs, clips); err != nil {
+		return err
+	}
 	cli, err := s.Ready(5 * time.Second)
 	if err != nil {
 		return err
@@ -803,6 +896,26 @@ func (s *Supervisor) ClearNotes() error {
 func (s *Supervisor) Bounce(params map[string]any) (string, error) {
 	cli, err := s.Ready(10 * time.Second)
 	if err != nil {
+		return "", err
+	}
+	// 输出路径白名单：缺省时注入默认 output 目录，显式传入则必须位于 output 内
+	_, outputDir, materialDirs := s.dirs()
+	outPath, _ := params["path"].(string)
+	if strings.TrimSpace(outPath) == "" {
+		if outputDir == "" {
+			return "", fmt.Errorf("bounce 输出目录未配置，已拒绝渲染")
+		}
+		params["path"] = filepath.Join(outputDir, fmt.Sprintf("bounce_%s.wav",
+			time.Now().Format("20060102_150405")))
+		outPath, _ = params["path"].(string)
+	} else if outputDir == "" || !isSubPathFS(outputDir, outPath) {
+		return "", fmt.Errorf("bounce 输出路径不在允许的输出目录内，已拒绝: %s", outPath)
+	}
+	_ = os.MkdirAll(filepath.Dir(outPath), 0755)
+	if err := validateClipsPaths(materialDirs, mapsFromAny(params["clips"])); err != nil {
+		return "", err
+	}
+	if err := validateBounceTracksPaths(materialDirs, mapsFromAny(params["tracks"])); err != nil {
 		return "", err
 	}
 	return cli.Bounce(params, 30*time.Second)

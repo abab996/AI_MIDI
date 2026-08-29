@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -87,6 +88,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			_ = project.RenameProject(projectID, in.Name)
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		case http.MethodDelete:
+			// 与 clear/messages-edit 等分支同款守卫：进行中任务先停止，
+			// 否则运行中的流会继续调 LLM 并把已删目录"复活"成无索引孤儿
+			if tasks.TaskHasActive(projectID) {
+				writeError(w, http.StatusConflict, "有任务尚未完成，请先停止任务再删除项目")
+				return
+			}
 			chat.DropSession(projectID)
 			tasks.TaskPurgeProject(projectID) /* 同步清除该项目的全部任务，防孤儿任务让面板永久自动弹出 */
 			_ = project.DeleteProject(projectID)
@@ -842,6 +849,10 @@ func (r *Router) handleProjectUploadFiles(w http.ResponseWriter, req *http.Reque
 		// 重名文件加序号（与 Python _unique_dest_path 一致），避免覆盖同名文件
 		basename := filepath.Base(fh.Filename)
 		dstPath := uniqueDestPath(baseDir, basename)
+		if dstPath == "" {
+			srcFile.Close()
+			continue
+		}
 		_ = os.MkdirAll(filepath.Dir(dstPath), 0755)
 
 		dstFile, err := os.Create(dstPath)
@@ -911,13 +922,19 @@ func (r *Router) handleProjectUploadFiles(w http.ResponseWriter, req *http.Reque
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// uniqueDestPath 重名文件加序号（与 Python _unique_dest_path 一致）
+// uniqueDestPath 重名文件加序号（与 Python _unique_dest_path 一致）。
+// 目录不可读/权限异常等 Stat 错误时返回空串（调用方按失败处理），
+// 避免对永远"非 NotExist"的错误无限自旋。
 func uniqueDestPath(dir, basename string) string {
 	candidate := filepath.Join(dir, basename)
 	counter := 2
 	for {
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate
+		_, err := os.Stat(candidate)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return candidate
+			}
+			return ""
 		}
 		ext := filepath.Ext(basename)
 		stem := strings.TrimSuffix(basename, ext)
@@ -942,6 +959,7 @@ func (r *Router) handleProjectDeleteFiles(w http.ResponseWriter, req *http.Reque
 	fl.Lock()
 	var kept []project.MidiFileInfo
 	var trashRels []string
+	failed := []string{}
 
 	for _, f := range s.MidiFiles {
 		if nameSet[f.Name] {
@@ -950,6 +968,8 @@ func (r *Router) handleProjectDeleteFiles(w http.ResponseWriter, req *http.Reque
 				trashRels = append(trashRels, rel)
 				continue
 			}
+			// 回收失败（常见于文件被占用）：保留原文件并把该文件名报给前端
+			failed = append(failed, f.Name)
 		}
 		kept = append(kept, f)
 	}
@@ -964,8 +984,9 @@ func (r *Router) handleProjectDeleteFiles(w http.ResponseWriter, req *http.Reque
 	project.SaveMidiManifest(projectID, s.MidiFiles)
 
 	resp := map[string]any{
-		"files": chat.SnapshotMidiFiles(s.MidiFiles),
-		"dirs":  project.ScanDirs(project.GetMidiBaseDir(projectID)),
+		"files":  chat.SnapshotMidiFiles(s.MidiFiles),
+		"dirs":   project.ScanDirs(project.GetMidiBaseDir(projectID)),
+		"failed": failed,
 	}
 	fl.Unlock()
 	writeJSON(w, http.StatusOK, resp)
@@ -975,47 +996,90 @@ func (r *Router) handleProjectMoveFiles(w http.ResponseWriter, req *http.Request
 	var in struct {
 		Moves []map[string]string `json:"moves"`
 	}
-	_ = json.NewDecoder(req.Body).Decode(&in)
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil || len(in.Moves) == 0 {
+		writeError(w, http.StatusBadRequest, "请求格式错误：缺少 moves")
+		return
+	}
 
 	baseDir := project.GetMidiBaseDir(projectID)
 	mirrorDir := project.GetMidiMirrorDir(projectID)
+	s := chat.GetSession(projectID)
+
+	failed := []string{}
+
+	fl := chat.GetSessionLock(projectID)
+	fl.Lock()
+	defer fl.Unlock()
 
 	for _, m := range in.Moves {
-		srcRel := m["src"]
+		// 前端 moveFile/renameFile 发的是 "name"；保留 "src" 兼容旧调用
+		srcRel := m["name"]
+		if srcRel == "" {
+			srcRel = m["src"]
+		}
 		dstFolder := m["target"]
+		newName := strings.TrimSpace(m["rename"])
+
+		display := srcRel
+		if newName != "" {
+			display = srcRel + " → " + newName
+		}
+
+		// rename：只允许改文件名本身，不得携带路径成分
+		if newName != "" {
+			newName = filepath.Base(filepath.FromSlash(newName))
+			if newName == "" || newName == "." || newName == ".." ||
+				strings.ContainsAny(newName, `/\`) || strings.ContainsRune(newName, 0) {
+				failed = append(failed, display)
+				continue
+			}
+		}
 
 		// dstFolder 来自请求体：与 srcRel 同样做逃逸校验，
 		// 否则 "..\\..\\" 可把项目文件 Rename 到任意可写目录
 		dstFolder = strings.TrimSpace(strings.Trim(filepath.ToSlash(dstFolder), "/"))
 		if dstFolder == ".." || strings.Contains(dstFolder, "../") || strings.Contains(dstFolder, "..\\") {
+			failed = append(failed, display)
 			continue
 		}
 
 		srcPath, err := mcp.SafeJoin(baseDir, srcRel)
 		if err != nil {
+			failed = append(failed, display)
 			continue
 		}
+
+		dstName := filepath.Base(srcRel)
+		if newName != "" {
+			dstName = newName
+		}
+
 		var dstPath string
 		if dstFolder == "" {
-			dstPath = filepath.Join(baseDir, filepath.Base(srcRel))
+			dstPath = filepath.Join(baseDir, dstName)
 		} else {
-			dstPath = filepath.Join(baseDir, filepath.FromSlash(dstFolder), filepath.Base(srcRel))
+			dstPath = filepath.Join(baseDir, filepath.FromSlash(dstFolder), dstName)
 			if rel, relErr := filepath.Rel(baseDir, filepath.Dir(dstPath)); relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				failed = append(failed, display)
 				continue
 			}
 		}
-		_ = os.MkdirAll(filepath.Dir(dstPath), 0755)
-		_ = os.Rename(srcPath, dstPath)
+
+		if err := moveOneFile(srcPath, dstPath); err != nil {
+			slog.Warn("移动/重命名文件失败", "src", srcRel, "dst", dstPath, "err", err)
+			failed = append(failed, display)
+			continue
+		}
 
 		if mirrorDir != "" {
 			if mSrc, err := mcp.SafeJoin(mirrorDir, srcRel); err == nil {
 				var mDst string
 				if dstFolder == "" {
-					mDst = filepath.Join(mirrorDir, filepath.Base(srcRel))
+					mDst = filepath.Join(mirrorDir, dstName)
 				} else {
-					mDst = filepath.Join(mirrorDir, filepath.FromSlash(dstFolder), filepath.Base(srcRel))
+					mDst = filepath.Join(mirrorDir, filepath.FromSlash(dstFolder), dstName)
 					if rel, relErr := filepath.Rel(mirrorDir, filepath.Dir(mDst)); relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-						continue
+						continue // 镜像侧失败不阻塞主文件
 					}
 				}
 				_ = os.MkdirAll(filepath.Dir(mDst), 0755)
@@ -1024,18 +1088,35 @@ func (r *Router) handleProjectMoveFiles(w http.ResponseWriter, req *http.Request
 		}
 	}
 
-	s := chat.GetSession(projectID)
 	// 重扫清单保留原音符表（此前直接 ScanMidiFiles 会把 note_table 丢光）
-	fl := chat.GetSessionLock(projectID)
-	fl.Lock()
 	s.MidiFiles = project.ScanMidiFilesKeepNotes(baseDir, s.MidiFiles)
 	project.SaveMidiManifest(projectID, s.MidiFiles)
 	resp := map[string]any{
-		"files": chat.SnapshotMidiFiles(s.MidiFiles),
-		"dirs":  project.ScanDirs(baseDir),
+		"files":  chat.SnapshotMidiFiles(s.MidiFiles),
+		"dirs":   project.ScanDirs(baseDir),
+		"failed": failed,
 	}
-	fl.Unlock()
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// moveOneFile 执行移动/重命名。Windows 下目标已存在时 os.Rename 会报错，
+// 这里把"目标已存在"显式化为错误（调用方进 failed 列表），不再静默吞掉。
+func moveOneFile(srcPath, dstPath string) error {
+	if srcPath == dstPath {
+		return nil
+	}
+	if _, err := os.Stat(srcPath); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dstPath); err == nil {
+		return fmt.Errorf("目标已存在: %s", filepath.Base(dstPath))
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return err
+	}
+	return os.Rename(srcPath, dstPath)
 }
 
 func (r *Router) handleProjectDownload(w http.ResponseWriter, req *http.Request, projectID string) {

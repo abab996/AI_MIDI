@@ -1,10 +1,10 @@
 package server
 
 import (
-	"testing"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"testing"
 )
 
 // newLocalRequest 构造带本机 Host 的测试请求。
@@ -45,11 +45,11 @@ func TestOriginGuard(t *testing.T) {
 	}
 
 	badReqs := []struct{ host, origin string }{
-		{"evil.example.com", ""},                          // DNS rebinding
-		{"127.0.0.1.evil.com", ""},                        // 子域 rebinding
-		{"127.0.0.1:7860", "https://evil.example.com"},    // 跨站简单请求
-		{"127.0.0.1:7860", "null"},                        // 沙箱 iframe
-		{"example.com", "http://example.com"},             // httptest 默认值也必须拒绝
+		{"evil.example.com", ""},                       // DNS rebinding
+		{"127.0.0.1.evil.com", ""},                     // 子域 rebinding
+		{"127.0.0.1:7860", "https://evil.example.com"}, // 跨站简单请求
+		{"127.0.0.1:7860", "null"},                     // 沙箱 iframe
+		{"example.com", "http://example.com"},          // httptest 默认值也必须拒绝
 		{"wails.localhost.evil.com", "http://wails.localhost.evil.com"},
 	}
 	for _, tc := range badReqs {

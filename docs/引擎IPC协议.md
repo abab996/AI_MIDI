@@ -27,12 +27,16 @@ payload = [1 字节消息类型][消息体]
 | Request | 0x01 | Go → Engine | UTF-8 JSON：`{"id":<num>,"method":"...","params":{...}}` |
 | Response | 0x02 | Engine → Go | UTF-8 JSON：`{"id":<num>,"ok":true,"result":...}` 或 `{"id":<num>,"ok":false,"error":{"message":"..."}}` |
 | Event | 0x03 | Engine → Go | UTF-8 JSON：`{"event":"...","data":{...}}` |
-| Midi | 0x04 | Go → Engine | 二进制 3 字节：`[status][data1][data2]`（M2 实时演奏路径，见下） |
+| Midi | 0x04 | Go → Engine | 二进制 MIDI 消息，3/4 字节双版本（见下） |
 | Timecode | 0x05 | Engine → Go | 二进制定长 25 字节走带时间码（M3，见下） |
 
-**Midi 帧（0x04）布局**：payload 在类型字节后为一条标准 MIDI 消息——
-`[status][data1][data2]`，status 为完整状态字节（`0x90|ch` noteOn、`0x80|ch` noteOff），
+**Midi 帧（0x04）布局**：payload 在类型字节后为一条 MIDI 消息，**两个版本并存**——
+- 3 字节（旧单轨）：`[status][data1][data2]`，等价 track 0；
+- 4 字节（多轨，每轨独立 SF2）：`[track][status][data1][data2]`，track 0–31。
+
+status 为完整状态字节（`0x90|ch` noteOn、`0x80|ch` noteOff），
 data1 为键号、data2 为力度；noteOn 且 data2=0 按 MIDI 约定等价 noteOff。
+引擎按 payload 长度区分版本（3 字节 → track 0，4 字节 → 取首字节为 track）。
 
 **Timecode 帧（0x05）布局**（M3）：payload 在类型字节后为 25 字节——
 `[samplePos int64 LE][beatPos float64 LE][bpm float64 LE][playing uint8]`。
@@ -102,13 +106,41 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 ### 4.6 `loadSoundFont`（M2）
 | | |
 |---|---|
-| params | `{"path":"D:/.../xxx.sf2"}` |
-| result | `{"loaded":true,"path":"..."}`；失败时 `loaded=false` 且附 `error` 文本（加载失败不算协议错误） |
+| params | `{"path":"D:/.../xxx.sf2","track?":0}`（track 缺省为 0；0–31，每轨独立 tsf） |
+| result | `{"loaded":true,"path":"...","track":0}`；失败时 `loaded=false` 且附 `error` 文本（加载失败不算协议错误） |
+| 说明 | 该方法在 JUCE 消息线程执行；SF2 文件可达数十 MB，首次解析耗时可达数秒 |
 
 ### 4.7 `setTrackMix`（M3 混音图）
 | | |
 |---|---|
 | params | `{"track":0,"gain":1.0,"pan":0.0,"mute":false,"solo":false,"active":true}`（track 0–31） |
+| result | `{}` |
+
+### 4.7a 素材调度（M3，编曲窗音频 Clip 与离线渲染共用）
+| 方法 | params | result | 说明 |
+|---|---|---|---|
+| `scheduleSamples` | `{"clips":[{...}],"bpm":<double>}` | `{}` | 全量替换采样调度表。clip 字段：`track`(0–31)、`path`(素材绝对路径)、`start`(拍)、`length`(拍)、`offset`(秒，素材内偏移)、`fadeIn`/`fadeOut`(秒)、`gain`(线性系数)。**注意单位混合**：start/length 为拍，offset/fade 为秒。`path` 重复时仅首次解码（SamplePool 缓存）；解码在消息线程进行 |
+| `clearSamples` | `{}` | `{}` | 清空采样调度表 |
+| `scheduleNotes` | `{"notes":[{...}],"bpm":<double>}` | `{}` | 全量替换 MIDI 调度表。note 字段：`track`、`key`(0–127)、`vel`(1–127)、`start`(拍)、`end`(拍) |
+| `clearNotes` | `{}` | `{}` | 清空 MIDI 调度表 |
+
+### 4.7b `bounce`（M3 离线渲染）
+| | |
+|---|---|
+| params | `{"path":"<输出 WAV 绝对路径>","bpm":<double>,"beats":<double>,"tailSec":<秒>,"sampleRate?":48000,"notes?":[...],"clips?":[...]}`；notes/clips 结构同 4.7a。缺省 `sampleRate` 时沿用当前设备采样率 |
+| result | `{"path":"...","ok":true}`；主进程以返回的 path 经自身下载通道提供给前端 |
+| 说明 | 管道线程同步渲染，长曲可达分钟级——Go 侧用独立长超时（30s）调用；渲染期间音频回调静音（协作握手保证互斥） |
+
+### 4.7c `getLevels`
+| | |
+|---|---|
+| params | `{}` |
+| result | `{"levels":[<float>, ...]}`（32 轨峰值电平） |
+
+### 4.7d `setLoop`（走带循环）
+| | |
+|---|---|
+| params | `{"on":true,"start":<拍>,"end":<拍>}` |
 | result | `{}` |
 
 ### 4.8 `openControlPanel`
@@ -154,7 +186,7 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 
 ## 6. 超时与其他约定
 
-- 主进程对每个请求应设超时（建议：ping/listDevices ≥ 3s，applySetup ≥ 5s，hello 握手 3s）；
+- 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 15s、loadSoundFont 30s、bounce 30s、握手 20s；ping 走 TryPing 5s）；
 - 引擎对畸形 JSON 不回复（请求方靠超时兜底），后续版本可在 Response 中引入显式 parse error；
-- 心跳由**主进程侧**负责（1s ping × 连丢 3 次判崩溃），引擎不主动探测客户端；
+- 心跳由**主进程侧**负责：TryPing 每 2s 一次（会话事务忙时跳过），连续失败 15 次（最坏 30–105s）判会话失效重建——阈值刻意宽松以容忍 ASIO 慢驱动首开（10–20s）；真崩溃由进程退出通道秒级检测，不走心跳；
 - 本协议不含鉴权。本地信任边界收紧（客户端 PID 校验/DACL）列入 M5 前加固项。

@@ -581,6 +581,9 @@
   PianoRoll.prototype.saveTab = function (tab) {
     var self = this;
     if (!tab || !tab.dirty) return Promise.resolve();
+    // 先"认领" dirty 再发请求（同 arrange.doSave）：响应回来再清 flag 会
+    // 误清在途编辑，UI 显示 SAVED 但最后几笔改动从未落盘
+    tab.dirty = false;
     this.setSaveState("SAVING");
 
     var noteLines = tab.notes.map(function (n) {
@@ -592,10 +595,11 @@
       note_table: noteLines,
       bpm: tab.bpm || 120
     }).then(function () {
-      tab.dirty = false;
       self.renderTabs();
       self.setSaveState("SAVED");
+      if (tab.dirty) self.saveTab(tab); // 保存期间有编辑：补一轮（saveTab 内部会重新认领）
     }).catch(function (e) {
+      tab.dirty = true; // 保存失败：恢复 dirty，编辑仍保留，关窗兜底仍会带上
       self.setSaveState("SAVE ERR");
       if (window.UI && window.UI.toast) {
         window.UI.toast("✗ 自动保存失败: " + ((e && e.message) || "网络错误") + "（编辑仍保留）", "err");
@@ -3277,20 +3281,30 @@
               if (window.UI && window.UI.toast) window.UI.toast("✓ 已加载音色库: " + f.name, "ok");
               var modal = document.getElementById("soundLibModalOverlay");
               if (modal) self.closeModalAnimated(modal);
+            } else {
+              if (window.UI && window.UI.toast) window.UI.toast("✗ 音色数据读取失败，请重新上传", "err");
             }
+          }).catch(function (err) {
+            /* 此前无 catch：加载失败时弹窗永远停在加载态且无提示 */
+            if (window.UI && window.UI.toast) window.UI.toast("✗ 加载音色失败: " + (err && err.message ? err.message : "未知错误"), "err");
           });
         });
 
         row.querySelector(".action-del").addEventListener("click", function () {
           if (!window.confirm("确定删除音色库「" + f.name + "」？此操作不可恢复。")) return;
-          window.SoundLibrary.deleteSoundFont(f.id).then(function () {
+          window.SoundLibrary.deleteSoundFont(f.id, f.name).then(function () {
             self.refreshSoundLibraryList();
             if (window.UI && window.UI.toast) window.UI.toast("✓ 已删除音色库: " + f.name, "ok");
+          }).catch(function (err) {
+            if (window.UI && window.UI.toast) window.UI.toast("✗ 删除失败: " + (err && err.message ? err.message : "未知错误"), "err");
           });
         });
 
         listEl.appendChild(row);
       });
+    }).catch(function (err) {
+      /* IndexedDB 打不开等场景：此前列表永远停在"正在加载…"且无报错 */
+      listEl.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-danger);text-align:center">音源列表加载失败: ' + UI.esc(err && err.message ? err.message : String(err)) + '</div>';
     });
   };
 

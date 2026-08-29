@@ -13,8 +13,9 @@
     "engine_enabled": true,
     "driver": "",
     "device": "",
-    "sample_rate": 48000,
-    "buffer_size": 256,
-    "backend": "auto"
+    "sample_rate": 0,
+    "buffer_size": 0,
+    "backend": "auto",
+    "engine_path": ""
   }
 }

@@ -42,6 +42,10 @@ var (
 	taskList    = make(map[string]*TaskRecord)
 	taskOrder   []string
 	cancelFlags = make(map[string]bool)
+	// cancelChans 任务停止信号：TaskStop 关闭对应 chan，让在途的
+	// LLM 流式请求能立即中断（而非只靠两个 chunk 之间的轮询）。
+	// TaskMarkRunning 为新一轮重建；关闭后即从 map 移除。
+	cancelChans = make(map[string]chan struct{})
 	loaded      = false
 )
 
@@ -265,6 +269,8 @@ func TaskMarkRunning(taskID string) {
 		// 新一轮开始即视为撤销上一轮的停止请求——否则手动停止一次后，
 		// 同一任务的后续消息永远被「任务已停止」拦截
 		delete(cancelFlags, taskID)
+		// 为新一轮重建停止信号 chan（旧的可能已被 TaskStop 关闭）
+		cancelChans[taskID] = make(chan struct{})
 		saveLocked()
 	}
 }
@@ -350,6 +356,12 @@ func TaskStop(taskID string) (bool, string) {
 	}
 
 	cancelFlags[taskID] = true
+	// 关闭停止信号 chan：ChatStream 侧的 watcher 立即取消在途 LLM 请求。
+	// 关闭后即从 map 移除，重复 TaskStop 不会二次 close
+	if ch, ok := cancelChans[taskID]; ok && ch != nil {
+		close(ch)
+		delete(cancelChans, taskID)
+	}
 	if t.Status == StatusNeedsConfirmation {
 		t.Status = StatusCompleted
 		t.FinishedAt = nowTs()
@@ -395,7 +407,12 @@ func TaskGet(taskID string) *TaskRecord {
 	return nil
 }
 
-// TaskDelete 删除任务
+// TaskDelete 删除任务。进行中/待确认的任务先置停止信号再删：
+// ChatStream 侧的 watcher 会立即取消在途请求，逐轮的 TaskIsCancelled
+// 检查也会因 flag 命中而中断。flag 故意保留（旧任务 ID 不会复用，
+// TaskEnsure 生成新 uuid；TaskMarkRunning 重建 chan 时会清掉），
+// 此前先置后删会让运行中的流错过停止信号。TaskFinish 对已删除
+// 任务为 no-op，安全。
 func TaskDelete(taskID string) (bool, string) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -405,14 +422,18 @@ func TaskDelete(taskID string) (bool, string) {
 	if !ok {
 		return false, "任务不存在"
 	}
-	if t.Status != StatusCompleted {
-		return false, "任务未完成（进行中或需要确认），无法删除"
-	}
-
 	pid := t.ProjectID
 	legacy := t.Legacy
 
-	delete(cancelFlags, taskID)
+	if t.Status != StatusCompleted {
+		cancelFlags[taskID] = true
+		if ch, ok := cancelChans[taskID]; ok && ch != nil {
+			close(ch)
+			delete(cancelChans, taskID)
+		}
+	} else {
+		delete(cancelFlags, taskID)
+	}
 	delete(taskList, taskID)
 	var newOrder []string
 	for _, id := range taskOrder {
@@ -510,6 +531,10 @@ func TaskPurgeProject(projectID string) {
 	for _, id := range taskOrder {
 		if t, ok := taskList[id]; ok && t.ProjectID == projectID {
 			delete(cancelFlags, id)
+			if ch, ok := cancelChans[id]; ok && ch != nil {
+				close(ch)
+				delete(cancelChans, id)
+			}
 			delete(taskList, id)
 		} else {
 			newOrder = append(newOrder, id)
@@ -517,6 +542,39 @@ func TaskPurgeProject(projectID string) {
 	}
 	taskOrder = newOrder
 	saveLocked()
+}
+
+// TaskCancelChan 返回任务的停止信号 chan（TaskStop 时被关闭）。
+// 返回 nil 表示当前没有可等待的停止信号（仅退化为轮询 TaskIsCancelled）。
+func TaskCancelChan(taskID string) <-chan struct{} {
+	mu.RLock()
+	defer mu.RUnlock()
+	return cancelChans[taskID]
+}
+
+// TaskLatestActive 返回项目最近活跃的任务 ID：按 StartedAt 最大者
+// （TaskMarkRunning 每轮刷新 StartedAt），无运行记录时取 taskOrder
+// 末端（最近创建），再无则空串。应用重启后恢复"上次打开的任务"用。
+func TaskLatestActive(projectID string) string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	var latest string
+	var latestStart float64
+	for i := len(taskOrder) - 1; i >= 0; i-- {
+		t, ok := taskList[taskOrder[i]]
+		if !ok || t.ProjectID != projectID {
+			continue
+		}
+		if latest == "" {
+			latest = t.ID
+		}
+		if t.StartedAt > latestStart {
+			latestStart = t.StartedAt
+			latest = t.ID
+		}
+	}
+	return latest
 }
 
 // TaskResumeByQuestion 根据提问 ID 查找需要确认的任务

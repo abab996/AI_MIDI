@@ -2,9 +2,12 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // MidiFileInfo 项目文件元数据
@@ -29,7 +32,27 @@ func ClearTrash(projectID string) {
 	_ = os.RemoveAll(trash)
 }
 
-// MoveToTrash 将文件移入项目回收站
+// uniqueDstPath 目标已存在时在扩展名前插入 " (n)" 递增。os.Rename 在
+// Windows 上会直接替换已存在的目标文件——恢复回收站时若不查重，会把
+// 用户新建的同名文件无声覆盖销毁
+func uniqueDstPath(dst string) string {
+	if _, err := os.Stat(dst); err != nil {
+		return dst // 目标不存在：直接用原名
+	}
+	ext := filepath.Ext(dst)
+	base := strings.TrimSuffix(dst, ext)
+	for i := 1; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	// 极端拥挤场景兜底：时间戳后缀必然唯一
+	return fmt.Sprintf("%s (%s)%s", base, time.Now().Format("150405.000"), ext)
+}
+
+// MoveToTrash 将文件移入项目回收站。返回实际落位的回收站相对路径
+// （同名冲突时为唯一名），调用方以此作为回滚/恢复的凭据
 func MoveToTrash(projectID string, fileInfo MidiFileInfo) string {
 	src := fileInfo.Path
 	name := fileInfo.Name
@@ -44,7 +67,7 @@ func MoveToTrash(projectID string, fileInfo MidiFileInfo) string {
 	}
 
 	trash := TrashDir(projectID)
-	dst := filepath.Join(trash, filepath.FromSlash(name))
+	dst := uniqueDstPath(filepath.Join(trash, filepath.FromSlash(name)))
 	_ = os.MkdirAll(filepath.Dir(dst), 0755)
 
 	if err := os.Rename(src, dst); err != nil {
@@ -52,7 +75,11 @@ func MoveToTrash(projectID string, fileInfo MidiFileInfo) string {
 		return ""
 	}
 
-	return name
+	rel, err := filepath.Rel(trash, dst)
+	if err != nil {
+		return name
+	}
+	return filepath.ToSlash(rel)
 }
 
 // RestoreFromTrash 从回收站恢复文件至主目录
@@ -68,7 +95,7 @@ func RestoreFromTrash(projectID string, trashRels []string) {
 		if fi, err := os.Stat(src); err != nil || fi.IsDir() {
 			continue
 		}
-		dst := filepath.Join(base, filepath.FromSlash(rel))
+		dst := uniqueDstPath(filepath.Join(base, filepath.FromSlash(rel)))
 		_ = os.MkdirAll(filepath.Dir(dst), 0755)
 
 		if err := os.Rename(src, dst); err != nil {

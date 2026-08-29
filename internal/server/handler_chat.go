@@ -35,7 +35,10 @@ func (r *Router) handleChat(w http.ResponseWriter, req *http.Request) {
 		return err
 	}
 
-	_ = chat.ChatStream(in.ProjectID, in.Message, in.Edit, false, in.TaskID, callback)
+	// 传入 req.Context() 仅用于携带请求元数据；ChatStream 内部用
+	// WithoutCancel 切断取消传播——前端断开 SSE 时任务转后台续跑
+	// （不中止生成），用户主动停止经 tasks.TaskCancelChan 传导
+	_ = chat.ChatStream(req.Context(), in.ProjectID, in.Message, in.Edit, false, in.TaskID, callback)
 }
 
 func (r *Router) handleAnswer(w http.ResponseWriter, req *http.Request) {
@@ -64,5 +67,5 @@ func (r *Router) handleAnswer(w http.ResponseWriter, req *http.Request) {
 		return err
 	}
 
-	_ = chat.AnswerStream(in.ProjectID, in.QuestionID, in.Answers, callback)
+	_ = chat.AnswerStream(req.Context(), in.ProjectID, in.QuestionID, in.Answers, callback)
 }

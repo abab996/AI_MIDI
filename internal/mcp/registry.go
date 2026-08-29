@@ -129,7 +129,7 @@ var mcpTools = []llm.ToolDefinition{
 var AskUserTool = llm.ToolDefinition{
 	Type: "function",
 	Function: llm.FunctionSchema{
-		Name: "ask_user_question",
+		Name:        "ask_user_question",
 		Description: "当用户需求不明确、存在多个合理创作方向、或关键参数（风格/BPM/调式/结构等）缺失时，向用户提出结构化问题以确认意图。不要在你已有足够信息时使用；一次最多提出 4 个问题，每题提供 2~5 个选项，如需多个答案可设 multiSelect=true。用户回答后按回答继续创作。",
 		Parameters: map[string]any{
 			"type":     "object",

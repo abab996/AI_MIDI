@@ -415,6 +415,32 @@
     this.syncTransportUI();
   };
 
+  /** 项目文件清单更新后同步清理：被删除（用户删除或 AI 调 delete_midi）
+      的 MIDI 文件，编曲轨道上对应的 midi clip 一并移除，避免悬垂引用
+      （clip.notes 还在内存里，播放/导出会继续用它，但源文件已不存在） */
+  Arrange.prototype.syncFiles = function (files) {
+    var valid = {};
+    (files || []).forEach(function (f) {
+      if (f && f.name) valid[f.name] = true;
+    });
+    var changed = false;
+    this.tracks.forEach(function (t) {
+      if (!t.clips || !t.clips.length) return;
+      var kept = t.clips.filter(function (c) {
+        if (!c || c.type !== "midi") return true;
+        if (valid[c.fullName] || valid[c.name]) return true;
+        changed = true;
+        return false;
+      });
+      if (kept.length !== t.clips.length) t.clips = kept;
+    });
+    if (changed) {
+      this.renderTracks();
+      this.updateContentWidth();
+      this.scheduleSave();
+    }
+  };
+
   Arrange.prototype.scheduleSave = function () {
     if (!this.projectId) return;
     this.dirty = true;
@@ -427,13 +453,18 @@
   Arrange.prototype.doSave = function () {
     var self = this;
     if (!this.projectId || !this.dirty) return;
+    // 先"认领" dirty 再发请求：在途期间的编辑会重新置 dirty 并触发下一轮
+    // 保存。若等响应回来再清 flag，会误清掉在途编辑（保存期间打的音符
+    // 静默丢失且 UI 仍显示 SAVED，关窗兜底也因 dirty=false 跳过）
+    this.dirty = false;
     this.setSaveStamp("SAVING", false);
     UI.putJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement", this.serialize())
       .then(function () {
-        self.dirty = false;
         self.setSaveStamp("SAVED", false);
+        if (self.dirty) self.scheduleSave(); // 保存期间有编辑：补一轮
       })
       .catch(function (e) {
+        self.dirty = true; // 保存失败：恢复 dirty，防抖重试与关窗兜底仍有效
         self.setSaveStamp("SAVE ERR", true);
         if (UI.toast) UI.toast("✗ 编排保存失败: " + e.message, "err");
       });
@@ -574,14 +605,21 @@
   };
 
   Arrange.prototype.startPlayback = function () {
-    this.engine.resume();
+    this.engine.resume().catch(function (e) {
+      console.warn("[Arrange] AudioContext 恢复失败:", e);
+    });
     this.engine.metronome = this.metronome;
     this.engine.loop = this.loop;
     this.engine.bpm = this.bpm;
     // 记录本次播放的起始位置（「暂停后恢复光标位置」回退目标）
     this.playbackOriginBeat = Math.max(0, this.playheadBeat);
     this.isPlaying = true;
-    this.engine.play(this.playheadBeat);
+    var self = this;
+    var playResult = this.engine.play(this.playheadBeat);
+    // 引擎启动失败时回滚播放态（engine.play 内部已 toast 提示）
+    if (playResult && typeof playResult.catch === "function") {
+      playResult.catch(function () { self.isPlaying = false; self.updatePlayButton(); });
+    }
     // 原生优先时：同步 JUCE 走带与素材调度（全走JUCE，尾音自然不截断）
     try {
       if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) {

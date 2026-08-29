@@ -7,12 +7,12 @@
     "name": "AI_MIDI",
     "email": "ai_midi@local"
   },
-  "version": "3.0.0",
+  "version": "3.0.1",
   "info": {
     "companyName": "AI_MIDI",
     "productName": "AI_MIDI · AI 编曲助手",
-    "productVersion": "3.0.0",
+    "productVersion": "3.0.1",
     "copyright": "Copyright 2026",
-    "comments": "AI_MIDI Assistant v3.0.0"
+    "comments": "AI_MIDI Assistant v3.0.1"
   }
 }

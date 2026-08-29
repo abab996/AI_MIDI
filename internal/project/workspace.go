@@ -293,6 +293,14 @@ func SyncWorkspaceToProjects(projectID string, prevMidiFiles []MidiFileInfo) []M
 		return prevMidiFiles
 	}
 
+	// 工作区不可达（U 盘/网络盘未挂载、目录被移走）时禁止同步：
+	// ScanMidiFiles 会返回空集，下方"镜像有、工作区无 → 删除"会把
+	// 整个镜像连同 note_table 清空并落盘空 manifest，盘恢复后也找不回
+	if _, err := os.Stat(ws); err != nil {
+		slog.Warn("工作区不可访问，跳过本次同步（保留镜像与清单）", "ws", ws, "err", err)
+		return prevMidiFiles
+	}
+
 	mirror := MidiDir(projectID)
 	_ = os.MkdirAll(mirror, 0755)
 

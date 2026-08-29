@@ -7,6 +7,13 @@ echo  正在回滚到今天最稳定的 M2 交付基线...
 echo  主仓基线: b5b4afe (M2 阶段五: 卷帘SF2弹奏 + 设置页面板)
 echo  引擎基线: 701b916 (M2 阶段一: tinySoundFont 合成器)
 echo ========================================================
+echo  警告：主仓与 engine 子仓将 git reset --hard，
+echo  所有未提交的改动会永久丢失且不可恢复！
+choice /c YN /m "确认回滚"
+if errorlevel 2 (
+    echo 已取消。
+    exit /b 1
+)
 
 echo [1/5] 终止残留进程...
 taskkill /F /IM aimidi-engine.exe 2>nul

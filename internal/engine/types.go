@@ -71,12 +71,12 @@ type DeviceList struct {
 type EngineState string
 
 const (
-	StateDisabled  EngineState = "disabled"  // 配置禁用
-	StateStopped   EngineState = "stopped"
-	StateStarting  EngineState = "starting"
-	StateReady     EngineState = "ready"
+	StateDisabled   EngineState = "disabled" // 配置禁用
+	StateStopped    EngineState = "stopped"
+	StateStarting   EngineState = "starting"
+	StateReady      EngineState = "ready"
 	StateRestarting EngineState = "restarting"
-	StateFailed    EngineState = "failed"
+	StateFailed     EngineState = "failed"
 )
 
 // EngineStatus 引擎运行状态快照（/api/audio/status）

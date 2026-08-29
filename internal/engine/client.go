@@ -3,12 +3,16 @@ package engine
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"sync"
 	"time"
 )
+
+// ErrSessionDead 会话已判死（进程退出/协议失败/已关闭），后续请求立即失败
+var ErrSessionDead = errors.New("引擎会话已失效")
 
 // Client 原生音频引擎管道客户端（串行事务模型）。
 //
@@ -81,6 +85,13 @@ func (c *Client) Request(method string, params map[string]any, timeout time.Dura
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	// 已判死的会话立即失败：否则每个后续请求都要先排队拿锁、再烧满
+	// 自身超时（冷启动重放场景会放大成 15+30×N 秒的卡死）
+	select {
+	case <-c.dead:
+		return nil, ErrSessionDead
+	default:
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -100,6 +111,38 @@ func (c *Client) Request(method string, params map[string]any, timeout time.Dura
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
 
+	return c.awaitResponse(req.ID, timeout)
+}
+
+// TryRequest 尝试发送请求：会话已死或事务锁被在途长请求占用时立即失败，
+// 不排队等待。供 Stop 等"不能被 bounce 之类长请求阻塞"的路径使用。
+func (c *Client) TryRequest(method string, params map[string]any, timeout time.Duration) (*Response, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	select {
+	case <-c.dead:
+		return nil, ErrSessionDead
+	default:
+	}
+	if !c.mu.TryLock() {
+		return nil, fmt.Errorf("引擎忙（有在途请求），已跳过 %s", method)
+	}
+	defer c.mu.Unlock()
+
+	req := Request{
+		ID:     c.nextRequestID(),
+		Method: method,
+		Params: params,
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+	if err := c.writeFrameWithTimeout(MsgRequest, body, timeout); err != nil {
+		c.markDead()
+		return nil, fmt.Errorf("发送请求失败: %w", err)
+	}
 	return c.awaitResponse(req.ID, timeout)
 }
 

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -280,7 +281,7 @@ func TestChatStreamAndAnswerStreamMock(t *testing.T) {
 	}
 
 	// 1. 发送第一条消息，触发 ask_user_question
-	err := ChatStream(projectID, "帮我写一首乐曲", false, false, nil, callback)
+	err := ChatStream(context.Background(), projectID, "帮我写一首乐曲", false, false, nil, callback)
 	if err != nil {
 		t.Fatalf("ChatStream failed: %v", err)
 	}
@@ -320,7 +321,7 @@ func TestChatStreamAndAnswerStreamMock(t *testing.T) {
 		},
 	}
 
-	err = AnswerStream(projectID, qid, userAnswers, callback)
+	err = AnswerStream(context.Background(), projectID, qid, userAnswers, callback)
 	if err != nil {
 		t.Fatalf("AnswerStream failed: %v", err)
 	}

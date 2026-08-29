@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"time"
 
 	"github.com/wailsapp/wails/v2"
@@ -32,6 +33,23 @@ var assets embed.FS
 
 //go:embed wails.json
 var wailsCfgRaw []byte
+
+// openBrowser 跨平台打开系统默认浏览器。此前硬编码 `cmd /c start`，
+// Linux/macOS（-browser 模式的发布目标之一）永远弹不出浏览器且错误被丢弃。
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("[AI_MIDI] 打开浏览器失败: %v（请手动访问 %s）", err, url)
+	}
+}
 
 // loadVersion 从打包配置读取版本号注入 config（/api/version 与设置页 About
 // 展示用；与 wails.json 同源，避免版本号双份维护）
@@ -85,6 +103,12 @@ func main() {
 	audioSettings := config.LoadSettings().Audio
 	engineSup := engine.NewSupervisor(engine.Config{
 		SoundFontDir: filepath.Join(config.LibraryDir, "soundfonts"),
+		// 路径白名单目录（engine 不反向依赖 config，见 engine.Config.Dirs 注释）
+		Dirs: func() (string, string, []string) {
+			return filepath.Join(config.LibraryDir, "soundfonts"),
+				config.OutputDir,
+				config.LoadSettings().MaterialDirs
+		},
 	}, audioSettings)
 	engine.SetGlobal(engineSup)
 	engineSup.Start()
@@ -120,7 +144,7 @@ func main() {
 		addr := fmt.Sprintf("127.0.0.1:%d", *port)
 		go func() {
 			splashCtrl.Wait()
-			_ = exec.Command("cmd", "/c", "start", fmt.Sprintf("http://%s/chat.html", addr)).Start()
+			openBrowser(fmt.Sprintf("http://%s/chat.html", addr))
 		}()
 
 		fmt.Printf("[AI_MIDI] HTTP 服务已在 http://%s 启动 (浏览器模式)\n", addr)

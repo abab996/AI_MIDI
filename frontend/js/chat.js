@@ -255,12 +255,39 @@
     });
   }
 
+  /* 流式相关状态的完整复位：项目/任务切换时统一调用。
+     此前 applyProjectPayload 完全不复位 liveStreaming/lastMessages 等，
+     而 chatDone 的 epoch 守卫又会把复位逻辑跳过——切项目后旧项目的
+     流式状态残留，最后一条 AI 消息被当成"流式尾部"渲染（跨项目混显） */
+  function resetStreamState() {
+    liveStreaming = false;
+    streamEnded = false;
+    streamTrack = { el: null, norm: "", parsed: null };
+    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };
+    userToggledStream = false;
+    thinkUserCollapsed = false;
+    lastMessages = [];
+    streamSysLines = [];
+    var btn = $("#sendBtn");
+    if (btn) {
+      btn.textContent = "▶ 发送";
+      btn.title = "发送 (Enter)";
+      btn.classList.remove("stop");
+    }
+  }
+
   /* 应用项目载荷到界面（打开项目与切换任务共用；不动视图切换动画） */
   function applyProjectPayload(projectId, payload) {
     currentProjectId = projectId;
     currentName = payload.meta.name || "未命名";
     files = payload.midi_files || [];
     draftDirty = false;
+
+    /* 目录树的选中/展开状态是项目作用域的：不复位会把旧项目的层级
+       带进新项目（"＋文件夹"建到旧项目的目录路径下） */
+    selectedDir = "";
+    expandedDirs = {};
+    resetStreamState();
 
     $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
     $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
@@ -287,6 +314,28 @@
     if (window.Tasks) {
       Tasks.setCurrentProject(projectId);
       Tasks.markProjectRead(projectId);
+    }
+
+    /* 任务转后台续跑后重进：若当前任务仍在生成，恢复"停止"态。
+       此前按钮无条件复位为"发送"，而后台流持有项目对话锁——此时
+       发送新消息会静默挂起；streamEpoch 对齐 chatEpoch 使 chatDone
+       的 epoch 守卫放行（点击停止后由 stopReply 复位并刷新） */
+    var runningNow = null;
+    (payload.tasks || []).forEach(function (t) {
+      if (t && t.id === payload.current_task_id && t.status === "running") runningNow = t;
+    });
+    if (runningNow) {
+      chatBusy = true;
+      streamEnded = false;
+      streamEpoch = chatEpoch;
+      liveStreaming = false;
+      abortController = null;
+      var stopBtn = $("#sendBtn");
+      if (stopBtn) {
+        stopBtn.textContent = "⏹ 停止";
+        stopBtn.title = "停止后台生成（保留已输出的内容）";
+        stopBtn.classList.add("stop");
+      }
     }
   }
 
@@ -344,14 +393,7 @@
         }
         /* 旧流已随 epoch 递增过期，chatDone 不会复位——这里显式复位忙态 */
         chatBusy = false;
-        streamEnded = false;
-        liveStreaming = false;
-        var swSendBtn = $("#sendBtn");
-        if (swSendBtn) {
-          swSendBtn.textContent = "▶ 发送";
-          swSendBtn.classList.remove("stop");
-          swSendBtn.disabled = false;
-        }
+        resetStreamState();
         if (swInput) swInput.disabled = false;
       })
       .catch(function (e) { UI.toast("✗ 切换任务失败: " + e.message, "err"); });
@@ -393,6 +435,7 @@
     showConfirm("确定删除任务「" + name + "」？\n将删除该任务的对话记录（AI 生成的文件会保留）。", function () {
       UI.delJSON("/api/tasks/" + encodeURIComponent(currentTaskId))
         .then(function () {
+          UI.toast("✓ 任务已删除", "ok");
           if (window.Tasks) Tasks.refresh();
           UI.getJSON("/api/projects/" + currentProjectId).then(function (payload) {
             if (currentProjectId !== payload.meta.id) return;
@@ -479,6 +522,9 @@
     currentTaskId = payload.current_task_id || null;
     currentName = payload.meta.name || "未命名";
     files = payload.midi_files || [];
+    selectedDir = "";
+    expandedDirs = {};
+    resetStreamState();
     $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
     $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
     renderMessages(payload.display_messages || []);
@@ -497,14 +543,6 @@
        （与切换任务处同理；此前流式中途返回再新建档案，首条消息会被
        chatBusy 静默吞掉，且发送按钮停留在"停止"文案） */
     chatBusy = false;
-    streamEnded = false;
-    liveStreaming = false;
-    var epSendBtn = $("#sendBtn");
-    if (epSendBtn) {
-      epSendBtn.textContent = "▶ 发送";
-      epSendBtn.title = "发送 (Enter)";
-      epSendBtn.classList.remove("stop");
-    }
     $("#newMidiLink").hidden = true;
 
     /* 无卡片来源：直接切换视图 + 面板内容弹入（无 VT，立即播放） */
@@ -789,6 +827,9 @@
     files = newFiles || [];
     if (dirs) dirsList = dirs;
     renderFiles();
+    /* 编曲轨道上的 midi clip 以文件名引用：文件被删除（用户或 AI）后
+       同步移除对应 clip */
+    if (window.Arrange && window.Arrange.syncFiles) window.Arrange.syncFiles(files);
   }
 
   /* 记录当前选中的文件夹层级（新建文件夹的目标位置）并高亮；
@@ -1150,6 +1191,7 @@
     detailsClosing = null; /* 旧元素销毁，延迟关闭状态随之失效 */
     chat.innerHTML = "";
     for (var i = 0; i < list.length; i++) {
+      if (!list[i] || typeof list[i] !== "object") continue; // 防御：跳过异常条目
       var mEl = renderMessageCached(list[i]);
       mEl.dataset.index = i;
       chat.appendChild(mEl);
@@ -1630,6 +1672,9 @@
   var MSG_CACHE_MAX = 300;
 
   function renderMessageCached(m) {
+    /* 防御：载荷里的异常条目（null/undefined 等）直接跳过，不让单个
+       坏消息杀掉整个打开项目流程 */
+    if (!m || typeof m !== "object") return document.createDocumentFragment();
     /* 提问卡片是交互组件（含选中状态），不参与缓存——整表重建时始终
        重建新卡片（状态由后端 answer 帧决定，前端不持久化） */
     if (m.type === "question") return renderMessage(m);
@@ -1650,6 +1695,7 @@
   function renderMessage(m) {
     /* AI 提问卡片（type=question）：结构化交互组件，DOM 构建防注入。
        状态机：pending（可作答，选项可点选）→ answered/skipped（静态展示） */
+    if (!m || typeof m !== "object") return document.createDocumentFragment();
     if (m.type === "question") return buildQuestionCard(m);
     var content = m.content || "";
 
@@ -1977,7 +2023,7 @@
     lastMessages = [];
     streamSysLines = [];
 
-    UI.ssePost("/api/answer", {
+    UI.streamStart("answer", {
       project_id: currentProjectId,
       question_id: questionId,
       answers: answers
@@ -2006,9 +2052,9 @@
       } else if (ev.type === "done") {
         chatDone();
       }
-    }, { signal: abortController.signal }).then(function () {
+    }, function () {
       chatDone();
-    }).catch(function (e) {
+    }, { signal: abortController.signal }).catch(function (e) {
       if (e && e.name === "AbortError") {
         chatDone();
         return;
@@ -2252,14 +2298,25 @@
   }
 
   function stopReply() {
-    if (!abortController) return;
-    /* 先通知后端停止对应任务（否则断连会被视为"切页续跑"而非停止），
-       再断开 SSE——停止语义与改造前一致：终止并保留已输出内容 */
+    /* 停止语义经任务 stop 端点传导（TaskStop → cancelChans → 在途请求
+       立即中断，保留已输出内容）。桌面桥接模式与"重进恢复的停止态"
+       都没有 abortController——此前无 controller 时直接 return，
+       停止按钮在重进场景完全失效 */
     if (window.Tasks) {
       var t = Tasks.findRunningTask(currentProjectId);
-      if (t) UI.postJSON("/api/tasks/" + encodeURIComponent(t.id) + "/stop", {}).catch(function () {});
+      /* 任务面板尚未轮询到时用当前任务 ID 兜底（重进恢复的停止态） */
+      var stopTid = (t && t.id) || currentTaskId;
+      if (stopTid) {
+        UI.postJSON("/api/tasks/" + encodeURIComponent(stopTid) + "/stop", {}).then(function () {
+          /* 恢复发送态；已输出内容由后端保存，任务轮询的
+             onProjectTaskChange 随后刷新对话（chatBusy 已复位放行） */
+          chatDone();
+        }).catch(function () {
+          chatDone();
+        });
+      }
     }
-    abortController.abort();
+    if (abortController) abortController.abort();
   }
 
   function sendMessage() {
@@ -2337,7 +2394,9 @@
       if (typingEl.parentNode) typingEl.remove();
     }
 
-    UI.ssePost("/api/chat", {
+    /* 桌面模式走 Wails 事件桥（即时送达），浏览器模式走 HTTP SSE；
+       onEnd 承接原 .then(chatDone) 的"流结束兜底"语义（chatDone 幂等） */
+    UI.streamStart("chat", {
       project_id: currentProjectId,
       message: message,
       edit: isEdit,
@@ -2370,11 +2429,11 @@
       } else if (ev.type === "done") {
         chatDone();
       }
-    }, { signal: abortController.signal }).then(function () {
+    }, function () {
       /* 流结束兜底：正常路径 done 事件已调 chatDone（幂等）；
          后端异常提前断流/未发 done 时，这里保证界面不卡死 */
       chatDone();
-    }).catch(function (e) {
+    }, { signal: abortController.signal }).catch(function (e) {
       if (e && e.name === "AbortError") {
         /* 用户主动停止：静默收尾，保留已输出的内容 */
         removeTyping();

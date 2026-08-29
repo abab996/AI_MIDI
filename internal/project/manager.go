@@ -64,24 +64,32 @@ func ResetProjectsIndexCache() {
 	indexCache = nil
 }
 
-func loadIndexLocked() []ProjectEntry {
+// loadIndexLocked 读取项目索引（调用方必须已持有 indexLock）。
+// 文件损坏时备份为 index.json.corrupt-<时间戳> 并返回错误：调用方
+// 不得基于空条目落盘覆盖，否则一次崩溃截断就会把所有项目从索引中抹掉
+func loadIndexLocked() ([]ProjectEntry, error) {
 	if indexCache != nil {
-		return indexCache
+		return indexCache, nil
 	}
 	idxFile := getIndexFile()
 	data, err := os.ReadFile(idxFile)
 	if err != nil {
-		return nil // 文件缺失（首启）：不缓存，首次创建后自然填充
+		return nil, nil // 文件缺失（首启）：不缓存，首次创建后自然填充
 	}
-
 	var root struct {
 		Projects []ProjectEntry `json:"projects"`
 	}
 	if err := json.Unmarshal(data, &root); err != nil {
-		return nil
+		backup := idxFile + ".corrupt-" + time.Now().Format("20060102-150405.000")
+		if rerr := os.Rename(idxFile, backup); rerr == nil {
+			slog.Error("index.json 损坏，已备份待人工恢复；本次操作跳过索引写入", "backup", backup, "err", err)
+		} else {
+			slog.Error("index.json 损坏且备份失败，本次操作跳过索引写入", "err", err, "renameErr", rerr)
+		}
+		return nil, err
 	}
 	indexCache = root.Projects
-	return indexCache
+	return indexCache, nil
 }
 
 func saveIndexLocked(entries []ProjectEntry) error {
@@ -112,7 +120,10 @@ func updateIndexEntry(projectID string, updateFn func(e *ProjectEntry)) {
 	indexLock.Lock()
 	defer indexLock.Unlock()
 
-	entries := loadIndexLocked()
+	entries, ierr := loadIndexLocked()
+	if ierr != nil {
+		return // 索引损坏：绝不基于空条目落盘（损坏原件已备份）
+	}
 	for i := range entries {
 		if entries[i].ID == projectID {
 			updateFn(&entries[i])
@@ -195,16 +206,20 @@ func CreateProject(name string) (ProjectMeta, error) {
 	histData, _ := json.MarshalIndent(map[string]any{"messages": []any{}, "midi_files": []any{}}, "", "  ")
 	_ = os.WriteFile(filepath.Join(pdir, "history.json"), histData, 0644)
 
-	entries := loadIndexLocked()
-	entries = append(entries, ProjectEntry{
-		ID:           pid,
-		Name:         name,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		MessageCount: 0,
-		MidiCount:    0,
-	})
-	_ = saveIndexLocked(entries)
+	entries, ierr := loadIndexLocked()
+	if ierr != nil {
+		slog.Warn("项目索引损坏，本次创建未登记索引（项目目录已生成，损坏原件已备份）", "id", pid)
+	} else {
+		entries = append(entries, ProjectEntry{
+			ID:           pid,
+			Name:         name,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+			MessageCount: 0,
+			MidiCount:    0,
+		})
+		_ = saveIndexLocked(entries)
+	}
 
 	slog.Info("项目已创建", "name", name, "id", pid)
 	return meta, nil
@@ -215,14 +230,18 @@ func DeleteProject(projectID string) error {
 	indexLock.Lock()
 	defer indexLock.Unlock()
 
-	entries := loadIndexLocked()
-	var newEntries []ProjectEntry
-	for _, e := range entries {
-		if e.ID != projectID {
-			newEntries = append(newEntries, e)
+	entries, ierr := loadIndexLocked()
+	if ierr != nil {
+		slog.Warn("项目索引损坏，本次删除仅移除项目目录，索引待人工恢复", "id", projectID)
+	} else {
+		var newEntries []ProjectEntry
+		for _, e := range entries {
+			if e.ID != projectID {
+				newEntries = append(newEntries, e)
+			}
 		}
+		_ = saveIndexLocked(newEntries)
 	}
-	_ = saveIndexLocked(newEntries)
 
 	pdir, err := ProjectDir(projectID)
 	if err == nil {
@@ -290,7 +309,7 @@ func CopyProject(sourceID, newName string) (ProjectMeta, error) {
 	_ = os.WriteFile(filepath.Join(dstDir, "meta.json"), metaData, 0644)
 
 	indexLock.Lock()
-	entries := loadIndexLocked()
+	entries, ierr := loadIndexLocked()
 	var srcMsgCount, srcMidiCount int
 	for _, e := range entries {
 		if e.ID == sourceID {
@@ -300,15 +319,19 @@ func CopyProject(sourceID, newName string) (ProjectMeta, error) {
 		}
 	}
 
-	entries = append(entries, ProjectEntry{
-		ID:           newID,
-		Name:         newName,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		MessageCount: srcMsgCount,
-		MidiCount:    srcMidiCount,
-	})
-	_ = saveIndexLocked(entries)
+	if ierr != nil {
+		slog.Warn("项目索引损坏，本次复制未登记索引（项目目录已生成，损坏原件已备份）", "newID", newID)
+	} else {
+		entries = append(entries, ProjectEntry{
+			ID:           newID,
+			Name:         newName,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+			MessageCount: srcMsgCount,
+			MidiCount:    srcMidiCount,
+		})
+		_ = saveIndexLocked(entries)
+	}
 	indexLock.Unlock()
 
 	slog.Info("项目已复制", "source", sourceID, "newID", newID, "name", newName)
@@ -382,7 +405,7 @@ func ListProjects() []ProjectEntry {
 	indexLock.Lock()
 	defer indexLock.Unlock()
 
-	entries := loadIndexLocked()
+	entries, _ := loadIndexLocked() // 损坏时返回空列表（load 内部已备份并记日志），只读路径不落盘
 	out := make([]ProjectEntry, len(entries))
 	copy(out, entries)
 	sort.SliceStable(out, func(i, j int) bool {

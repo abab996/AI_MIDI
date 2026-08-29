@@ -249,6 +249,61 @@
     });
   }
 
+  /* ---- 聊天流双通道：桌面模式走 Wails 事件桥，浏览器模式走 HTTP SSE ----
+     Wails Windows 的 assetserver 把整个响应体缓存到 Finish() 才一次性交给
+     WebView2（且包装层不实现 Flusher），HTTP SSE 在桌面模式物理上无法流式——
+     所有增量帧攒到生成结束一起到达。因此桌面模式经 window.go 绑定 +
+     runtime.EventsOn（原生 IPC，即时送达）；浏览器模式行为不变。
+     kind: "chat" | "answer"；onEvent(ev) 逐事件回调；onEnd() 流结束（含
+     正常/异常/后端 done），保证只触发一次。 */
+  function streamStart(kind, body, onEvent, onEnd, opts) {
+    var appBindings = (window.go && window.go.app && window.go.app.App) || null;
+    var bridged = appBindings && window.runtime
+      && typeof window.runtime.EventsOn === "function"
+      && typeof appBindings.ChatStreamStart === "function"
+      && typeof appBindings.AnswerStreamStart === "function";
+
+    if (!bridged) {
+      var url = kind === "answer" ? "/api/answer" : "/api/chat";
+      return UI.ssePost(url, body, onEvent, opts).then(onEnd, function (e) {
+        /* onEnd 先于错误抛出：调用方的收尾（chatDone）幂等 */
+        onEnd();
+        throw e;
+      });
+    }
+
+    var sid = "s_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    var evtName = "chat:evt:" + sid;
+    var endName = "chat:end:" + sid;
+    var ended = false;
+    function finish() {
+      if (ended) return;
+      ended = true;
+      try { window.runtime.EventsOff(evtName); } catch (e) {}
+      try { window.runtime.EventsOff(endName); } catch (e) {}
+      onEnd();
+    }
+    window.runtime.EventsOn(evtName, function (data) {
+      if (ended) return;
+      try {
+        var ev = (typeof data === "string") ? JSON.parse(data) : data;
+        onEvent(ev);
+      } catch (e) { /* 忽略坏帧 */ }
+    });
+    window.runtime.EventsOn(endName, function () { finish(); });
+
+    var p;
+    if (kind === "answer") {
+      p = appBindings.AnswerStreamStart(body.project_id, body.question_id, body.answers, sid);
+    } else {
+      p = appBindings.ChatStreamStart(body.project_id, body.message, !!body.edit, body.task_id || "", sid);
+    }
+    return Promise.resolve(p).catch(function (e) {
+      finish();
+      throw e;
+    });
+  }
+
   /* ---- 跨文档导航动画：方向记录 ---- */
   function initNavDirections() {
     UI.qsa("a[href][data-dir]").forEach(function (a) {
@@ -262,12 +317,40 @@
 
   /* ---- Markdown 渲染（marked 优先，失败回退迷你解析） ---- */
   /* marked 安全配置：AI 输出中的原始 HTML 一律转义，防止注入 */
+  /* isSafeLinkHref 链接 scheme 白名单：http/https/mailto/页内锚点/相对路径。
+     marked v12 已移除 sanitize，[x](javascript:...) 会原样产出可点击链接，
+     必须在这里拦掉（LLM 输出可被间接提示词注入携带恶意链接）。 */
+  function isSafeLinkHref(href) {
+    var h = String(href == null ? "" : href).replace(/[\t\n\r]/g, "").trim();
+    var lower = h.toLowerCase();
+    if (lower === "" || lower.charAt(0) === "#") return true;
+    if (/^(https?:|mailto:)/.test(lower)) return true;
+    return lower.indexOf(":") === -1; /* 无 scheme 的相对路径放行，其余（javascript:/vbscript:/data: 等）拒绝 */
+  }
+
   if (window.marked && window.marked.use && window.marked.Renderer) {
     try {
       var _mdRenderer = new window.marked.Renderer();
       _mdRenderer.html = function (token) {
         var raw = (token && token.text != null) ? token.text : String(token);
         return esc(raw);
+      };
+      var _defaultLink = window.marked.Renderer.prototype.link;
+      /* 兼容两种 renderer 签名：旧版 link(href, title, text) 与新版 link(token)。
+         本仓库自带的 marked.min.js 为旧版签名（实测）。 */
+      _mdRenderer.link = function (a, b, c) {
+        if (a && typeof a === "object") {
+          /* 新版 token 签名 */
+          if (!isSafeLinkHref(a.href)) {
+            return esc((a.text != null) ? a.text : "");
+          }
+          return _defaultLink.call(this, a);
+        }
+        /* 旧版 (href, title, text) 签名；c 为已解析的行内 HTML */
+        if (!isSafeLinkHref(a)) {
+          return (c == null) ? "" : String(c);
+        }
+        return _defaultLink.call(this, a, b, c);
       };
       window.marked.use({ renderer: _mdRenderer });
     } catch (e) { /* marked 配置失败时按默认行为渲染 */ }
@@ -389,10 +472,25 @@
     fmtSize: fmtSize, fmtDate: fmtDate, friendlyText: friendlyText,
     getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
     ssePost: ssePost, md: md, mdInline: mdInline, projectCard: projectCard,
+    streamStart: streamStart,
     transportPrefs: getTransportPrefs,
     setTransportPref: setTransportPref,
     onTransportPrefs: onTransportPrefs,
   };
+
+  /* 鼠标点击过的按钮保持焦点，空格键会再次触发它（发送/播放等按钮
+     因此被意外重复激活）。冒泡阶段在按钮自身 handler 之后 blur——
+     键盘 Tab 导航的焦点不受影响 */
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    while (t && t !== document) {
+      if (t.tagName === "BUTTON") {
+        t.blur();
+        return;
+      }
+      t = t.parentElement;
+    }
+  });
 
   document.addEventListener("DOMContentLoaded", initNavDirections);
 })(window);

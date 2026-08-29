@@ -11,7 +11,7 @@ func TestBounceTotalDurationIncludesTail(t *testing.T) {
 	sr := 44100.0
 	tailSec := 2.5
 	spb := sr * 60.0 / bpm // 22050
-	beats := 8.0 // 最后一拍
+	beats := 8.0           // 最后一拍
 	total := int64(math.Round(beats*spb + tailSec*sr))
 	expected := int64(8*22050 + 2.5*44100) // 176400 + 110250 = 286650
 	if total != expected {
@@ -47,7 +47,7 @@ func TestSMFDoesNotContainTail(t *testing.T) {
 	sr := 48000.0
 	tailSec := 2.5
 	spb := sr * 60 / bpm
-	audioTotalBeats := 4.0 + tailSec* bpm/60.0 // 4 + 1.25 = 5.25 拍等效
+	audioTotalBeats := 4.0 + tailSec*bpm/60.0 // 4 + 1.25 = 5.25 拍等效
 	_ = audioTotalBeats
 	_ = spb
 }

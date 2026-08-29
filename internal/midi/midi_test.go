@@ -132,4 +132,3 @@ func TestJSONNoteTableParsing(t *testing.T) {
 		t.Fatalf("got %d fenced notes, want 2", len(fencedNotes))
 	}
 }
-

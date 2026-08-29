@@ -73,13 +73,16 @@ func SnapshotDisplay(display []map[string]any) []map[string]any {
 	if display == nil {
 		return nil
 	}
-	out := make([]map[string]any, len(display))
-	for i, m := range display {
+	out := make([]map[string]any, 0, len(display))
+	for _, m := range display {
+		if m == nil {
+			continue // 防御：nil 条目序列化为 JSON null，前端读取字段会崩
+		}
 		cp := make(map[string]any, len(m))
 		for k, v := range m {
 			cp[k] = v
 		}
-		out[i] = cp
+		out = append(out, cp)
 	}
 	return out
 }
@@ -119,6 +122,9 @@ func loadTaskState(projectID, taskID string) *TaskState {
 		replaced := false
 		if realQid != "" {
 			for i := len(st.ChatDisplay) - 1; i >= 0; i-- {
+				if st.ChatDisplay[i] == nil {
+					continue // 历史持久化为 null 的条目：读取安全，写入会 panic
+				}
 				if t, _ := st.ChatDisplay[i]["type"].(string); t != "question" {
 					continue
 				}
@@ -153,14 +159,20 @@ func GetSession(projectID string) *ProjectSession {
 	if !ok {
 		midiFiles := project.LoadMidiManifest(projectID)
 		defTask := tasks.TaskEnsureDefault(projectID)
+		// 恢复"上次打开的任务"：取最近活跃（StartedAt 最大）的任务，
+		// 而非固定的 legacy 默认任务——重启后回到用户离开时的上下文
+		currentTask := tasks.TaskLatestActive(projectID)
+		if currentTask == "" {
+			currentTask = defTask.ID
+		}
 
 		s = &ProjectSession{
 			ProjectID:     projectID,
-			CurrentTaskID: defTask.ID,
+			CurrentTaskID: currentTask,
 			TaskStates:    make(map[string]*TaskState),
 			MidiFiles:     midiFiles,
 		}
-		s.TaskStates[defTask.ID] = loadTaskState(projectID, defTask.ID)
+		s.TaskStates[currentTask] = loadTaskState(projectID, currentTask)
 		sessions[projectID] = s
 	}
 	return s

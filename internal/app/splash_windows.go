@@ -269,10 +269,10 @@ func ShowNativeTransparentSplash(duration time.Duration) *SplashController {
 		sz := sizeStruct{CX: imgW, CY: imgH}
 		ptSrc := point{X: 0, Y: 0}
 		blend := blendFunction{
-			BlendOp:             0,    // AC_SRC_OVER
+			BlendOp:             0, // AC_SRC_OVER
 			BlendFlags:          0,
 			SourceConstantAlpha: 255,
-			AlphaFormat:         1,    // AC_SRC_ALPHA
+			AlphaFormat:         1, // AC_SRC_ALPHA
 		}
 
 		procUpdateLayeredWindow.Call(

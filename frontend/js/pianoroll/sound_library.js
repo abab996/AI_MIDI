@@ -65,6 +65,7 @@
             size: item.size,
             presetsCount: item.presets ? item.presets.length : 0,
             presets: item.presets || [],
+            diskPath: item.diskPath || "", // 服务器落盘绝对路径（旧记录可能没有）
             createdAt: item.createdAt
           });
           cursor.continue();
@@ -76,41 +77,54 @@
 
   SoundLibrary.prototype.saveSoundFont = function (name, arrayBuffer, presets) {
     var self = this;
-    // 镜像到原生引擎音色库（Library/soundfonts/）：失败仅告警，不影响浏览器音源
+    // 镜像到原生引擎音色库（Library/soundfonts/）：失败仅告警，不影响浏览器音源。
+    // 响应里的 saved 为服务器落盘绝对路径——存入记录供原生引擎直通加载，
+    // 否则加载时只能靠"文件名消毒规则 + 引擎进程 CWD"间接推导（CWD 不对
+    // 时原生音源会静默失效回退 WebAudio）
+    var diskPathPromise = null;
     try {
-      fetch("/api/audio/soundfonts?name=" + encodeURIComponent(name), {
+      diskPathPromise = fetch("/api/audio/soundfonts?name=" + encodeURIComponent(name), {
         method: "POST",
         headers: { "Content-Type": "application/octet-stream" },
         body: arrayBuffer
       }).then(function (res) { return res.json(); })
-        .then(function (j) { console.log("[SoundLibrary] 已同步到引擎音色库", j); })
-        .catch(function (err) { console.warn("[SoundLibrary] 引擎同步失败（浏览器音源不受影响）", err); });
-    } catch (e) { /* 非阻塞 */ }
+        .then(function (j) {
+          console.log("[SoundLibrary] 已同步到引擎音色库", j);
+          return (j && j.saved) ? j.saved : null;
+        })
+        .catch(function (err) {
+          console.warn("[SoundLibrary] 引擎同步失败（浏览器音源不受影响）", err);
+          return null;
+        });
+    } catch (e) { /* 非阻塞 */ diskPathPromise = Promise.resolve(null); }
     var id = "sf2_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
-    return this.init().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(STORE_NAME, "readwrite");
-        var store = tx.objectStore(STORE_NAME);
-        var record = {
-          id: id,
-          name: name,
-          size: arrayBuffer.byteLength,
-          presets: presets || [],
-          data: arrayBuffer,
-          createdAt: Date.now()
-        };
-        var req = store.put(record);
-        req.onsuccess = function () { /* 等 tx.oncomplete 再 resolve */ };
-        req.onerror = function () { reject(req.error); };
-        tx.onabort = function () { reject(tx.error || new Error("音色库写入被中止")); };
-        // 事务提交（而非 put 成功）才算落库——IndexedDB 配额错误在
-        // commit 阶段才暴露；随后刷新缓存，调用方拿到的列表即包含新条目
-        tx.oncomplete = function () {
-          self.listSoundFonts().then(
-            function () { resolve(record); },
-            function () { resolve(record); }
-          );
-        };
+    return diskPathPromise.then(function (diskPath) {
+      return self.init().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(STORE_NAME, "readwrite");
+          var store = tx.objectStore(STORE_NAME);
+          var record = {
+            id: id,
+            name: name,
+            size: arrayBuffer.byteLength,
+            presets: presets || [],
+            data: arrayBuffer,
+            diskPath: diskPath || "",
+            createdAt: Date.now()
+          };
+          var req = store.put(record);
+          req.onsuccess = function () { /* 等 tx.oncomplete 再 resolve */ };
+          req.onerror = function () { reject(req.error); };
+          tx.onabort = function () { reject(tx.error || new Error("音色库写入被中止")); };
+          // 事务提交（而非 put 成功）才算落库——IndexedDB 配额错误在
+          // commit 阶段才暴露；随后刷新缓存，调用方拿到的列表即包含新条目
+          tx.oncomplete = function () {
+            self.listSoundFonts().then(
+              function () { resolve(record); },
+              function () { resolve(record); }
+            );
+          };
+        });
       });
     });
   };
@@ -128,8 +142,14 @@
     });
   };
 
-  SoundLibrary.prototype.deleteSoundFont = function (id) {
+  SoundLibrary.prototype.deleteSoundFont = function (id, name) {
     var self = this;
+    // 同步删除磁盘镜像（Library/soundfonts/）：此前只删 IndexedDB 记录，
+    // 镜像文件永久残留并被引擎当作默认音色加载。失败不影响本地删除
+    if (name && window.UI && UI.delJSON) {
+      UI.delJSON("/api/audio/soundfonts?name=" + encodeURIComponent(name))
+        .catch(function (err) { console.warn("[SoundLibrary] 磁盘镜像删除失败（本地记录已删除）", err); });
+    }
     return this.init().then(function (db) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(STORE_NAME, "readwrite");

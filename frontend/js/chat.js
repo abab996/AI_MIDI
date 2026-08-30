@@ -1182,6 +1182,10 @@
         renderStreamingTail(last.content || "", list.length - 1, list.length - 1);
         return;
       }
+      /* 首帧 chat 事件只含用户消息（AI 尚未产出任何内容）：事件桥即时送达
+         后整表重建会秒杀三点加载动画，LLM 预热等待期间界面空无一物——
+         保留动画，等首个增量帧经 renderStreamingTail 整表重建时再取代 */
+      if (chat.querySelector(".typing")) return;
     }
 
     /* ── 非流式：全量渲染 ── */

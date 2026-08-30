@@ -192,8 +192,23 @@ func (r *Router) registerRoutes() {
 	// Audio 原生音频引擎
 	r.mux.HandleFunc("/api/audio/", r.handleAudioSub)
 
+	// Wails 桌面运行时脚本：chat.html 显式引用 /wails/runtime.js 与
+	// /wails/ipc.js 以启用事件桥。桌面模式由 Wails assetserver 先行拦截提供
+	// 真实脚本；-browser 模式没有 Go 绑定，这里返回无害空 JS——否则 404 的
+	// HTML 响应体被 <script> 执行会触发"脚本错误"toast 并污染错误上报。
+	r.mux.HandleFunc("/wails/runtime.js", serveWailsStubJS)
+	r.mux.HandleFunc("/wails/ipc.js", serveWailsStubJS)
+
 	// Static Assets
 	r.registerStaticRoutes()
+}
+
+// serveWailsStubJS 浏览器模式下的 Wails 运行时占位脚本（无操作）。
+// window.go/window.runtime 保持未定义，前端 bridged 判定为 false 走 SSE。
+func serveWailsStubJS(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte("/* wails runtime unavailable in browser mode */\n"))
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

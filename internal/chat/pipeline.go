@@ -84,9 +84,15 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		}()
 	}
 
-	lock := GetProjectChatLock(projectID)
-	lock.Lock()
-	defer lock.Unlock()
+	if err := AcquireProjectChatLock(taskCtx, projectID); err != nil {
+		// 等锁期间任务被停止（如持锁的上游卡死任务被用户点停）：不再无限
+		// 排队，立即退出并如实上报，避免界面一直转圈
+		tasks.TaskFinish(tid)
+		_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
+		_ = onEvent(map[string]any{"type": "done"})
+		return nil
+	}
+	defer ReleaseProjectChatLock(projectID)
 
 	if tasks.TaskIsCancelled(tid) {
 		tasks.TaskFinish(tid)
@@ -574,8 +580,11 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 	// 与 ChatStream 相同的项目对话锁：并发的 /api/chat 不得与回答的
 	// 补执行/状态修改交错（此前本函数全程无锁，存在并发 map 读写风险）。
 	// 锁只覆盖预处理段——末尾重入 ChatStream（其内部自行加锁）前必须释放。
-	lock := GetProjectChatLock(projectID)
-	lock.Lock()
+	if err := AcquireProjectChatLock(ctx, projectID); err != nil {
+		_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
+		_ = onEvent(map[string]any{"type": "done"})
+		return nil
+	}
 
 	s := GetSession(projectID)
 	tid := taskRec.ID
@@ -585,7 +594,7 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 	globalBPM := project.GetProjectBPM(projectID)
 
 	if st.PendingQuestion == nil {
-		lock.Unlock()
+		ReleaseProjectChatLock(projectID)
 		_ = onEvent(map[string]any{"type": "error", "message": "该提问已失效或已被回答"})
 		_ = onEvent(map[string]any{"type": "done"})
 		return nil
@@ -721,7 +730,7 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 	project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
 	fl.Unlock()
 
-	lock.Unlock()
+	ReleaseProjectChatLock(projectID)
 
 	// resume 模式续跑（ChatStream 内部自行获取项目对话锁）
 	return ChatStream(ctx, projectID, "", false, true, &tid, onEvent)
@@ -827,6 +836,16 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 	sentReasoning, sentContent := 0, 0
 	var streamErr error
 
+	// 上游空闲看门狗：长时间收不到任何字节视为死连，主动关闭 body 打断
+	// 阻塞的 ReadString——否则项目对话锁会被永久占住（此前只能靠用户点
+	// 停止，且同任务复跑后停止也可能失效）。正常流式每个 chunk 都有字节，
+	// 只在上游真正停滞（无任何 keepalive）时触发
+	const streamIdleTimeout = 120 * time.Second
+	idleTimer := time.AfterFunc(streamIdleTimeout, func() {
+		_ = resp.Body.Close()
+	})
+	defer idleTimer.Stop()
+
 	for {
 		if tasks.TaskIsCancelled(tid) {
 			break
@@ -835,12 +854,14 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
-				// 上游断流/连接中断（含用户停止导致的 ctx 取消）：
-				// 与正常结束一样走统一收尾——已生成的部分内容保留展示并落盘
+				// 上游断流/连接中断（含用户停止导致的 ctx 取消、空闲看门狗
+				// 超时主动关 body）：与正常结束一样走统一收尾——已生成的
+				// 部分内容保留展示并落盘
 				streamErr = err
 			}
 			break
 		}
+		idleTimer.Reset(streamIdleTimeout)
 
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data: ") {

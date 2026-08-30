@@ -256,6 +256,7 @@
      runtime.EventsOn（原生 IPC，即时送达）；浏览器模式行为不变。
      kind: "chat" | "answer"；onEvent(ev) 逐事件回调；onEnd() 流结束（含
      正常/异常/后端 done），保证只触发一次。 */
+  var warnedBridgeFallback = false;   /* 桌面模式桥未生效：每页仅提示一次 */
   function streamStart(kind, body, onEvent, onEnd, opts) {
     var appBindings = (window.go && window.go.app && window.go.app.App) || null;
     var bridged = appBindings && window.runtime
@@ -264,6 +265,28 @@
       && typeof appBindings.AnswerStreamStart === "function";
 
     if (!bridged) {
+      /* 桌面模式（WebView2）下桥未生效：不再无声降级——上报日志 + 每页一次
+         提示，便于报障定位。此前静默回退被 Wails 缓存的 SSE 正是"一直转圈、
+         退出重进才刷新"的根源之一 */
+      if (window.chrome && window.chrome.webview) {
+        try {
+          fetch("/api/client-error", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: "桌面模式事件桥未生效，聊天流回退 HTTP SSE（实时显示将不可用）",
+              source: "app.js:streamStart",
+              line: 0,
+              column: 0,
+              page: location.pathname
+            })
+          }).catch(function () {});
+        } catch (e) {}
+        if (!warnedBridgeFallback) {
+          warnedBridgeFallback = true;
+          toast("⚠ 桌面实时通道未就绪，聊天回复可能不实时——请重启应用后重试", "warn");
+        }
+      }
       var url = kind === "answer" ? "/api/answer" : "/api/chat";
       return UI.ssePost(url, body, onEvent, opts).then(onEnd, function (e) {
         /* onEnd 先于错误抛出：调用方的收尾（chatDone）幂等 */
@@ -276,21 +299,44 @@
     var evtName = "chat:evt:" + sid;
     var endName = "chat:end:" + sid;
     var ended = false;
+    var timeoutMs = (opts && opts.timeoutMs) || SSE_TIMEOUT_MS;
+    /* 桥路径与 ssePost 一致的空闲看门狗：后端卡死（如上游停滞持有项目锁）
+       时不能无限转圈——超时收尾复位 busy 态并抛出可见错误；任一事件帧
+       到达即重置。此前桥路径无任何超时兜底 */
+    var settled = false;
+    var settleResolve, settleReject;
+    var settle = new Promise(function (res, rej) { settleResolve = res; settleReject = rej; });
+    var timer = null;
+    function clearTimer() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+    function touchTimer() {
+      clearTimer();
+      timer = setTimeout(function () {
+        finish();
+        if (!settled) { settled = true; settleReject(new Error("连接超时（长时间无响应，请重试）")); }
+      }, timeoutMs);
+    }
     function finish() {
       if (ended) return;
       ended = true;
+      clearTimer();
       try { window.runtime.EventsOff(evtName); } catch (e) {}
       try { window.runtime.EventsOff(endName); } catch (e) {}
       onEnd();
     }
     window.runtime.EventsOn(evtName, function (data) {
       if (ended) return;
+      touchTimer();   /* 有帧到达：重置挂起计时 */
       try {
         var ev = (typeof data === "string") ? JSON.parse(data) : data;
         onEvent(ev);
       } catch (e) { /* 忽略坏帧 */ }
     });
-    window.runtime.EventsOn(endName, function () { finish(); });
+    window.runtime.EventsOn(endName, function () {
+      finish();
+      if (!settled) { settled = true; settleResolve(); }
+    });
 
     var p;
     if (kind === "answer") {
@@ -298,7 +344,11 @@
     } else {
       p = appBindings.ChatStreamStart(body.project_id, body.message, !!body.edit, body.task_id || "", sid);
     }
-    return Promise.resolve(p).catch(function (e) {
+    touchTimer();
+    /* 绑定调用立即返回（Go 侧起 goroutine 后台执行）；settle 在流真正结束
+       （chat:end）时 resolve、超时/绑定异常时 reject——调用方的 .catch 能
+       显示错误，onEnd 兜底收尾（chatDone 幂等） */
+    return Promise.resolve(p).then(function () { return settle; }).catch(function (e) {
       finish();
       throw e;
     });

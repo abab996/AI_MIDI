@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"sync"
 
 	"aimidi/internal/project"
@@ -34,24 +35,47 @@ type ProjectSession struct {
 }
 
 var (
-	sessionsMu      sync.RWMutex
-	sessions        = make(map[string]*ProjectSession)
-	sessionChatLock = make(map[string]*sync.Mutex)
+	sessionsMu sync.RWMutex
+	sessions   = make(map[string]*ProjectSession)
+	// 项目级对话锁用容量 1 的 chan 信号量（区别于 *sync.Mutex）：等锁期间
+	// 可以 select ctx.Done() 响应任务停止。否则上游卡死持锁时，同项目的
+	// 后续消息会永久阻塞在锁获取上（表现为一直转圈、零事件、只能重进）
+	sessionChatLock = make(map[string]chan struct{})
 	chatLockGuard   sync.Mutex
 	sessionFileLock = make(map[string]*sync.RWMutex)
 	fileLockGuard   sync.Mutex
 )
 
-// GetProjectChatLock 获取项目级对话锁（保证同一项目多轮会话有序，不同项目完全并发）
-func GetProjectChatLock(projectID string) *sync.Mutex {
+// GetProjectChatLock 获取项目级对话锁信号量（保证同一项目多轮会话有序，不同项目完全并发）
+func GetProjectChatLock(projectID string) chan struct{} {
 	chatLockGuard.Lock()
 	defer chatLockGuard.Unlock()
 	l, ok := sessionChatLock[projectID]
 	if !ok {
-		l = &sync.Mutex{}
+		l = make(chan struct{}, 1)
+		l <- struct{}{}
 		sessionChatLock[projectID] = l
 	}
 	return l
+}
+
+// AcquireProjectChatLock 等待项目对话锁；ctx 取消（用户停止任务）时立即返回
+// 错误，不再无限排队。持锁期间必须调用 ReleaseProjectChatLock 归还。
+func AcquireProjectChatLock(ctx context.Context, projectID string) error {
+	select {
+	case <-GetProjectChatLock(projectID):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ReleaseProjectChatLock 归还项目对话锁（仅持锁者调用；非阻塞，重复释放安全）
+func ReleaseProjectChatLock(projectID string) {
+	select {
+	case GetProjectChatLock(projectID) <- struct{}{}:
+	default:
+	}
 }
 
 // GetSessionLock 获取项目文件状态锁

@@ -269,7 +269,15 @@ func TaskMarkRunning(taskID string) {
 		// 新一轮开始即视为撤销上一轮的停止请求——否则手动停止一次后，
 		// 同一任务的后续消息永远被「任务已停止」拦截
 		delete(cancelFlags, taskID)
-		// 为新一轮重建停止信号 chan（旧的可能已被 TaskStop 关闭）
+		// 为新一轮重建停止信号 chan：先关闭旧 chan（若存在）唤醒旧 watcher。
+		// 此前直接覆盖不关旧 chan：同任务复跑（如回答提问恢复）后上一轮卡在
+		// 上游读的流仍监听旧 chan，TaskStop 只关新 chan 无法打断它，项目对话
+		// 锁被永久占住，后续消息全部转圈。map 中残留的 chan 必未关闭
+		// （TaskStop/TaskDelete/TaskPurgeProject 都是先 close 再 delete），
+		// 这里直接 close 安全
+		if ch, ok := cancelChans[taskID]; ok && ch != nil {
+			close(ch)
+		}
 		cancelChans[taskID] = make(chan struct{})
 		saveLocked()
 	}

@@ -28,6 +28,15 @@
     }
   })();
 </script>
+<!-- Wails 运行时/绑定：Wails 的 assetserver 只对 "/" 与 "/index.html" 自动注入
+     这两个脚本（isRuntimeInjectionMatch），而本应用冷启动被 index.html 直接
+     location.replace 到 /chat.html——没有它们页面拿不到 window.runtime 与
+     window.go，聊天流会静默回退到被 Wails 整体缓存的 HTTP SSE（思考/工具
+     步骤不实时、长回复像"卡死"）。此处显式引用（顺序不可反：runtime.js 依赖
+     ipc.js 定义的 WailsInvoke）；-browser 模式这两个路径由后端返回无害空 JS，
+     window.go 无绑定，仍走 SSE，行为不变。 -->
+<script src="/wails/ipc.js" defer></script>
+<script src="/wails/runtime.js" defer></script>
 </head>
 <body class="app-shell">
 

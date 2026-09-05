@@ -43,12 +43,12 @@
 ## 🚀 快速开始
 
 ### Windows（推荐）
-1. 从 [Releases](../../releases) 下载 `AI_MIDI_Setup_3.0.0_windows_amd64.exe`，双击安装（免管理员权限）
+1. 从 [Releases](../../releases) 下载最新的 `AI_MIDI_Setup_<版本>_windows_amd64.exe`，双击安装（免管理员权限）
 2. 首次启动阅读使用声明，然后打开 **设置** 页填入 API Key
 3. 新建档案，开始创作！
 
 ### Linux
-1. 从 [Releases](../../releases) 下载 `AI_MIDI_v3.0.0_linux_amd64.tar.gz` 并解压
+1. 从 [Releases](../../releases) 下载最新的 `AI_MIDI_v<版本>_linux_amd64.tar.gz` 并解压
 2. `chmod +x RUN.sh && ./RUN.sh`（桌面模式需要 webkit2gtk；或 `./AI_MIDI -browser` 走浏览器模式）
 3. Linux 版使用浏览器音频合成，无需引擎
 

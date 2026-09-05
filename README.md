@@ -43,12 +43,12 @@
 ## 🚀 Quick Start
 
 ### Windows (recommended)
-1. Grab `AI_MIDI_Setup_3.0.0_windows_amd64.exe` from [Releases](../../releases) and run it — no admin rights needed
+1. Grab the latest `AI_MIDI_Setup_<version>_windows_amd64.exe` from [Releases](../../releases) and run it — no admin rights needed
 2. On first launch, read the usage notice, then open **Settings** and enter your API key
 3. Create a project and start composing!
 
 ### Linux
-1. Download `AI_MIDI_v3.0.0_linux_amd64.tar.gz` from [Releases](../../releases) and unzip it
+1. Download the latest `AI_MIDI_v<version>_linux_amd64.tar.gz` from [Releases](../../releases) and unzip it
 2. `chmod +x RUN.sh && ./RUN.sh` (desktop mode needs webkit2gtk; otherwise `./AI_MIDI -browser` opens in your browser)
 3. Linux uses browser audio synthesis — no engine needed
 

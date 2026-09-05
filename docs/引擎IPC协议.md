@@ -1,6 +1,6 @@
 # AI_MIDI 引擎 IPC 协议（v1）
 
-> 版本：1 ｜ 日期：2026-08-23
+> 版本：1 ｜ 日期：2026-08-23 ｜ 修订：2026-09-05（见文末修订记录，线格式不变）
 > 适用双方：`AI_MIDI.exe`（Go 主进程，客户端）↔ `aimidi-engine.exe`（JUCE 引擎，服务端）
 > 实现镜像：Go 侧 `internal/engine/protocol.go`（M1 后续落地）；C++ 侧 `engine/Source/Ipc/Protocol.h`
 > **本文为协议唯一权威来源**，两侧实现与 engine/README 摘要如有出入，以本文为准。
@@ -18,7 +18,7 @@
 ## 2. 帧格式
 
 ```
-[uint32 LE 长度 n][n 字节 payload]        n ≤ 16 MiB（kMaxFrameSize）
+[uint32 LE 长度 n][n 字节 payload]        n ≤ 16 MiB（kMaxFrameSize，收发两侧均校验）
 payload = [1 字节消息类型][消息体]
 ```
 
@@ -129,7 +129,7 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 |---|---|
 | params | `{"path":"<输出 WAV 绝对路径>","bpm":<double>,"beats":<double>,"tailSec":<秒>,"sampleRate?":48000,"notes?":[...],"clips?":[...]}`；notes/clips 结构同 4.7a。缺省 `sampleRate` 时沿用当前设备采样率 |
 | result | `{"path":"...","ok":true}`；主进程以返回的 path 经自身下载通道提供给前端 |
-| 说明 | 管道线程同步渲染，长曲可达分钟级——Go 侧用独立长超时（30s）调用；渲染期间音频回调静音（协作握手保证互斥） |
+| 说明 | **消息线程异步渲染**（`MessageManager::callAsync`，v3.0.3 起；此前在管道线程同步执行会瘫痪渲染期间的整个 IPC 通道）。长曲可达分钟级——Go 侧按清单/素材展开动态估算超时（下限 30s、上限 20min，见 supervisor `estimateBounceTimeout`）；渲染期间实时音频回调静音（协作握手保证互斥） |
 
 ### 4.7c `getLevels`
 | | |
@@ -186,7 +186,11 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 
 ## 6. 超时与其他约定
 
-- 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 15s、loadSoundFont 30s、bounce 30s、握手 20s；ping 走 TryPing 5s）；
+- 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 15s、loadSoundFont 30s、握手 20s；ping 走 TryPing 5s）。**bounce 例外**：按渲染时长动态估算（音频时长×2 + 60s，下限 30s、上限 20min——固定 30s 会把长工程导出误判为会话失效并杀掉渲染中的引擎，v3.0.3 修复）；
 - 引擎对畸形 JSON 不回复（请求方靠超时兜底），后续版本可在 Response 中引入显式 parse error；
 - 心跳由**主进程侧**负责：TryPing 每 2s 一次（会话事务忙时跳过），连续失败 15 次（最坏 30–105s）判会话失效重建——阈值刻意宽松以容忍 ASIO 慢驱动首开（10–20s）；真崩溃由进程退出通道秒级检测，不走心跳；
 - 本协议不含鉴权。本地信任边界收紧（客户端 PID 校验/DACL）列入 M5 前加固项。
+
+## 修订记录
+
+- **2026-09-05（v3.0.3）**：线格式不变。行为修订三处——① `bounce` 改消息线程异步执行（对齐 `scheduleSamples`）；② bounce 超时改按渲染时长动态估算（30s–20min）；③ 帧长上限 16 MiB 改为**收发两侧均校验**（此前仅接收侧校验）。另 PipeServer 断开时序改为「先锁内置空句柄再 CloseHandle」（消除对已关闭/复用句柄写入的竞态），不影响协议语义。

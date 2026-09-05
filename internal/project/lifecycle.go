@@ -302,8 +302,10 @@ func RemoveAICreatedFiles(projectID string, currentFiles []MidiFileInfo, entries
 
 	for _, f := range currentFiles {
 		cleanName := filepath.ToSlash(f.Name)
-		baseName := filepath.Base(f.Name)
-		if targetFiles[cleanName] || targetFiles[baseName] {
+		// 仅精确匹配 AI 创建记录中的相对路径。按 basename 兜底会把
+		// 用户自己上传的同名文件（AI 建了根目录 melody.mid 时，
+		// drums/melody.mid 也命中）一并丢进回收站且不可感知
+		if targetFiles[cleanName] {
 			rel := MoveToTrash(projectID, f)
 			if rel != "" {
 				trashRels = append(trashRels, rel)
@@ -314,11 +316,20 @@ func RemoveAICreatedFiles(projectID string, currentFiles []MidiFileInfo, entries
 	}
 
 	baseDir := GetMidiBaseDir(projectID)
-	for _, rel := range entries["dirs"] {
-		target := filepath.Join(baseDir, filepath.FromSlash(rel))
-		if entries, err := os.ReadDir(target); err == nil && len(entries) == 0 {
+	for _, dirRel := range entries["dirs"] {
+		// rel 来自历史中 create_folder 的原始参数（当时被 SafeJoin 拒绝
+		// 的请求也会留痕在历史里），撤回侧必须复检，防 "..\.." 逃逸删除项目外目录
+		cleanRel := strings.Trim(strings.TrimSpace(filepath.ToSlash(dirRel)), "/")
+		if cleanRel == "" {
+			continue
+		}
+		target := filepath.Join(baseDir, filepath.FromSlash(cleanRel))
+		if rooted, err := filepath.Rel(baseDir, target); err != nil || rooted == ".." || strings.HasPrefix(rooted, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if des, err := os.ReadDir(target); err == nil && len(des) == 0 {
 			_ = os.Remove(target)
-			removedDirs = append(removedDirs, rel)
+			removedDirs = append(removedDirs, cleanRel)
 		}
 	}
 

@@ -2,9 +2,11 @@ package project
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // HistoryFile 任务对话历史文件路径
@@ -77,8 +79,18 @@ func LoadHistory(projectID, taskID string, legacy bool) ([]map[string]any, []Mid
 		var root struct {
 			Messages []map[string]any `json:"messages"`
 		}
-		if err := json.Unmarshal(data, &root); err == nil {
+		if uerr := json.Unmarshal(data, &root); uerr == nil {
 			messages = root.Messages
+		} else {
+			// 损坏先备份再按空历史继续：否则下一次 SaveHistory 会把可能
+			// 半截可恢复的原件无声覆盖掉（与 index.json 损坏策略一致）
+			backup := fmt.Sprintf("%s.corrupt-%s-p%d-%d", hfile,
+				time.Now().Format("20060102-150405"), os.Getpid(), corruptBackupSeq.Add(1))
+			if rerr := os.Rename(hfile, backup); rerr == nil {
+				slog.Error("对话历史损坏，已备份待人工恢复", "file", hfile, "backup", backup, "err", uerr)
+			} else {
+				slog.Error("对话历史损坏且备份失败", "file", hfile, "err", uerr, "renameErr", rerr)
+			}
 		}
 	}
 
@@ -120,8 +132,17 @@ func LoadEditHistory(projectID, taskID string, legacy bool) []map[string]any {
 	var root struct {
 		EditHistory []map[string]any `json:"edit_history"`
 	}
-	if err := json.Unmarshal(data, &root); err == nil {
+	if uerr := json.Unmarshal(data, &root); uerr == nil {
 		return root.EditHistory
+	} else {
+		// 同 LoadHistory：损坏先备份，防止下一次保存覆盖原件
+		backup := fmt.Sprintf("%s.corrupt-%s-p%d-%d", efile,
+			time.Now().Format("20060102-150405"), os.Getpid(), corruptBackupSeq.Add(1))
+		if rerr := os.Rename(efile, backup); rerr == nil {
+			slog.Error("编辑历史损坏，已备份待人工恢复", "file", efile, "backup", backup, "err", uerr)
+		} else {
+			slog.Error("编辑历史损坏且备份失败", "file", efile, "err", uerr, "renameErr", rerr)
+		}
 	}
 	return nil
 }

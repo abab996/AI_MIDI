@@ -918,7 +918,116 @@ func (s *Supervisor) Bounce(params map[string]any) (string, error) {
 	if err := validateBounceTracksPaths(materialDirs, mapsFromAny(params["tracks"])); err != nil {
 		return "", err
 	}
-	return cli.Bounce(params, 30*time.Second)
+	return cli.Bounce(params, estimateBounceTimeout(params))
+}
+
+// estimateBounceTimeout 按渲染时长估算 bounce 超时。此前固定 30s，而引擎允许
+// 渲染最长 600s 音频：长工程导出必然超时 → 会话判死 → supervisor 把正在写
+// WAV 的引擎进程杀掉重建。离线渲染通常远快于实时，但逐块混音/重采样开销
+// 无上界，按 2 倍音频时长 + 60s 余量兜底（下限 30s，上限 20min）。
+func estimateBounceTimeout(params map[string]any) time.Duration {
+	anyFloat := func(v any) (float64, bool) {
+		switch n := v.(type) {
+		case float64:
+			return n, true
+		case int:
+			return float64(n), true
+		case int64:
+			return float64(n), true
+		case string:
+			f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+			return f, err == nil
+		}
+		return 0, false
+	}
+	bpm, _ := anyFloat(params["bpm"])
+	if bpm < 20 {
+		bpm = 120 // 与引擎 (bpm > 20 ? bpm : 120) 一致
+	}
+	maxEnd, _ := anyFloat(params["beats"])
+	if maxEnd < 0 {
+		maxEnd = 0
+	}
+	// 引擎侧 computeBeats 会按显式素材动态放宽 beats，这里取相同上界
+	if notes, ok := params["notes"].([]any); ok {
+		for _, raw := range notes {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if e, ok := anyFloat(m["end"]); ok && e > maxEnd {
+				maxEnd = e
+			}
+		}
+	}
+	if clips, ok := params["clips"].([]any); ok {
+		for _, raw := range clips {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			sv, _ := anyFloat(m["start"])
+			lv, _ := anyFloat(m["length"])
+			if e := sv + lv; e > maxEnd {
+				maxEnd = e
+			}
+		}
+	}
+	if tracks, ok := params["tracks"].([]any); ok {
+		for _, raw := range tracks {
+			t, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			tclips, ok := t["clips"].([]any)
+			if !ok {
+				continue
+			}
+			for _, cRaw := range tclips {
+				c, ok := cRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+				sv, _ := anyFloat(c["start"])
+				lv, _ := anyFloat(c["length"])
+				if e := sv + lv; e > maxEnd {
+					maxEnd = e
+				}
+				if cnotes, ok := c["notes"].([]any); ok {
+					for _, nRaw := range cnotes {
+						n, ok := nRaw.(map[string]any)
+						if !ok {
+							continue
+						}
+						ns, _ := anyFloat(n["start"])
+						ne, ok := anyFloat(n["end"])
+						if !ok {
+							ne = ns + 1
+						}
+						if absEnd := sv + ne; absEnd > maxEnd {
+							maxEnd = absEnd
+						}
+					}
+				}
+			}
+		}
+	}
+	if maxEnd <= 0 {
+		maxEnd = 16 // 与引擎缺省 beats=16 一致
+	}
+	tail, _ := anyFloat(params["tailSec"])
+	if tail < 0 {
+		tail = 0
+	}
+	audioSec := maxEnd*60/bpm + tail
+	timeout := time.Duration(audioSec*2*float64(time.Second)) + 60*time.Second
+	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	if timeout > 20*time.Minute {
+		timeout = 20 * time.Minute
+	}
+	return timeout
 }
 
 // GetLevels 获取电平

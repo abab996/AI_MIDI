@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,7 +64,6 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 
 	taskRec := tasks.TaskEnsure(projectID, taskID, message)
 	tid := taskRec.ID
-	tasks.TaskMarkRunning(tid)
 
 	// 任务停止信号 → ctx：用户点停止时立即取消在途 LLM 请求（而非只靠
 	// 两个 chunk 之间的轮询——上游停滞时 ReadString 会无限阻塞，项目锁
@@ -74,15 +74,6 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 	// 生成：半截回复丢失，且下方 defer TaskFinish 把任务强标"已完成"
 	taskCtx, cancelTask := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelTask()
-	if ch := tasks.TaskCancelChan(tid); ch != nil {
-		go func() {
-			select {
-			case <-ch:
-				cancelTask()
-			case <-taskCtx.Done():
-			}
-		}()
-	}
 
 	if err := AcquireProjectChatLock(taskCtx, projectID); err != nil {
 		// 等锁期间任务被停止（如持锁的上游卡死任务被用户点停）：不再无限
@@ -99,6 +90,23 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
 		_ = onEvent(map[string]any{"type": "done"})
 		return nil
+	}
+
+	// TaskMarkRunning 必须在拿到项目锁之后调用：它先 close 旧停止信号
+	// chan 再建新的——若在等锁前调用，同任务上一条消息仍在生成时，本条
+	// 消息会提前关闭旧 chan，把正在生成的流当成「卡死的旧轮」误杀。
+	// 拿到锁意味着上一轮已正常释放，旧 watcher 必然已随旧 taskCtx 退出。
+	// 等锁期间用户点停止：TaskStop 关闭的是上一轮的旧 chan（尚未被替换），
+	// 旧轮被取消后锁释放，本轮在上方 TaskIsCancelled 处退出
+	tasks.TaskMarkRunning(tid)
+	if ch := tasks.TaskCancelChan(tid); ch != nil {
+		go func() {
+			select {
+			case <-ch:
+				cancelTask()
+			case <-taskCtx.Done():
+			}
+		}()
 	}
 
 	s := GetSession(projectID)
@@ -126,10 +134,11 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 	}
 
 	// 处理用户消息
+	var userMsgSnapshot []map[string]any
 	if !resume {
 		fl.Lock()
 		st.UndoStack = append(st.UndoStack, UndoEntry{
-			Files: s.MidiFiles,
+			Files: SnapshotMidiFiles(s.MidiFiles),
 		})
 		if edit && st.PendingEdit != nil {
 			// 修改模式：/messages/edit 已截断并把旧 user 消息留在末尾，
@@ -150,12 +159,19 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 			st.FullHistory = append(st.FullHistory, map[string]any{"role": "user", "content": message})
 			st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "user", "content": message})
 		}
+		userMsgSnapshot = SnapshotDisplay(st.ChatDisplay)
 		fl.Unlock()
+	} else {
+		// resume 路径只读快照：绝不把活切片直接交给锁外回调序列化，
+		// 否则与其它持锁写入方并发读写 map 会触发 runtime fatal
+		fl.RLock()
+		userMsgSnapshot = SnapshotDisplay(st.ChatDisplay)
+		fl.RUnlock()
 	}
 
 	_ = onEvent(map[string]any{
 		"type":     "chat",
-		"messages": st.ChatDisplay,
+		"messages": userMsgSnapshot,
 	})
 
 	defer func() {
@@ -223,10 +239,12 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 	}
 
 	// 多轮工具调用循环（最多 10 轮）
+	endedWithToolCalls := false
 	for round := 0; round < config.MaxToolRounds; round++ {
 		if tasks.TaskIsCancelled(tid) {
 			break
 		}
+		endedWithToolCalls = false
 
 		fl.Lock()
 		apiMessages := buildApiMessages(st.FullHistory, s.MidiFiles)
@@ -256,6 +274,8 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 			fl.Lock()
 			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
 			fl.Unlock()
+			// 错误退出而非轮数耗尽：不计入循环结束后的补提示条件
+			endedWithToolCalls = false
 			break
 		}
 
@@ -286,6 +306,8 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 				_ = onEvent(map[string]any{"type": "error", "message": fmt.Sprintf("AI 调用失败: %v", err)})
 			}
 			_ = onEvent(map[string]any{"type": "done"})
+			// 错误/停止退出而非轮数耗尽：不计入循环结束后的补提示条件
+			endedWithToolCalls = false
 			break
 		}
 
@@ -313,13 +335,13 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 				})
 			}
 
-			_ = onEvent(map[string]any{
-				"type":     "chat",
-				"messages": st.ChatDisplay,
-			})
-
+			finalSnapshot := SnapshotDisplay(st.ChatDisplay)
 			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
 			fl.Unlock()
+			_ = onEvent(map[string]any{
+				"type":     "chat",
+				"messages": finalSnapshot,
+			})
 			break
 		}
 
@@ -380,11 +402,12 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 						"role":    "assistant",
 						"content": entry,
 					})
+					invalidSnapshot := SnapshotDisplay(st.ChatDisplay)
+					fl.Unlock()
 					_ = onEvent(map[string]any{
 						"type":     "chat",
-						"messages": st.ChatDisplay,
+						"messages": invalidSnapshot,
 					})
-					fl.Unlock()
 					continue
 				}
 
@@ -435,13 +458,13 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 					})
 				}
 
-				_ = onEvent(map[string]any{
-					"type":     "chat",
-					"messages": st.ChatDisplay,
-				})
-
+				questionSnapshot := SnapshotDisplay(st.ChatDisplay)
 				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
 				fl.Unlock()
+				_ = onEvent(map[string]any{
+					"type":     "chat",
+					"messages": questionSnapshot,
+				})
 				pausedByQuestion = true
 				break
 			}
@@ -454,11 +477,12 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 				"role":    "assistant",
 				"content": pendingEntry,
 			})
+			pendingSnapshot := SnapshotDisplay(st.ChatDisplay)
+			fl.Unlock()
 			_ = onEvent(map[string]any{
 				"type":     "chat",
-				"messages": st.ChatDisplay,
+				"messages": pendingSnapshot,
 			})
-			fl.Unlock()
 
 			// 执行 MCP 工具
 			resText, _ := mcp.ExecuteTool(fnName, rawArgs, baseDir, mirrorDir)
@@ -493,12 +517,12 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 					}
 					updated = append(updated, newInfo)
 					s.MidiFiles = updated
-
+					filesSnapshot := SnapshotMidiFiles(s.MidiFiles)
+					fl.Unlock()
 					_ = onEvent(map[string]any{
 						"type":  "files",
-						"files": s.MidiFiles,
+						"files": filesSnapshot,
 					})
-					fl.Unlock()
 
 					relToProj, _ := filepath.Rel(config.ProjectRoot, targetPath)
 					_ = onEvent(map[string]any{
@@ -524,11 +548,12 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 					}
 				}
 				s.MidiFiles = updated
+				deletedSnapshot := SnapshotMidiFiles(s.MidiFiles)
+				fl.Unlock()
 				_ = onEvent(map[string]any{
 					"type":  "files",
-					"files": s.MidiFiles,
+					"files": deletedSnapshot,
 				})
-				fl.Unlock()
 			}
 
 			fl.Lock()
@@ -549,11 +574,12 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 					"content": completedEntry,
 				})
 			}
+			completedSnapshot := SnapshotDisplay(st.ChatDisplay)
+			fl.Unlock()
 			_ = onEvent(map[string]any{
 				"type":     "chat",
-				"messages": st.ChatDisplay,
+				"messages": completedSnapshot,
 			})
-			fl.Unlock()
 		}
 
 		fl.Lock()
@@ -561,8 +587,29 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		fl.Unlock()
 
 		if pausedByQuestion {
+			// 提问暂停不算轮数耗尽
+			endedWithToolCalls = false
 			break
 		}
+		// 本轮以工具调用收尾：若下一轮循环因轮数上限不再执行，
+		// 循环结束后据此补提示
+		endedWithToolCalls = true
+	}
+
+	// 工具轮数耗尽：循环自然结束且最后一轮仍在等下一轮 LLM 决策，
+	// 此前静默退出，用户看到对话「无声结束」且无任何指引
+	if endedWithToolCalls && !tasks.TaskIsCancelled(tid) && taskCtx.Err() == nil {
+		hint := "⚠ 本轮已达到单次任务的工具调用次数上限，自动停止。请继续发送消息，我会接着完成剩余操作。"
+		fl.Lock()
+		st.FullHistory = append(st.FullHistory, map[string]any{"role": "assistant", "content": hint})
+		st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "assistant", "content": hint})
+		hintSnapshot := SnapshotDisplay(st.ChatDisplay)
+		project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+		fl.Unlock()
+		_ = onEvent(map[string]any{
+			"type":     "chat",
+			"messages": hintSnapshot,
+		})
 	}
 
 	return nil
@@ -606,7 +653,7 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 
 	// 记录撤销快照（回答前状态）
 	st.UndoStack = append(st.UndoStack, UndoEntry{
-		Files: s.MidiFiles,
+		Files: SnapshotMidiFiles(s.MidiFiles),
 	})
 
 	questions := NormalizeQuestions(pending["questions"])
@@ -655,11 +702,12 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 			"role":    "assistant",
 			"content": pendingEntry,
 		})
+		pendingSnapshot := SnapshotDisplay(st.ChatDisplay)
+		fl.Unlock()
 		_ = onEvent(map[string]any{
 			"type":     "chat",
-			"messages": st.ChatDisplay,
+			"messages": pendingSnapshot,
 		})
-		fl.Unlock()
 
 		resText, _ := mcp.ExecuteTool(fnName, args, baseDir, mirrorDir)
 
@@ -692,8 +740,9 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 				}
 				updated = append(updated, newInfo)
 				s.MidiFiles = updated
-				_ = onEvent(map[string]any{"type": "files", "files": s.MidiFiles})
+				filesSnapshot := SnapshotMidiFiles(s.MidiFiles)
 				fl.Unlock()
+				_ = onEvent(map[string]any{"type": "files", "files": filesSnapshot})
 				relToProj, _ := filepath.Rel(config.ProjectRoot, targetPath)
 				_ = onEvent(map[string]any{
 					"type": "download",
@@ -722,13 +771,13 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 		fl.Unlock()
 	}
 	fl.Lock()
-	_ = onEvent(map[string]any{
-		"type":     "chat",
-		"messages": st.ChatDisplay,
-	})
-
+	finalSnapshot := SnapshotDisplay(st.ChatDisplay)
 	project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
 	fl.Unlock()
+	_ = onEvent(map[string]any{
+		"type":     "chat",
+		"messages": finalSnapshot,
+	})
 
 	ReleaseProjectChatLock(projectID)
 
@@ -852,96 +901,93 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 		}
 
 		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err != io.EOF {
-				// 上游断流/连接中断（含用户停止导致的 ctx 取消、空闲看门狗
-				// 超时主动关 body）：与正常结束一样走统一收尾——已生成的
-				// 部分内容保留展示并落盘
-				streamErr = err
-			}
+		if err != nil && err != io.EOF {
+			// 上游断流/连接中断（含用户停止导致的 ctx 取消、空闲看门狗
+			// 超时主动关 body）：与正常结束一样走统一收尾——已生成的
+			// 部分内容保留展示并落盘
+			streamErr = err
 			break
 		}
-		idleTimer.Reset(streamIdleTimeout)
+		// EOF 时 line 可能仍带最后一段未换行数据（SSE 规范允许省略结尾
+		// 换行）：先正常处理本行再退出，不能直接 break 丢数据
+		if line != "" {
+			idleTimer.Reset(streamIdleTimeout)
 
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				// 兼容 "data: xxx" 与 "data:xxx" 两种分隔写法
+				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if payload != "" && payload != "[DONE]" {
+					var chunk llm.ChatCompletionChunk
+					if jsonErr := json.Unmarshal([]byte(payload), &chunk); jsonErr == nil && len(chunk.Choices) > 0 {
+						delta := chunk.Choices[0].Delta
+						reasoning, text := llm.SplitContentBlocks(delta.Content)
+						if delta.ReasoningContent != "" {
+							reasoning += delta.ReasoningContent
+						}
+
+						contentBuilder.WriteString(text)
+						reasoningBuilder.WriteString(reasoning)
+
+						for _, tc := range delta.ToolCalls {
+							existing, ok := toolCallMap[tc.Index]
+							if !ok {
+								existing = &llm.ToolCall{
+									Index: tc.Index,
+									ID:    tc.ID,
+									Type:  "function",
+									Function: llm.FunctionCall{
+										Name:      tc.Function.Name,
+										Arguments: tc.Function.Arguments,
+									},
+									ExtraContent: tc.ExtraContent,
+								}
+								toolCallMap[tc.Index] = existing
+							} else {
+								if tc.ID != "" {
+									existing.ID = tc.ID
+								}
+								if tc.Function.Name != "" {
+									existing.Function.Name += tc.Function.Name
+								}
+								if tc.Function.Arguments != "" {
+									existing.Function.Arguments += tc.Function.Arguments
+								}
+								if tc.ExtraContent != nil {
+									existing.ExtraContent = tc.ExtraContent
+								}
+							}
+						}
+
+						// 增量推送：只发新增的推理/正文片段（轻量、逐 chunk 级实时），
+						// 替代旧版每 25ms 重传整个 ChatDisplay 数组（O(n²)，长回复越到
+						// 后面越卡）。小窗口合并减少 IPC 帧率；msg_index 让前端区分回合。
+						if time.Since(lastEmit) > 8*time.Millisecond {
+							lastEmit = time.Now()
+							r := reasoningBuilder.String()
+							c := contentBuilder.String()
+							rd, cd := r[sentReasoning:], c[sentContent:]
+							if rd != "" || cd != "" {
+								sentReasoning, sentContent = len(r), len(c)
+								_ = onEvent(map[string]any{
+									"type":            "chat_delta",
+									"msg_index":       len(st.ChatDisplay) - 1,
+									"reasoning_delta": rd,
+									"content_delta":   cd,
+								})
+							}
+						}
+					}
+				}
+			}
 		}
-
-		payload := strings.TrimPrefix(line, "data: ")
-		if payload == "[DONE]" {
+		if err == io.EOF {
 			break
-		}
-
-		var chunk llm.ChatCompletionChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			continue
-		}
-
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		delta := chunk.Choices[0].Delta
-		reasoning, text := llm.SplitContentBlocks(delta.Content)
-		if delta.ReasoningContent != "" {
-			reasoning += delta.ReasoningContent
-		}
-
-		contentBuilder.WriteString(text)
-		reasoningBuilder.WriteString(reasoning)
-
-		for _, tc := range delta.ToolCalls {
-			existing, ok := toolCallMap[tc.Index]
-			if !ok {
-				existing = &llm.ToolCall{
-					Index: tc.Index,
-					ID:    tc.ID,
-					Type:  "function",
-					Function: llm.FunctionCall{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					},
-					ExtraContent: tc.ExtraContent,
-				}
-				toolCallMap[tc.Index] = existing
-			} else {
-				if tc.ID != "" {
-					existing.ID = tc.ID
-				}
-				if tc.Function.Name != "" {
-					existing.Function.Name += tc.Function.Name
-				}
-				if tc.Function.Arguments != "" {
-					existing.Function.Arguments += tc.Function.Arguments
-				}
-				if tc.ExtraContent != nil {
-					existing.ExtraContent = tc.ExtraContent
-				}
-			}
-		}
-
-		// 增量推送：只发新增的推理/正文片段（轻量、逐 chunk 级实时），
-		// 替代旧版每 25ms 重传整个 ChatDisplay 数组（O(n²)，长回复越到
-		// 后面越卡）。小窗口合并减少 IPC 帧率；msg_index 让前端区分回合。
-		if time.Since(lastEmit) > 8*time.Millisecond {
-			lastEmit = time.Now()
-			r := reasoningBuilder.String()
-			c := contentBuilder.String()
-			rd, cd := r[sentReasoning:], c[sentContent:]
-			if rd != "" || cd != "" {
-				sentReasoning, sentContent = len(r), len(c)
-				_ = onEvent(map[string]any{
-					"type":            "chat_delta",
-					"msg_index":       len(st.ChatDisplay) - 1,
-					"reasoning_delta": rd,
-					"content_delta":   cd,
-				})
-			}
 		}
 	}
 
 	fl.Lock()
+	var finalSnapshot []map[string]any
 	if contentBuilder.Len() == 0 && reasoningBuilder.Len() == 0 {
 		if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == "" {
 			st.ChatDisplay = st.ChatDisplay[:len(st.ChatDisplay)-1]
@@ -949,22 +995,33 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 	} else if len(st.ChatDisplay) > 0 {
 		formatted := llm.FormatDisplayMessage(reasoningBuilder.String(), contentBuilder.String())
 		st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = formatted
-		_ = onEvent(map[string]any{
-			"type":     "chat",
-			"messages": st.ChatDisplay,
-		})
+		finalSnapshot = SnapshotDisplay(st.ChatDisplay)
 	}
 	fl.Unlock()
+	if finalSnapshot != nil {
+		_ = onEvent(map[string]any{
+			"type":     "chat",
+			"messages": finalSnapshot,
+		})
+	}
 
 	return contentBuilder.String(), reasoningBuilder.String(), mapToToolCallList(toolCallMap), streamErr
 }
 
 func mapToToolCallList(m map[int]*llm.ToolCall) []llm.ToolCall {
-	var list []llm.ToolCall
-	for i := 0; i < len(m); i++ {
-		if tc, ok := m[i]; ok {
-			list = append(list, *tc)
-		}
+	if len(m) == 0 {
+		return nil
+	}
+	// 按 index 升序输出：上游可能用 1-based 或跳号 index，按下标连续
+	// 遍历会静默丢弃尾部工具调用
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	list := make([]llm.ToolCall, 0, len(keys))
+	for _, k := range keys {
+		list = append(list, *m[k])
 	}
 	return list
 }

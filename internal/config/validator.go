@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -43,7 +44,15 @@ func ValidateBaseURL(rawURL string, apiPath string) (string, error) {
 		return "", fmt.Errorf("base_url 缺少主机名")
 	}
 
-	isLoopback := host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasPrefix(host, "127.")
+	// 回环判定必须走 IP 解析：前缀匹配 strings.HasPrefix(host, "127.")
+	// 会被 "127.evil.com"、"127.0.0.1.evil.com" 绕过——它们是公网域名，
+	// 被误判为回环后可走明文 http+任意端口，API Key 将发往攻击者主机
+	isLoopback := host == "localhost" || host == "::1"
+	if !isLoopback {
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			isLoopback = true
+		}
+	}
 
 	if !isLoopback {
 		if u.Scheme != "https" {

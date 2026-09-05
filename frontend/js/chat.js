@@ -40,6 +40,7 @@
   var editMenuIndex = -1;                /* 修改菜单：当前显示「取消/撤回修改/撤回消息」的消息索引 */
   var editMenuToken = 0;                 /* 修改菜单请求令牌：连点时丢弃过期响应，防止菜单落错消息 */
   var inputBeforeEdit = "";              /* 进入修改模式前的输入框内容（撤回时还原） */
+  var switchTaskToken = 0;               /* 任务切换请求令牌：快速连切任务时丢弃过期响应（仿 searchToken） */
 
   /* ═══════════ 档案库 ═══════════ */
 
@@ -375,8 +376,12 @@
       UI.postJSON("/api/projects/" + currentProjectId + "/messages/recall", {}).catch(function () {});
       resetEditUI();
     }
+    var token = ++switchTaskToken;
     UI.getJSON("/api/projects/" + currentProjectId + "?task_id=" + encodeURIComponent(tid))
       .then(function (payload) {
+        /* 快速连切任务 A→B 时 A 的慢响应可能后到：过期响应直接丢弃，
+           否则 B 的消息列表/任务选择条会被整体覆盖回 A */
+        if (token !== switchTaskToken) return;
         if (currentProjectId !== payload.meta.id) return;
         currentTaskId = payload.current_task_id || tid;
         files = payload.midi_files || [];
@@ -454,6 +459,9 @@
 
   function openProject(projectId, taskId) {
     if (isTransitioning) return;
+    /* 进入即置过渡锁：此前在 fetch 回调里才置位，双击两张卡片会并发
+       两次请求、后到者胜——最终展示的可能不是用户最后点击的项目 */
+    isTransitioning = true;
     /* 切换视图：断开旧流（任务转后台续跑）+ 递增会话代数，使旧流帧/收尾全部过期 */
     if (abortController) abortController.abort();
     chatEpoch++;
@@ -3654,7 +3662,8 @@
       var tid = currentTaskId;
       var url = "/api/projects/" + pid + (tid ? "?task_id=" + encodeURIComponent(tid) : "");
       UI.getJSON(url).then(function (payload) {
-        if (pid !== currentProjectId || chatBusy) return;
+        /* tid 校验：请求期间用户切走任务时丢弃过期响应，防旧任务消息覆盖新任务 */
+        if (pid !== currentProjectId || tid !== currentTaskId || chatBusy) return;
         files = payload.midi_files || [];
         renderMessages(payload.display_messages || []);
         dirsList = payload.dirs || [];

@@ -402,11 +402,17 @@
 
     /* 恢复默认：立即持久化且无回头路，先确认（不丢表单里未保存的 API Key） */
     $("#resetBtn").addEventListener("click", function () {
-      if (!window.confirm("恢复默认将重置表单并立即保存默认 MIDI 参数（不影响已保存的 API Key），确定？")) return;
+      if (!window.confirm("恢复默认将重置表单并立即保存默认参数（不影响已保存的 API Key），确定？")) return;
       fillForm(DEFAULTS);
       saveMidiSettings(DEFAULT_MIDI_SETTINGS);
       fillMidiSettings();
-      UI.toast("✓ 已恢复默认设置", "ok");
+      /* LLM 设置也同步落盘：此前只填表单不保存，确认框却写着「立即保存」，
+         用户以为已持久化，重启后旧值回来。api_key 为空时服务端保留已存密钥 */
+      UI.putJSON("/api/settings", collect()).then(function () {
+        UI.toast("✓ 已恢复默认设置", "ok");
+      }).catch(function (e) {
+        UI.toast("✗ 恢复失败: " + e.message, "err");
+      });
     });
   }
 

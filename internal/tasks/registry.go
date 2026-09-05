@@ -2,10 +2,13 @@ package tasks
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,6 +50,12 @@ var (
 	// TaskMarkRunning 为新一轮重建；关闭后即从 map 移除。
 	cancelChans = make(map[string]chan struct{})
 	loaded      = false
+	// tasksCorrupt tasks.json 损坏未恢复：置位后 saveLocked 拒绝落盘，
+	// 绝不基于空列表覆盖原件（原件已备份，待人工恢复后重启进程）
+	tasksCorrupt = false
+	// corruptTasksBackupSeq 损坏备份名的进程内序号（防同毫秒撞名覆盖，
+	// 与 project.loadIndexLocked 同款策略）
+	corruptTasksBackupSeq atomic.Uint32
 )
 
 func nowTs() float64 {
@@ -73,6 +82,17 @@ func ensureLoadedLocked() {
 		Tasks []*TaskRecord `json:"tasks"`
 	}
 	if err := json.Unmarshal(data, &root); err != nil {
+		// 损坏先备份、本进程拒绝落盘：否则首次 saveLocked（任意一次
+		// TaskCreate/TaskMarkRead 都会触发）就把可能半截可恢复的任务
+		// 记录替换成空列表，任务面板全空、历史目录成孤儿
+		backup := fmt.Sprintf("%s.corrupt-%s-p%d-%d", tfile,
+			time.Now().Format("20060102-150405"), os.Getpid(), corruptTasksBackupSeq.Add(1))
+		if rerr := os.Rename(tfile, backup); rerr == nil {
+			slog.Error("tasks.json 损坏，已备份待人工恢复；本次进程跳过任务落盘", "backup", backup, "err", err)
+		} else {
+			slog.Error("tasks.json 损坏且备份失败，本次进程跳过任务落盘", "err", err, "renameErr", rerr)
+		}
+		tasksCorrupt = true
 		return
 	}
 
@@ -101,6 +121,9 @@ func ensureLoadedLocked() {
 }
 
 func saveLocked() {
+	if tasksCorrupt {
+		return // tasks.json 损坏未恢复：绝不基于空列表覆盖（原件已备份）
+	}
 	tfile := getTasksFile()
 	_ = os.MkdirAll(filepath.Dir(tfile), 0755)
 

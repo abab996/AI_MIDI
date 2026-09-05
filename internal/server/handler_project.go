@@ -192,12 +192,14 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 
 		origText, _ := st.ChatDisplay[in.Index]["content"].(string)
+		// 快照必须深拷贝：截断后流式 append 会原地覆写底层数组，
+		// 浅引用快照恢复出来的是「旧前缀+新消息」的混合体
 		st.PendingEdit = map[string]any{
 			"index":        in.Index,
 			"hist_idx":     histIdx,
 			"text":         origText,
-			"full_history": st.FullHistory,
-			"chat_display": st.ChatDisplay,
+			"full_history": chat.CloneHistory(st.FullHistory),
+			"chat_display": chat.CloneDisplay(st.ChatDisplay),
 		}
 		st.FullHistory = st.FullHistory[:histIdx+1]
 		st.ChatDisplay = st.ChatDisplay[:in.Index+1]
@@ -230,7 +232,13 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 				st.ChatDisplay = cd
 			}
 			st.PendingEdit = nil
-			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, s.CurrentTaskID, false)
+			// 按当前任务是否为 legacy 决定落盘位置：硬编码 false 会把
+			// legacy 任务的历史写进 tasks/<id>/history.json，重启后撤回结果丢失
+			legacy := false
+			if t := tasks.TaskGet(s.CurrentTaskID); t != nil {
+				legacy = t.Legacy
+			}
+			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, s.CurrentTaskID, legacy)
 		}
 		resp := map[string]any{
 			"messages": chat.SnapshotDisplay(st.ChatDisplay),
@@ -319,12 +327,13 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		removalInfo["original_files"] = originalFiles
 
 		origText, _ := st.ChatDisplay[in.Index]["content"].(string)
+		// 与 messages/edit 同理：快照必须深拷贝，避免截断后 append 覆写污染
 		st.PendingEdit = map[string]any{
 			"index":        in.Index,
 			"hist_idx":     histIdx,
 			"text":         origText,
-			"full_history": st.FullHistory,
-			"chat_display": st.ChatDisplay,
+			"full_history": chat.CloneHistory(st.FullHistory),
+			"chat_display": chat.CloneDisplay(st.ChatDisplay),
 			"_rollback":    removalInfo,
 		}
 
@@ -417,13 +426,17 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		s := chat.GetSession(projectID)
 		fl := chat.GetSessionLock(projectID)
 		fl.Lock()
-		for i := range s.MidiFiles {
-			if s.MidiFiles[i].Name == in.Name {
-				s.MidiFiles[i].Size = int64(len(midiBytes))
-				s.MidiFiles[i].NoteTable = in.NoteTable
+		// 拷贝后替换而非就地改写：s.MidiFiles 的底层数组可能仍被
+		// 撤销栈快照引用，就地改会污染撤销点
+		files := chat.SnapshotMidiFiles(s.MidiFiles)
+		for i := range files {
+			if files[i].Name == in.Name {
+				files[i].Size = int64(len(midiBytes))
+				files[i].NoteTable = in.NoteTable
 				break
 			}
 		}
+		s.MidiFiles = files
 		project.SaveMidiManifest(projectID, s.MidiFiles)
 		resp := map[string]any{
 			"ok":    true,
@@ -549,6 +562,10 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 
 	case sub == "folders/delete" && req.Method == http.MethodPost:
+		if tasks.TaskHasActive(projectID) {
+			writeError(w, http.StatusBadRequest, "有任务尚未完成，请等待任务结束后再操作")
+			return
+		}
 		var in struct {
 			Folder string `json:"folder"`
 		}
@@ -576,8 +593,9 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		fl.Lock()
 		prefix := folderRel + "/"
 		// 文件夹内文件逐个移入回收站（保留相对路径，撤销时自动重建层级）
-		// 失败（被占用）时回滚已移入的文件，保持「失败时文件夹原样保留」契约
-		project.ClearTrash(projectID)
+		// 失败（被占用）时回滚已移入的文件，保持「失败时文件夹原样保留」契约。
+		// 注意：不能 ClearTrash——会把此前删除的文件物理销毁，旧撤销条目的
+		// 回收站凭据全部失效；MoveToTrash 用唯一名落位，不依赖先清空
 		var trashRels []string
 		var failed string
 		failedFile := false
@@ -617,9 +635,10 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		s.MidiFiles = kept
 
 		// 撤销栈：记录被删文件与回收站路径，撤销时恢复
+		//（快照拷贝：entry.Files 与 s.MidiFiles 共享底层数组会被后续修改穿透）
 		st := s.GetTaskState("")
 		st.UndoStack = append(st.UndoStack, chat.UndoEntry{
-			Files: kept,
+			Files: chat.SnapshotMidiFiles(kept),
 			Trash: trashRels,
 		})
 		project.SaveMidiManifest(projectID, s.MidiFiles)
@@ -635,6 +654,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		r.handleProjectDownload(w, req, projectID)
 
 	case sub == "undo" && req.Method == http.MethodPost:
+		// 与 clear/edit 同款守卫：任务运行中恢复旧清单会让 AI 后续的
+		// files 事件与磁盘/清单再次错位
+		if tasks.TaskHasActive(projectID) {
+			writeError(w, http.StatusBadRequest, "有任务尚未完成，请等待任务结束后再操作")
+			return
+		}
 		s := chat.GetSession(projectID)
 		st := s.GetTaskState("")
 		fl := chat.GetSessionLock(projectID)
@@ -671,14 +696,17 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusBadRequest, "请输入工作区目录路径")
 			return
 		}
+		s := chat.GetSession(projectID)
+		fl := chat.GetSessionLock(projectID)
+		// BindWorkspace 内部会 SaveMidiManifest（读改写 midi.json）：
+		// 必须与聊天流的清单保存互斥，否则并发互相覆盖丢增量
+		fl.Lock()
 		res, err := project.BindWorkspace(projectID, in.Path)
 		if err != nil {
+			fl.Unlock()
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("绑定失败: %v", err))
 			return
 		}
-		s := chat.GetSession(projectID)
-		fl := chat.GetSessionLock(projectID)
-		fl.Lock()
 		if mf, ok := res["midi_files"].([]project.MidiFileInfo); ok {
 			s.MidiFiles = mf
 		}
@@ -690,10 +718,11 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusOK, res)
 
 	case sub == "workspace/unbind" && req.Method == http.MethodPost:
-		mf := project.UnbindWorkspace(projectID)
 		s := chat.GetSession(projectID)
 		fl := chat.GetSessionLock(projectID)
+		// 同 bind：UnbindWorkspace 内部落盘清单，需持会话锁防覆盖
 		fl.Lock()
+		mf := project.UnbindWorkspace(projectID)
 		s.MidiFiles = mf
 		fl.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -821,6 +850,12 @@ func buildProjectPayload(meta project.ProjectMeta) map[string]any {
 }
 
 func (r *Router) handleProjectUploadFiles(w http.ResponseWriter, req *http.Request, projectID string) {
+	// 与 clear/edit 同款守卫：任务运行中改动清单/撤销栈会与 AI 的
+	// files 事件错位
+	if tasks.TaskHasActive(projectID) {
+		writeError(w, http.StatusBadRequest, "有任务尚未完成，请等待任务结束后再操作")
+		return
+	}
 	err := req.ParseMultipartForm(128 << 20)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "解析文件失败")
@@ -905,7 +940,7 @@ func (r *Router) handleProjectUploadFiles(w http.ResponseWriter, req *http.Reque
 	if len(added) > 0 {
 		st := s.GetTaskState("")
 		st.UndoStack = append(st.UndoStack, chat.UndoEntry{
-			Files: s.MidiFiles,
+			Files: chat.SnapshotMidiFiles(s.MidiFiles),
 		})
 	}
 
@@ -944,6 +979,10 @@ func uniqueDestPath(dir, basename string) string {
 }
 
 func (r *Router) handleProjectDeleteFiles(w http.ResponseWriter, req *http.Request, projectID string) {
+	if tasks.TaskHasActive(projectID) {
+		writeError(w, http.StatusBadRequest, "有任务尚未完成，请等待任务结束后再操作")
+		return
+	}
 	var in struct {
 		Names []string `json:"names"`
 	}
@@ -976,7 +1015,7 @@ func (r *Router) handleProjectDeleteFiles(w http.ResponseWriter, req *http.Reque
 
 	st := s.GetTaskState("")
 	st.UndoStack = append(st.UndoStack, chat.UndoEntry{
-		Files: s.MidiFiles,
+		Files: chat.SnapshotMidiFiles(s.MidiFiles),
 		Trash: trashRels,
 	})
 

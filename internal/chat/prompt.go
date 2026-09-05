@@ -60,6 +60,11 @@ func BuildSystemPrompt(files []project.MidiFileInfo, globalBPM int) string {
 			sb.WriteString(fmt.Sprintf("%d. `%s` → %s\n", i+1, fname, desc))
 		}
 		sb.WriteString("\n")
+	} else {
+		// 知识库缺失（安装包漏装/目录被删）时不再静默：此前「铁律」仍要求
+		// 必须先读文件，AI 会拿着下方硬编码映射反复调用注定失败的工具。
+		// 明确宣告不可用并豁免读取要求，同时让用户知情
+		sb.WriteString("> ⚠ **知识库当前不可用**（目录缺失或为空）：请跳过上述「必须先读文件」的规则，直接基于自身知识回答，**不要再调用 `read_library_file`**（此时调用必定失败）；并在回复开头提醒用户——程序安装可能不完整，知识库功能不可用，重新运行安装程序即可恢复。\n\n")
 	}
 
 	sb.WriteString("### 强制读取映射（优先级从高到低）\n")

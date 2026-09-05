@@ -1,6 +1,6 @@
 ; AI_MIDI v3 安装脚本 — Inno Setup 6
 ; 编译命令: ISCC.exe AI_MIDI.iss
-; 产物: dist\installer\AI_MIDI_Setup_3.0.2.exe
+; 产物: dist\installer\AI_MIDI_Setup_3.0.3.exe
 ;
 ; 发布物约定（长期规范）:
 ;   - Windows 版仅上传本安装包（AI_MIDI_Setup_<ver>.exe），不再分发便携压缩包
@@ -15,7 +15,7 @@
 ;   - 卸载时保留用户数据（设置/项目/输出），不主动删除。
 
 #define MyAppName "AI_MIDI"
-#define MyAppVersion "3.0.2"
+#define MyAppVersion "3.0.3"
 #define MyAppPublisher "abab996"
 #define MyAppExeName "AI_MIDI.exe"
 
@@ -88,6 +88,11 @@ Source: "window_icon.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedo
 ; 文档
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README_zh.md"; DestDir: "{app}"; Flags: ignoreversion
+; 乐理知识库（read_library_file 工具的数据源；缺失时 AI 每次读取知识文件
+; 都会失败——此前安装包漏装该目录，打包版 AI 无法引用乐理指南）
+Source: "Library\*.md"; DestDir: "{app}\Library"; Flags: ignoreversion
+; 音色库不分发（Library\soundfonts\* 体积大且为测试音色，沿用既有约定：
+; 用户自备 sf2 放入 {app}\Library\soundfonts，无音色时原生引擎降级 WebAudio）
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -124,4 +129,5 @@ Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExeName} /IM aimidi-engine.
 [UninstallDelete]
 ; 清理运行期生成的空壳目录（用户数据文件不在删除列表，升级/重装可保留）
 Type: dirifempty; Name: "{app}\bin"
+Type: dirifempty; Name: "{app}\Library"
 Type: dirifempty; Name: "{app}"

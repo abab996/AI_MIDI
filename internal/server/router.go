@@ -107,6 +107,24 @@ func (c *capturingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return h.Hijack()
 }
 
+// requestLimitFor 按路径返回请求体上限。此前除个别 handler 外全部无上限：
+// multipart 上传会把超限部分 spool 到临时目录（可填满磁盘），JSON decoder
+// 会把整个请求体读进内存（无界分配）。统一在中间件层兜底。
+func requestLimitFor(path, method string) int64 {
+	switch {
+	case path == "/api/parse":
+		return 64 << 20 // MIDI 上传（handler 内存阈值 32MB，超限部分 spool 临时目录）
+	case strings.HasPrefix(path, "/api/audio/"):
+		return 48 << 20 // soundfont 上传（handler 内部 32MB）+ bounce tracks（5MB）
+	case strings.HasPrefix(path, "/api/arrangement/"):
+		return 8 << 20 // 编排数据（handler 内部 5MB）
+	case method == http.MethodPost && strings.HasSuffix(path, "/files"):
+		return 256 << 20 // 项目文件上传（ParseMultipartForm 128MB 内存阈值）
+	default:
+		return 2 << 20 // JSON/常规请求
+	}
+}
+
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// 来源校验（含 OPTIONS 预检）：非法 Host/Origin 一律 403
 	if !isAllowedHost(req.Host) {
@@ -128,6 +146,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+
+	// 请求体上限（见 requestLimitFor）
+	req.Body = http.MaxBytesReader(w, req.Body, requestLimitFor(req.URL.Path, req.Method))
 
 	// panic 恢复：任何 handler（含 SSE 协程）的 panic 在此兜底，
 	// 避免单个坏请求把整个 http server 连带服务拖崩。

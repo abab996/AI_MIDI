@@ -16,6 +16,7 @@ func resetRegistry() {
 	cancelFlags = make(map[string]bool)
 	cancelChans = make(map[string]chan struct{})
 	loaded = false
+	tasksCorrupt = false
 }
 
 func withTempProjectsDir(t *testing.T) {

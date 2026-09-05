@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,15 +88,23 @@ func cleanupEmptyParents(startPath, rootDir string) {
 	}
 }
 
-func deleteWithMirror(mainPath, mainBase, mirrorBase string) {
-	_ = os.Remove(mainPath)
+// deleteWithMirror 删除主文件与镜像文件，主文件删除失败必须上报：
+// Windows 上文件被播放器/DAW 占用是常态，吞掉错误会让工具对 LLM
+// 谎报「成功删除」，随后清单/聊天记录照常更新，与磁盘永久脱节
+func deleteWithMirror(mainPath, mainBase, mirrorBase string) error {
+	if err := os.Remove(mainPath); err != nil {
+		return err
+	}
 	cleanupEmptyParents(filepath.Dir(mainPath), mainBase)
 
 	mp := mirrorPath(mainPath, mainBase, mirrorBase)
 	if mp != "" {
-		_ = os.Remove(mp)
+		if err := os.Remove(mp); err != nil && !os.IsNotExist(err) {
+			slog.Warn("删除镜像文件失败", "path", mp, "err", err)
+		}
 		cleanupEmptyParents(filepath.Dir(mp), mirrorBase)
 	}
+	return nil
 }
 
 // ExecuteTool 执行指定的 MCP 工具调用并返回结果文本
@@ -183,7 +192,9 @@ func ExecuteTool(name string, rawArgs map[string]any, baseDir, mirrorDir string)
 			return fmt.Sprintf("错误：只能删除 MIDI 文件 (.mid / .midi) — %s", fn), nil
 		}
 
-		deleteWithMirror(targetPath, baseDir, mirrorDir)
+		if err := deleteWithMirror(targetPath, baseDir, mirrorDir); err != nil {
+			return fmt.Sprintf("错误：删除失败（文件可能正被占用）— %s", fn), nil
+		}
 		return fmt.Sprintf("成功删除 %s", filepath.ToSlash(fn)), nil
 
 	case "create_folder":

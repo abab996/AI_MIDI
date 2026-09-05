@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -65,6 +66,13 @@ func loadVersion() {
 func main() {
 	config.SetupLogging()
 	loadVersion()
+
+	// 启动自检：知识库目录缺失（典型为安装包漏装 Library）时打日志留痕。
+	// 此前该故障全链路静默——ListLibraryFiles 返回 nil、系统提示词静默
+	// 跳过文件列表，用户只能从 AI 的「文件不存在」报错反推
+	if files := mcp.ListLibraryFiles(); len(files) == 0 {
+		slog.Warn("Library 知识库不可用（目录缺失或为空），read_library_file 将不可用", "dir", config.LibraryDir)
+	}
 
 	browserMode := flag.Bool("browser", false, "在系统默认浏览器中打开，而不是使用原生窗口")
 	scaleRatio := flag.Float64("scale", 0.8, "原生窗口占屏幕工作区的比例(0.0-1.0)，默认 0.8")
@@ -148,7 +156,15 @@ func main() {
 		}()
 
 		fmt.Printf("[AI_MIDI] HTTP 服务已在 http://%s 启动 (浏览器模式)\n", addr)
-		if err := http.ListenAndServe(addr, router); err != nil {
+		// 不设 ReadTimeout/WriteTimeout：WriteTimeout 会掐断 SSE 长下行。
+		// 慢速请求体的保护由 ReadHeaderTimeout + handler 侧 LimitReader/MaxBytes 承担
+		srv := &http.Server{
+			Addr:              addr,
+			Handler:           router,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		if err := srv.ListenAndServe(); err != nil {
 			app.ShowErrorDialog(config.WindowTitle, fmt.Sprintf("服务启动失败: %v", err))
 		}
 		return

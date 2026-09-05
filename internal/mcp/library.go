@@ -50,6 +50,12 @@ func ReadLibraryFile(filename string) (string, error) {
 	data, err := os.ReadFile(targetClean)
 	if err != nil {
 		available := ListLibraryFiles()
+		if len(available) == 0 {
+			// 知识库目录整体缺失/为空（典型：安装包未带 Library，此前
+			// AI_MIDI.iss 漏装）：给出可行动的提示而不是裸的
+			// 「文件不存在 + 空列表」，让 AI 能向用户说明真实原因
+			return "", fmt.Errorf("知识库不可用（目录缺失或为空）：%s。程序可能未完整安装，请提醒用户重新运行安装程序；本次请基于自身知识回答，不要重试读取", libClean)
+		}
 		return "", fmt.Errorf("文件不存在 — %s\n可用文件：%s", filename, strings.Join(available, ", "))
 	}
 

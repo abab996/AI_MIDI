@@ -13,6 +13,12 @@ func ShouldCompact(messages []llm.ChatCompletionMessage) bool {
 	totalChars := 0
 	for _, m := range messages {
 		totalChars += len(m.Content)
+		// create_midi 的完整 note_table 存放在 assistant 消息的
+		// tool_calls[].function.arguments 里（可达数百 KB），不计入会让
+		// 压缩永远不触发，直到 API 因上下文超限返回 400
+		for _, tc := range m.ToolCalls {
+			totalChars += len(tc.Function.Arguments)
+		}
 	}
 	return totalChars > config.MaxContextChars
 }

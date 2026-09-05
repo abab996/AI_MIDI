@@ -53,6 +53,27 @@ func TestValidateBaseURL(t *testing.T) {
 			apiPath: "",
 			wantErr: true,
 		},
+		{
+			// "127." 前缀匹配曾被当作回环放行 http+任意端口：
+			// API Key 会以明文发往攻击者域名，必须按公网主机校验
+			name:    "Lookalike 127 domain rejects http",
+			baseURL: "http://127.evil.com",
+			apiPath: "",
+			wantErr: true,
+		},
+		{
+			name:    "Lookalike 127 domain rejects non-443 port",
+			baseURL: "https://127.0.0.1.evil.com:8443",
+			apiPath: "",
+			wantErr: true,
+		},
+		{
+			name:    "Loopback 127.0.0.2 still allows http custom port",
+			baseURL: "http://127.0.0.2:11434",
+			apiPath: "",
+			wantURL: "http://127.0.0.2:11434",
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range cases {

@@ -122,6 +122,64 @@ func SnapshotMidiFiles(files []project.MidiFileInfo) []project.MidiFileInfo {
 	return out
 }
 
+// CloneHistory 深拷贝历史切片（含每条消息内嵌套的 map/slice）。
+// 快照场景（PendingEdit、撤销栈等）必须存深拷贝而非切片引用：
+// 截断（FullHistory[:histIdx+1]）后继续 append 会原地覆写底层数组
+// 槽位，嵌套 map 也会被流式写入就地修改，浅引用快照恢复出来的是
+// 被污染的数据（表现为撤回后历史损坏、消息丢失）。
+func CloneHistory(history []map[string]any) []map[string]any {
+	if history == nil {
+		return nil
+	}
+	out := make([]map[string]any, len(history))
+	for i, m := range history {
+		out[i] = cloneMsgMap(m)
+	}
+	return out
+}
+
+// CloneDisplay 深拷贝显示列表（含 questions/tool_calls 等嵌套结构）
+func CloneDisplay(display []map[string]any) []map[string]any {
+	return CloneHistory(display)
+}
+
+func cloneMsgMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = deepCopyAny(v)
+	}
+	return cp
+}
+
+// deepCopyAny 递归拷贝 JSON 兼容值；标量（string/数字/bool/nil）不可变，共享安全
+func deepCopyAny(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return cloneMsgMap(t)
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = deepCopyAny(e)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(t))
+		for i, e := range t {
+			out[i] = cloneMsgMap(e)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		copy(out, t)
+		return out
+	default:
+		return v
+	}
+}
+
 func loadTaskState(projectID, taskID string) *TaskState {
 	taskRec := tasks.TaskEnsure(projectID, &taskID, "")
 	legacy := taskRec.Legacy

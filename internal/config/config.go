@@ -29,6 +29,9 @@ const (
 	DraftFilename = "draft.txt"
 	ServerPort    = 7860
 	WindowTitle   = "AI_MIDI · AI 编曲助手"
+	// UpdateManifestURL 更新清单地址（R2 桶绑定的公开自定义域名）。
+	// 应用启动时拉取并比较版本；清单必须公开可读（S3 API 端点不行）。
+	UpdateManifestURL = "https://aimidi-r2.baimoo.top/update.json"
 )
 
 // AppVersion 应用版本：main 启动时从 wails.json 注入（与打包配置同源，

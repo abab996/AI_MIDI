@@ -105,6 +105,8 @@ func main() {
 
 	appInstance := app.NewApp()
 	router := server.NewRouter(subFS, appInstance.SelectFolderDialog)
+	// 后台预取更新清单：让前端启动时的 /api/update/check 即时返回
+	go router.PrefetchUpdate()
 
 	// 原生音频引擎守护（M1）：随主程序启动拉起 aimidi-engine，
 	// 崩溃自动重启；进程退出时优雅回收。缺失/失败均不阻断主程序（降级 Web Audio）。

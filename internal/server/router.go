@@ -21,6 +21,7 @@ type Router struct {
 	mux      *http.ServeMux
 	assetsFS fs.FS
 	dialogFn func() (string, error)
+	updater  *updater
 }
 
 // NewRouter 创建路由器实例
@@ -29,6 +30,7 @@ func NewRouter(assetsFS fs.FS, dialogFn func() (string, error)) *Router {
 		mux:      http.NewServeMux(),
 		assetsFS: assetsFS,
 		dialogFn: dialogFn,
+		updater:  newUpdater(),
 	}
 	r.registerRoutes()
 	return r
@@ -150,6 +152,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// 请求体上限（见 requestLimitFor）
 	req.Body = http.MaxBytesReader(w, req.Body, requestLimitFor(req.URL.Path, req.Method))
 
+	// 强制更新网关：必要更新未完成时拦截一切改写型请求。
+	// GET 一律放行（查询/静态资源不拦，界面本身保持可渲染）；
+	// 判定只用已缓存清单且拉取失败放行——绝不把离线用户锁死在应用外
+	if req.Method != http.MethodGet && !updateGateWhitelisted(req.URL.Path) && r.updater.MandatoryPending() {
+		writeError(w, http.StatusUpgradeRequired, "发现必要更新：必须更新到新版本后才能继续使用，请按界面提示完成升级")
+		return
+	}
+
 	// panic 恢复：任何 handler（含 SSE 协程）的 panic 在此兜底，
 	// 避免单个坏请求把整个 http server 连带服务拖崩。
 	cw := &capturingWriter{ResponseWriter: w}
@@ -197,6 +207,12 @@ func (r *Router) registerRoutes() {
 	// Chat & Answer
 	r.mux.HandleFunc("/api/chat", r.handleChat)
 	r.mux.HandleFunc("/api/answer", r.handleAnswer)
+
+	// Update 自动更新（清单拉取/比较、应用内下载、进度、浏览器降级）
+	r.mux.HandleFunc("/api/update/check", r.handleUpdateCheck)
+	r.mux.HandleFunc("/api/update/apply", r.handleUpdateApply)
+	r.mux.HandleFunc("/api/update/progress", r.handleUpdateProgress)
+	r.mux.HandleFunc("/api/update/open-browser", r.handleUpdateOpenBrowser)
 
 	// Tasks
 	r.mux.HandleFunc("/api/tasks", r.handleTasks)

@@ -1041,6 +1041,14 @@
         // 降级判定：setTrackVoice 失败即回退 WebAudio
         var useNative = false;
         try {
+          // 播放路径同步波形：setWaveform 只在 playNoteSound（实时演奏/
+          // WebAudio 回放）里调用，原生分支不经它——不在此同步的话切
+          // 音色后 synth.waveform 仍是旧值，_ensureNativeVoice 签名不变、
+          // 引擎轨一直用旧波形（播放时切锯齿→方波等听不出变化）
+          if (this.soundSource && this.soundSource.indexOf("synth_") === 0 && this.synth) {
+            var w = this.soundSource.replace("synth_", "");
+            if (this.synth.waveform !== w) this.synth.setWaveform(w);
+          }
           useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred()
             && this.soundSource && this.soundSource.indexOf("synth_") === 0
             && this.synth && this.synth._ensureNativeVoice && this.synth._ensureNativeVoice();
@@ -3245,6 +3253,12 @@
       "synth_sawtooth",
       function (val, label) {
         self.soundSource = val;
+        // 同步合成器波形：切 synth 音色后立即更新 synth.waveform——
+        // 原生回放路径不经 playNoteSound，只改 soundSource 会让引擎轨
+        // 一直用旧波形（锯齿→方波等切换无效）
+        if (val.indexOf("synth_") === 0 && self.synth) {
+          self.synth.setWaveform(val.replace("synth_", ""));
+        }
         self.showHUD("音源: " + label);
       }
     );

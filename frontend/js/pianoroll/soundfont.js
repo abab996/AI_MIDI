@@ -122,7 +122,11 @@
 
     var pbagGenNdx = readNdx("pbag", 4, 0);
     var ibagGenNdx = readNdx("ibag", 4, 0);
-    var instBagNdx = readNdx("inst", 38, 20);
+    // inst 记录 = instName(20) + instBagNdx(2) = 22 字节（38 是 phdr
+    // preset 头的大小——此前错用 38 步进读 22 字节的记录，第 2 条 inst
+    // 起位置全部错乱，zone 链断裂、键位区间只剩首个，音符全被移调
+    // 到最低音采样）
+    var instBagNdx = readNdx("inst", 22, 20);
 
     function readGens(chunkId, lo, hi) {
       var out = [];

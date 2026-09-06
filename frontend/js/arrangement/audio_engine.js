@@ -248,6 +248,8 @@
       nodes._voiceSig = sig;
       nodes._voiceRetryAt = 0;
       nodes._useNative = true;
+      // 此前失败冷却期把 synth 强制 WebAudio；恢复成功后解除，该轨回到原生
+      if (nodes.synth) nodes.synth._forceWebAudio = false;
     }).catch(function (e) {
       console.warn("[ArrangeEngine] setTrackVoice 失败，3s 后重试，期间该轨走 WebAudio:", e);
       nodes._voiceSig = null;
@@ -255,6 +257,10 @@
       nodes._useNative = false;
       if (nodes.synth) nodes.synth._forceWebAudio = true;
     });
+    // 声部切换 IPC 未确认前该轨走 WebAudio：立即置 _useNative=true 会把
+    // 音符发往仍持旧声部的引擎轨——切音色后第一下仍旧音色（synth.js
+    // _ensureNativeVoice 同源修复）
+    nodes._useNative = false;
   };
 
   /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立） */

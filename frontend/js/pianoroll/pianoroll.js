@@ -639,8 +639,11 @@
       this.synth.setWaveform(wave);
       this.synth.noteOn(midiNote, velocity, when);
     } else if (this.soundSource.indexOf("sf2_") === 0) {
-      var preset = this.soundSource.replace("sf2_", "");
-      this.soundfont.setPreset(preset);
+      // 完整 id 直传：SF2 预设 id 是 "sf2_bank_program_idx"（soundfont.js
+      // 生成），此前 replace("sf2_","") 剥成 "bank_program_idx" 后
+      // setPreset 永远找不到 → 音色不变（弹的还是内置钢琴）甚至无声；
+      // 内置名 "sf2_piano"/"sf2_strings" 由 setPreset 内部剥前缀匹配
+      this.soundfont.setPreset(this.soundSource);
       this.soundfont.noteOn(midiNote, velocity, when);
     }
   };

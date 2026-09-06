@@ -423,15 +423,20 @@
   };
 
   SoundFontPlayer.prototype.setPreset = function (presetOrBuiltinId) {
-    if (presetOrBuiltinId === "piano" || presetOrBuiltinId === "strings") {
+    var pid = String(presetOrBuiltinId || "");
+    // 兼容带 "sf2_" 前缀的完整 id（钢琴窗 soundSource 直传）：
+    // 内置名 "sf2_piano"/"sf2_strings" 剥前缀匹配 builtinBuffers；
+    // SF2 预设完整 id "sf2_bank_program_idx" 原样匹配 loadedPresets
+    var builtinId = pid.indexOf("sf2_") === 0 ? pid.slice(4) : pid;
+    if (builtinId === "piano" || builtinId === "strings") {
       this.ensureBuiltinPresets();
     }
-    if (this.builtinBuffers && this.builtinBuffers[presetOrBuiltinId]) {
-      this.builtinInstrument = presetOrBuiltinId;
+    if (this.builtinBuffers && this.builtinBuffers[builtinId]) {
+      this.builtinInstrument = builtinId;
       this.currentPreset = null;
       return;
     }
-    var found = this.loadedPresets.find(function (p) { return p.id === presetOrBuiltinId; });
+    var found = this.loadedPresets.find(function (p) { return p.id === pid || p.id === builtinId; });
     if (found) {
       this.currentPreset = found;
       this.builtinInstrument = null;

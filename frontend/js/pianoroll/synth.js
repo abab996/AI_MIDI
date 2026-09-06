@@ -141,7 +141,10 @@
     } catch (e) {
       return false;
     }
-    return true;
+    // 声部切换 IPC 未确认前不判定原生可用：此前立即返回 true，切换
+    // 音色后的第一下 noteOn 发往仍持旧声部的引擎轨——音色不变（延迟
+    // 几十 ms 后引擎声部才更新）。未确认期间音符走 WebAudio，音色即时正确
+    return false;
   };
 
 

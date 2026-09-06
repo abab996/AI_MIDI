@@ -8,11 +8,17 @@ import (
 	"math"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // ErrSessionDead 会话已判死（进程退出/协议失败/已关闭），后续请求立即失败
 var ErrSessionDead = errors.New("引擎会话已失效")
+
+// ErrMidiPipeBusy 实时 MIDI 帧写入失败（写超时/写错误），该帧已丢弃。
+// 区别于 ErrSessionDead：实时路径不拥有杀死会话的能力，会话生死由
+// 控制面请求与心跳判定（writeBroken 复位前实时帧快速失败）。
+var ErrMidiPipeBusy = errors.New("MIDI 管道忙，实时帧已丢弃")
 
 // Client 原生音频引擎管道客户端（串行事务模型）。
 //
@@ -31,6 +37,12 @@ type Client struct {
 	nextID   float64
 	dead     chan struct{}
 	deadOnce sync.Once
+
+	// writeBroken：实时 MIDI 写入曾失败/超时，写侧可能仍被长请求
+	// （bounce/applySetup）撑满。置位后实时帧快速失败（丢弃）而非
+	// 每次再烧满写超时；控制面 Request 成功一次即复位（说明连接
+	// 已恢复可写）。
+	writeBroken atomic.Bool
 
 	eventsMu sync.Mutex
 	events   chan Event
@@ -116,7 +128,14 @@ func (c *Client) Request(method string, params map[string]any, timeout time.Dura
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
 
-	return c.awaitResponse(req.ID, timeout)
+	resp, err := c.awaitResponse(req.ID, timeout)
+	if err != nil {
+		return nil, err
+	}
+	// 控制面事务成功说明写侧已恢复（长请求结束、引擎重新读管道），
+	// 复位实时帧丢弃标志，恢复 MIDI 直通
+	c.writeBroken.Store(false)
+	return resp, nil
 }
 
 // TryRequest 尝试发送请求：会话已死或事务锁被在途长请求占用时立即失败，
@@ -148,26 +167,39 @@ func (c *Client) TryRequest(method string, params map[string]any, timeout time.D
 		c.markDead()
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
-	return c.awaitResponse(req.ID, timeout)
+	resp, err := c.awaitResponse(req.ID, timeout)
+	if err != nil {
+		return nil, err
+	}
+	c.writeBroken.Store(false) // 同 Request：写侧恢复后复位实时帧丢弃标志
+	return resp, nil
 }
 
 // SendMidi 发送 3 字节 MIDI 二进制帧（尽力而为，不等待响应）。
 // 线格式：payload = [类型0x04][status][data1][data2]（status 为完整 MIDI 状态字节）。
 // 兼容旧单轨；新多轨请用 SendMidiTrack。
+//
+// 尽力而为语义：写失败/超时只丢弃该帧并置位 writeBroken（后续实时帧
+// 快速失败），**不判死会话**——bounce/applySetup 等长请求在途时引擎
+// 消息线程被渲染占住、不读管道，缓冲区写满即触发此处超时；若按旧
+// 逻辑 markDead，用户弹琴会把整个会话送进重启风暴、在途渲染全丢。
+// 会话生死由控制面请求与心跳判定，写侧恢复由下一次成功 Request 复位。
 func (c *Client) SendMidi(status, data1, data2 byte) error {
+	if c.writeBroken.Load() {
+		return ErrMidiPipeBusy
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	err := c.writeFrameWithTimeout(MsgMidi, []byte{status, data1, data2}, 2*time.Second)
 	if err != nil {
-		// 写失败/超时后连接已不可信：残留 goroutine 可能仍在写一半帧，
-		// 与后续帧交错撕裂协议。判死会话，由 supervisor 重建
-		c.markDead()
+		c.writeBroken.Store(true)
 	}
 	return err
 }
 
 // SendMidiTrack 发送带 track 的 MIDI 帧（每轨独立 tsf）。
 // 线格式：payload = [类型0x04][track][status][data1][data2]
+// 尽力而为语义同 SendMidi：写失败/超时丢弃并置位 writeBroken，不判死会话。
 func (c *Client) SendMidiTrack(track int, status, data1, data2 byte) error {
 	if track < 0 {
 		track = 0
@@ -175,11 +207,14 @@ func (c *Client) SendMidiTrack(track int, status, data1, data2 byte) error {
 	if track > 31 {
 		track = 31
 	}
+	if c.writeBroken.Load() {
+		return ErrMidiPipeBusy
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	err := c.writeFrameWithTimeout(MsgMidi, []byte{byte(track), status, data1, data2}, 2*time.Second)
 	if err != nil {
-		c.markDead() // 同 SendMidi：写失败后会话不可信
+		c.writeBroken.Store(true)
 	}
 	return err
 }

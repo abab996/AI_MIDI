@@ -408,6 +408,11 @@
       });
       return track;
     });
+    // 引擎/导出 32 轨上限：超出部分现场播放与导出行为不一致，加载时截断
+    if (this.tracks.length > 32) {
+      this.tracks = this.tracks.slice(0, 32);
+      this.showHUD("⚠ 工程超过 32 条轨道，已保留前 32 条");
+    }
     if (!this.tracks.length) this.tracks = [this.makeTrack(1)];
     this._pruneTrackNodes();
     this.engine.bpm = this.bpm;
@@ -504,6 +509,11 @@
     this.bpm = s.bpm || 120;
     this.loop = s.loop || { on: false, start: 0, end: 16 };
     this.tracks = s.tracks || [];
+    // 引擎/导出 32 轨上限：撤销/重做恢复超限快照时截断
+    if (this.tracks.length > 32) {
+      this.tracks = this.tracks.slice(0, 32);
+      this.showHUD("⚠ 快照超过 32 条轨道，已保留前 32 条");
+    }
     if (!this.tracks.length) this.tracks = [this.makeTrack(1)];
     this._pruneTrackNodes();
     this.engine.applyMix(this.tracks);
@@ -2278,6 +2288,12 @@
   /* ═══════════ 轨道操作 ═══════════ */
 
   Arrange.prototype.addTrack = function () {
+    // 引擎合成器与 bounce 均为 32 轨上限：超出部分现场被钳到演奏轨、
+    // 导出被静默丢弃，两路径行为不一致——源头限制轨道数
+    if (this.tracks.length >= 32) {
+      this.showHUD("✗ 最多支持 32 条轨道（引擎/导出上限）");
+      return;
+    }
     this.pushHistory();
     this.tracks.push(this.makeTrack(this.tracks.length + 1));
     this.applyMixSafe();

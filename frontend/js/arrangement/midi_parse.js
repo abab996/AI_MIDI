@@ -68,11 +68,20 @@
           while (pos < trackEnd) {
             var delta = 0;
             var b = 0;
+            // VLQ 守卫：截断文件（尾字节带延续位 0x80）时读取会穿出
+            // trackEnd 甚至文件尾，getUint8 越界抛 RangeError 被外层
+            // catch 吞掉、整轨音符静默丢失；VLQ 至多 4 字节（28 位），
+            // 超长视为损坏数据
+            var vlqGuard = 0;
             do {
+              if (pos >= trackEnd) break;
               b = view.getUint8(pos++);
               delta = (delta << 7) | (b & 0x7f);
+              if (++vlqGuard > 4) break;
             } while (b & 0x80);
             currentTick += delta;
+
+            if (pos >= trackEnd) break; // 事件头越界：轨道数据损坏，终止本轨
 
             var status = view.getUint8(pos);
             if (status & 0x80) {
@@ -84,6 +93,7 @@
 
             var type = status & 0xf0;
             if (type === 0x90) {
+              if (pos + 2 > trackEnd) break; // 参数越界：终止本轨
               var p = view.getUint8(pos++);
               var v = view.getUint8(pos++);
               var beat = currentTick / ticksPerBeat;
@@ -102,6 +112,7 @@
                 delete activeMap[key];
               }
             } else if (type === 0x80) {
+              if (pos + 2 > trackEnd) break;
               var p8 = view.getUint8(pos++);
               pos++;
               var beat8 = currentTick / ticksPerBeat;
@@ -117,26 +128,38 @@
                 delete activeMap[key8];
               }
             } else if (type === 0xc0 || type === 0xd0) {
+              if (pos + 1 > trackEnd) break;
               pos++;
             } else if (type === 0xa0 || type === 0xb0 || type === 0xe0) {
+              if (pos + 2 > trackEnd) break;
               pos += 2;
             } else if (status === 0xff) {
+              if (pos + 1 > trackEnd) break;
               pos++;
               var metaLen = 0;
+              var mGuard = 0;
               do {
+                if (pos >= trackEnd) break;
                 b = view.getUint8(pos++);
                 metaLen = (metaLen << 7) | (b & 0x7f);
+                if (++mGuard > 4) break;
               } while (b & 0x80);
+              if (pos + metaLen > trackEnd) break; // meta 体越界：终止本轨
               pos += metaLen;
             } else if (status === 0xf0 || status === 0xf7) {
               /* 系统专用事件：按长度跳过（此前直接 break——轨道中段的
                  sysex 会丢弃其后全部音符，造成大面积错位） */
+              if (pos + 1 > trackEnd) break;
               pos++;
               var syxLen = 0;
+              var sGuard = 0;
               do {
+                if (pos >= trackEnd) break;
                 b = view.getUint8(pos++);
                 syxLen = (syxLen << 7) | (b & 0x7f);
+                if (++sGuard > 4) break;
               } while (b & 0x80);
+              if (pos + syxLen > trackEnd) break;
               pos += syxLen;
             } else if (status >= 0xf0) {
               break;

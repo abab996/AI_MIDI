@@ -71,7 +71,9 @@ func (r *Router) handleAudioStatus(w http.ResponseWriter, req *http.Request) {
 	}
 	st := sup.Status()
 	if st.State == engine.StateReady {
-		if raw, err := sup.RequestRaw("currentSummary", 5*time.Second); err == nil {
+		// summary 是状态增强字段：用 TryRequestRaw，bounce 等长请求在途时
+		// 立即跳过而非在事务锁上挂起（此前每次轮询都排队到渲染结束）
+		if raw, err := sup.TryRequestRaw("currentSummary", 3*time.Second); err == nil {
 			var extra struct {
 				Summary string `json:"summary"`
 			}
@@ -157,21 +159,26 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 		s.Audio.Backend = "auto"
 	}
 
+	sup := engine.Get()
+	restartRequired := sup != nil && sup.StartedWithEnabled() != s.Audio.EngineEnabled
+
+	// 校验先于落盘：对照引擎实际枚举校验驱动/设备名，无效组合立即
+	// 400 并列出可用项、不落盘（此前先 SaveSettings 后校验，坏配置已
+	// 持久化，每次冷启动重放失败，UI 表现为"改了什么都没反应"）。
+	// 引擎未就绪或枚举失败时跳过——尽力而为，不阻塞保存
+	if sup != nil {
+		if err := validateDeviceSelection(sup, s.Audio); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	if err := config.SaveSettings(s); err != nil {
 		writeError(w, http.StatusInternalServerError, "保存设置失败: "+err.Error())
 		return
 	}
 
-	// 引擎启用状态变化需要重建守护器，M1 提示重启主程序生效
-	sup := engine.Get()
-	restartRequired := sup != nil && sup.StartedWithEnabled() != s.Audio.EngineEnabled
 	if !restartRequired && sup != nil {
-		// 保存前对照引擎实际枚举校验驱动/设备名：此前无效设备名会被
-		// 静默保存，重放每次失败只写日志，UI 表现为"改了什么都没反应"
-		if err := validateDeviceSelection(sup, s.Audio); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		attemptedDriver := s.Audio.Driver
 		attemptedDevice := s.Audio.Device
 		if err := sup.ApplySettings(s.Audio); err != nil {
@@ -399,8 +406,9 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 	}
 	// 输出路径：output/bounce_<ts>.wav（全局生效采样率，尾音已含）。
 	// 固定用 config.OutputDir（exe 目录），与下载白名单一致；避免从
-	// 其他工作目录启动时文件落到预期外位置
-	ts := time.Now().Format("20060102_150405")
+	// 其他工作目录启动时文件落到预期外位置。毫秒级时间戳：同秒内两次
+	// 导出（Wails 直通与 HTTP 双路径并发）不会互相覆盖
+	ts := time.Now().Format("20060102_150405.000")
 	outPath := filepath.Join(config.OutputDir, fmt.Sprintf("bounce_%s.wav", ts))
 	_ = os.MkdirAll(filepath.Dir(outPath), 0755)
 	abs := outPath
@@ -487,6 +495,11 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 		params["clips"] = flatClips
 	} else if body.Tracks != nil {
 		params["tracks"] = body.Tracks
+	} else {
+		// 未提供任何 clips/tracks：显式传空 clips 而非缺省——否则引擎
+		// 回退到现场调度素材表（scheduleSamples 挂过的素材会混入导出，
+		// 纯 MIDI 工程导出混进无关声音）
+		params["clips"] = []map[string]any{}
 	}
 	retPath, err := sup.Bounce(params)
 	if err != nil {

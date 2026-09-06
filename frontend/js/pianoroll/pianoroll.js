@@ -650,7 +650,42 @@
     this.soundfont.noteOff(midiNote, when);
   };
 
+  /** 原生音符精确调度（JUCE 演奏轨直通）。timer 集中登记，停止时统一
+      撤销：未发出的 noteOn 取消、已响未收的 noteOff 立即补发——
+      此前裸 setTimeout 不登记，停止后仍冒幽灵音/挂音。 */
+  PianoRoll.prototype._schedNativeNote = function (p, v, when, durSec, trk) {
+    if (!this._nativeTimers) this._nativeTimers = [];
+    var self = this;
+    var rec = { trk: trk, p: p, noteOnFired: false, noteOffFired: false };
+    rec.noteOnTimer = setTimeout(function () {
+      if (!self.isPlaying) return; // 停止后不再触发（与编曲窗 _schedNative 同语义）
+      rec.noteOnFired = true;
+      try { window.EngineBridge.noteOnTrack(trk, p, v); } catch (e) {}
+      rec.noteOffTimer = setTimeout(function () {
+        rec.noteOffFired = true;
+        try { window.EngineBridge.noteOffTrack(trk, p); } catch (e) {}
+      }, Math.max(0, (when + durSec - self._audioNow()) * 1000));
+    }, Math.max(0, (when - self._audioNow()) * 1000));
+    this._nativeTimers.push(rec);
+  };
+
+  PianoRoll.prototype._clearNativeTimers = function () {
+    if (!this._nativeTimers) return;
+    for (var i = 0; i < this._nativeTimers.length; i++) {
+      var rec = this._nativeTimers[i];
+      if (!rec.noteOnFired) {
+        clearTimeout(rec.noteOnTimer);
+      } else if (!rec.noteOffFired) {
+        // 音符已在响而 noteOff 未发出：取消定时并立即补发，消除挂音
+        clearTimeout(rec.noteOffTimer);
+        try { window.EngineBridge.noteOffTrack(rec.trk, rec.p); } catch (e) {}
+      }
+    }
+    this._nativeTimers = [];
+  };
+
   PianoRoll.prototype.stopAllSounds = function () {
+    this._clearNativeTimers(); // 撤掉调度中的原生音符 timer（含已响未收的补发 noteOff）
     this.synth.stopAll();
     this.soundfont.stopAll();
   };
@@ -832,8 +867,35 @@
     return window.SharedAudio ? window.SharedAudio.now() : this.synth.ctx.currentTime;
   };
 
+  /** 播放中重锚调度到指定拍（标尺点击/拖拽结束、BPM 变更共用）。
+      重锚即停旧调度链并重启：旧前瞻窗已排音符的 timer 由 _clearNativeTimers
+      撤销、WebAudio 已触发音符由 stopAllSounds 停掉——否则音符仍按旧锚点
+      展开，与新的播放头位置脱同步。非播放中只移播放头。 */
+  PianoRoll.prototype._resyncPlaybackTo = function (beat) {
+    beat = Math.max(0, beat);
+    this.playheadBeat = beat;
+    if (this.isPlaying) {
+      this.isPlaying = false;
+      if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
+      if (this._schedTimer) { clearInterval(this._schedTimer); this._schedTimer = null; }
+      this.stopAllSounds();
+      this.startPlayback();
+    }
+    this.render();
+  };
+
   PianoRoll.prototype.startPlayback = function () {
     var self = this;
+    // 幂等：已在播放时先停旧调度链再重启（播放中录音、录制 countIn=0
+    // 直通都会重复进入）。此前旧 setInterval 句柄被覆盖后永久 25ms 空转，
+    // 且 _schedPos 重锚会让前瞻窗口内音符被二次触发（双音）、双 rAF 链
+    // 并存。不调 stopPlayback：其 isRecording 分支会连带停掉录制
+    if (this.isPlaying) {
+      this.isPlaying = false;
+      if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
+      if (this._schedTimer) { clearInterval(this._schedTimer); this._schedTimer = null; }
+      this.stopAllSounds();
+    }
     this.synth.resume();
     this.soundfont.resume();
     this.synth.init();
@@ -869,7 +931,11 @@
     /* rAF 只负责播放头推进 / 录制音符拉伸 / 自动跟随（不再触发音符） */
     function frame() {
       if (!self.isPlaying) return;
-      self.playheadBeat = self._currentPlayBeat();
+      // 标尺拖拽（scrub）期间播放头跟手，不按旧锚点覆盖（否则刚拖到的
+      // 位置下一帧就被 _currentPlayBeat 弹回）
+      if (!(self.dragState && self.dragState.type === "ruler_scrub")) {
+        self.playheadBeat = self._currentPlayBeat();
+      }
       if (self.isRecording && !self.isCountIn) {
         for (var p in self.activeRecordNotes) {
           if (self.activeRecordNotes.hasOwnProperty(p)) {
@@ -978,12 +1044,7 @@
         } catch(e) {}
         if (useNative) {
           var trk = (window.EngineBridge && window.EngineBridge.PERF_TRACK) || 0;
-          (function(p, v, w, d, tr){
-            var delayOn = Math.max(0, (w - self._audioNow()) * 1000);
-            setTimeout(function(){ try{ window.EngineBridge.noteOnTrack(tr, p, v); }catch(e){} }, delayOn);
-            var delayOff = Math.max(0, (w + d - self._audioNow()) * 1000);
-            setTimeout(function(){ try{ window.EngineBridge.noteOffTrack(tr, p); }catch(e){} }, delayOff);
-          })(pNum, n.velocity || 100, when, durSec, trk);
+          this._schedNativeNote(pNum, n.velocity || 100, when, durSec, trk);
         } else {
           this.playNoteSound(pNum, n.velocity, when);
           this.stopNoteSound(pNum, when + durSec);
@@ -1709,8 +1770,9 @@
           return;
         }
 
-        // 默认点击标尺移动播放头
-        this.playheadBeat = Math.max(0, Math.round(pos.beat / this.snapGrid) * this.snapGrid);
+        // 默认点击标尺移动播放头（播放中重锚调度：此前只改 playheadBeat，
+        // 下一帧被 rAF 用旧锚点覆盖回原位——播放头闪一下又弹回）
+        this._resyncPlaybackTo(Math.round(pos.beat / this.snapGrid) * this.snapGrid);
         this.dragState = { type: "ruler_scrub" };
         this.render();
         return;
@@ -2109,7 +2171,15 @@
       }
     }
 
+    var wasScrub = this.dragState && this.dragState.type === "ruler_scrub";
     this.dragState = null;
+    if (wasScrub && this.isPlaying) {
+      // 标尺拖拽结束：重锚调度到最终位置（拖拽期间 rAF 不覆盖播放头，
+      // 不重锚的话松手后播放头会闪回拖拽前的进度）
+      this._resyncPlaybackTo(this.playheadBeat);
+      this.render();
+      return;
+    }
     this.stopAllSounds();
     this.render();
   };
@@ -3079,6 +3149,10 @@
       self.bpm = Math.max(20, Math.min(400, parseInt(this.value, 10) || 120));
       var tab = self.getActiveTab();
       if (tab) tab.bpm = self.bpm;
+      // 播放中改 BPM：重锚调度（已排音符按旧 BPM 时间轴展开，直接换速
+      // 会与后续窗口错位跳变；编曲窗 setBpm 有同等重锚逻辑）。
+      // 录制中不重锚——重锚会停掉正在响的音符、打断录音
+      if (self.isPlaying && !self.isRecording) self._resyncPlaybackTo(self.playheadBeat);
     });
 
     // 1. 网格吸附自定义下拉菜单 (对齐模型列表 Q 弹动画)

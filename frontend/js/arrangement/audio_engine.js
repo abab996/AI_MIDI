@@ -70,6 +70,10 @@
     this.metronome = false;
     this.loop = { on: false, start: 0, end: 16 };
 
+    // 播放代际 token：resume() 异步期间暂停/停止/再次播放会递增，
+    // 挂起的 play() 回调据此作废（防"UI 已暂停但音频重新响起"）
+    this._playGen = 0;
+
     // 调度状态
     this._anchorCtxTime = 0;  // 播放起点对应的 AudioContext 时间
     this._playStartBeat = 0;  // 播放起点的时间线拍
@@ -365,6 +369,15 @@
         entry.buffer = buffer;
         entry.peaks = self.computePeaks(buffer);
         return entry;
+      })
+      .catch(function (err) {
+        // 读取/解码失败：把条目从缓存删除——rejected promise 若留在
+        // 缓存，LRU 只在新增时驱逐，磁盘上文件修复后同路径仍永远失败、
+        // clip 一直丢且无提示。删除后下次请求会重新读取
+        if (self.bufferCache.get(absPath) === entry) {
+          self.bufferCache.delete(absPath);
+        }
+        throw err;
       });
     entry = { promise: promise, buffer: null, peaks: null, lastUse: Date.now() };
     this.bufferCache.set(absPath, entry);
@@ -492,9 +505,15 @@
   /** 从指定时间线拍开始播放 */
   ArrangeEngine.prototype.play = function (startBeat) {
     var self = this;
+    // 代际 token：resume() 是异步的，期间用户可能已暂停/停止/再次播放；
+    // 旧回调不得在停止后重新拉起播放（此前快速连点播放→暂停会出现
+    // UI 显示"播放"（暂停态）但音频仍在响的状态分裂）
+    var gen = ++this._playGen;
     this.resume().then(function () {
+      if (gen !== self._playGen) return;
       self._beginPlay(startBeat);
     }).catch(function (e) {
+      if (gen !== self._playGen) return;
       /* AudioContext 创建/恢复失败（设备被独占/禁用等）：此前无 catch，
          UI 已先置播放态——永久卡在"暂停"且无任何提示 */
       self.isPlaying = false;
@@ -549,6 +568,7 @@
 
   /** 停止调度并立即静音（原生轨经 EngineBridge 逐个 noteOff，避免挂音） */
   ArrangeEngine.prototype.stopSchedule = function () {
+    this._playGen++; // 作废挂起的 play() 回调（resume 未 resolve 前被暂停/停止）
     this._stopHeartbeat();
     this._clearNativeTimers(); // 先撤调度中的原生音符 timer（尚未发出的 noteOn/off 一并取消）
     if (isNativePreferred() && window.EngineBridge) {
@@ -750,7 +770,11 @@
     // 后续窗口回退 Web 队列（失败原因已由 arrange.js toast 提示）
     if (isNativePreferred() && !this._nativeSamplesFailed) return;
     if (clip.start < evFrom || clip.start >= evTo) return;
-    var clipRemain = clip.length;
+    // 循环开启时窗口段会截断 clip：播放时长按本窗口内剩余长度计算。
+    // 此前取整段 clip.length，起点落在 [loop.end-length, loop.end) 的
+    // clip 首实例会线性穿出循环终点、内容错位，下一轮回绕又从采样头
+    // 重播——采样内容与时间线脱同步
+    var clipRemain = Math.min(clip.length, evTo - clip.start);
     if (clipRemain <= 0) return;
     // 预热解码缓存（异步、失败仅丢该剪辑实例）
     this.getSampleEntry(clip.src.p).catch(function () {});
@@ -769,13 +793,16 @@
   ArrangeEngine.prototype._triggerDue = function (now) {
     var i, ev;
 
-    // 音符 on：过期 >0.25s 丢弃；否则临近触发（原生优先时走 JUCE，失败回退 WebAudio）
+    // 音符 on：过期补触发（主线程卡顿恢复后仍出声，不静默丢音——
+    // 调度在主线程，WebView2 被渲染/GC 阻塞超 250ms 时此前窗口内音符
+    // 会被 0.25s 门槛整批丢弃）。距计划时间超过 2s 视为早已脱离当前
+    // 播放窗口，跳过以免长时间卡顿恢复后整段齐发
     var stillOn = [];
     var nativeWanted = isNativePreferred();
     for (i = 0; i < this._pendingOn.length; i++) {
       ev = this._pendingOn[i];
       if (ev.t <= now + TRIGGER_S) {
-        if (ev.t >= now - 0.25 && this.isPlaying) {
+        if (ev.t >= now - 2.0 && this.isPlaying) {
           var handledNative = false;
           if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOnTrack && ev.nodes && ev.nodes._useNative) {
             var tracksOn = this.getTracks ? this.getTracks() : [];
@@ -893,6 +920,10 @@
         if (nowBeat >= clip.start + clip.length) return;
         when2 = now;
         ev.playFromBeat = Math.max(ev.playFromBeat, nowBeat);
+        // 迟到接入：剩余时长按实际接入拍收缩（此前仍按完整 clipRemain
+        // 计算，接入越晚多播越多——例：0-4 拍 clip 延迟到 3 拍接入会
+        // 播到第 7 拍，越过 clip 终点多播 3 拍）
+        ev.clipRemain = clip.start + clip.length - ev.playFromBeat;
       }
 
       var offsetInClip = ev.playFromBeat - clip.start; // 拍

@@ -83,6 +83,14 @@ func (r *Router) handleAudioSoundfonts(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusBadRequest, "不是有效的 SF2 文件")
 		return
 	}
+	// RIFF size 一致性校验：buf[4:8] 为小端 RIFF 块长度（不含头部 8 字节）。
+	// 头部完整但内容被截断的文件（网络中断恰好落在尾部等）size 字段与
+	// 实收字节数不符——只校验魔数会让半截文件落盘、引擎加载解析失败
+	declared := uint32(buf[4]) | uint32(buf[5])<<8 | uint32(buf[6])<<16 | uint32(buf[7])<<24
+	if declared != uint32(len(buf))-8 {
+		writeError(w, http.StatusBadRequest, "SF2 文件不完整（RIFF size 与实收数据不符）")
+		return
+	}
 	_ = os.MkdirAll(dir, 0o755)
 	tmp := dest + ".tmp"
 	if err := os.WriteFile(tmp, buf, 0o644); err != nil {

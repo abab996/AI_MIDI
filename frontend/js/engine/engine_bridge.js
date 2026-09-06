@@ -133,14 +133,25 @@
     var last = { beat: 0, samplePos: 0, bpm: 120, playing: false, t: 0 };
     window.__engineTimecode = last;
     var pending = false;
+    var pendingSince = 0;
     function tick(){
-      if (pending) return;
+      if (pending) {
+        // 保险丝：Wails IPC 挂起（promise 永不 resolve，引擎进程僵死等）
+        // 时超时后释放守卫——否则 pending 永不复位、轮询永久停摆，
+        // 播放头插值冻结且无自愈
+        if (performance.now() - pendingSince > 2000) {
+          pending = false;
+        } else {
+          return;
+        }
+      }
       if (!EngineBridge.available) return;
       try {
         if (EngineBridge.getBackend() === "webaudio") return;
         if (window.__engineState && window.__engineState !== "ready") return;
       } catch(e) {}
       pending = true;
+      pendingSince = performance.now();
       EngineBridge.getTimecode().then(function(tc){
         if (tc && typeof tc.beat === "number") {
           last.beat = tc.beat;
@@ -159,14 +170,22 @@
   (function(){
     window.__engineLevels = [];
     var pending = false;
+    var pendingSince = 0;
     function tick(){
-      if (pending) return;
+      if (pending) {
+        if (performance.now() - pendingSince > 2000) {
+          pending = false; // 保险丝：同 timecode 轮询，IPC 挂起时自愈
+        } else {
+          return;
+        }
+      }
       if (!EngineBridge.available || !EngineBridge.getLevels) return;
       try {
         if (EngineBridge.getBackend() === "webaudio") return;
         if (window.__engineState && window.__engineState !== "ready") return;
       } catch(e) {}
       pending = true;
+      pendingSince = performance.now();
       EngineBridge.getLevels().then(function(arr){
         if (Array.isArray(arr)) window.__engineLevels = arr;
       }).catch(function(){}).then(function(){ pending = false; });

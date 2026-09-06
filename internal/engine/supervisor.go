@@ -221,6 +221,7 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 	s.mu.Lock()
 	wasEnabled := s.audio.EngineEnabled
 	s.audio = audio
+	lastGood := s.lastGood
 	s.mu.Unlock()
 
 	// 守护循环处于 StateDisabled 驻留时，启用引擎需要唤醒它拉起进程
@@ -245,6 +246,13 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 		params["bufferSize"] = audio.BufferSize
 	}
 
+	// 设备参数去重：与上次成功下发的配置一致时跳过 applySetup——
+	// 仅切换 backend（AUTO/WEBAUDIO）不该重开声卡设备（ASIO 慢驱动
+	// 重开会中断播放 10-20s，期间音符照常入队，恢复后齐鸣）
+	if applyParamsEqual(lastGood, params) {
+		return nil
+	}
+
 	s.mu.Lock()
 	p := params
 	s.lastApply = &p
@@ -259,12 +267,17 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 		// 未就绪：设置已保存，引擎就绪后会由 loop 自动重放
 		return nil
 	}
-	resp, err := cli.Request("applySetup", params, applySetupTimeout)
+	// 用 TryRequest 而非 Request：bounce 等长请求在途（事务锁被占）时
+	// 立即失败返回，不在锁上无界排队——此前 HTTP 处理器会挂起整段
+	// 渲染（最长 20 分钟），且排队期间若引擎侧消息线程被渲染占住，
+	// applySetup 无人处理还会拖到 60s 超时杀死会话
+	resp, err := cli.TryRequest("applySetup", params, applySetupTimeout)
 	if err != nil {
-		// 超时 = 驱动在引擎内卡死（消息线程阻塞在驱动打开上，进程无法恢复）。
-		// 回滚内存设置到最近一次可用配置并清掉重放标记：否则会话判死重启后
-		// 会重放这份坏设置再次卡死，UI 永远停在"检测中"。引擎进程由
-		// supervisor 现有的会话失效→重启机制拉起，落在可用设备上。
+		// 超时 = 驱动在引擎内卡死（消息线程阻塞在驱动打开上，进程无法恢复）；
+		// 引擎忙 = 长请求在途，设置未生效。两种情况都回滚内存设置到最近
+		// 一次可用配置并清掉重放标记：否则会话判死重启后会重放这份坏设置
+		// 再次卡死，UI 永远停在"检测中"。引擎进程由 supervisor 现有的
+		// 会话失效→重启机制拉起，落在可用设备上。
 		s.mu.Lock()
 		s.audio = s.lastGood
 		s.lastApply = nil
@@ -286,6 +299,34 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 	s.lastGood = audio
 	s.mu.Unlock()
 	return nil
+}
+
+// applyParamsEqual 判断两组音频设置的设备参数是否一致（仅比较会下发
+// applySetup 的字段：driver/device/sampleRate/bufferSize；backend、
+// EngineEnabled 等不触发设备重开的字段不参与比较）
+func applyParamsEqual(a AudioSettings, params map[string]any) bool {
+	pa := map[string]any{}
+	if a.Driver != "" {
+		pa["driver"] = a.Driver
+	}
+	if a.Device != "" {
+		pa["device"] = a.Device
+	}
+	if a.SampleRate > 0 {
+		pa["sampleRate"] = a.SampleRate
+	}
+	if a.BufferSize > 0 {
+		pa["bufferSize"] = a.BufferSize
+	}
+	if len(pa) != len(params) {
+		return false
+	}
+	for k, v := range pa {
+		if pv, ok := params[k]; !ok || pv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // CurrentAudio 返回当前生效的音频设置（ApplySettings 超时回退后
@@ -647,16 +688,19 @@ func (s *Supervisor) runOnce() string {
 			s.audio = AudioSettings{
 				EngineEnabled: s.audio.EngineEnabled,
 				Backend:       s.audio.Backend,
+				// 保留显式引擎路径覆盖：回滚的是设备配置，不该抹掉
+				// engine_path（此前被静默清空并随 OnAudioFallback 落盘）
+				EnginePath: s.audio.EnginePath,
 			}
-				s.lastApply = nil
-				s.lastGood = s.audio
-				fallback := s.audio
-				s.mu.Unlock()
-				// 持久化回滚结果（回调由 main 注入）：否则每次启动都会重演
-				// 「重放坏设置 → 卡死 → 回滚」，冷启动每次多等一个超时周期
-				if s.cfg.OnAudioFallback != nil {
-					s.cfg.OnAudioFallback(fallback)
-				}
+			s.lastApply = nil
+			s.lastGood = s.audio
+			fallback := s.audio
+			s.mu.Unlock()
+			// 持久化回滚结果（回调由 main 注入）：否则每次启动都会重演
+			// 「重放坏设置 → 卡死 → 回滚」，冷启动每次多等一个超时周期
+			if s.cfg.OnAudioFallback != nil {
+				s.cfg.OnAudioFallback(fallback)
+			}
 			// 传输层失败意味着会话已判死（Request 出错路径必然 markDead）：
 			// 立即走下方清场重启。此前会继续在死会话上逐轨重放音色（每轨
 			// 烧满 30s），而 StateReady 已置位——UI 显示就绪实际引擎卡死，
@@ -667,7 +711,18 @@ func (s *Supervisor) runOnce() string {
 			default:
 			}
 		} else if err := resp.Err(); err != nil {
-			slog.Warn("[engine] 应用音频设置失败", "err", err)
+			slog.Warn("[engine] 应用音频设置失败（业务拒绝）", "err", err)
+			// 业务失败（典型：设备不在枚举列表）：设备从未生效，同样回滚
+			// 到最近可用配置并持久化——否则坏设置留在 settings.json，
+			// 每次冷启动重演失败（此前只写日志，UI 表现为改了什么没反应）
+			s.mu.Lock()
+			s.audio = s.lastGood
+			s.lastApply = nil
+			fallback := s.audio
+			s.mu.Unlock()
+			if s.cfg.OnAudioFallback != nil {
+				s.cfg.OnAudioFallback(fallback)
+			}
 		} else {
 			s.mu.Lock()
 			p := params
@@ -833,6 +888,11 @@ func (s *Supervisor) LoadSoundFont(path string) error {
 
 // LoadSoundFontTrack 指定轨道加载音色
 func (s *Supervisor) LoadSoundFontTrack(track int, path string) error {
+	// 引擎合成器 32 轨上限：越界 track 会被引擎静默钳到 0（音色被加载到
+	// 错误轨道，前端以为加载到目标轨）——入口直接拒绝
+	if track < 0 || track >= 32 {
+		return fmt.Errorf("track 超出范围（0-31）: %d", track)
+	}
 	if err := s.validateSoundFontPath(path); err != nil {
 		return err
 	}
@@ -998,7 +1058,7 @@ func (s *Supervisor) Bounce(params map[string]any) (string, error) {
 			return "", fmt.Errorf("bounce 输出目录未配置，已拒绝渲染")
 		}
 		params["path"] = filepath.Join(outputDir, fmt.Sprintf("bounce_%s.wav",
-			time.Now().Format("20060102_150405")))
+			time.Now().Format("20060102_150405.000")))
 		outPath, _ = params["path"].(string)
 	} else if outputDir == "" || !isSubPathFS(outputDir, outPath) {
 		return "", fmt.Errorf("bounce 输出路径不在允许的输出目录内，已拒绝: %s", outPath)
@@ -1040,66 +1100,37 @@ func estimateBounceTimeout(params map[string]any) time.Duration {
 	if maxEnd < 0 {
 		maxEnd = 0
 	}
-	// 引擎侧 computeBeats 会按显式素材动态放宽 beats，这里取相同上界
-	if notes, ok := params["notes"].([]any); ok {
-		for _, raw := range notes {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			if e, ok := anyFloat(m["end"]); ok && e > maxEnd {
-				maxEnd = e
-			}
+	// 引擎侧 computeBeats 会按显式素材动态放宽 beats，这里取相同上界。
+	// 统一经 mapsFromAny 归一化：HTTP/Go 调用方构造的 notes/clips 为
+	// []map[string]any，直接断言 .([]any) 恒失败——此前时长放宽分支被
+	// 静默跳过，长工程按固定值估算可能误杀渲染中的会话
+	for _, m := range mapsFromAny(params["notes"]) {
+		if e, ok := anyFloat(m["end"]); ok && e > maxEnd {
+			maxEnd = e
 		}
 	}
-	if clips, ok := params["clips"].([]any); ok {
-		for _, raw := range clips {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			sv, _ := anyFloat(m["start"])
-			lv, _ := anyFloat(m["length"])
+	for _, m := range mapsFromAny(params["clips"]) {
+		sv, _ := anyFloat(m["start"])
+		lv, _ := anyFloat(m["length"])
+		if e := sv + lv; e > maxEnd {
+			maxEnd = e
+		}
+	}
+	for _, t := range mapsFromAny(params["tracks"]) {
+		for _, c := range mapsFromAny(t["clips"]) {
+			sv, _ := anyFloat(c["start"])
+			lv, _ := anyFloat(c["length"])
 			if e := sv + lv; e > maxEnd {
 				maxEnd = e
 			}
-		}
-	}
-	if tracks, ok := params["tracks"].([]any); ok {
-		for _, raw := range tracks {
-			t, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			tclips, ok := t["clips"].([]any)
-			if !ok {
-				continue
-			}
-			for _, cRaw := range tclips {
-				c, ok := cRaw.(map[string]any)
+			for _, n := range mapsFromAny(c["notes"]) {
+				ns, _ := anyFloat(n["start"])
+				ne, ok := anyFloat(n["end"])
 				if !ok {
-					continue
+					ne = ns + 1
 				}
-				sv, _ := anyFloat(c["start"])
-				lv, _ := anyFloat(c["length"])
-				if e := sv + lv; e > maxEnd {
-					maxEnd = e
-				}
-				if cnotes, ok := c["notes"].([]any); ok {
-					for _, nRaw := range cnotes {
-						n, ok := nRaw.(map[string]any)
-						if !ok {
-							continue
-						}
-						ns, _ := anyFloat(n["start"])
-						ne, ok := anyFloat(n["end"])
-						if !ok {
-							ne = ns + 1
-						}
-						if absEnd := sv + ne; absEnd > maxEnd {
-							maxEnd = absEnd
-						}
-					}
+				if absEnd := sv + ne; absEnd > maxEnd {
+					maxEnd = absEnd
 				}
 			}
 		}
@@ -1148,13 +1179,20 @@ func (s *Supervisor) GetLevels() ([]float32, error) {
 	return res.Levels, nil
 }
 
-// PanicAll 全音符停止（卡音逃生口，见 Client.Panic）
+// PanicAll 全音符停止（卡音逃生口，见 Client.Panic）。
+// 用 TryRequest：panic 是紧急静音路径，bounce 等长请求在途时不得在
+// 事务锁上无界排队（此前最长等 20 分钟才执行，逃生口形同虚设）；
+// 引擎忙时跳过并返回错误，由调用方提示用户稍后再试。
 func (s *Supervisor) PanicAll() error {
 	cli, err := s.Ready(2 * time.Second)
 	if err != nil {
 		return err
 	}
-	return cli.Panic(s.cfg.RequestTimeout)
+	resp, err := cli.TryRequest("panic", nil, s.cfg.RequestTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
 }
 
 // SetLoop 设置循环
@@ -1228,6 +1266,24 @@ func (s *Supervisor) RequestRaw(method string, timeout time.Duration) (json.RawM
 		return nil, err
 	}
 	resp, err := cli.Request(method, nil, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
+// TryRequestRaw 透传任意方法调用，引擎忙（长请求在途）时立即失败。
+// 供状态轮询等"可跳过"路径使用——此前 /api/audio/status 走 Request，
+// bounce 期间每次轮询都在事务锁上无界排队（最长挂起 20 分钟）。
+func (s *Supervisor) TryRequestRaw(method string, timeout time.Duration) (json.RawMessage, error) {
+	cli, err := s.Ready(timeout)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.TryRequest(method, nil, timeout)
 	if err != nil {
 		return nil, err
 	}

@@ -227,7 +227,12 @@
             var sId = reader.readFourCC();
             var sSize = reader.readUint32();
             if (sId === "smpl") {
-              sampleData = new Int16Array(arrayBuffer, reader.pos, sSize / 2);
+              // 截断文件防护：chunk size 声明可能超出实收数据，clamp 到
+              // 剩余长度——Int16Array 越界会抛 RangeError 被外层 catch
+              // 吞掉，采样数据整体丢失
+              var avail = Math.max(0, reader.length - reader.pos);
+              var smplLen = Math.min(sSize, avail);
+              sampleData = new Int16Array(arrayBuffer, reader.pos, smplLen / 2);
             }
             reader.pos += sSize;
           }
@@ -347,12 +352,16 @@
     if (cached) return cached;
     var sm = this._rawSamples ? this._rawSamples[idx] : null;
     if (!sm || !this.ctx || !this._sampleData) return null;
-    var len = sm.end - sm.start;
+    // 采样边界 clamp：损坏/裁剪过的 SF2 其 shdr.start/end 可能超出 smpl
+    // 块长度，未校验时 channelData[i] 取到 undefined → NaN 音频（爆音/静音）
+    var start = Math.max(0, Math.min(sm.start, this._sampleData.length));
+    var end = Math.max(start, Math.min(sm.end, this._sampleData.length));
+    var len = end - start;
     if (len <= 0) return null;
     try {
       var audioBuf = this.ctx.createBuffer(1, len, sm.sampleRate);
       var channelData = audioBuf.getChannelData(0);
-      var srcStart = sm.start;
+      var srcStart = start;
       for (var i = 0; i < len; i++) {
         channelData[i] = this._sampleData[srcStart + i] / 32768.0;
       }

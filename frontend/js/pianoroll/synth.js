@@ -102,7 +102,46 @@
   };
 
   SynthEngine.prototype._useNative = function () {
-    return _backendMode === "auto" && window.AudioBackend.isNativeAvailable();
+    // 以全局 AudioBackend 为准（backend 模式 + 引擎 state ready + 桥可用）；
+    // 此前只查桥可用，引擎 failed 时实时演奏仍发原生 → 无声
+    return _backendMode === "auto"
+      && window.AudioBackend && window.AudioBackend.isNativePreferred
+      && window.AudioBackend.isNativePreferred();
+  };
+
+  /* 确保专用演奏轨（EngineBridge.PERF_TRACK）的内置波形声部与本实例参数
+     一致（合成波音色的原生渲染路径，不依赖 SF2）。参数签名变化才重发，
+     避免每个按键一次 IPC。失败按 3s 冷却重试（引擎冷启动未就绪属瞬态），
+     引擎崩溃重启后的声部恢复由 supervisor 重放兜底 */
+  SynthEngine.prototype._ensureNativeVoice = function () {
+    if (this._voiceRetryAt && Date.now() < this._voiceRetryAt) return false;
+    if (!window.EngineBridge || !window.EngineBridge.setTrackVoice || !window.EngineBridge.noteOnTrack) return false;
+    var sig = [this.waveform, this.attack, this.decay, this.sustain, this.release,
+      this.cutoff, this.resonance, this.volume].join("|");
+    if (this._lastVoiceSig === sig) return true;
+    var self = this;
+    try {
+      window.EngineBridge.setTrackVoice(window.EngineBridge.PERF_TRACK, {
+        wave: this.waveform,
+        attack: this.attack,
+        decay: this.decay,
+        sustain: this.sustain,
+        release: this.release,
+        cutoff: this.cutoff,
+        resonance: this.resonance,
+        gain: this.volume
+      }).then(function () {
+        self._lastVoiceSig = sig;
+        self._voiceRetryAt = 0;
+      }).catch(function (e) {
+        console.warn("[SynthEngine] setTrackVoice 失败，3s 后重试，期间实时演奏走 WebAudio:", e);
+        self._lastVoiceSig = null;
+        self._voiceRetryAt = Date.now() + 3000;
+      });
+    } catch (e) {
+      return false;
+    }
+    return true;
   };
 
 
@@ -130,10 +169,11 @@
 
   SynthEngine.prototype.noteOn = function (midiNote, velocity, when) {
     // 原生路径仅限实时演奏（钢琴卷帘键盘）：带 when 的预调度调用
-    // （编曲引擎）不走此路——原生桥不支持 when 且每音符 IPC 往返会阻塞主线程
-    if (!this._forceWebAudio && when === undefined && this._useNative()) {
+    // （编曲引擎）不走此路——原生桥不支持 when 且每音符 IPC 往返会阻塞主线程。
+    // 走 EngineBridge.PERF_TRACK 专用演奏轨 + 内置波形声部（不依赖 SF2）
+    if (!this._forceWebAudio && when === undefined && this._useNative() && this._ensureNativeVoice()) {
       try {
-        window.EngineBridge.noteOn(0, midiNote, Math.round(velocity !== undefined ? velocity : 100));
+        window.EngineBridge.noteOnTrack(window.EngineBridge.PERF_TRACK, midiNote, Math.round(velocity !== undefined ? velocity : 100));
         this._nativeVoices[midiNote] = (this._nativeVoices[midiNote] || 0) + 1;
         return;
       } catch (e) {
@@ -182,11 +222,11 @@
   };
 
   SynthEngine.prototype.noteOff = function (midiNote, when) {
-    // 原生路径（仅实时演奏；编曲预调度见 noteOn 注释）
+    // 原生路径（仅实时演奏；编曲预调度见 noteOn 注释）——与 noteOn 同轨
     if (!this._forceWebAudio && this._useNative() && this._nativeVoices[midiNote]) {
       var left = --this._nativeVoices[midiNote];
       if (left <= 0) delete this._nativeVoices[midiNote];
-      try { window.EngineBridge.noteOff(0, midiNote); } catch (e) {}
+      try { window.EngineBridge.noteOffTrack(window.EngineBridge.PERF_TRACK, midiNote); } catch (e) {}
       return;
     }
 
@@ -257,10 +297,10 @@
   SynthEngine.prototype.stopAll = function () {
     var self = this;
 
-    // 原生路径：对仍在发声的音符逐个 noteOff
+    // 原生路径：对仍在发声的音符逐个 noteOff（与 noteOn 同轨）
     if (this._nativeVoices) {
       Object.keys(this._nativeVoices).forEach(function (note) {
-        try { window.EngineBridge.noteOff(0, parseInt(note, 10)); } catch (e) {}
+        try { window.EngineBridge.noteOffTrack(window.EngineBridge.PERF_TRACK, parseInt(note, 10)); } catch (e) {}
       });
       this._nativeVoices = {};
     }

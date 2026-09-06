@@ -40,9 +40,26 @@ func (r *Router) handleAudioSub(w http.ResponseWriter, req *http.Request) {
 		r.handleAudioBounce(w, req)
 	case "/api/audio/bounce/file":
 		r.handleAudioBounceFile(w, req)
+	case "/api/audio/panic":
+		r.handleAudioPanic(w, req)
 	default:
 		writeError(w, http.StatusNotFound, "unknown audio endpoint")
 	}
+}
+
+// handleAudioPanic 全音符停止（卡音逃生口：丢 note-off、音色热切换、
+// 后端切换都可能留下响个不停的原生音符）
+func (r *Router) handleAudioPanic(w http.ResponseWriter, req *http.Request) {
+	sup := engine.Get()
+	if sup == nil {
+		writeError(w, http.StatusServiceUnavailable, "音频引擎未启用")
+		return
+	}
+	if err := sup.PanicAll(); err != nil {
+		writeError(w, http.StatusBadGateway, "panic 失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleAudioStatus 引擎进程状态
@@ -149,23 +166,29 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 	sup := engine.Get()
 	restartRequired := sup != nil && sup.StartedWithEnabled() != s.Audio.EngineEnabled
 	if !restartRequired && sup != nil {
+		// 保存前对照引擎实际枚举校验驱动/设备名：此前无效设备名会被
+		// 静默保存，重放每次失败只写日志，UI 表现为"改了什么都没反应"
+		if err := validateDeviceSelection(sup, s.Audio); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		attemptedDriver := s.Audio.Driver
 		attemptedDevice := s.Audio.Device
 		if err := sup.ApplySettings(s.Audio); err != nil {
-			// 超时类失败 = 驱动在引擎内卡死（个别 ASIO 驱动打开永不返回）。
-			// ApplySettings 已把内存设置回滚到最近可用配置，这里持久化之，
-			// 保持 settings.json 与实际设备一致
+			// 超时（驱动卡死）或业务失败（设备不存在）：ApplySettings 已把
+			// 内存设置回滚到最近可用配置，这里统一持久化之，保持 settings.json
+			// 与实际设备一致
+			s.Audio = sup.CurrentAudio()
+			_ = config.SaveSettings(s)
+			name := attemptedDevice
+			if name == "" {
+				name = attemptedDriver
+			}
 			if isEngineTimeoutErr(err) {
-				s.Audio = sup.CurrentAudio()
-				_ = config.SaveSettings(s)
-				name := attemptedDevice
-				if name == "" {
-					name = attemptedDriver
-				}
-				writeError(w, http.StatusGatewayTimeout, name+" 未响应")
+				writeError(w, http.StatusGatewayTimeout, name+" 未响应（已回退到上次可用设备）")
 				return
 			}
-			writeError(w, http.StatusBadGateway, "设置已保存，但下发引擎失败: "+err.Error())
+			writeError(w, http.StatusBadGateway, "设置未生效（已回退到上次可用设备）: "+err.Error())
 			return
 		}
 	}
@@ -185,6 +208,60 @@ func isEngineTimeoutErr(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "超时") || strings.Contains(msg, "timeout")
+}
+
+// validateDeviceSelection 保存音频设置前对照引擎实际枚举校验驱动/设备名，
+// 与引擎 applySetup 的精确匹配语义一致。无效组合立即 400 并列出可用项，
+// 不再落盘（此前只写日志，UI 表现为"改了什么都没反应"）。
+// 引擎未就绪或枚举失败时跳过——尽力而为，不阻塞保存
+func validateDeviceSelection(sup *engine.Supervisor, a engine.AudioSettings) error {
+	if a.Driver == "" && a.Device == "" {
+		return nil
+	}
+	dl, err := sup.ListDevices()
+	if err != nil || dl == nil {
+		return nil
+	}
+	if a.Driver != "" {
+		found := false
+		for _, dt := range dl.Drivers {
+			if dt.Driver == a.Driver {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("驱动类型 %q 不存在（引擎可用: %s），请从设备下拉中选择",
+				a.Driver, joinDriverNames(dl))
+		}
+	}
+	if a.Device != "" {
+		for _, dt := range dl.Drivers {
+			if a.Driver != "" && dt.Driver != a.Driver {
+				continue
+			}
+			for _, name := range dt.Devices {
+				if name == a.Device {
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("设备 %q 不在引擎枚举列表中，请从设备下拉中选择实际存在的设备（可在驱动面板确认安装状态）",
+			a.Device)
+	}
+	return nil
+}
+
+// joinDriverNames 列出引擎可用的驱动类型名（提示用）
+func joinDriverNames(dl *engine.DeviceList) string {
+	names := make([]string, 0, len(dl.Drivers))
+	for _, dt := range dl.Drivers {
+		names = append(names, dt.Driver)
+	}
+	if len(names) == 0 {
+		return "无"
+	}
+	return strings.Join(names, " / ")
 }
 
 // handleTestTone 测试音开关
@@ -263,9 +340,10 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 	bpm := 120.0
 	if body.Bpm != nil && *body.Bpm > 20 {
 		bpm = *body.Bpm
-	} else if settings.Audio.SampleRate > 0 {
-		// 尝试从已有工程取 bpm，若无则 120
 	}
+	// 采样率语义说明：此处复用「设备采样率」设置作为导出渲染率。
+	// 两者语义不同（设备可能跑 44.1kHz 而导出想要 48kHz），当前产品
+	// 未区分——显式传参 sampleRate 可覆盖。详见 docs/audit-audio-update-2026-09-05.md
 	sampleRate := settings.Audio.SampleRate
 	if body.SampleRate != nil && *body.SampleRate > 8000 {
 		sampleRate = *body.SampleRate

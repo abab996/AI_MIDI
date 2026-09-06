@@ -81,3 +81,6 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 build/test/
+
+# ---------- 补充：Cloudflare Wrangler 本地缓存（含账号信息，防误提交） ----------
+.wrangler/

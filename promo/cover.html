@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AI_MIDI · B站封面</title>
+<style>
+  :root {
+    --bg: #F5F3EE; --card: #FAF8F3; --ink: #1E3A5F;
+    --accent: #D35400; --border: rgba(30,58,95,.22); --grid: rgba(65,105,225,.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    position: relative;
+  }
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+  /* 右侧暖橙光晕（聚焦视觉重心） */
+  body::after {
+    content: ""; position: absolute; right: -180px; top: -160px; width: 1100px; height: 1100px;
+    background: radial-gradient(circle, rgba(211,84,0,.14) 0%, rgba(65,105,225,.10) 45%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .brandmark {
+    position: absolute; left: 64px; top: 52px;
+    font-family: Consolas, monospace; font-weight: 700; font-size: 30px;
+    letter-spacing: .12em; border: 2.5px solid var(--ink);
+    padding: 10px 22px; border-radius: 4px; background: var(--card);
+  }
+  .brandmark .ver {
+    display: inline-block; vertical-align: top; margin: -6px 0 0 6px;
+    font-size: 16px; color: #fff; background: var(--accent);
+    padding: 3px 10px; border-radius: 3px; transform: rotate(6deg);
+  }
+
+  .title-col { position: absolute; left: 88px; top: 196px; width: 900px; z-index: 5; }
+  .hook-stamp {
+    display: inline-block; font-family: Consolas, monospace; font-size: 27px;
+    letter-spacing: .18em; color: var(--bg); background: var(--ink);
+    padding: 10px 22px; border-radius: 3px; box-shadow: 0 4px 0 var(--accent);
+  }
+  h1 {
+    margin-top: 30px; font-size: 118px; font-weight: 900; line-height: 1.18;
+    letter-spacing: .01em; white-space: nowrap;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+  h1 .blue { color: var(--color-primary, #4169E1); }
+  .sub {
+    margin-top: 30px; font-size: 33px; font-weight: 700; color: rgba(30,58,95,.75);
+    letter-spacing: .02em;
+  }
+  .sub b { color: var(--accent); }
+  .chips { margin-top: 44px; display: flex; gap: 20px; }
+  .chips span {
+    font-family: Consolas, monospace; font-size: 26px; font-weight: 700;
+    letter-spacing: .1em; color: var(--ink); background: var(--card);
+    border: 2px dashed var(--border); border-radius: 3px; padding: 12px 26px;
+  }
+  .free-badge {
+    position: absolute; left: 88px; bottom: 66px;
+    font-family: Consolas, monospace; font-size: 30px; font-weight: 700;
+    letter-spacing: .14em; color: #fff; background: var(--accent);
+    padding: 14px 30px; border-radius: 4px; box-shadow: 0 5px 0 rgba(30,58,95,.6);
+    transform: rotate(-2deg);
+  }
+
+  /* 右侧 3D 薄片：钢琴卷帘截图 */
+  .slab-col {
+    position: absolute; right: 0; top: 0; width: 1010px; height: 1080px;
+    perspective: 1700px; perspective-origin: 10% 45%;
+  }
+  .slab {
+    position: absolute; right: -66px; top: 132px; width: 1010px;
+    transform: rotateY(-14deg) rotateX(3deg);
+    border-radius: 8px;
+  }
+  .screen {
+    border-radius: 8px; overflow: hidden;
+    border: 2px solid rgba(30,58,95,.5);
+    box-shadow: 0 40px 110px rgba(10,20,36,.38), 0 0 0 1px rgba(30,58,95,.18),
+                0 0 70px rgba(65,105,225,.18);
+    background: #0A1424;
+  }
+  .screen img { display: block; width: 100%; }
+  .thickness {
+    position: absolute; left: 4px; right: -4px; top: 100%; height: 18px;
+    background: linear-gradient(#cfd6e4, #aeb9cf);
+    transform: skewX(-47deg); transform-origin: top left;
+    border: 1px solid rgba(30,58,95,.3); border-top: none;
+  }
+  .side-edge {
+    position: absolute; left: 100%; top: 4px; bottom: 4px; width: 18px;
+    background: linear-gradient(to bottom, #dbe1ec, #b3bed2);
+    transform: skewY(-43deg); transform-origin: top left;
+    border: 1px solid rgba(30,58,95,.3); border-left: none;
+  }
+  .corner { position: absolute; width: 34px; height: 34px; border: 0 solid #4169E1; }
+  .c-tl { top: -12px; left: -12px; border-width: 3px 0 0 2.5px; }
+  .c-tr { top: -12px; right: -12px; border-width: 3px 2.5px 0 0; }
+  .c-bl { bottom: -12px; left: -12px; border-width: 0 0 2.5px 2.5px; }
+  .c-br { bottom: -12px; right: -12px; border-width: 0 2.5px 2.5px 0; }
+  .live-tag {
+    position: absolute; right: 30px; top: -26px;
+    font-family: Consolas, monospace; font-size: 22px; letter-spacing: .16em;
+    color: var(--accent); border: 2.5px solid var(--accent); background: var(--card);
+    padding: 8px 16px; border-radius: 3px; transform: rotate(4deg);
+  }
+</style>
+</head>
+<body>
+  <div class="brandmark">AI_MIDI<span class="ver">3.0</span></div>
+
+  <div class="title-col">
+    <div class="hook-stamp">[ 开源项目 · OPEN SOURCE ]</div>
+    <h1>你的下一首编曲，<br>何必<span class="blue">从零开始</span></h1>
+    <div class="sub">描述一段灵感 —— <b>AI_MIDI 3.0</b> 帮你铺好和声、贝斯与鼓组</div>
+    <div class="chips">
+      <span>对话写歌</span><span>快速任务</span><span>多轨编曲窗</span><span>MIDI / WAV 导出</span>
+    </div>
+  </div>
+
+  <div class="slab-col">
+    <div class="slab">
+      <span class="corner c-tl"></span><span class="corner c-tr"></span>
+      <span class="corner c-bl"></span><span class="corner c-br"></span>
+      <div class="screen">
+        <img src="cover_shot.png" style="display:block;width:100%">
+        <div class="thickness"></div>
+        <div class="side-edge"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

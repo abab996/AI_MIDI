@@ -87,6 +87,10 @@ type EngineStatus struct {
 	LastError     string      `json:"last_error,omitempty"`
 	DeviceSummary string      `json:"device_summary,omitempty"`
 	Protocol      uint32      `json:"protocol_version"`
+	// 引擎是否已加载任何音色（冷启动默认加载或显式 loadSoundFont 成功）。
+	// ready 只代表 IPC 通畅；SF2 轨要出声还得看这里。波形声部（setTrackVoice）
+	// 不依赖音色，不受此字段影响
+	SoundfontLoaded bool `json:"soundfont_loaded"`
 }
 
 // Event 引擎推送的事件

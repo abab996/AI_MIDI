@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AI_MIDI · B站封面 4:3</title>
+<style>
+  :root {
+    --bg: #F5F3EE; --card: #FAF8F3; --ink: #1E3A5F;
+    --accent: #D35400; --border: rgba(30,58,95,.22); --grid: rgba(65,105,225,.08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1440px; height: 1080px; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    position: relative;
+  }
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+  body::after {
+    content: ""; position: absolute; right: -160px; top: -140px; width: 1000px; height: 1100px;
+    background: radial-gradient(circle, rgba(211,84,0,.13) 0%, rgba(65,105,225,.10) 45%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .brandmark {
+    position: absolute; left: 64px; top: 78px;
+    font-family: Consolas, monospace; font-weight: 700; font-size: 26px;
+    letter-spacing: .12em; border: 2.5px solid var(--ink);
+    padding: 9px 20px; border-radius: 4px; background: var(--card);
+  }
+  .brandmark .ver {
+    display: inline-block; vertical-align: top; margin: -6px 0 0 6px;
+    font-size: 15px; color: #fff; background: var(--accent);
+    padding: 3px 10px; border-radius: 3px; transform: rotate(6deg);
+  }
+
+  .title-col { position: absolute; left: 72px; top: 268px; width: 660px; z-index: 5; }
+  .hook-stamp {
+    display: inline-block; font-family: Consolas, monospace; font-size: 23px;
+    letter-spacing: .16em; color: var(--bg); background: var(--ink);
+    padding: 9px 20px; border-radius: 3px; box-shadow: 0 4px 0 var(--accent);
+  }
+  h1 {
+    margin-top: 30px; font-size: 90px; font-weight: 900; line-height: 1.24;
+    letter-spacing: .01em;
+  }
+  h1 em { font-style: normal; color: #4169E1; }
+  .sub {
+    margin-top: 28px; font-size: 25px; font-weight: 700; color: rgba(30,58,95,.75);
+  }
+  .sub em { font-style: normal; color: var(--accent); font-weight: 900; }
+  .sub b { color: var(--accent); }
+  .chips { margin-top: 40px; display: flex; gap: 15px; }
+  .chips span {
+    font-family: Consolas, monospace; font-size: 20px; font-weight: 700;
+    letter-spacing: .06em; color: var(--ink); background: var(--card);
+    border: 2px dashed var(--border); border-radius: 3px; padding: 10px 17px;
+  }
+
+  .slab-col {
+    position: absolute; right: 0; top: 0; width: 760px; height: 1080px;
+    perspective: 1500px; perspective-origin: 12% 42%;
+  }
+  .slab {
+    position: absolute; right: -34px; top: 328px; width: 790px;
+    transform: rotateY(-14deg) rotateX(3deg);
+    border-radius: 8px;
+  }
+  .screen {
+    border-radius: 8px; overflow: hidden;
+    border: 2px solid rgba(30,58,95,.5);
+    box-shadow: 0 36px 100px rgba(10,20,36,.36), 0 0 0 1px rgba(30,58,95,.18),
+                0 0 60px rgba(65,105,225,.18);
+    background: #0A1424;
+  }
+  .screen img { display: block; width: 100%; }
+  .thickness {
+    position: absolute; left: 4px; right: -4px; top: 100%; height: 16px;
+    background: linear-gradient(#cfd6e4, #aeb9cf);
+    transform: skewX(-47deg); transform-origin: top left;
+    border: 1px solid rgba(30,58,95,.3); border-top: none;
+  }
+  .side-edge {
+    position: absolute; left: 100%; top: 4px; bottom: 4px; width: 16px;
+    background: linear-gradient(to bottom, #dbe1ec, #b3bed2);
+    transform: skewY(-43deg); transform-origin: top left;
+    border: 1px solid rgba(30,58,95,.3); border-left: none;
+  }
+  .corner { position: absolute; width: 30px; height: 30px; border: 0 solid #4169E1; }
+  .c-tl { top: -11px; left: -11px; border-width: 3px 0 0 2.5px; }
+  .c-tr { top: -11px; right: -11px; border-width: 3px 2.5px 0 0; }
+  .c-bl { bottom: -11px; left: -11px; border-width: 0 0 2.5px 2.5px; }
+  .c-br { bottom: -11px; right: -11px; border-width: 0 2.5px 2.5px 0; }
+</style>
+</head>
+<body>
+  <div class="brandmark">AI_MIDI<span class="ver">3.0</span></div>
+
+  <div class="title-col">
+    <div class="hook-stamp">[ 开源项目 · OPEN SOURCE ]</div>
+    <h1>你的下一首编曲<br>何必<em>从零开始</em></h1>
+    <div class="sub">描述一段灵感 —— <b>AI_MIDI 3.0</b> 铺好<em>和声、贝斯与鼓组</em></div>
+    <div class="chips">
+      <span>对话写歌</span><span>快速任务</span><span>多轨编曲窗</span><span>MIDI / WAV 导出</span>
+    </div>
+  </div>
+
+  <div class="slab-col">
+    <div class="slab">
+      <span class="corner c-tl"></span><span class="corner c-tr"></span>
+      <span class="corner c-bl"></span><span class="corner c-br"></span>
+      <div class="screen">
+        <img src="cover_shot.png" alt="">
+        <div class="thickness"></div>
+        <div class="side-edge"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

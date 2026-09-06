@@ -103,13 +103,31 @@ func (r *Router) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Windows：单飞下载（重复点击直接返回当前进度）
-	dest := filepath.Join(os.TempDir(), fmt.Sprintf("AI_MIDI_Setup_%s_windows_amd64.exe", mani.Version))
-	if err := r.updater.downloader.Start(req.Context(), dlURL, dest, mani.SHA256Windows); err != nil && err != update.ErrInProgress {
+	// Windows：单飞下载（重复点击直接返回当前进度）。
+	// 版本号来自远程清单，必须消毒后才能拼路径（防 ..\ 路径穿越）
+	if !update.IsValidVersionString(mani.Version) {
+		writeError(w, http.StatusBadGateway, "更新清单版本号非法: "+mani.Version)
+		return
+	}
+	dest := filepath.Join(updateDownloadDir(), fmt.Sprintf("AI_MIDI_Setup_%s_windows_amd64.exe", mani.Version))
+	// 注意：下载生命周期独立于本次 HTTP 请求——req.Context() 在 handler
+	// 返回后即被取消，传入会让下载瞬间中断（这是此前的致命 bug）
+	if err := r.updater.downloader.Start(context.Background(), dlURL, dest, mani.SHA256Windows); err != nil && err != update.ErrInProgress {
 		writeError(w, http.StatusInternalServerError, "启动下载失败: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": "download", "progress": r.updater.downloader.Snapshot()})
+}
+
+// updateDownloadDir 安装包下载目录。不用 %TEMP%：系统清理器可能几秒内
+// 删掉临时目录下的文件（发布指南 §10 记录过该坑），下载完成但启动失败时
+// 用户会指向一个已消失的文件。用户缓存目录稳定且无需管理员权限。
+// var 形式便于测试注入临时目录。
+var updateDownloadDir = func() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "AI_MIDI")
+	}
+	return os.TempDir()
 }
 
 // handleUpdateProgress GET /api/update/progress：下载进度（前端轮询）

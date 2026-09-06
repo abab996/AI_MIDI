@@ -218,3 +218,76 @@ func waitState(t *testing.T, d *Downloader, want State, timeout time.Duration) {
 	}
 	t.Fatalf("等待状态 %s 超时，当前 %s (%+v)", want, d.Snapshot().State, d.Snapshot())
 }
+
+// TestDownloaderTotalDuringDownload 下载过程中 Total 必须已可用（响应头
+// 到手即公布）：此前 Total 在 io.Copy 结束后才设置，进度条全程 0%。
+func TestDownloaderTotalDuringDownload(t *testing.T) {
+	payload := strings.Repeat("B", 64*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)*3))
+		for i := 0; i < 3; i++ {
+			_, _ = w.Write([]byte(payload))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(80 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	d := NewDownloader(nil)
+	dest := filepath.Join(t.TempDir(), "setup.exe")
+	if err := d.Start(context.Background(), srv.URL, dest, ""); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+
+	// 下载仍在进行时 Total 应已等于完整大小
+	sawTotal := false
+	for d.Snapshot().State == StateDownloading {
+		if s := d.Snapshot(); s.Total == int64(len(payload)*3) {
+			sawTotal = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !sawTotal {
+		t.Fatalf("下载进行中 Total 应为 %d，最后快照: %+v", len(payload)*3, d.Snapshot())
+	}
+	waitState(t, d, StateCompleted, 3*time.Second)
+}
+
+// TestDownloaderStallWatchdog 停滞看门狗：源站挂起不发数据时，
+// 超过 stallTimeout 应判 Failed 而非永远 downloading。
+func TestDownloaderStallWatchdog(t *testing.T) {
+	hang := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-hang // 挂起：连接建立但不发任何字节
+	}))
+	defer srv.Close()
+	defer close(hang)
+
+	d := NewDownloader(nil)
+	d.stallTimeout = 200 * time.Millisecond // 注入短超时加速测试
+	dest := filepath.Join(t.TempDir(), "setup.exe")
+	_ = d.Start(context.Background(), srv.URL, dest, "")
+	waitState(t, d, StateFailed, 3*time.Second)
+	if !strings.Contains(d.Snapshot().Error, "停滞") {
+		t.Fatalf("应报停滞超时: %q", d.Snapshot().Error)
+	}
+}
+
+// TestIsValidVersionString 版本号消毒：仅数字与点（可带 v 前缀）
+func TestIsValidVersionString(t *testing.T) {
+	valid := []string{"3.0.3", "v3.0.3", " 3.0.3 ", "99.0", "3"}
+	for _, v := range valid {
+		if !IsValidVersionString(v) {
+			t.Errorf("%q 应为合法版本号", v)
+		}
+	}
+	invalid := []string{"", "..", "3.0.3/../evil", "3.0.3\\evil", "a.b.c", "3.0.3-beta", "3 0 3"}
+	for _, v := range invalid {
+		if IsValidVersionString(v) {
+			t.Errorf("%q 应为非法版本号", v)
+		}
+	}
+}

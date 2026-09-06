@@ -931,15 +931,25 @@
         cls = "stamp warn";
         badge.title = "已强制 WEBAUDIO（设置页可切回 AUTO）";
       } else {
-        if (state === "ready") { text = "JUCE ●"; cls = "stamp ok"; badge.title = (st.device_summary||"JUCE就绪") + " · AUTO"; }
+        if (state === "ready") {
+          text = "JUCE ●"; cls = "stamp ok";
+          var sfNote = (st.soundfont_loaded === false) ? " · 未加载音色（SF2 轨逐轨回退）" : "";
+          badge.title = (st.device_summary||"JUCE就绪") + sfNote + " · AUTO";
+        }
         else if (state === "starting" || state === "restarting") { text = "JUCE …"; cls = "stamp warn"; badge.title = "JUCE启动中"; }
         else if (state === "failed" || state === "stopped" || state === "disabled") { text = "WEB ○"; cls = "stamp warn"; badge.title = "JUCE不可用，已回退 WebAudio："+(st.last_error||state); }
         else { text = "WEB ○"; cls = "stamp"; badge.title = "引擎状态："+state; }
       }
       badge.textContent = "ENGINE: " + text;
       badge.className = cls;
+      var prevState = window.__engineState;
       window.__engineState = state;
       window.__engineBackend = backend;
+      // 卡音兜底：后端从原生切走（引擎挂掉/强制 WEBAUDIO）时，之前经
+      // 原生路径发出的音符没有对应的前端 voice 可停——清引擎侧残留
+      if (prevState === "ready" && state !== "ready" && window.EngineBridge && window.EngineBridge.panic) {
+        try { window.EngineBridge.panic().catch(function(){}); } catch (e) {}
+      }
       // 失败转态 toast（仅一次）
       if (state === "failed" && lastState !== "failed" && !isWeAudioForced) {
         if (window.UI && window.UI.toast) window.UI.toast("⚠ 原生引擎不可用，已自动回退到浏览器音频（可在设置页切 WEBAUDIO 或检查声卡）", "warn");

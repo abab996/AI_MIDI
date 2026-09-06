@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // State 下载状态机状态
@@ -27,6 +28,10 @@ const (
 
 // DefaultMaxBytes 下载体积上限（200MB，正常安装包 ~12MB，防异常响应撑爆磁盘）
 const DefaultMaxBytes int64 = 200 << 20
+
+// DefaultStallTimeout 停滞看门狗：超过该时长无新增字节即判定下载挂死并中止
+// （客户端 Timeout 为 0 时这是唯一的卡死出口）
+const DefaultStallTimeout = 60 * time.Second
 
 // ErrInProgress 已有下载在进行中（Start 单飞）
 var ErrInProgress = errors.New("下载已在进行中")
@@ -44,27 +49,31 @@ type Snapshot struct {
 // Downloader 安装包下载状态机（单飞：同一时刻至多一个下载）。
 // onLaunch 在下载校验成功后被调用（如运行安装程序），为 nil 则止步于 Completed。
 type Downloader struct {
-	http     *http.Client
-	maxBytes int64
-	onLaunch func(path string) error
+	http         *http.Client
+	maxBytes     int64
+	stallTimeout time.Duration
+	onLaunch     func(path string) error
 
-	mu         sync.Mutex
-	state      State
-	downloaded int64
-	total      int64
-	err        error
-	path       string
-	launched   bool
-	cancel     context.CancelFunc
+	mu           sync.Mutex
+	state        State
+	downloaded   int64
+	total        int64
+	err          error
+	path         string
+	launched     bool
+	lastProgress time.Time
+	stalled      bool
+	cancel       context.CancelFunc
 }
 
 // NewDownloader 创建下载器；onLaunch 为 nil 时下载完成后仅置 Completed。
 func NewDownloader(onLaunch func(path string) error) *Downloader {
 	return &Downloader{
-		http:     &http.Client{Timeout: 0}, // 大文件无整体超时；连接层超时由 Transport 默认值承担
-		maxBytes: DefaultMaxBytes,
-		onLaunch: onLaunch,
-		state:    StateIdle,
+		http:         &http.Client{Timeout: 0}, // 大文件无整体超时；停滞由看门狗兜底
+		maxBytes:     DefaultMaxBytes,
+		stallTimeout: DefaultStallTimeout,
+		onLaunch:     onLaunch,
+		state:        StateIdle,
 	}
 }
 
@@ -85,6 +94,8 @@ func (d *Downloader) Start(parent context.Context, url, destPath, wantSHA string
 	d.err = nil
 	d.path = ""
 	d.launched = false
+	d.stalled = false
+	d.lastProgress = time.Now()
 	d.mu.Unlock()
 
 	go d.run(ctx, url, destPath, wantSHA)
@@ -100,11 +111,52 @@ func (d *Downloader) run(ctx context.Context, url, destPath, wantSHA string) {
 		d.mu.Unlock()
 		_ = os.Remove(destPath + ".part")
 	}
+	// failIfStalled 看门狗先于本错误触发时，优先报告停滞（否则只能看到
+	// 干巴巴的 context canceled，用户无从判断该重试还是该换网络）
+	failIfStalled := func() bool {
+		d.mu.Lock()
+		stalled := d.stalled
+		d.mu.Unlock()
+		if stalled {
+			fail("下载停滞超时（超过 %v 无新增数据），已中止", d.stallTimeout)
+		}
+		return stalled
+	}
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		fail("创建下载目录失败: %v", err)
 		return
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// 停滞看门狗：HTTP 客户端无整体超时，卡死的下载（连上不发头、
+	// 发头不发体、连接黑洞）必须由「无新增字节」判定并主动取消，
+	// 否则前端永远轮询。必须在 Do 之前启动——等响应头阶段同样可能挂死
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-ticker.C:
+				d.mu.Lock()
+				stalled := d.state == StateDownloading && time.Since(d.lastProgress) > d.stallTimeout
+				if stalled {
+					d.stalled = true
+				}
+				d.mu.Unlock()
+				if stalled {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -113,7 +165,9 @@ func (d *Downloader) run(ctx context.Context, url, destPath, wantSHA string) {
 	}
 	resp, err := d.http.Do(req)
 	if err != nil {
-		fail("下载失败: %v", err)
+		if !failIfStalled() {
+			fail("下载失败: %v", err)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -127,6 +181,9 @@ func (d *Downloader) run(ctx context.Context, url, destPath, wantSHA string) {
 		fail("文件超过体积上限（%d MB）", d.maxBytes>>20)
 		return
 	}
+	// 响应头到手即公布总量：此前在 io.Copy 结束后才 setTotal，
+	// 整个下载过程进度条一直显示 0%（Total 恒为 0）
+	d.setTotal(total)
 
 	partPath := destPath + ".part"
 	part, err := os.Create(partPath)
@@ -139,10 +196,11 @@ func (d *Downloader) run(ctx context.Context, url, destPath, wantSHA string) {
 	counting := &countingWriter{w: io.MultiWriter(part, hasher), d: d}
 	_, copyErr := io.Copy(counting, io.LimitReader(resp.Body, d.maxBytes+1))
 	closeErr := part.Close()
-	d.setTotal(total)
 
 	if copyErr != nil {
-		fail("下载中断: %v", copyErr)
+		if !failIfStalled() {
+			fail("下载中断: %v", copyErr)
+		}
 		return
 	}
 	if closeErr != nil {
@@ -209,7 +267,8 @@ func (d *Downloader) setTotal(total int64) {
 	d.mu.Unlock()
 }
 
-// countingWriter 统计已下载字节数并同步计算 sha256（实时进度）。
+// countingWriter 统计已下载字节数并同步计算 sha256（实时进度），
+// 同时刷新 lastProgress 供停滞看门狗判定。
 type countingWriter struct {
 	w io.Writer
 	d *Downloader
@@ -219,6 +278,7 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.d.mu.Lock()
 	c.d.downloaded += int64(n)
+	c.d.lastProgress = time.Now()
 	c.d.mu.Unlock()
 	return n, err
 }

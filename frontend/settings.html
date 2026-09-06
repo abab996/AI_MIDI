@@ -279,6 +279,15 @@
       $("engineState").textContent = map[st.state] || st.state;
       $("engineDetail").textContent =
         (st.pid ? "pid=" + st.pid + " 重启=" + st.restarts + " " : "") + (st.device_summary || "");
+      // 音色库状态（ready 只代表 IPC 通畅；SF2 轨出声还需引擎已加载音色。
+      // 合成波音色走内置波形声部，不依赖音色）
+      if (st.state === "ready") {
+        $("sf2Hint").textContent = st.soundfont_loaded
+          ? "🎵 音色库：已加载（SF2 轨走引擎）"
+          : "🎵 音色库：空——SF2 轨将逐轨回退浏览器渲染；可将 .sf2 放入 应用目录\\Library\\soundfonts";
+      } else {
+        $("sf2Hint").textContent = "";
+      }
       updateLatency();
     }).catch(function () { $("engineState").textContent = "不可用"; });
   }

@@ -73,7 +73,12 @@ func (c *Client) Close() error {
 func (c *Client) Done() <-chan struct{} { return c.dead }
 
 func (c *Client) markDead() {
-	c.deadOnce.Do(func() { close(c.dead) })
+	// dead 为 nil 时（测试直接构造 Client{}）跳过：close(nil) 会 panic
+	c.deadOnce.Do(func() {
+		if c.dead != nil {
+			close(c.dead)
+		}
+	})
 }
 
 // Events 事件流通道
@@ -152,7 +157,13 @@ func (c *Client) TryRequest(method string, params map[string]any, timeout time.D
 func (c *Client) SendMidi(status, data1, data2 byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return c.writeFrameWithTimeout(MsgMidi, []byte{status, data1, data2}, 2*time.Second)
+	err := c.writeFrameWithTimeout(MsgMidi, []byte{status, data1, data2}, 2*time.Second)
+	if err != nil {
+		// 写失败/超时后连接已不可信：残留 goroutine 可能仍在写一半帧，
+		// 与后续帧交错撕裂协议。判死会话，由 supervisor 重建
+		c.markDead()
+	}
+	return err
 }
 
 // SendMidiTrack 发送带 track 的 MIDI 帧（每轨独立 tsf）。
@@ -166,7 +177,24 @@ func (c *Client) SendMidiTrack(track int, status, data1, data2 byte) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return c.writeFrameWithTimeout(MsgMidi, []byte{byte(track), status, data1, data2}, 2*time.Second)
+	err := c.writeFrameWithTimeout(MsgMidi, []byte{byte(track), status, data1, data2}, 2*time.Second)
+	if err != nil {
+		c.markDead() // 同 SendMidi：写失败后会话不可信
+	}
+	return err
+}
+
+// Panic 全音符停止（自然 release）——卡音逃生口。丢 note-off、音色
+// 热切换、后端切换都可能留下响个不停的原生音符，这是唯一恢复手段。
+func (c *Client) Panic(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	resp, err := c.Request("panic", nil, timeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
 }
 
 // Ping 心跳探测

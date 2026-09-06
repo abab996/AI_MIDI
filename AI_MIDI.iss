@@ -1,6 +1,6 @@
 ; AI_MIDI v3 安装脚本 — Inno Setup 6
 ; 编译命令: ISCC.exe AI_MIDI.iss
-; 产物: dist\installer\AI_MIDI_Setup_3.0.3.exe
+; 产物: dist\installer\AI_MIDI_Setup_3.1.0.exe
 ;
 ; 发布物约定（长期规范）:
 ;   - Windows 版仅上传本安装包（AI_MIDI_Setup_<ver>.exe），不再分发便携压缩包
@@ -15,7 +15,7 @@
 ;   - 卸载时保留用户数据（设置/项目/输出），不主动删除。
 
 #define MyAppName "AI_MIDI"
-#define MyAppVersion "3.0.3"
+#define MyAppVersion "3.1.0"
 #define MyAppPublisher "abab996"
 #define MyAppExeName "AI_MIDI.exe"
 
@@ -71,8 +71,9 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 [Files]
 ; 主程序（wails build 产物）
 Source: "build\bin\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-; 闭源 JUCE 音频引擎（随安装包分发，缺失时应用自动降级 Web Audio）
-Source: "bin\aimidi-engine.exe"; DestDir: "{app}\bin"; Flags: ignoreversion skipifsourcedoesntexist
+; 闭源 JUCE 音频引擎（随安装包分发）。缺失即打包失败——此前 skipifsourcedoesntexist
+; 会静默漏装，装出的应用永久只有 WebAudio，用户侧表现为"原生引擎无声"
+Source: "bin\aimidi-engine.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 ; 启动脚本与配置模板
 Source: "RUN.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "settings.example.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -91,8 +92,12 @@ Source: "README_zh.md"; DestDir: "{app}"; Flags: ignoreversion
 ; 乐理知识库（read_library_file 工具的数据源；缺失时 AI 每次读取知识文件
 ; 都会失败——此前安装包漏装该目录，打包版 AI 无法引用乐理指南）
 Source: "Library\*.md"; DestDir: "{app}\Library"; Flags: ignoreversion
-; 音色库不分发（Library\soundfonts\* 体积大且为测试音色，沿用既有约定：
-; 用户自备 sf2 放入 {app}\Library\soundfonts，无音色时原生引擎降级 WebAudio）
+; 默认捆绑音色（GeneralUser GS v1.471，作者 S. Christian Collins，许可允许
+; 自由捆绑再分发，许可全文随包分发）。缺失即打包失败——先运行
+; tools\fetch_soundfont.bat 下载。冷启动默认加载它：安装版开箱原生有声；
+; 用户自备 sf2 也可放入 {app}\Library\soundfonts（按文件名排序首个为默认）
+Source: "Library\soundfonts\GeneralUser GS v1.471.sf2"; DestDir: "{app}\Library\soundfonts"; Flags: ignoreversion
+Source: "Library\soundfonts\GeneralUser GS LICENSE.txt"; DestDir: "{app}\Library\soundfonts"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

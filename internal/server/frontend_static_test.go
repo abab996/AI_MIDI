@@ -21,9 +21,13 @@ func TestFrontendAudioRouting(t *testing.T) {
 	if !strings.Contains(s, "noteOnTrack") {
 		t.Fatal("audio_engine.js should call EngineBridge.noteOnTrack for native")
 	}
-	// 验证 _queueAudioClip 在原生时跳过 Web 队列
-	if !strings.Contains(s, "if (isNativePreferred()) return;") {
-		t.Fatal("_queueAudioClip should early return when native")
+	// 验证 _queueAudioClip 在原生时跳过 Web 队列（批量调度失败时回退）
+	if !strings.Contains(s, "if (isNativePreferred() && !this._nativeSamplesFailed) return;") {
+		t.Fatal("_queueAudioClip should early return when native and samples scheduling has not failed")
+	}
+	// synth 轨原生直通需同步引擎侧内置波形声部（不依赖 SF2）
+	if !strings.Contains(s, "_ensureTrackWaveVoice") {
+		t.Fatal("audio_engine.js should sync engine wave voice for synth tracks")
 	}
 }
 
@@ -38,6 +42,15 @@ func TestFrontendPianorollRouting(t *testing.T) {
 	}
 	if !strings.Contains(s, "noteOnTrack") {
 		t.Fatal("pianoroll.js should use noteOnTrack for native")
+	}
+	// 播放头回归护栏：钢琴窗本地播放不得跟随引擎 timecode——引擎走带
+	// 由编曲窗启动，钢琴窗从不 play，跟随只会冻结在 tc.beat
+	if strings.Contains(s, "return tc.beat") {
+		t.Fatal("pianoroll.js must not freeze playhead on engine timecode (tc.playing is always false here)")
+	}
+	// 原生演奏应走专用演奏轨 + 内置波形声部（不依赖 SF2）
+	if !strings.Contains(s, "PERF_TRACK") || !strings.Contains(s, "_ensureNativeVoice") {
+		t.Fatal("pianoroll.js should route native notes via PERF_TRACK with wave voice sync")
 	}
 }
 
@@ -59,6 +72,9 @@ func TestFrontendEngineBridge(t *testing.T) {
 	}
 	if !strings.Contains(s, "setLoop") {
 		t.Fatal("engine_bridge.js should expose setLoop")
+	}
+	if !strings.Contains(s, "setTrackVoice") || !strings.Contains(s, "PERF_TRACK") {
+		t.Fatal("engine_bridge.js should expose setTrackVoice and PERF_TRACK")
 	}
 }
 

@@ -889,24 +889,11 @@
     this.animFrameId = requestAnimationFrame(frame);
   };
 
-  /* 展开位置 → 时间线拍（AUTO时优先跟随引擎 timecode 插值） */
+  /* 展开位置 → 时间线拍。本地播放一律用本地 AudioContext 时钟——
+     此前「AUTO 时优先跟随引擎 timecode」的分支是冻结源：钢琴窗从不
+     启动引擎走带（EngineBridge.play 仅编曲窗调用），tc.playing 恒为
+     false，播放头被钉死在 tc.beat。本地时钟与上方调度器同源，天然同步 */
   PianoRoll.prototype._currentPlayBeat = function () {
-    try {
-      if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.__engineTimecode && window.__engineTimecode.t) {
-        var tc = window.__engineTimecode;
-        if (!tc.playing) return tc.beat;
-        var now = performance.now()/1000;
-        var delta = now - tc.t; if (delta<0) delta=0; if(delta>0.2) delta=0;
-        var beat = tc.beat + delta * (tc.bpm/60);
-        // 仍用前端循环语义兜底（引擎 loop 未接管时）
-        var pos = beat - this._schedStartBeat;
-        if (pos < 0) pos = 0;
-        if (!this.isLooping || this._schedSegLen === Infinity) return this._schedStartBeat + pos;
-        if (pos < this._schedSegLen) return this._schedSegStart + pos;
-        var loopLen = this.loopEnd - this.loopStart;
-        return this.loopStart + ((pos - this._schedSegLen) % loopLen);
-      }
-    } catch(e) {}
     var pos = (this._audioNow() - this._schedCtxTime) * (this.bpm / 60);
     if (pos < 0) pos = 0;
     if (!this.isLooping || this._schedSegLen === Infinity) {
@@ -979,20 +966,24 @@
         var pos = seg.posFrom + (n.start - seg.beatFrom);
         var when = this._schedCtxTime + pos * spb;
         var durSec = Math.max(0.02, (n.end - n.start) * spb);
-        // 原生优先且为合成器音源时，经 JUCE 直通（避免 WebAudio 远期包络不可靠，且统一主链路）
+        // 原生优先且为合成器音源时，经 JUCE 专用演奏轨直通（内置波形声部，
+        // 不依赖 SF2；避免 WebAudio 远期包络不可靠，且统一主链路）。
+        // _ensureNativeVoice 同步声部参数（签名不变时为 no-op）并兼作
+        // 降级判定：setTrackVoice 失败即回退 WebAudio
         var useNative = false;
         try {
           useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred()
             && this.soundSource && this.soundSource.indexOf("synth_") === 0
-            && window.EngineBridge && window.EngineBridge.noteOnTrack;
+            && this.synth && this.synth._ensureNativeVoice && this.synth._ensureNativeVoice();
         } catch(e) {}
         if (useNative) {
-          (function(p, v, w, d){
+          var trk = (window.EngineBridge && window.EngineBridge.PERF_TRACK) || 0;
+          (function(p, v, w, d, tr){
             var delayOn = Math.max(0, (w - self._audioNow()) * 1000);
-            setTimeout(function(){ try{ window.EngineBridge.noteOnTrack(0, p, v); }catch(e){} }, delayOn);
+            setTimeout(function(){ try{ window.EngineBridge.noteOnTrack(tr, p, v); }catch(e){} }, delayOn);
             var delayOff = Math.max(0, (w + d - self._audioNow()) * 1000);
-            setTimeout(function(){ try{ window.EngineBridge.noteOffTrack(0, p); }catch(e){} }, delayOff);
-          })(pNum, n.velocity || 100, when, durSec);
+            setTimeout(function(){ try{ window.EngineBridge.noteOffTrack(tr, p); }catch(e){} }, delayOff);
+          })(pNum, n.velocity || 100, when, durSec, trk);
         } else {
           this.playNoteSound(pNum, n.velocity, when);
           this.stopNoteSound(pNum, when + durSec);

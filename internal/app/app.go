@@ -65,6 +65,15 @@ func (a *App) EngineNoteOffTrack(track, key int) {
 	}
 }
 
+// EnginePanic 全音符停止（卡音逃生口，见 Supervisor.PanicAll）
+func (a *App) EnginePanic() error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.PanicAll()
+}
+
 // EngineLoadSoundFont 加载音色文件到引擎（track 0 兼容）
 func (a *App) EngineLoadSoundFont(path string) error {
 	sup := engine.Get()
@@ -81,6 +90,16 @@ func (a *App) EngineLoadSoundFontTrack(track int, path string) error {
 		return errEngineUnavailable
 	}
 	return sup.LoadSoundFontTrack(track, path)
+}
+
+// EngineSetTrackVoice 切换引擎轨道到内置波形声部（合成波音色原生路径，
+// voice: {wave, attack, decay, sustain, release, cutoff, resonance, gain}）
+func (a *App) EngineSetTrackVoice(track int, voice map[string]any) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.SetTrackVoice(track, voice)
 }
 
 // EngineSetTrackMix 设置音轨混音参数（M3 混音图）

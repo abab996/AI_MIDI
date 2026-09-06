@@ -27,6 +27,10 @@ type Config struct {
 	// Dirs 返回路径白名单目录（音色库 / bounce 输出 / 已注册素材目录）。
 	// 由 main 注入；未注入时路径校验 fail-closed（见 paths.go）。
 	Dirs func() (soundFontDir, outputDir string, materialDirs []string)
+	// OnAudioFallback 冷启动重放把音频设置回滚到系统默认设备时回调
+	// （驱动卡死等传输层失败）。main 借此把回滚结果持久化到 settings.json，
+	// 否则每次启动都会重演「重放坏设置 → 卡死 → 回滚」循环
+	OnAudioFallback func(AudioSettings)
 }
 
 // Supervisor 引擎进程守护：启动、心跳、崩溃自动重启、优雅回收。
@@ -50,6 +54,8 @@ type Supervisor struct {
 	lastGood       AudioSettings   // 最近一次成功应用的音频设置（applySetup 超时后回退目标）
 	lastSoundFont  string          // 兼容旧单轨（track 0）
 	lastSoundFonts map[int]string  // 每轨独立 SF2（重启后重放）
+	lastVoices     map[int]map[string]any // 每轨内置波形声部参数（重启后重放）
+	hasSoundfont   bool            // 当前会话是否已加载任何音色（/api/audio/status 透出）
 	exePath        string
 	stopOnce       sync.Once
 	doneCh         chan struct{} // 关闭表示主循环退出
@@ -78,9 +84,10 @@ func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 }
 
 // applySetupTimeout 驱动切换专用超时：正常切换 2-5s 完成；个别驱动
-// （如 ASIO Link Pro）打开会永久卡死——超过该时限即判定卡死并回退，
-// 不让用户对着无响应的界面无限等待
-const applySetupTimeout = 15 * time.Second
+// （如 ASIO Link Pro）首次打开可达 10-20s 甚至更久（见 HandshakeTimeout
+// 注释），15s 时限会把它误判为卡死——切换/改缓冲永远「未响应」。60s
+// 仍无响应才判定驱动卡死并回退
+const applySetupTimeout = 60 * time.Second
 
 // StartedWithEnabled 当前守护会话启动时的启用状态（判断设置变更是否需重启）
 func (s *Supervisor) StartedWithEnabled() bool {
@@ -168,6 +175,7 @@ func (s *Supervisor) Status() EngineStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	st := s.status
+	st.SoundfontLoaded = s.hasSoundfont
 	if s.audio.EngineEnabled {
 		st.Protocol = ProtocolVersion
 	} else {
@@ -264,6 +272,13 @@ func (s *Supervisor) ApplySettings(audio AudioSettings) error {
 		return err
 	}
 	if err := resp.Err(); err != nil {
+		// 业务失败（典型：设备不在枚举列表）。设备从未生效，内存同样
+		// 回滚到最近可用配置——调用方据 CurrentAudio 持久化，避免无效
+		// 设备名留在 settings.json 里每次启动重放失败
+		s.mu.Lock()
+		s.audio = s.lastGood
+		s.lastApply = nil
+		s.mu.Unlock()
 		return err
 	}
 	// 成功：记录为新的回退目标
@@ -350,6 +365,34 @@ func (s *Supervisor) SetTrackMix(p TrackMixParams) error {
 		return err
 	}
 	return resp.Err()
+}
+
+// SetTrackVoice 把引擎轨道切换到内置波形声部（合成波音色的原生渲染路径，
+// 不依赖 SF2）。voice 内容见协议文档 setTrackVoice；崩溃重启后随会话重放
+func (s *Supervisor) SetTrackVoice(track int, voice map[string]any) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	params := make(map[string]any, len(voice)+1)
+	for k, v := range voice {
+		params[k] = v
+	}
+	params["track"] = track
+	resp, err := cli.Request("setTrackVoice", params, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if err := resp.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.lastVoices == nil {
+		s.lastVoices = make(map[int]map[string]any)
+	}
+	s.lastVoices[track] = voice
+	s.mu.Unlock()
+	return nil
 }
 
 // OpenControlPanel 打开当前声卡的控制面板（ASIO 驱动专用）
@@ -605,9 +648,15 @@ func (s *Supervisor) runOnce() string {
 				EngineEnabled: s.audio.EngineEnabled,
 				Backend:       s.audio.Backend,
 			}
-			s.lastApply = nil
-			s.lastGood = s.audio
-			s.mu.Unlock()
+				s.lastApply = nil
+				s.lastGood = s.audio
+				fallback := s.audio
+				s.mu.Unlock()
+				// 持久化回滚结果（回调由 main 注入）：否则每次启动都会重演
+				// 「重放坏设置 → 卡死 → 回滚」，冷启动每次多等一个超时周期
+				if s.cfg.OnAudioFallback != nil {
+					s.cfg.OnAudioFallback(fallback)
+				}
 			// 传输层失败意味着会话已判死（Request 出错路径必然 markDead）：
 			// 立即走下方清场重启。此前会继续在死会话上逐轨重放音色（每轨
 			// 烧满 30s），而 StateReady 已置位——UI 显示就绪实际引擎卡死，
@@ -648,6 +697,11 @@ func (s *Supervisor) runOnce() string {
 		}
 	}
 	if failReason == "" {
+		loadedFonts := 0
+		// 新会话重置音色状态：本会话能否加载成功以本次重放结果为准
+		s.mu.Lock()
+		s.hasSoundfont = false
+		s.mu.Unlock()
 		if len(fonts) > 0 {
 			for tr, p := range fonts {
 				if err := s.loadSoundFontWithTrack(cli, tr, p); err != nil {
@@ -660,6 +714,7 @@ func (s *Supervisor) runOnce() string {
 						slog.Warn("[engine] 加载音色失败（track)", "track", tr, "path", p, "err", err)
 					}
 				} else {
+					loadedFonts++
 					slog.Info("[engine] 已加载音色", "track", tr, "path", p)
 				}
 				if failReason != "" {
@@ -667,7 +722,43 @@ func (s *Supervisor) runOnce() string {
 				}
 			}
 		} else {
-			slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），原生演奏静默")
+			slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），SF2 轨将走逐轨回退或保持静默")
+		}
+		s.mu.Lock()
+		s.hasSoundfont = loadedFonts > 0
+		s.mu.Unlock()
+	}
+
+	// 重放波形声部（合成波音色的原生路径）：音色重放之后执行——loadSoundFont
+	// 会撤下波形声部，顺序颠倒会让波形轨被默认音色覆盖
+	s.mu.RLock()
+	voices := make(map[int]map[string]any, len(s.lastVoices))
+	for tr, v := range s.lastVoices {
+		cp := make(map[string]any, len(v))
+		for k, val := range v {
+			cp[k] = val
+		}
+		voices[tr] = cp
+	}
+	s.mu.RUnlock()
+	if failReason == "" {
+		for tr, v := range voices {
+			params := make(map[string]any, len(v)+1)
+			for k, val := range v {
+				params[k] = val
+			}
+			params["track"] = tr
+			if _, err := cli.Request("setTrackVoice", params, 10*time.Second); err != nil {
+				select {
+				case <-cli.Done():
+					failReason = "冷启动重放失败: IPC 会话失效"
+				default:
+					slog.Warn("[engine] 重放波形声部失败（track)", "track", tr, "err", err)
+				}
+			}
+			if failReason != "" {
+				break
+			}
 		}
 	}
 
@@ -757,6 +848,7 @@ func (s *Supervisor) LoadSoundFontTrack(track int, path string) error {
 		s.lastSoundFonts = make(map[int]string)
 	}
 	s.lastSoundFonts[track] = path
+	s.hasSoundfont = true
 	if track == 0 {
 		s.lastSoundFont = path
 	}
@@ -1030,13 +1122,39 @@ func estimateBounceTimeout(params map[string]any) time.Duration {
 	return timeout
 }
 
-// GetLevels 获取电平
+// GetLevels 获取电平。用 TryRequest：bounce 之类长请求占用事务锁时
+// 立即返回错误（前端 50ms 轮询本就容忍丢帧），而不是把 UI 的电平/走带
+// 轮询挂起最长 20 分钟（此前 Request 排队等锁的后果）
 func (s *Supervisor) GetLevels() ([]float32, error) {
-	cli, err := s.Ready(2 * time.Second)
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return nil, fmt.Errorf("引擎未就绪")
+	}
+	resp, err := cli.TryRequest("getLevels", nil, s.cfg.RequestTimeout)
 	if err != nil {
 		return nil, err
 	}
-	return cli.GetLevels(s.cfg.RequestTimeout)
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var res struct {
+		Levels []float32 `json:"levels"`
+	}
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		return nil, err
+	}
+	return res.Levels, nil
+}
+
+// PanicAll 全音符停止（卡音逃生口，见 Client.Panic）
+func (s *Supervisor) PanicAll() error {
+	cli, err := s.Ready(2 * time.Second)
+	if err != nil {
+		return err
+	}
+	return cli.Panic(s.cfg.RequestTimeout)
 }
 
 // SetLoop 设置循环

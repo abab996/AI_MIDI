@@ -16,6 +16,9 @@ echo [3/3] 打包 Wails 主程序...
 call wails build || (echo Wails 打包失败 & exit /b 1)
 copy /y "build\bin\AI_MIDI.exe" "AI_MIDI.exe" >nul || (echo 主程序复制失败 & exit /b 1)
 
+echo [4/4] 组装 build\bin 自测布局（引擎/知识库/音色）...
+call tools\assemble_buildbin.bat || (echo 布局组装失败 & exit /b 1)
+
 echo ========================================================
 echo  全部构建完成！固定管道名已生效，彻底杜绝 PID 猜测死锁。
 echo  请直接运行 RUN.bat

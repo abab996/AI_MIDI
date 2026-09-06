@@ -752,6 +752,9 @@
       this.engine.bpm = val;
       this.engine.play(b);
       try { if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred() && window.EngineBridge) { try{window.EngineBridge.setTempo(val);}catch(e){} try{window.EngineBridge.locate(b);}catch(e){} } } catch(e){}
+      // 原生模式：已调度音频剪辑的位置是旧 BPM 烘焙的采样数，setTempo
+      // 只重算走带位置不重排调度表——不重建会与 MIDI 轨渐进失同步
+      this.rescheduleSamplesDebounced();
     } else {
       this.bpm = val;
       this.engine.bpm = val;
@@ -1408,9 +1411,11 @@
   };
 
   /** 汇总当前全部音频 clip → 引擎调度表。scheduleSamples 为全量重建语义，
-      SamplePool 按路径缓存已解码样本，重复下发只做表重建不重新解码 */
+      SamplePool 按路径缓存已解码样本，重复下发只做表重建不重新解码。
+      失败时置 engine._nativeSamplesFailed（播放中回退 Web 队列）并 toast
+      具体原因（素材目录未挂载等此前只写日志，用户侧表现为"没声音"） */
   Arrange.prototype.sendSampleSchedule = function () {
-    if (!window.EngineBridge) return;
+    if (!window.EngineBridge) return null;
     var clips = [];
     for (var ti = 0; ti < this.tracks.length; ti++) {
       var tr = this.tracks[ti];
@@ -1420,14 +1425,22 @@
         clips.push({ track: ti, path: c.src.p, start: c.start, length: c.length, offset: c.offset || 0, fadeIn: c.fadeIn || 0, fadeOut: c.fadeOut || 0, gain: c.gain !== undefined ? c.gain : 1 });
       }
     }
+    var self = this;
     try {
       var p = window.EngineBridge.scheduleSamples(clips, this.bpm);
-      if (p && typeof p.catch === "function") {
-        p.catch(function (err) {
-          if (UI.toast) UI.toast("⚠ 音频素材调度失败：" + (err && err.message || err), "warn");
+      if (p && typeof p.then === "function") {
+        return p.then(function () {
+          self.engine._nativeSamplesFailed = false;
+        }).catch(function (err) {
+          self.engine._nativeSamplesFailed = true;
+          if (UI.toast) UI.toast("⚠ 音频素材调度失败，相关剪辑回退浏览器渲染：" + (err && err.message || err), "warn");
         });
       }
-    } catch (e) {}
+      return p;
+    } catch (e) {
+      this.engine._nativeSamplesFailed = true;
+      return null;
+    }
   };
 
   /** 调度签名：坐标/长度/offset/mute/fade 任一变化都算——用于跳过

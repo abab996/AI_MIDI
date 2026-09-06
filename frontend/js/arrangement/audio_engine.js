@@ -60,6 +60,9 @@
     this.bufferCache = new Map(); // path -> { promise, buffer, peaks, lastUse }
     this.maxCachedBuffers = 48;
     this.activeSources = [];      // 播放中的 BufferSource（停止时快速静音）
+    // 原生样本批量调度失败标记（sendSampleSchedule catch 置位/成功清除）：
+    // 置位后 _queueAudioClip 不再跳过 Web 队列，剪辑回退浏览器渲染
+    this._nativeSamplesFailed = false;
 
     // 走带状态（arrange.js 同步写入）
     this.isPlaying = false;
@@ -203,10 +206,51 @@
         nodes._isNativeSynth = useNativeSynth;
       }
     }
+    // synth 轨原生直通：把引擎同 idx 轨切到内置波形声部（不依赖 SF2；
+    // 内部按参数签名去重，音源切换与轨序变化都会在此同步）
+    this._ensureTrackWaveVoice(track, nodes);
     if (created && this.getTracks) {
       this.applyMix(this.getTracks());
     }
     return nodes;
+  };
+
+  /** synth 轨原生直通：把引擎同 idx 轨切到内置波形声部（合成波音色的
+      原生渲染路径，不依赖 SF2）。按「idx+参数」签名去重（ensureTrack 每个调度窗
+      都会调用）；失败按 3s 冷却重试（引擎冷启动未就绪属瞬态），冷却期间
+      该轨走 WebAudio（nodes._useNative=false） */
+  ArrangeEngine.prototype._ensureTrackWaveVoice = function (track, nodes) {
+    if (!nodes || !nodes.synth || !nodes._isNativeSynth) return;
+    if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.setTrackVoice) return;
+    if (nodes._voiceRetryAt && Date.now() < nodes._voiceRetryAt) {
+      nodes._useNative = false;
+      return;
+    }
+    var s = nodes.synth;
+    var idx = trackIndexOf(track.id, this.getTracks ? this.getTracks() : null);
+    if (idx < 0) return;
+    var sig = [idx, s.waveform, s.attack, s.decay, s.sustain, s.release, s.cutoff, s.resonance, s.volume].join("|");
+    if (nodes._voiceSig === sig) return;
+    window.EngineBridge.setTrackVoice(idx, {
+      wave: s.waveform,
+      attack: s.attack,
+      decay: s.decay,
+      sustain: s.sustain,
+      release: s.release,
+      cutoff: s.cutoff,
+      resonance: s.resonance,
+      gain: s.volume
+    }).then(function () {
+      nodes._voiceSig = sig;
+      nodes._voiceRetryAt = 0;
+      nodes._useNative = true;
+    }).catch(function (e) {
+      console.warn("[ArrangeEngine] setTrackVoice 失败，3s 后重试，期间该轨走 WebAudio:", e);
+      nodes._voiceSig = null;
+      nodes._voiceRetryAt = Date.now() + 3000;
+      nodes._useNative = false;
+      if (nodes.synth) nodes.synth._forceWebAudio = true;
+    });
   };
 
   /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立） */
@@ -359,12 +403,13 @@
     return 60 / (this.bpm || 120);
   };
 
-  /** 当前播放头所在的时间线拍（AUTO时跟随引擎 timecode 插值，WEBAUDIO时用 AudioContext） */
+  /** 当前播放头所在的时间线拍（AUTO时跟随引擎 timecode 插值，WEBAUDIO时用 AudioContext）。
+      引擎未确认在走带（play 静默失败/尚未确认 playing）时回落本地时钟——
+      此前冻结在 tc.beat，编曲播放头会因 EngineBridge.play 偶发失败而卡死 */
   ArrangeEngine.prototype.currentBeat = function () {
     if (!this.isPlaying) return this._playStartBeat;
-    if (isNativePreferred() && window.__engineTimecode && window.__engineTimecode.t) {
+    if (isNativePreferred() && window.__engineTimecode && window.__engineTimecode.t && window.__engineTimecode.playing) {
       var tc = window.__engineTimecode;
-      if (!tc.playing) return tc.beat;
       var now = performance.now() / 1000;
       var delta = now - tc.t;
       if (delta < 0) delta = 0;
@@ -384,8 +429,8 @@
       return beat;
     }
     if (!this.ctx) return this._playStartBeat;
-    var pos = (this.ctx.currentTime - this._anchorCtxTime) / this.secondsPerBeat();
-    return this._posToBeat(pos);
+    var posLocal = (this.ctx.currentTime - this._anchorCtxTime) / this.secondsPerBeat();
+    return this._posToBeat(posLocal);
   };
 
   /** 展开位置 → 时间线拍 */
@@ -505,6 +550,7 @@
   /** 停止调度并立即静音（原生轨经 EngineBridge 逐个 noteOff，避免挂音） */
   ArrangeEngine.prototype.stopSchedule = function () {
     this._stopHeartbeat();
+    this._clearNativeTimers(); // 先撤调度中的原生音符 timer（尚未发出的 noteOn/off 一并取消）
     if (isNativePreferred() && window.EngineBridge) {
       try {
         var tracks = this.getTracks ? this.getTracks() : [];
@@ -522,6 +568,31 @@
     this._pendingClips = [];
     this.isPlaying = false;
     this.stopAllVoices();
+  };
+
+  /** 原生音符精确调度：Web Audio 路径有 when 参数可精确到采样，原生
+      IPC 路径此前触发即发（提前 0~TRIGGER_S≈150ms，且 note-off 窗口更
+      宽），MIDI 轨与采样精确的音频轨节奏错位。这里到点才发。
+      timer 集中登记，stopSchedule 全部撤销（消除停止后的幽灵音）。 */
+  ArrangeEngine.prototype._schedNative = function (delaySec, fn) {
+    if (!this._nativeTimers) this._nativeTimers = [];
+    var self = this;
+    var rec = { fired: false };
+    rec.timer = setTimeout(function () {
+      rec.fired = true;
+      if (!self.isPlaying) return; // 停止后不再触发
+      try { fn(); } catch (e) {}
+    }, Math.max(0, delaySec * 1000));
+    this._nativeTimers.push(rec);
+    return rec;
+  };
+
+  ArrangeEngine.prototype._clearNativeTimers = function () {
+    if (!this._nativeTimers) return;
+    for (var i = 0; i < this._nativeTimers.length; i++) {
+      if (!this._nativeTimers[i].fired) clearTimeout(this._nativeTimers[i].timer);
+    }
+    this._nativeTimers = [];
   };
 
   /** v1 兼容别名（arrange.js / 自测页可能引用） */
@@ -674,8 +745,10 @@
       （颗粒/合唱感的重要来源之一）。起点错过窗口的（起播点在剪辑
       中段的定位播放）由 _startAudioClip 的迟到接入逻辑兜底。 */
   ArrangeEngine.prototype._queueAudioClip = function (clip, track, nodes, evFrom, evTo, seg, spb) {
-    // 原生优先时样本走 JUCE SamplePool（批量调度），Web队列跳过以免双重播放
-    if (isNativePreferred()) return;
+    // 原生优先时样本走 JUCE SamplePool（批量调度），Web队列跳过以免双重播放；
+    // 批量调度失败（素材目录未挂载/引擎拒绝）时置 _nativeSamplesFailed，
+    // 后续窗口回退 Web 队列（失败原因已由 arrange.js toast 提示）
+    if (isNativePreferred() && !this._nativeSamplesFailed) return;
     if (clip.start < evFrom || clip.start >= evTo) return;
     var clipRemain = clip.length;
     if (clipRemain <= 0) return;
@@ -708,7 +781,14 @@
             var tracksOn = this.getTracks ? this.getTracks() : [];
             var idxOn = trackIndexOf(ev.trackId, tracksOn);
             if (idxOn >= 0) {
-              try { window.EngineBridge.noteOnTrack(idxOn, ev.midi, ev.vel); handledNative = true; } catch(e) { handledNative = false; }
+              // 到点才发（此前触发即发：原生路径提前 0~150ms，与精确
+              // 调度的音频轨节奏错位）。过期事件立即发不迟于现在
+              var delayOn = Math.max(0, ev.t - now);
+              var midi = ev.midi, vel = ev.vel, idx = idxOn;
+              this._schedNative(delayOn, function () {
+                window.EngineBridge.noteOnTrack(idx, midi, vel);
+              });
+              handledNative = true;
             }
           }
           if (!handledNative) {
@@ -743,7 +823,13 @@
             var tracksOff = this.getTracks ? this.getTracks() : [];
             var idxOff = trackIndexOf(ev.trackId, tracksOff);
             if (idxOff >= 0) {
-              try { window.EngineBridge.noteOffTrack(idxOff, ev.midi); handledOff = true; } catch(e) { handledOff = false; }
+              // 同 note-on：到点才发，不再提前 TRIGGER_S+0.05s
+              var delayOff = Math.max(0, ev.t - now);
+              var midiOff = ev.midi, idx2 = idxOff;
+              this._schedNative(delayOff, function () {
+                window.EngineBridge.noteOffTrack(idx2, midiOff);
+              });
+              handledOff = true;
             }
           }
           if (!handledOff) {

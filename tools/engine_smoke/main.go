@@ -383,13 +383,21 @@ func main() {
 	r, reqErr = c.request("listDevices", nil)
 	check("listDevices", reqErr == nil && r.OK, errText(r, reqErr))
 	hasASIO := false
+	asioLinkPro := false
 	for attempt := 0; attempt < 2; attempt++ {
 		if r != nil && r.OK {
 			var ld listDevicesResult
 			_ = json.Unmarshal(r.Result, &ld)
 			hasASIO = false
+			asioLinkPro = false
 			for _, d := range ld.Drivers {
 				fmt.Printf("      驱动 %-14s 设备数 %d\n", d.Driver, len(d.Devices))
+				for _, name := range d.Devices {
+					fmt.Printf("        · %s\n", name.Name)
+					if d.Driver == "ASIO" && name.Name == "ASIO Link Pro" {
+						asioLinkPro = true
+					}
+				}
 				if d.Driver == "ASIO" {
 					hasASIO = true
 				}
@@ -407,6 +415,24 @@ func main() {
 	}
 	check("枚举结果包含 ASIO 驱动类型（JUCE_ASIO 已生效）", hasASIO,
 		"未发现 ASIO 类型——确认 SDK 就位且 CMake 检测通过后重新构建")
+
+	// 5.5) ASIO Link Pro 实机切换（条件项：枚举到该驱动才执行）。
+	// 慢驱动首开 10-20s+，此前 applySetupTimeout=15s 会把它误判为卡死
+	// 回滚——此处验证 60s 时限内能成功切换并改缓冲。结束前切回默认
+	// 设备，避免冒烟残留 ASIO 独占
+	if asioLinkPro {
+		r, reqErr = c.request("applySetup", map[string]interface{}{"driver": "ASIO", "device": "ASIO Link Pro"})
+		check("applySetup 切换 ASIO Link Pro（慢驱动 ≤60s）", reqErr == nil && r.OK, errText(r, reqErr))
+		r, reqErr = c.request("applySetup", map[string]interface{}{"driver": "ASIO", "device": "ASIO Link Pro", "bufferSize": 512})
+		check("ASIO Link Pro 缓冲区 512 应用", reqErr == nil && r.OK, errText(r, reqErr))
+		r, reqErr = c.request("currentSummary", nil)
+		summaryOK := reqErr == nil && r != nil && r.OK && contains(string(r.Result), "buffer=512")
+		check("currentSummary 反映新缓冲", summaryOK, errText(r, reqErr))
+		r, reqErr = c.request("applySetup", map[string]interface{}{"driver": "Windows Audio"})
+		check("切回系统默认设备", reqErr == nil && r.OK, errText(r, reqErr))
+	} else {
+		fmt.Println("[跳过] 未枚举到 ASIO Link Pro，跳过慢驱动实机切换检查")
+	}
 
 	// 6) applySetup 空参数回环（不做机器相关的硬件假设）
 	r, reqErr = c.request("applySetup", map[string]interface{}{})
@@ -439,6 +465,50 @@ func main() {
 	check("Midi noteOff 帧写入（第二音）", err == nil, fmt.Sprintf("err=%v", err))
 	r, reqErr = c.request("ping", nil)
 	check("MIDI 帧后连接仍健康", reqErr == nil && r.OK, errText(r, reqErr))
+
+	// 8.55) panic 卡音逃生口：卡住的音符必须有全停止恢复手段
+	r, reqErr = c.request("panic", nil)
+	check("panic 应答", reqErr == nil && r.OK, errText(r, reqErr))
+	r, reqErr = c.request("ping", nil)
+	check("panic 后连接仍健康", reqErr == nil && r.OK, errText(r, reqErr))
+
+	// 8.57) setTrackVoice 内置波形声部（合成波音色的原生渲染路径，不依赖
+	// SF2）。切 track 31（演奏专用轨）→ 发 MIDI 帧 → 连接保持健康；
+	// 越界轨必须报错而非静默
+	r, reqErr = c.request("setTrackVoice", map[string]interface{}{
+		"track": 31, "wave": "sawtooth", "attack": 0.01, "decay": 0.15,
+		"sustain": 0.6, "release": 0.25, "cutoff": 8000.0, "resonance": 1.0, "gain": 0.7,
+	})
+	check("setTrackVoice 波形声部切换（track 31）", reqErr == nil && r.OK, errText(r, reqErr))
+	// 真出声验证：波形声部 noteOn 后该轨峰值电平必须非零（render 全零=静音回归）。
+	// 走新线格式 [track][status][d1][d2]（旧 3 字节格式隐式 track 0）
+	err = c.writeFrame(0x04, []byte{31, 0x90, 69, 127}) // noteOn track31 A4 强奏
+	check("波形声部 Midi noteOn 帧写入", err == nil, fmt.Sprintf("err=%v", err))
+	time.Sleep(400 * time.Millisecond)
+	r, reqErr = c.request("getLevels", nil)
+	lv31 := 0.0
+	if reqErr == nil && r != nil && r.OK {
+		if m := jsonLoose(r.Result); m != nil {
+			if arr, ok := m["levels"].([]interface{}); ok && len(arr) > 31 {
+				lv31, _ = arr[31].(float64)
+			}
+		}
+	}
+	check(fmt.Sprintf("波形声部真实渲染（track31 峰值 %.3f）", lv31), lv31 > 0.01,
+		"内置波形声部无输出——合成波音色原生路径静音")
+	err = c.writeFrame(0x04, []byte{31, 0x80, 69, 0}) // noteOff 防声部悬挂
+	check("波形声部 Midi noteOff 帧写入", err == nil, fmt.Sprintf("err=%v", err))
+	r, reqErr = c.request("setTrackVoice", map[string]interface{}{"track": 99, "wave": "sine"})
+	check("setTrackVoice 越界轨报错", reqErr == nil && r != nil && !r.OK, errText(r, reqErr))
+	r, reqErr = c.request("ping", nil)
+	check("波形声部后连接仍健康", reqErr == nil && r.OK, errText(r, reqErr))
+	// 恢复 SF2 模式：验证两种声源互斥切换不破坏后续渲染路径
+	if _, statErr := os.Stat("Library/soundfonts/PianoteqTest.sf2"); statErr == nil {
+		if absSF, absErr := filepath.Abs("Library/soundfonts/PianoteqTest.sf2"); absErr == nil {
+			r, reqErr = c.request("loadSoundFont", map[string]interface{}{"path": absSF, "track": 31})
+			check("波形→SF2 模式互斥切换", reqErr == nil && r.OK, errText(r, reqErr))
+		}
+	}
 
 	// 8.6) 真实 SF2 加载（文件存在时）：守护器启动即自动加载默认音色，
 	// 此处验证引擎对真实文件解析成功（tsf 渲染路径打通的前置条件）

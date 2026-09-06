@@ -79,6 +79,28 @@ func versionSegments(v string) []int {
 	return segs
 }
 
+// IsValidVersionString 版本号是否可安全用于文件名：仅允许数字与点
+// （可选 v 前缀），且每段必须非空（拒绝 ".." 之类纯点串）。
+// 清单来自远程，未消毒的版本号拼入落盘路径会构成路径穿越。
+func IsValidVersionString(v string) bool {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(strings.ToLower(v), "v")
+	if v == "" {
+		return false
+	}
+	for _, seg := range strings.Split(v, ".") {
+		if seg == "" {
+			return false
+		}
+		for _, r := range seg {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // Client 更新清单拉取客户端（带进程内缓存与降级）
 type Client struct {
 	url      string

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"aimidi/internal/update"
 )
@@ -137,5 +139,100 @@ func TestUpdateCheckFailOpen(t *testing.T) {
 	}
 	if out.Available || !out.CheckFailed {
 		t.Fatalf("清单不可达应 fail-open: %+v", out)
+	}
+}
+
+// TestUpdateApplyDownloadSurvivesRequestReturn 应用内下载必须独立于
+// apply 请求的生命周期存活：req.Context() 在 handler 返回后即被取消，
+// 此前把请求上下文传给下载器导致「立即更新」必失败（context canceled）。
+func TestUpdateApplyDownloadSurvivesRequestReturn(t *testing.T) {
+	// 慢速下载源：3 块 × 64KB，确保 apply 返回时下载仍在进行
+	payload := strings.Repeat("A", 64*1024)
+	dl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)*3))
+		for i := 0; i < 3; i++ {
+			_, _ = w.Write([]byte(payload))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(80 * time.Millisecond)
+		}
+	}))
+	defer dl.Close()
+
+	r := NewRouter(nil, nil)
+	installTestManifest(t, r, `{"version":"99.0.0","mandatory":false,`+
+		`"downloads":{"windows":"`+dl.URL+`/e.exe","linux":"`+dl.URL+`/t.gz"}}`)
+
+	// 下载落盘与执行均注入测试替身（不真跑安装包、不写用户缓存目录）
+	destDir := t.TempDir()
+	prevDir := updateDownloadDir
+	updateDownloadDir = func() string { return destDir }
+	t.Cleanup(func() { updateDownloadDir = prevDir })
+	r.updater.downloader = update.NewDownloader(func(string) error { return nil })
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/update/apply", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("apply 请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("apply 应返回 200, got %d", resp.StatusCode)
+	}
+
+	// handler 已返回（请求上下文已取消）：轮询进度必须走到 completed 而非 failed
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		presp, err := http.Get(ts.URL + "/api/update/progress")
+		if err != nil {
+			t.Fatalf("progress 请求失败: %v", err)
+		}
+		var p struct {
+			State      string `json:"state"`
+			Error      string `json:"error"`
+			Downloaded int64  `json:"downloaded"`
+			Total      int64  `json:"total"`
+		}
+		err = json.NewDecoder(presp.Body).Decode(&p)
+		presp.Body.Close()
+		if err != nil {
+			t.Fatalf("解析 progress 失败: %v", err)
+		}
+		if p.State == "failed" {
+			t.Fatalf("下载在请求返回后不应失败（此前的 context canceled 回归）: %s", p.Error)
+		}
+		if p.State == "completed" || p.State == "launched" {
+			if p.Total != int64(len(payload)*3) {
+				t.Fatalf("完成时 Total 应为完整大小: %d", p.Total)
+			}
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatalf("下载未在超时内完成，最后状态: %+v", r.updater.downloader.Snapshot())
+}
+
+// TestUpdateApplyRejectsBadVersion 清单版本号含路径分隔符时拒绝（防路径穿越）
+func TestUpdateApplyRejectsBadVersion(t *testing.T) {
+	dl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {}))
+	defer dl.Close()
+
+	r := NewRouter(nil, nil)
+	installTestManifest(t, r, `{"version":"99.0.0/../evil","downloads":{"windows":"`+dl.URL+`/e.exe"}}`)
+	r.updater.downloader = update.NewDownloader(nil)
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/update/apply", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("apply 请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("含路径分隔符的版本号应被拒绝, got %d", resp.StatusCode)
 	}
 }

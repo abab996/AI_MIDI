@@ -99,9 +99,19 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 ### 4.5 `testTone`
 三角波测试音开关（M1 验收用），带电平渐变防咔哒声。
 | | |
-|---|---|---|
+|---|---|
 | params | `{"on":true,"freq?":440.0}`（freq 合法域 20–20000 Hz，越界保持原值） |
 | result | `{"on":true}` |
+
+### 4.5a `panic`
+全音符停止（卡音逃生口）：丢 note-off、音色热切换、后端切换都可能留下
+持续发声的音符，此方法让全部轨道按自然 release 停音（每轨对 16 通道发
+`note_off_all`，经事件环投递）。
+| | |
+|---|---|
+| params | `{}` |
+| result | `{}` |
+| 说明 | 管道线程直接执行（与实时音符同一生产者，保持事件环单生产者纪律）；前端入口为 `EngineBridge.panic()` / `POST /api/audio/panic` |
 
 ### 4.6 `loadSoundFont`（M2）
 | | |
@@ -115,6 +125,13 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 |---|---|
 | params | `{"track":0,"gain":1.0,"pan":0.0,"mute":false,"solo":false,"active":true}`（track 0–31） |
 | result | `{}` |
+
+### 4.6a `setTrackVoice`（内置波形声部）
+| | |
+|---|---|
+| params | `{"track":0,"wave":"sawtooth","attack":0.01,"decay":0.15,"sustain":0.6,"release":0.25,"cutoff":8000,"resonance":1.0,"gain":0.7}`（track 0–31；wave ∈ sine/triangle/square/sawtooth；attack/decay/release 单位秒，sustain 0–1，cutoff Hz，gain 总增益） |
+| result | `{}`；track 越界返回错误文本 |
+| 说明 | 在 JUCE 消息线程执行。把该轨切到**内置波形声部**（PolyBLEP 振荡器 + 指数 ADSR + 每声部 lowpass，参数语义与前端 WebAudio SynthEngine 一致），**不依赖 SF2**——合成波音色在音频引擎模式下的原生渲染路径。与 `loadSoundFont` 互斥：任一成功都会撤下另一模式的声源（正响音符随之停止）。钢琴窗/实时键盘约定使用 track 31（`EngineBridge.PERF_TRACK`）专用演奏轨，编曲 synth 轨使用自身 idx；supervisor 会记录每轨声部参数并在会话重启后重放 |
 
 ### 4.7a 素材调度（M3，编曲窗音频 Clip 与离线渲染共用）
 | 方法 | params | result | 说明 |
@@ -149,6 +166,7 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 |---|---|
 | params | `{}` |
 | result | `{"opened":true}`；不支持时 `opened=false`（非错误） |
+| 说明 | `opened=true` 仅表示「已请求打开面板」（立即应答）；面板实际由引擎独立后台线程打开（含 COM 初始化），**本请求不再被驱动的模态循环阻塞**——此前 showControlPanel 阻塞消息线程会把管道事务与心跳一并拖住，30s 后被主进程判死杀引擎（面板改动丢失）。同一时刻只允许一个面板，重复请求会被忽略。驱动面板内改缓冲区由 JUCE resetRequest 在面板关闭后约 500ms 自动重建设备生效 |
 
 ### 4.9 `currentSummary`
 当前音频设备摘要（与 applySetup result.summary 同格式），供状态轮询。
@@ -186,7 +204,7 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 
 ## 6. 超时与其他约定
 
-- 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 15s、loadSoundFont 30s、握手 20s；ping 走 TryPing 5s）。**bounce 例外**：按渲染时长动态估算（音频时长×2 + 60s，下限 30s、上限 20min——固定 30s 会把长工程导出误判为会话失效并杀掉渲染中的引擎，v3.0.3 修复）；
+- 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 60s（此前 15s 会把 ASIO Link Pro 等 10–20s+ 的慢首开误判为卡死）、loadSoundFont 30s、setTrackVoice 10s、握手 20s；ping 走 TryPing 5s）。**bounce 例外**：按渲染时长动态估算（音频时长×2 + 60s，下限 30s、上限 20min——固定 30s 会把长工程导出误判为会话失效并杀掉渲染中的引擎，v3.0.3 修复）；
 - 引擎对畸形 JSON 不回复（请求方靠超时兜底），后续版本可在 Response 中引入显式 parse error；
 - 心跳由**主进程侧**负责：TryPing 每 2s 一次（会话事务忙时跳过），连续失败 15 次（最坏 30–105s）判会话失效重建——阈值刻意宽松以容忍 ASIO 慢驱动首开（10–20s）；真崩溃由进程退出通道秒级检测，不走心跳；
 - 本协议不含鉴权。本地信任边界收紧（客户端 PID 校验/DACL）列入 M5 前加固项。
@@ -194,3 +212,4 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 ## 修订记录
 
 - **2026-09-05（v3.0.3）**：线格式不变。行为修订三处——① `bounce` 改消息线程异步执行（对齐 `scheduleSamples`）；② bounce 超时改按渲染时长动态估算（30s–20min）；③ 帧长上限 16 MiB 改为**收发两侧均校验**（此前仅接收侧校验）。另 PipeServer 断开时序改为「先锁内置空句柄再 CloseHandle」（消除对已关闭/复用句柄写入的竞态），不影响协议语义。
+- **2026-09-05（波形声部与 ASIO 修复，随下一版本发布）**：新增 `setTrackVoice`（§4.6a，内置波形声部，与 loadSoundFont 互斥）；`openControlPanel` 改为立即应答 + 后台线程打开（§4.8）；applySetup 超时 15s→60s。主进程新增 `soundfont_loaded` 状态字段（/api/audio/status）。

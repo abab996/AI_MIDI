@@ -119,6 +119,20 @@ func main() {
 				config.OutputDir,
 				config.LoadSettings().MaterialDirs
 		},
+		// 冷启动重放把音频设置回滚到默认设备时持久化：否则每次启动都会
+		// 重演「重放坏设置 → 卡死 → 回滚」（驱动卡死类故障的冷启动假死）
+		OnAudioFallback: func(a engine.AudioSettings) {
+			s := config.LoadSettings()
+			if s.Audio == a {
+				return
+			}
+			s.Audio = a
+			if err := config.SaveSettings(s); err != nil {
+				slog.Warn("[engine] 回滚音频设置落盘失败", "err", err)
+			} else {
+				slog.Info("[engine] 已将回滚后的音频设置写入 settings.json")
+			}
+		},
 	}, audioSettings)
 	engine.SetGlobal(engineSup)
 	engineSup.Start()

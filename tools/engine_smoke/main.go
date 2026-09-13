@@ -510,6 +510,32 @@ func main() {
 		}
 	}
 
+	// 8.58) setTrackPreset SF2 预设选择（多预设音色库，§4.6b）
+	r, reqErr = c.request("setTrackPreset", map[string]interface{}{"track": 30, "bank": 0, "program": 0})
+	check("setTrackPreset 无音色轨应报错", reqErr == nil && r != nil && !r.OK, errText(r, reqErr))
+	if sfPath, sfErr := filepath.Abs("Library/soundfonts/PianoteqTest.sf2"); sfErr == nil {
+		if _, statErr := os.Stat(sfPath); statErr == nil {
+			r, reqErr = c.request("loadSoundFont", map[string]interface{}{"path": sfPath, "track": 30})
+			check("loadSoundFont 到轨 30（预设检查前置）", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+			r, reqErr = c.request("setTrackPreset", map[string]interface{}{"track": 30, "bank": 0, "program": 0})
+			check("setTrackPreset 预设 (0,0) 选择成功", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+		} else {
+			fmt.Println("[跳过] Library/soundfonts/PianoteqTest.sf2 不存在，跳过预设选择真实检查")
+		}
+	}
+	r, reqErr = c.request("setTrackPreset", map[string]interface{}{"track": 99, "bank": 0, "program": 0})
+	check("setTrackPreset 越界轨报错", reqErr == nil && r != nil && !r.OK, errText(r, reqErr))
+
+	// 8.59) click 节拍器木鱼音（引擎侧合成，§4.6c；越界轨静默忽略）
+	r, reqErr = c.request("click", map[string]interface{}{"track": 31, "high": true})
+	check("click 重拍应答", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+	r, reqErr = c.request("click", map[string]interface{}{"track": 31, "high": false})
+	check("click 弱拍应答", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+	r, reqErr = c.request("click", map[string]interface{}{"track": 99, "high": true})
+	check("click 越界轨静默（应答仍 ok）", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+	r, reqErr = c.request("ping", nil)
+	check("click 后连接仍健康", reqErr == nil && r.OK, errText(r, reqErr))
+
 	// 8.6) 真实 SF2 加载（文件存在时）：守护器启动即自动加载默认音色，
 	// 此处验证引擎对真实文件解析成功（tsf 渲染路径打通的前置条件）
 	if sfPath, sfErr := filepath.Abs("Library/soundfonts/PianoteqTest.sf2"); sfErr == nil {

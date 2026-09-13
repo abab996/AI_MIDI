@@ -1,22 +1,42 @@
 /* 原生音频引擎桥（M2）：Wails 绑定直达 supervisor，绕过 HTTP。
    available=false 时（浏览器模式/绑定缺失）调用方自动回退 Web Audio。 */
+
+/* 引擎轨位分配表（共 32 轨，0..31）：
+   0..28  编曲窗轨道（上限 28）
+   29     试听轨（编曲窗音源试听 + 编曲窗节拍器 click）
+   30     钢琴窗 SF2 / 内置钢琴弦乐（音色轨）
+   31     钢琴窗内置波形声部 / 实时键盘（PERF_TRACK） */
 (function (window) {
   "use strict";
 
   var app = window.go && window.go.app && window.go.app.App;
 
-  /* 钢琴窗/实时键盘专用引擎轨：编曲轨用 0..N（SF2/波形声部各自切换），
-     演奏路径独占 31，避免与编曲轨 0 的 SF2 互相覆盖（引擎共 32 轨） */
   var PERF_TRACK = 31;
+  var SF2_TRACK = 30;
+  var PREVIEW_TRACK = 29;
 
   var EngineBridge = {
     available: !!app,
     PERF_TRACK: PERF_TRACK,
+    SF2_TRACK: SF2_TRACK,
+    PREVIEW_TRACK: PREVIEW_TRACK,
     /* 切换轨道到内置波形声部（合成波音色的原生渲染路径，不依赖 SF2）。
        voice: {wave, attack, decay, sustain, release, cutoff, resonance, gain}。
        引擎崩溃重启后由 supervisor 重放，无需前端感知 */
     setTrackVoice: function (track, voice) {
       if (app && app.EngineSetTrackVoice) { return app.EngineSetTrackVoice(track, voice || {}); }
+      return Promise.reject(new Error("engine unavailable"));
+    },
+    /* 选择轨道 SF2 的预设（多预设音色库）：bank/program 为 General MIDI
+       编号；预设不存在由引擎侧拒绝（Promise reject） */
+    setTrackPreset: function (track, bank, program) {
+      if (app && app.EngineSetTrackPreset) { return app.EngineSetTrackPreset(track, bank, program); }
+      return Promise.reject(new Error("engine unavailable"));
+    },
+    /* 节拍器木鱼音（引擎侧合成，极短包络）：high=true 重拍 1600Hz /
+       false 弱拍 900Hz。经事件环即时触发，无 when 参数 */
+    click: function (track, high) {
+      if (app && app.EngineClick) { return app.EngineClick(track, !!high); }
       return Promise.reject(new Error("engine unavailable"));
     },
     noteOn: function (channel, key, velocity) {
@@ -120,6 +140,11 @@
     return "auto";
   };
   EngineBridge.isNativePreferred = function () {
+    /* 单一路由源：以 AudioBackend 为准（引擎模式 + state ready）。
+       引擎模式下绝不回退 WebAudio（严格路由） */
+    if (window.AudioBackend && window.AudioBackend.isNativePreferred) {
+      return window.AudioBackend.isNativePreferred();
+    }
     var mode = EngineBridge.getBackend();
     if (mode === "webaudio") return false;
     if (window.__engineState && window.__engineState !== "ready") return false;

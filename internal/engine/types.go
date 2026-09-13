@@ -91,6 +91,9 @@ type EngineStatus struct {
 	// ready 只代表 IPC 通畅；SF2 轨要出声还得看这里。波形声部（setTrackVoice）
 	// 不依赖音色，不受此字段影响
 	SoundfontLoaded bool `json:"soundfont_loaded"`
+	// 音色目录首个 SF2 的绝对路径（内置 piano/strings 在引擎模式的原生映射
+	// 目标）；空 = 未安装内置音色库
+	DefaultSoundfont string `json:"default_soundfont,omitempty"`
 }
 
 // Event 引擎推送的事件

@@ -261,6 +261,12 @@
 
   PianoRoll.prototype.close = function () {
     if (!this.drawerEl) return;
+    /* 关闭前先停录制：此前只 stopPlayback，录制中关抽屉会把按键/音符
+       继续写进 activeRecordNotes——重新打开后出现"隐形录制"的幽灵音符 */
+    if (this.isRecording) {
+      this.stopRecording();
+      if (window.UI && UI.toast) UI.toast("⏹ 录制已停止（卷帘已关闭）", "warn");
+    }
     this.stopPlayback();
     this.isOpen = false;
     this.setFocus(false);
@@ -639,7 +645,18 @@
       this.synth.setWaveform(wave);
       this.synth.noteOn(midiNote, velocity, when);
     } else if (this.soundSource.indexOf("sf2_") === 0) {
-      // 完整 id 直传：SF2 预设 id 是 "sf2_bank_program_idx"（soundfont.js
+      // 引擎模式：SF2/内置音色走专用引擎轨 30（严格，不降级）。
+      // 未就绪静默（播放门控已拦截），音源加载失败静默（已 toast）
+      if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
+        if (!window.AudioBackend.isEngineReady()) return;
+        var st = this._engineSf2Prepare();
+        if (st === "failed") return;
+        try {
+          window.EngineBridge.noteOnTrack((window.EngineBridge.SF2_TRACK) || 30, midiNote, Math.round(velocity !== undefined ? velocity : 100));
+        } catch (e) {}
+        return;
+      }
+      // webaudio：完整 id 直传。SF2 预设 id 是 "sf2_bank_program_idx"（soundfont.js
       // 生成），此前 replace("sf2_","") 剥成 "bank_program_idx" 后
       // setPreset 永远找不到 → 音色不变（弹的还是内置钢琴）甚至无声；
       // 内置名 "sf2_piano"/"sf2_strings" 由 setPreset 内部剥前缀匹配
@@ -651,6 +668,101 @@
   PianoRoll.prototype.stopNoteSound = function (midiNote, when) {
     this.synth.noteOff(midiNote, when);
     this.soundfont.noteOff(midiNote, when);
+    // 引擎模式：SF2 轨 30 收音（synth 轨 31 由 synth.noteOff 处理）
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine() && window.EngineBridge) {
+      try { window.EngineBridge.noteOffTrack((window.EngineBridge.SF2_TRACK) || 30, midiNote); } catch (e) {}
+    }
+  };
+
+  /* ═══════════ 引擎模式 SF2 轨（30）准备状态机 ═══════════
+     首次/切换音源时异步 loadSoundFontTrack(30) + setTrackPreset(30)；
+     pending 期间直发（首音瞬态可接受），failed 后 3s 冷却重试。
+     严格路由：失败绝不回退 WebAudio——该音源标记不可用 + toast 提示 */
+  PianoRoll.prototype._engineSf2Prepare = function () {
+    var key = this.soundSource;
+    if (this._sf2EngineKey === key) {
+      if (this._sf2EngineReady) return "ready";
+      if (this._sf2EngineFailed) {
+        if (this._sf2EngineFailAt && Date.now() < this._sf2EngineFailAt) return "failed";
+        this._sf2EngineFailed = false;   // 冷却结束：重新尝试
+      } else {
+        return "pending";
+      }
+    }
+    // 首次/切换：异步准备轨 30
+    this._sf2EngineKey = key;
+    this._sf2EngineReady = false;
+    this._sf2EngineFailed = false;
+    this._sf2EnginePending = true;
+    this._sf2EnginePrepareAsync(key);
+    /* 加载中提示（仅首次；切换音源后复位，冷却重试不重复） */
+    if (!this._sf2EngineLoadNotified) {
+      this._sf2EngineLoadNotified = true;
+      if (window.UI && UI.toast) UI.toast("⏳ 音色加载中…", "ok");
+    }
+    return "pending";
+  };
+
+  PianoRoll.prototype._sf2EnginePrepareAsync = function (key) {
+    var self = this;
+    var trk = (window.EngineBridge && window.EngineBridge.SF2_TRACK) || 30;
+    var bank = 0, program = 0;
+    var finish = function (ok, msg) {
+      self._sf2EnginePending = false;
+      self._sf2EngineReady = ok;
+      self._sf2EngineFailed = !ok;
+      if (!ok) {
+        self._sf2EngineFailAt = Date.now() + 3000;
+        /* 失败提示节流：同一音源只弹一次，冷却重试期间不刷屏 */
+        if (!self._sf2EngineFailNotified && window.UI && UI.toast) {
+          self._sf2EngineFailNotified = true;
+          UI.toast(msg || "✗ 引擎加载音色失败", "err");
+        }
+      } else {
+        self._sf2EngineFailNotified = false;
+      }
+    };
+    if (key === "sf2_piano" || key === "sf2_strings") {
+      // 内置音色映射随包 GeneralUser GS：(0,0) Stereo Grand / (0,48) Stereo Strings Fast
+      program = key === "sf2_piano" ? 0 : 48;
+      fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (j) {
+        var path = j && j.default_soundfont;
+        if (!path) { finish(false, "✗ 缺少内置音色库（引擎模式），请在音色目录放置 SF2"); return; }
+        self._engineSf2Load(trk, path, bank, program, finish);
+      }).catch(function () { finish(false, "✗ 获取引擎状态失败"); });
+      return;
+    }
+    // 自定义 SF2：优先从解析结果取 bank/program，id 兜底解析
+    var preset = null;
+    if (this.soundfont && this.soundfont.loadedPresets) {
+      for (var i = 0; i < this.soundfont.loadedPresets.length; i++) {
+        if (this.soundfont.loadedPresets[i] && this.soundfont.loadedPresets[i].id === key) { preset = this.soundfont.loadedPresets[i]; break; }
+      }
+    }
+    if (preset) { bank = preset.bank || 0; program = preset.program || 0; }
+    else {
+      var parts = key.replace(/^sf2_/, "").split("_");
+      bank = parseInt(parts[0], 10) || 0;
+      program = parseInt(parts[1], 10) || 0;
+    }
+    if (!this._sf2DiskPath) { finish(false, "✗ 音源缺少磁盘路径，无法在引擎模式加载"); return; }
+    this._engineSf2Load(trk, this._sf2DiskPath, bank, program, finish);
+  };
+
+  PianoRoll.prototype._engineSf2Load = function (trk, path, bank, program, finish) {
+    window.EngineBridge.loadSoundFont(path, trk)
+      .then(function () {
+        return window.EngineBridge.setTrackPreset(trk, bank, program).catch(function () {
+          // 预设不存在：回退该文件预设 0 并提示
+          return window.EngineBridge.setTrackPreset(trk, 0, 0).then(function () {
+            if (window.UI && UI.toast) UI.toast("⚠ 预设不存在，已用该音色库首个预设", "warn");
+          });
+        });
+      })
+      .then(function () { finish(true); })
+      .catch(function (e) {
+        finish(false, "✗ 引擎加载音色失败: " + ((e && e.message) || "引擎不可用"));
+      });
   };
 
   /** 原生音符精确调度（JUCE 演奏轨直通）。timer 集中登记，停止时统一
@@ -734,6 +846,15 @@
     }
 
     this.pushHistory(); // 录制前历史快照，支持 Ctrl+Z 撤销
+
+    /* 引擎模式播放门控（严格路由）：未就绪不进入录音状态机——
+       此前 isRecording 先于 startPlayback 置位，门控 return 后按钮点亮、
+       音符照录、全程无声且状态卡死（假录音） */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
+        && !window.AudioBackend.isEngineReady()) {
+      if (window.UI && UI.toast) UI.toast("✗ 音频引擎未就绪，录制不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+      return;
+    }
 
     // 如果开启了覆盖模式 (Replace Mode)
     if (this.recordConfig.replaceMode) {
@@ -899,6 +1020,13 @@
       if (this._schedTimer) { clearInterval(this._schedTimer); this._schedTimer = null; }
       this.stopAllSounds();
     }
+    /* 引擎模式播放门控（严格路由）：引擎未就绪不播放、不静默回退——
+       明确提示并跳转设置页由用户决策 */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
+        && !window.AudioBackend.isEngineReady()) {
+      if (window.UI && UI.toast) UI.toast("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+      return;
+    }
     this.synth.resume();
     this.soundfont.resume();
     this.synth.init();
@@ -1001,6 +1129,15 @@
 
   PianoRoll.prototype._scheduleTick = function () {
     if (!this.isPlaying) return;
+    /* 引擎模式播放中引擎掉线（崩溃/重启）：自动停止并提示（严格路由，
+       不无声空转——徽章轮询 5s 才翻转，这里每 25ms 即检） */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
+        && window.__engineState && window.__engineState !== "ready") {
+      this.stopPlayback();
+      if (window.EngineBridge && window.EngineBridge.panic) { try { window.EngineBridge.panic().catch(function(){}); } catch (e) {} }
+      if (window.UI && UI.toast) UI.toast("⚠ 音频引擎已中断，播放已停止（引擎恢复后可重新播放）", "warn");
+      return;
+    }
     var horizonPos = (this._audioNow() + 0.15 - this._schedCtxTime) * (this.bpm / 60);
     if (horizonPos <= this._schedPos) return;
 
@@ -1040,6 +1177,7 @@
         // _ensureNativeVoice 同步声部参数（签名不变时为 no-op）并兼作
         // 降级判定：setTrackVoice 失败即回退 WebAudio
         var useNative = false;
+        var useNativeSf2 = false;
         try {
           // 播放路径同步波形：setWaveform 只在 playNoteSound（实时演奏/
           // WebAudio 回放）里调用，原生分支不经它——不在此同步的话切
@@ -1052,9 +1190,17 @@
           useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred()
             && this.soundSource && this.soundSource.indexOf("synth_") === 0
             && this.synth && this.synth._ensureNativeVoice && this.synth._ensureNativeVoice();
+          // 引擎模式：SF2/内置音色走引擎轨 30（pending 也直发，首音瞬态
+          // 可接受；failed 静音不回退——严格路由）
+          if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
+              && this.soundSource && this.soundSource.indexOf("sf2_") === 0) {
+            useNativeSf2 = this._engineSf2Prepare() !== "failed";
+          }
         } catch(e) {}
-        if (useNative) {
-          var trk = (window.EngineBridge && window.EngineBridge.PERF_TRACK) || 0;
+        if (useNative || useNativeSf2) {
+          var trk = useNativeSf2
+            ? ((window.EngineBridge && window.EngineBridge.SF2_TRACK) || 30)
+            : ((window.EngineBridge && window.EngineBridge.PERF_TRACK) || 0);
           this._schedNativeNote(pNum, n.velocity || 100, when, durSec, trk);
         } else {
           this.playNoteSound(pNum, n.velocity, when);
@@ -2458,128 +2604,78 @@
 
       // 仅当卷帘聚焦时拦截快捷键
       if (self.isFocused) {
-        // 1. FL Studio 组合快捷键 (无论是否开启键盘弹奏模式，始终生效)
-        // FL Studio 经典重做快捷键: Ctrl+Alt+Z
-        if (e.ctrlKey && e.altKey && !e.shiftKey) {
-          if (e.code === "KeyZ") {
-            e.preventDefault();
-            self.redo();
-            return;
-          }
-        }
+        /* 快捷键查表（Shortcuts 注册表，设置页可自定义）。
+           组合键与编辑键在键盘弹奏模式下不挂起（不影响弹奏键区）； */
+        var K = window.Shortcuts;
 
-        // 现代 DAW 重做快捷键: Ctrl+Shift+Z
-        if (e.ctrlKey && e.shiftKey && !e.altKey) {
-          if (e.code === "KeyZ") {
-            e.preventDefault();
-            self.redo();
-            return;
-          }
+        if (K && K.matches(e, "piano.redo")) { e.preventDefault(); self.redo(); return; }
+        if (K && K.matches(e, "piano.undo")) { e.preventDefault(); self.undo(); return; }
+        if (K && K.matches(e, "piano.toggleTyping")) { e.preventDefault(); self.toggleTypingKeyboard(); return; }
+        if (K && K.matches(e, "piano.selectAll")) {
+          e.preventDefault();
+          var tabAll = self.getActiveTab();
+          if (tabAll) { self.selectedNotes = tabAll.notes.slice(); self.render(); self.showHUD("全选 (Select All)"); }
+          return;
         }
-
-        if (e.ctrlKey && !e.altKey && !e.shiftKey) {
-          if (e.code === "KeyT") {
-            e.preventDefault();
-            self.toggleTypingKeyboard();
-            return;
-          }
-          if (e.code === "KeyA") {
-            e.preventDefault();
-            var tab = self.getActiveTab();
-            if (tab) { self.selectedNotes = tab.notes.slice(); self.render(); self.showHUD("全选 (Select All)"); }
-            return;
-          }
-          if (e.code === "KeyD") {
-            e.preventDefault();
-            self.selectedNotes = [];
+        if (K && K.matches(e, "piano.deselect")) {
+          e.preventDefault();
+          self.selectedNotes = [];
+          self.render();
+          self.showHUD("取消选择 (Deselect)");
+          return;
+        }
+        if (K && K.matches(e, "piano.invertSelect")) {
+          e.preventDefault();
+          var tabInv = self.getActiveTab();
+          if (tabInv) {
+            self.selectedNotes = tabInv.notes.filter(function (n) { return self.selectedNotes.indexOf(n) === -1; });
             self.render();
-            self.showHUD("取消选择 (Deselect)");
-            return;
+            self.showHUD("反选 (Invert Selection)");
           }
-          if (e.code === "KeyI") {
-            e.preventDefault();
-            var tabI = self.getActiveTab();
-            if (tabI) {
-              self.selectedNotes = tabI.notes.filter(function (n) { return self.selectedNotes.indexOf(n) === -1; });
-              self.render();
-              self.showHUD("反选 (Invert Selection)");
-            }
-            return;
-          }
-          if (e.code === "KeyB") {
-            e.preventDefault();
-            self.duplicateSelectionRight();
-            return;
-          }
-          if (e.code === "KeyQ") {
-            e.preventDefault();
-            self.quickQuantize();
-            return;
-          }
-          if (e.code === "KeyL") {
-            e.preventDefault();
-            self.quickLegato();
-            return;
-          }
-          if (e.code === "ArrowUp") {
-            e.preventDefault();
-            self.transposeSelection(12);
-            return;
-          }
-          if (e.code === "ArrowDown") {
-            e.preventDefault();
-            self.transposeSelection(-12);
-            return;
-          }
-          if (e.code === "KeyR") {
-            e.preventDefault();
-            self.toggleRecord();
-            return;
-          }
-          if (e.code === "KeyZ") { e.preventDefault(); self.undo(); return; }
-          if (e.code === "KeyY") { e.preventDefault(); self.redo(); return; }
-          if (e.code === "KeyC") { e.preventDefault(); self.copySelection(); return; }
-          if (e.code === "KeyV") { e.preventDefault(); self.pasteSelection(); return; }
-          if (e.code === "KeyX") { e.preventDefault(); self.cutSelection(); return; }
+          return;
         }
+        if (K && K.matches(e, "piano.duplicateNext")) { e.preventDefault(); self.duplicateSelectionRight(); return; }
+        if (K && K.matches(e, "piano.quickQuantize")) { e.preventDefault(); self.quickQuantize(); return; }
+        if (K && K.matches(e, "piano.legato")) { e.preventDefault(); self.quickLegato(); return; }
+        if (K && K.matches(e, "piano.transposeUp12")) { e.preventDefault(); self.transposeSelection(12); return; }
+        if (K && K.matches(e, "piano.transposeDown12")) { e.preventDefault(); self.transposeSelection(-12); return; }
+        if (K && K.matches(e, "piano.record")) { e.preventDefault(); self.toggleRecord(); return; }
+        if (K && K.matches(e, "piano.copy")) { e.preventDefault(); self.copySelection(); return; }
+        if (K && K.matches(e, "piano.paste")) { e.preventDefault(); self.pasteSelection(); return; }
+        if (K && K.matches(e, "piano.cut")) { e.preventDefault(); self.cutSelection(); return; }
 
         // 2. 单键快捷键 (当开启键盘 MIDI 弹奏时挂起失效，关闭时恢复生效)
         if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
           if (self.isTypingKeyboard) {
             // 键盘弹奏模式已启动：字母键分配给 MIDI 演奏，单键工具快捷键全部屏蔽
-            if (e.code === "Space") { e.preventDefault(); self.togglePlay(); return; }
-            if (e.code === "Escape") { e.preventDefault(); self.escapeAction(); return; }
+            if (K && K.matches(e, "piano.playPause")) { e.preventDefault(); self.togglePlay(); return; }
+            if (e.key === "Escape") { e.preventDefault(); self.escapeAction(); return; }
             return;
           }
 
-          var key = e.code.toUpperCase();
-          if (key === "KEYP") { e.preventDefault(); self.setTool("draw"); return; }
-          if (key === "KEYB") { e.preventDefault(); self.setTool("paint"); return; }
-          if (key === "KEYD") { e.preventDefault(); self.setTool("erase"); return; }
-          if (key === "KEYC") { e.preventDefault(); self.setTool("slice"); return; }
-          if (key === "KEYE") { e.preventDefault(); self.setTool("select"); return; }
-          if (key === "KEYT") { e.preventDefault(); self.setTool("mute"); return; }
-          if (key === "KEYZ") { e.preventDefault(); self.setTool("zoom"); return; }
-          if (key === "SPACE") { e.preventDefault(); self.togglePlay(); return; }
-          if (key === "ESCAPE") { e.preventDefault(); self.escapeAction(); return; }
+          if (K && K.matches(e, "piano.toolDraw")) { e.preventDefault(); self.setTool("draw"); return; }
+          if (K && K.matches(e, "piano.toolPaint")) { e.preventDefault(); self.setTool("paint"); return; }
+          if (K && K.matches(e, "piano.toolErase")) { e.preventDefault(); self.setTool("erase"); return; }
+          if (K && K.matches(e, "piano.toolSlice")) { e.preventDefault(); self.setTool("slice"); return; }
+          if (K && K.matches(e, "piano.toolSelect")) { e.preventDefault(); self.setTool("select"); return; }
+          if (K && K.matches(e, "piano.toolMute")) { e.preventDefault(); self.setTool("mute"); return; }
+          if (K && K.matches(e, "piano.toolZoom")) { e.preventDefault(); self.setTool("zoom"); return; }
+          if (K && K.matches(e, "piano.playPause")) { e.preventDefault(); self.togglePlay(); return; }
+          if (e.key === "Escape") { e.preventDefault(); self.escapeAction(); return; }
         }
 
-        if (e.altKey && !e.ctrlKey) {
-          if (e.code === "KeyX") { e.preventDefault(); self.openLevelScaleModal(); return; }
-          if (e.code === "KeyS") { e.preventDefault(); self.openStrumModal(); return; }
-          if (e.code === "KeyA") { e.preventDefault(); self.openArpModal(); return; }
-          if (e.code === "KeyR") { e.preventDefault(); self.openRandomModal(); return; }
-          if (e.code === "KeyY") { e.preventDefault(); self.openFlipModal(); return; }
-          if (e.code === "KeyQ") { e.preventDefault(); self.openQuantizeModal(); return; }
-          if (e.code === "KeyL") { e.preventDefault(); self.quickLegato(); return; }
-        }
+        if (K && K.matches(e, "piano.levelScale")) { e.preventDefault(); self.openLevelScaleModal(); return; }
+        if (K && K.matches(e, "piano.strum")) { e.preventDefault(); self.openStrumModal(); return; }
+        if (K && K.matches(e, "piano.arpeggio")) { e.preventDefault(); self.openArpModal(); return; }
+        if (K && K.matches(e, "piano.randomize")) { e.preventDefault(); self.openRandomModal(); return; }
+        if (K && K.matches(e, "piano.flip")) { e.preventDefault(); self.openFlipModal(); return; }
+        if (K && K.matches(e, "piano.quantizeDialog")) { e.preventDefault(); self.openQuantizeModal(); return; }
 
-        if (e.shiftKey && !e.ctrlKey && !e.altKey) {
-          if (e.code === "ArrowUp") { e.preventDefault(); self.transposeSelection(1); return; }
-          if (e.code === "ArrowDown") { e.preventDefault(); self.transposeSelection(-1); return; }
-        }
+        if (K && K.matches(e, "piano.transposeUp1")) { e.preventDefault(); self.transposeSelection(1); return; }
+        if (K && K.matches(e, "piano.transposeDown1")) { e.preventDefault(); self.transposeSelection(-1); return; }
 
-        if (e.code === "Delete" || e.code === "Backspace") {
+        /* 删除：键盘弹奏模式下同样生效（与原行为一致） */
+        if (K && K.matches(e, "piano.delete")) {
           e.preventDefault();
           self.deleteSelection();
           return;
@@ -2627,7 +2723,7 @@
     }
     if (this.isTypingKeyboard) {
       this.showHUD("🎹 键盘弹奏: 已开启 (单键快捷键已挂起)");
-      if (window.UI && window.UI.toast) window.UI.toast("🎹 键盘弹奏已开启 (单键快捷键已挂起，按 Ctrl+T 可切换)", "ok");
+      if (window.UI && window.UI.toast) window.UI.toast("✓ 🎹 键盘弹奏已开启（电脑键盘即 MIDI 琴键，按 Ctrl+T 可切换）", "ok");
     } else {
       this.showHUD("🎹 键盘弹奏: 已关闭 (单键快捷键已恢复)");
       if (window.UI && window.UI.toast) window.UI.toast("🎹 键盘弹奏已关闭 (单键快捷键已恢复)", "ok");
@@ -2751,7 +2847,15 @@
      的反射不再直接收起整个工作区（多层防误触：弹窗 > 选择 > 关闭） */
   PianoRoll.prototype.escapeAction = function () {
     /* Esc 分层：弹窗（keydown 顶部 anyModalOpen 拦截）→ 下拉菜单 →
-       清选区 → 关抽屉。下拉此前只能点外部关闭，与弹层 Esc 分层惯例不一致 */
+       清选区 → 关抽屉。下拉此前只能点外部关闭，与弹层 Esc 分层惯例不一致。
+       录制菜单是裸 .select-menu（不在 .pr-dropdown 内），此前按 Esc 会
+       跳过它直接收起整个卷帘——单独纳入分层 */
+    var recMenu = document.getElementById("prRecordMenu");
+    if (recMenu && !recMenu.hidden) {
+      recMenu.hidden = true;
+      recMenu.classList.remove("menu-in");
+      return;
+    }
     var openDD = document.querySelector(".pr-dropdown.open");
     if (openDD) { this.closeAllDropdowns(); return; }
     if (this.selectedNotes && this.selectedNotes.length) {
@@ -2763,28 +2867,46 @@
     this.close();
   };
 
+  /* 弹窗焦点管理：打开记录触发元素并移入焦点（首个可聚焦控件），
+     关闭归还触发元素——对齐聊天页 restoreModalFocus 模式（此前键盘/
+     读屏用户焦点停留在画布上，Tab 在弹窗内无头绪乱跳） */
+  PianoRoll.prototype.modalFocusReturn = null;
+
   PianoRoll.prototype.openModalAnimated = function (modalEl) {
     if (!modalEl) return;
+    this.modalFocusReturn = document.activeElement;
     modalEl.hidden = false;
     modalEl.classList.remove("modal-in", "modal-out");
     void modalEl.offsetWidth;
     modalEl.classList.add("modal-in");
+    /* 移入首个可聚焦控件（输入框优先，按钮其次） */
+    var focusable = modalEl.querySelector("input, select, textarea, button, [tabindex]:not([tabindex='-1'])");
+    if (focusable) {
+      try { focusable.focus(); } catch (e) {}
+    } else {
+      try { modalEl.focus && modalEl.focus(); } catch (e) {}
+    }
   };
 
   PianoRoll.prototype.closeModalAnimated = function (modalEl) {
     if (!modalEl) return;
     modalEl.classList.remove("modal-in");
     modalEl.classList.add("modal-out");
+    var returnEl = this.modalFocusReturn;
+    this.modalFocusReturn = null;
     setTimeout(function () {
       modalEl.hidden = true;
       modalEl.classList.remove("modal-out");
+      /* 关闭后焦点归还触发元素（若仍存在且可聚焦） */
+      if (returnEl && returnEl.focus && document.contains(returnEl)) {
+        try { returnEl.focus(); } catch (e) {}
+      }
     }, 220);
   };
 
   /* 本窗口管理的全部模态弹窗（Esc 分层关闭 / 弹窗开启时挂起快捷键） */
   PianoRoll.prototype.prModalIds = [
-    "notePropModal", "levelScaleModal", "strumModal",
-    "prShortcutsModal", "soundLibModalOverlay"
+    "notePropModal", "levelScaleModal", "strumModal", "soundLibModalOverlay"
   ];
 
   PianoRoll.prototype.closeTopModal = function () {
@@ -2888,17 +3010,6 @@
     }
     if (stCancel && stModal) {
       stCancel.addEventListener("click", function () { self.closeModalAnimated(stModal); });
-    }
-
-    // 快捷键帮助弹窗
-    var helpBtn = document.getElementById("prShortcutsHelpBtn");
-    var helpModal = document.getElementById("prShortcutsModal");
-    var helpClose = document.getElementById("prShortcutsClose");
-    if (helpBtn && helpModal) {
-      helpBtn.addEventListener("click", function () { self.openModalAnimated(helpModal); });
-    }
-    if (helpClose && helpModal) {
-      helpClose.addEventListener("click", function () { self.closeModalAnimated(helpModal); });
     }
 
     var soundLibClose = document.getElementById("soundLibCloseBtn");
@@ -3053,6 +3164,12 @@
       var m = wrap.querySelector(".select-menu");
       if (m) { m.hidden = true; m.classList.remove("menu-in"); }
     });
+    /* 录制菜单不在 .pr-dropdown 内，随其他下拉一并收起 */
+    var recMenu = document.getElementById("prRecordMenu");
+    if (recMenu && !recMenu.hidden) {
+      recMenu.hidden = true;
+      recMenu.classList.remove("menu-in");
+    }
   };
 
   /* ═══════════ 顶部控制栏绑定 ═══════════ */
@@ -3259,6 +3376,16 @@
         if (val.indexOf("synth_") === 0 && self.synth) {
           self.synth.setWaveform(val.replace("synth_", ""));
         }
+        // 引擎模式：SF2 音源切换后旧轨 30 状态作废，下次音符重新加载+选预设
+        if (val.indexOf("sf2_") === 0) {
+          self._sf2EngineKey = null;
+          self._sf2EngineReady = false;
+          self._sf2EnginePending = false;
+          self._sf2EngineFailed = false;
+          self._sf2EngineFailAt = 0;
+          self._sf2EngineLoadNotified = false;   // 切换音源：重新允许"加载中"提示
+          self._sf2EngineFailNotified = false;
+        }
         self.showHUD("音源: " + label);
       }
     );
@@ -3360,7 +3487,17 @@
             if (rec && rec.data) {
               var parsed = self.soundfont.parseSF2(rec.data);
               self.updateSoundSelectOptions(parsed);
-              if (window.UI && window.UI.toast) window.UI.toast("✓ 已加载音色库: " + f.name, "ok");
+              if (!parsed.presets || !parsed.presets.length) {
+                /* P2-1：空预设误导——updateSoundSelectOptions 已保持当前音源，
+                   提示文案必须如实说明未切换 */
+                if (window.UI && window.UI.toast) window.UI.toast("✗ 该文件没有可用预设，音源未切换", "err");
+              } else {
+                if (window.UI && window.UI.toast) window.UI.toast("✓ 已加载音色库: " + f.name, "ok");
+                /* 引擎模式 SF2 轨加载所需：磁盘路径 + 预设元数据（parseSF2
+                   结果已进 soundfont.loadedPresets，无需重复持有） */
+                self._sf2DiskPath = rec.diskPath || null;
+                self._sf2LibName = f.name || "";
+              }
               var modal = document.getElementById("soundLibModalOverlay");
               if (modal) self.closeModalAnimated(modal);
             } else {

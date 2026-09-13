@@ -40,6 +40,10 @@
     if (!zone) {
       zone = document.createElement("div");
       zone.className = "toast-zone";
+      /* 读屏可感知：全部 toast 经 aria-live 播报（此前屏幕阅读器
+         完全收不到任何操作反馈） */
+      zone.setAttribute("role", "status");
+      zone.setAttribute("aria-live", "polite");
       document.body.appendChild(zone);
     }
     return zone;
@@ -173,6 +177,22 @@
       if (!r.ok) return throwHttpError(r);
       return r.json();
     }).catch(friendlyError);
+  }
+
+  /* 打开外部链接（系统默认浏览器）：走后端 /api/open-url——该端点仅放行
+     本应用自己的 GitHub 链接（防开放跳转）；后端不可达/拒绝时兜底新窗口，
+     保证浏览器模式与桌面模式行为一致 */
+  function openExternal(url) {
+    return fetch("/api/open-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: String(url) }),
+    }).then(function (r) {
+      if (!r.ok) return throwHttpError(r);
+      return r.json();
+    }).catch(function () {
+      try { window.open(url, "_blank", "noopener"); } catch (e) { /* 弹窗被拦截则静默 */ }
+    });
   }
 
   /* ---- SSE 消费：POST body，逐事件回调 onEvent(obj)，结束 resolve ----
@@ -521,6 +541,7 @@
     qs: qs, qsa: qsa, toast: toast, esc: esc,
     fmtSize: fmtSize, fmtDate: fmtDate, friendlyText: friendlyText,
     getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
+    openExternal: openExternal,
     ssePost: ssePost, md: md, mdInline: mdInline, projectCard: projectCard,
     streamStart: streamStart,
     transportPrefs: getTransportPrefs,

@@ -25,6 +25,9 @@
 
   SynthEngine.prototype.init = function () {
     if (this.ctx) return;
+    /* 引擎模式不创建 WebAudio 节点（杜绝"存在即可能被用"）；
+       切到 WEBAUDIO 后首次使用时再惰性创建 */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) return;
     try {
       this.ctx = this._sharedCtx || new AudioContext();
       this.masterGain = this.ctx.createGain();
@@ -82,37 +85,57 @@
       _backendMode = mode;
       try { localStorage.setItem(BACKEND_KEY, mode); } catch (e) {}
       try { window.__engineBackend = mode; } catch(e) {}
-      // 同步到 Go（权威），失败不影响本地已生效
+      // 同步到 Go（权威），失败不影响本地已生效；返回 {ok} 供调用方提示
       try {
         return fetch("/api/audio/settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ backend: mode })
-        }).then(function (r) { return r.json(); }).catch(function () {});
-      } catch (e) { return Promise.resolve(); }
+        }).then(function (r) {
+          if (!r.ok) return { ok: false };
+          return r.json().then(function () { return { ok: true }; }).catch(function () { return { ok: true }; });
+        }).catch(function () { return { ok: false }; });
+      } catch (e) { return Promise.resolve({ ok: false }); }
     },
     isNativeAvailable: function () {
       return !!(window.EngineBridge && window.EngineBridge.available);
     },
+    /* ══ 全局唯一音频路由判定（严格化） ══
+       mode()："engine" | "webaudio"
+       - 浏览器模式（无 Wails 桥，EngineBridge.available=false）→ 恒 webaudio
+       - backend="webaudio" → webaudio
+       - backend="auto"（设置页显示为 ENGINE · 仅音频引擎）→ engine，不降级：
+         引擎未就绪/失败/声部设置失败一律不发声 + UI 提示，绝不回退 WebAudio */
+    mode: function () {
+      if (!(window.EngineBridge && window.EngineBridge.available)) return "webaudio";
+      if (_backendMode === "webaudio") return "webaudio";
+      return "engine";
+    },
+    isEngine: function () { return AudioBackend.mode() === "engine"; },
+    isWebAudio: function () { return AudioBackend.mode() === "webaudio"; },
+    isEngineReady: function () {
+      return AudioBackend.isEngine() && window.__engineState === "ready";
+    },
     isNativePreferred: function () {
-      if (_backendMode === "webaudio") return false;
-      if (window.__engineState && window.__engineState !== "ready") return false;
-      return _backendMode === "auto" && !!(window.EngineBridge && window.EngineBridge.available);
+      /* 兼容旧调用方语义：仅当引擎模式且就绪才判原生可用——
+         不再代表"可降级"，引擎模式下永不回退 WebAudio */
+      return AudioBackend.isEngineReady();
     }
   };
 
   SynthEngine.prototype._useNative = function () {
-    // 以全局 AudioBackend 为准（backend 模式 + 引擎 state ready + 桥可用）；
-    // 此前只查桥可用，引擎 failed 时实时演奏仍发原生 → 无声
-    return _backendMode === "auto"
-      && window.AudioBackend && window.AudioBackend.isNativePreferred
+    // 以全局 AudioBackend 为准（引擎模式 + state ready）；引擎模式下
+    // 永不回退 WebAudio（严格路由），此方法仅供旧调用方兼容
+    return window.AudioBackend && window.AudioBackend.isNativePreferred
       && window.AudioBackend.isNativePreferred();
   };
 
   /* 确保专用演奏轨（EngineBridge.PERF_TRACK）的内置波形声部与本实例参数
      一致（合成波音色的原生渲染路径，不依赖 SF2）。参数签名变化才重发，
      避免每个按键一次 IPC。失败按 3s 冷却重试（引擎冷启动未就绪属瞬态），
-     引擎崩溃重启后的声部恢复由 supervisor 重放兜底 */
+     引擎崩溃重启后的声部恢复由 supervisor 重放兜底。
+     引擎模式下本方法仅作"预热"（见 noteOn）：未确认期间也直发，首音
+     瞬态可接受——绝不回退 WebAudio */
   SynthEngine.prototype._ensureNativeVoice = function () {
     if (this._voiceRetryAt && Date.now() < this._voiceRetryAt) return false;
     if (!window.EngineBridge || !window.EngineBridge.setTrackVoice || !window.EngineBridge.noteOnTrack) return false;
@@ -134,16 +157,13 @@
         self._lastVoiceSig = sig;
         self._voiceRetryAt = 0;
       }).catch(function (e) {
-        console.warn("[SynthEngine] setTrackVoice 失败，3s 后重试，期间实时演奏走 WebAudio:", e);
+        console.warn("[SynthEngine] setTrackVoice 失败，3s 后重试:", e);
         self._lastVoiceSig = null;
         self._voiceRetryAt = Date.now() + 3000;
       });
     } catch (e) {
       return false;
     }
-    // 声部切换 IPC 未确认前不判定原生可用：此前立即返回 true，切换
-    // 音色后的第一下 noteOn 发往仍持旧声部的引擎轨——音色不变（延迟
-    // 几十 ms 后引擎声部才更新）。未确认期间音符走 WebAudio，音色即时正确
     return false;
   };
 
@@ -154,8 +174,26 @@
     }
   };
 
+  /* 引擎模式声部参数防抖同步：音量/滤波改动后 50ms 合并重发 setTrackVoice
+     ——即时生效（首个音符即用新参数）；参数一致时引擎侧 no-op，不打断
+     正响音符 */
+  SynthEngine.prototype._debouncedVoiceSync = function () {
+    var self = this;
+    if (this._voiceSyncTimer) clearTimeout(this._voiceSyncTimer);
+    this._voiceSyncTimer = setTimeout(function () {
+      self._voiceSyncTimer = null;
+      self._lastVoiceSig = null;   // 签名失效：强制重发
+      self._ensureNativeVoice();
+    }, 50);
+  };
+
   SynthEngine.prototype.setVolume = function (vol) {
     this.volume = Math.max(0, Math.min(1, vol));
+    /* 引擎模式：重发 setTrackVoice（声部签名含 gain） */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
+      this._debouncedVoiceSync();
+      return;
+    }
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(this.isMuted ? 0 : this.volume, this.ctx.currentTime, 0.01);
     }
@@ -164,6 +202,11 @@
   SynthEngine.prototype.setFilter = function (cutoff, res) {
     this.cutoff = Math.max(100, Math.min(20000, cutoff));
     if (res !== undefined) this.resonance = Math.max(0.1, Math.min(20, res));
+    /* 引擎模式：同 setVolume */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
+      this._debouncedVoiceSync();
+      return;
+    }
     if (this.filterNode && this.ctx) {
       this.filterNode.frequency.setTargetAtTime(this.cutoff, this.ctx.currentTime, 0.01);
       this.filterNode.Q.setTargetAtTime(this.resonance, this.ctx.currentTime, 0.01);
@@ -171,17 +214,21 @@
   };
 
   SynthEngine.prototype.noteOn = function (midiNote, velocity, when) {
-    // 原生路径仅限实时演奏（钢琴卷帘键盘）：带 when 的预调度调用
-    // （编曲引擎）不走此路——原生桥不支持 when 且每音符 IPC 往返会阻塞主线程。
-    // 走 EngineBridge.PERF_TRACK 专用演奏轨 + 内置波形声部（不依赖 SF2）
-    if (!this._forceWebAudio && when === undefined && this._useNative() && this._ensureNativeVoice()) {
+    // 引擎模式：仅原生路径（严格，不降级）。原生路径仅限实时演奏
+    // （when===undefined）：带 when 的预调度（编曲引擎）不经此路——
+    // 原生桥不支持 when 且每音符 IPC 往返会阻塞主线程。
+    // 未就绪/声部未确认时也直发（首音瞬态可接受）；引擎未 ready 由
+    // 播放门控拦截，这里兜底静默，绝不落 WebAudio
+    if (when === undefined && window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
+      if (!window.AudioBackend.isEngineReady()) return;
       try {
+        this._ensureNativeVoice();   // 预热声部（签名不变时为 no-op）
         window.EngineBridge.noteOnTrack(window.EngineBridge.PERF_TRACK, midiNote, Math.round(velocity !== undefined ? velocity : 100));
         this._nativeVoices[midiNote] = (this._nativeVoices[midiNote] || 0) + 1;
-        return;
       } catch (e) {
-        console.warn("[SynthEngine] 原生 noteOn 失败，回退 Web Audio:", e);
+        console.warn("[SynthEngine] 原生 noteOn 失败:", e);
       }
+      return;
     }
 
     this.resume();
@@ -225,8 +272,9 @@
   };
 
   SynthEngine.prototype.noteOff = function (midiNote, when) {
-    // 原生路径（仅实时演奏；编曲预调度见 noteOn 注释）——与 noteOn 同轨
-    if (!this._forceWebAudio && this._useNative() && this._nativeVoices[midiNote]) {
+    // 引擎模式：与 noteOn 同轨（严格，不降级）
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
+      if (!this._nativeVoices[midiNote]) return;
       var left = --this._nativeVoices[midiNote];
       if (left <= 0) delete this._nativeVoices[midiNote];
       try { window.EngineBridge.noteOffTrack(window.EngineBridge.PERF_TRACK, midiNote); } catch (e) {}
@@ -300,6 +348,12 @@
   SynthEngine.prototype.stopAll = function () {
     var self = this;
 
+    // 撤销未触发的引擎 click 定时器（停止后不得再有幽灵 click）
+    if (this._clickTimers) {
+      for (var ci = 0; ci < this._clickTimers.length; ci++) clearTimeout(this._clickTimers[ci]);
+      this._clickTimers = [];
+    }
+
     // 原生路径：对仍在发声的音符逐个 noteOff（与 noteOn 同轨）
     if (this._nativeVoices) {
       Object.keys(this._nativeVoices).forEach(function (note) {
@@ -332,6 +386,23 @@
 
   // 节拍器木鱼/电子 Click 音效
   SynthEngine.prototype.playClick = function (isHigh, when) {
+    /* 引擎模式：引擎侧合成 click（极短包络木鱼音）。IPC 无排程参数，
+       带 when（钢琴窗前瞻窗内调用）时按计划时刻延迟触发——此前立即
+       触发使每拍提前 0~150ms 且不均匀（抢拍）。定时器登记到
+       _clickTimers，stopAll 时统一撤销（防停止后幽灵 click） */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
+      if (!window.AudioBackend.isEngineReady()) return;
+      var self = this;
+      var fire = function () {
+        try { window.EngineBridge.click(window.EngineBridge.PERF_TRACK, !!isHigh); } catch (e) {}
+      };
+      if (when === undefined) { fire(); return; }
+      var nowMs = (window.SharedAudio ? window.SharedAudio.now() : (performance.now() / 1000)) * 1000;
+      var delayMs = Math.max(0, when * 1000 - nowMs);
+      var timer = setTimeout(fire, delayMs);
+      (this._clickTimers = this._clickTimers || []).push(timer);
+      return;
+    }
     this.resume();
     if (!this.ctx || this.isMuted) return;
 

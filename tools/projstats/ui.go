@@ -736,6 +736,8 @@ func (m *model) drawOverview(c *canvas) {
 	}
 	addKV("工作区大小", SizeStr(s.WorkSize))
 	addKV(".git 大小", SizeStr(s.GitSize))
+	addKV("总行数", fmt.Sprintf("%s 行", num(s.Totals.Total)))
+	addKV("纯代码行", fmt.Sprintf("%s 行", num(s.Totals.Code)))
 	addKV("代码文件体积", SizeStr(s.Totals.Size))
 	addKV("占工作区", fmt.Sprintf("%.1f%%", pctSize(s.Totals.Size, s.WorkSize)))
 	if s.GoVer != "" {
@@ -1086,9 +1088,10 @@ func (m *model) drawMetrics(c *canvas) {
 	rows := [][4]string{
 		{"计入统计文件", fmt.Sprintf("%d 个", s.Totals.Files), "纯代码行", num(s.Totals.Code) + " 行"},
 		{"注释行", fmt.Sprintf("%s 行 (%.1f%%)", num(s.Totals.Comment), pctOf(s.Totals.Comment, s.Totals.Total)), "空行", fmt.Sprintf("%s 行 (%.1f%%)", num(s.Totals.Blank), pctOf(s.Totals.Blank, s.Totals.Total))},
-		{"平均文件长度", fmt.Sprintf("%d 行", avg), "注释/代码比", ratio(s.Totals.Comment, s.Totals.Code)},
-		{"代码总体积", SizeStr(s.Totals.Size), "平均文件体积", SizeStr(avgSize)},
-		{"最大单文件体积", SizeStr(s.MaxFileSize), "扫描目录", fmt.Sprintf("%d 个 · 耗时 %.2f 秒", s.DirsFound, s.Elapsed.Seconds())},
+		{"总行数", fmt.Sprintf("%s 行（代码+注释+空行）", num(s.Totals.Total)), "平均文件长度", fmt.Sprintf("%d 行", avg)},
+		{"注释/代码比", ratio(s.Totals.Comment, s.Totals.Code), "代码总体积", SizeStr(s.Totals.Size)},
+		{"平均文件体积", SizeStr(avgSize), "最大单文件体积", SizeStr(s.MaxFileSize)},
+		{"扫描目录", fmt.Sprintf("%d 个", s.DirsFound), "统计耗时", fmt.Sprintf("%.2f 秒", s.Elapsed.Seconds())},
 	}
 	for _, r := range rows {
 		c.newline()

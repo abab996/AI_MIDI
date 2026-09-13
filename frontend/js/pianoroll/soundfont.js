@@ -22,6 +22,9 @@
 
   SoundFontPlayer.prototype.init = function () {
     if (this.ctx) return;
+    /* 引擎模式不创建 WebAudio 发声节点；parseSF2 元数据解析职责与
+       发声职责分离——解析在引擎模式仍可用（预设列表/元数据） */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) return;
     try {
       this.ctx = this._sharedCtx || new AudioContext();
       this.masterGain = this.ctx.createGain();
@@ -384,7 +387,15 @@
      同步执行，阻塞整个聊天页首帧；改为首次选用/触发内置音色时才生成 */
   SoundFontPlayer.prototype.ensureBuiltinPresets = function () {
     if (this.builtinBuffers) return;
-    this.generateBuiltinPresets();
+    try {
+      this.generateBuiltinPresets();
+    } catch (e) {
+      // 生成中途异常（AudioContext 失效等）会让 builtinBuffers 停在
+      // 空对象——ensureBuiltinPresets 恒早退，内置音色永久静默。
+      // 复位为空并告警，下次触发时重试
+      this.builtinBuffers = null;
+      console.warn("内置音色生成失败（下次选用时重试）:", e);
+    }
   };
 
   SoundFontPlayer.prototype.generateBuiltinPresets = function () {

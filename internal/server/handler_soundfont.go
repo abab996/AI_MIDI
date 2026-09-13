@@ -29,7 +29,7 @@ func (r *Router) handleAudioSoundfonts(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST / DELETE")
 		return
 	}
-	req.Body = http.MaxBytesReader(w, req.Body, 32<<20) // 32MB 上限
+	req.Body = http.MaxBytesReader(w, req.Body, 256<<20) // 256MB 上限（大音色库如 98MB 的钢琴 SF2 需能镜像供原生引擎加载）
 
 	name := strings.TrimSpace(req.URL.Query().Get("name"))
 	if name == "" {
@@ -47,7 +47,7 @@ func (r *Router) handleAudioSoundfonts(w http.ResponseWriter, req *http.Request)
 
 	// 预分配提示：Content-Length 客户端可控，必须钳制到上限内，
 	// 否则声明超大 Content-Length 即触发无界内存分配
-	const maxSF2 = int64(32 << 20)
+	const maxSF2 = int64(256 << 20)
 	capHint := 0
 	if req.ContentLength > 0 {
 		if req.ContentLength > maxSF2 {
@@ -72,7 +72,7 @@ func (r *Router) handleAudioSoundfonts(w http.ResponseWriter, req *http.Request)
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		var maxErr *http.MaxBytesError
 		if errors.As(readErr, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "SF2 文件超过 32MB 上限")
+			writeError(w, http.StatusRequestEntityTooLarge, "SF2 文件超过 256MB 上限")
 		} else {
 			writeError(w, http.StatusBadRequest, "接收上传数据失败，请重试")
 		}

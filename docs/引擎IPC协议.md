@@ -133,6 +133,20 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 | result | `{}`；track 越界返回错误文本 |
 | 说明 | 在 JUCE 消息线程执行。把该轨切到**内置波形声部**（PolyBLEP 振荡器 + 指数 ADSR + 每声部 lowpass，参数语义与前端 WebAudio SynthEngine 一致），**不依赖 SF2**——合成波音色在音频引擎模式下的原生渲染路径。与 `loadSoundFont` 互斥：任一成功都会撤下另一模式的声源（正响音符随之停止）。钢琴窗/实时键盘约定使用 track 31（`EngineBridge.PERF_TRACK`）专用演奏轨，编曲 synth 轨使用自身 idx；supervisor 会记录每轨声部参数并在会话重启后重放 |
 
+### 4.6b `setTrackPreset`（SF2 预设选择）
+| | |
+|---|---|
+| params | `{"track":0,"bank":0,"program":0}`（track 0–31；bank/program 为 General MIDI 编号） |
+| result | `{}`；预设不存在或该轨未加载 SF2 时返回错误文本（`ok=false`） |
+| 说明 | 选择已加载 SF2 音色库的预设（`tsf_channel_set_bank_preset`，channel 0）。多预设 SF2 与内置钢琴/弦乐映射（GeneralUser GS (0,0)/(0,48)）都依赖它。**不切换声源模式**（仅换预设，SF2 继续发声）；与 `loadSoundFont` 共用 loadMutex_ 互斥。钢琴窗/编曲窗在 `loadSoundFont` 成功后调用；supervisor 记录每轨 bank/program 并在会话重启后按 `loadSoundFont → setTrackPreset → setTrackVoice` 顺序重放（loadSoundFont 会重置预设状态，顺序颠倒会被默认 (0,0) 覆盖） |
+
+### 4.6c `click`（节拍器木鱼音）
+| | |
+|---|---|
+| params | `{"track":31,"high":true}`（high=true 重拍 1600Hz / false 弱拍 900Hz） |
+| result | `{}`；track 越界静默忽略 |
+| 说明 | 引擎侧合成：恒定正弦 + 起音即峰值、约 40ms 指数释放的短促包络，**独立于该轨 SF2/波形模式**（click 声部与主声源叠加渲染，不打断正响音符）。经事件环即时投递（与实时音符同一生产者纪律），无 when 参数——前端按自身调度器到点调用，IPC 往返（毫秒级）对拍间隔（≥150ms）可忽略。钢琴窗经 `EngineBridge.PERF_TRACK`(31)、编曲窗经试听轨(29) 发送 |
+
 ### 4.7a 素材调度（M3，编曲窗音频 Clip 与离线渲染共用）
 | 方法 | params | result | 说明 |
 |---|---|---|---|
@@ -204,7 +218,7 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 
 ## 6. 超时与其他约定
 
-- 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 60s（此前 15s 会把 ASIO Link Pro 等 10–20s+ 的慢首开误判为卡死）、loadSoundFont 30s、setTrackVoice 10s、握手 20s；ping 走 TryPing 5s）。**bounce 例外**：按渲染时长动态估算（音频时长×2 + 60s，下限 30s、上限 20min——固定 30s 会把长工程导出误判为会话失效并杀掉渲染中的引擎，v3.0.3 修复）；
+- 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 60s（此前 15s 会把 ASIO Link Pro 等 10–20s+ 的慢首开误判为卡死）、loadSoundFont 30s、setTrackVoice/setTrackPreset 10s、握手 20s；ping 走 TryPing 5s；click 走 Request 默认 30s）。**bounce 例外**：按渲染时长动态估算（音频时长×2 + 60s，下限 30s、上限 20min——固定 30s 会把长工程导出误判为会话失效并杀掉渲染中的引擎，v3.0.3 修复）；
 - 引擎对畸形 JSON 不回复（请求方靠超时兜底），后续版本可在 Response 中引入显式 parse error；
 - 心跳由**主进程侧**负责：TryPing 每 2s 一次（会话事务忙时跳过），连续失败 15 次（最坏 30–105s）判会话失效重建——阈值刻意宽松以容忍 ASIO 慢驱动首开（10–20s）；真崩溃由进程退出通道秒级检测，不走心跳；
 - 本协议不含鉴权。本地信任边界收紧（客户端 PID 校验/DACL）列入 M5 前加固项。
@@ -213,3 +227,4 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 
 - **2026-09-05（v3.0.3）**：线格式不变。行为修订三处——① `bounce` 改消息线程异步执行（对齐 `scheduleSamples`）；② bounce 超时改按渲染时长动态估算（30s–20min）；③ 帧长上限 16 MiB 改为**收发两侧均校验**（此前仅接收侧校验）。另 PipeServer 断开时序改为「先锁内置空句柄再 CloseHandle」（消除对已关闭/复用句柄写入的竞态），不影响协议语义。
 - **2026-09-05（波形声部与 ASIO 修复，随下一版本发布）**：新增 `setTrackVoice`（§4.6a，内置波形声部，与 loadSoundFont 互斥）；`openControlPanel` 改为立即应答 + 后台线程打开（§4.8）；applySetup 超时 15s→60s。主进程新增 `soundfont_loaded` 状态字段（/api/audio/status）。
+- **2026-09-06（音频路线严格化）**：新增 `setTrackPreset`（§4.6b，SF2 预设选择）与 `click`（§4.6c，节拍器木鱼音）；/api/audio/status 新增 `default_soundfont`（音色目录首个 SF2 绝对路径，内置 piano/strings 的原生映射目标）；主进程会话重放顺序扩展为 `loadSoundFont → setTrackPreset → setTrackVoice`（`lastPresets` 每轨记录）；前端轨位约定：0–28 编曲、29 试听/编曲节拍器、30 钢琴窗 SF2/内置、31 钢琴窗波形/实时键盘。

@@ -21,13 +21,26 @@ func TestFrontendAudioRouting(t *testing.T) {
 	if !strings.Contains(s, "noteOnTrack") {
 		t.Fatal("audio_engine.js should call EngineBridge.noteOnTrack for native")
 	}
-	// 验证 _queueAudioClip 在原生时跳过 Web 队列（批量调度失败时回退）
-	if !strings.Contains(s, "if (isNativePreferred() && !this._nativeSamplesFailed) return;") {
-		t.Fatal("_queueAudioClip should early return when native and samples scheduling has not failed")
+	// 验证 _queueAudioClip 在原生路径（引擎模式）跳过 Web 队列——
+	// 严格路由：SamplePool 批量调度失败也不回退 Web 队列（只按
+	// isNativePreferred() 早退，不再检查 _nativeSamplesFailed）
+	if !strings.Contains(s, "if (isNativePreferred()) return;") {
+		t.Fatal("_queueAudioClip should early return when native (strict, no Web fallback)")
+	}
+	if strings.Contains(s, "if (isNativePreferred() && !this._nativeSamplesFailed) return;") {
+		t.Fatal("_queueAudioClip must not fall back to Web queue after sample scheduling failure")
 	}
 	// synth 轨原生直通需同步引擎侧内置波形声部（不依赖 SF2）
 	if !strings.Contains(s, "_ensureTrackWaveVoice") {
 		t.Fatal("audio_engine.js should sync engine wave voice for synth tracks")
+	}
+	// 引擎模式不得强制 WebAudio（_forceWebAudio 降级路径已删除）
+	if strings.Contains(s, "_forceWebAudio") {
+		t.Fatal("audio_engine.js must not use _forceWebAudio (strict routing, no Web fallback)")
+	}
+	// 引擎模式节拍器走引擎（click / PREVIEW_TRACK）
+	if !strings.Contains(s, "PREVIEW_TRACK") {
+		t.Fatal("audio_engine.js should route metronome click to engine preview track")
 	}
 }
 
@@ -117,5 +130,24 @@ func TestEngineMixerAndTransport(t *testing.T) {
 		if !strings.Contains(s, "loopOn_") {
 			t.Fatal("Transport should have loop state")
 		}
+	}
+}
+
+// SF2 上传上限回归：handler 256MB + router 层 288MB（256MB 本体 + 32MB 头），
+// 双层防线缺一不可——router 层防大包直拒，handler 层防 Content-Length 伪装
+func TestSoundFontUploadLimit(t *testing.T) {
+	handlerData, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "handler_soundfont.go"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	if !bytes.Contains(handlerData, []byte("256 << 20")) {
+		t.Fatal("handler_soundfont.go should enforce 256MB SF2 upload limit")
+	}
+	routerData, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "router.go"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	if !bytes.Contains(routerData, []byte("288 << 20")) {
+		t.Fatal("router.go should allow 288MB (256MB body + 32MB header) for soundfont uploads")
 	}
 }

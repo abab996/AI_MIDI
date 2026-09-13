@@ -34,18 +34,24 @@
 
   function isNativePreferred() {
     try {
-      // 全局后端为准（Go权威），引擎未就绪时自动回退 Web
-      var backend = (window.__engineBackend || (window.AudioBackend && window.AudioBackend.getMode ? window.AudioBackend.getMode() : "auto"));
-      if (backend === "webaudio") return false;
-      if (window.__engineState && window.__engineState !== "ready") return false;
+      // 全局后端为准（Go权威）。AudioBackend.isNativePreferred 已收紧为
+      // "引擎模式且就绪"——引擎模式下永不回退 WebAudio（严格路由）
       if (window.AudioBackend && window.AudioBackend.isNativePreferred) {
         return window.AudioBackend.isNativePreferred();
       }
+      var backend = (window.__engineBackend || (window.AudioBackend && window.AudioBackend.getMode ? window.AudioBackend.getMode() : "auto"));
+      if (backend === "webaudio") return false;
+      if (window.__engineState && window.__engineState !== "ready") return false;
       if (window.AudioBackend && window.AudioBackend.getMode) {
         return window.AudioBackend.getMode() === "auto" && window.EngineBridge && window.EngineBridge.available;
       }
     } catch (e) {}
     return false;
+  }
+  function isEngineMode() {
+    try {
+      return !!(window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine());
+    } catch (e) { return false; }
   }
   function trackIndexOf(trackId, tracks) {
     if (!tracks) return -1;
@@ -131,7 +137,10 @@
 
   ArrangeEngine.prototype.init = function () {
     if (this.ctx) return;
-    this.ctx = (window.SharedAudio && window.SharedAudio.get()) || new AudioContext();
+    /* 引擎模式不创建 AudioContext（严格路由，杜绝存在即可能被用）；
+       时钟由 _now() 以 SharedAudio.now()（performance.now）兜底 */
+    this.ctx = (window.SharedAudio && window.SharedAudio.get()) || null;
+    if (!this.ctx) return;
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.setValueAtTime(0.9, this.ctx.currentTime);
     // 主链限幅器：多轨合成超 0dB 时压回可听区间
@@ -144,6 +153,13 @@
     this.masterGain.connect(this.limiter);
     this.limiter.connect(this.ctx.destination);
     this._heartbeat = this._heartbeat || createHeartbeat();
+  };
+
+  /* 统一时间基准：WebAudio 时钟（webaudio 模式）或 performance.now
+     （引擎模式无 AudioContext；毫秒级精度对 IPC 触发路径足够） */
+  ArrangeEngine.prototype._now = function () {
+    if (this.ctx) return this.ctx.currentTime;
+    return window.SharedAudio ? window.SharedAudio.now() : (performance.now() / 1000);
   };
 
   ArrangeEngine.prototype.resume = function () {
@@ -160,16 +176,22 @@
     var created = false;
     if (!nodes) {
       nodes = {
-        gain: this.ctx.createGain(),
-        analyser: this.ctx.createAnalyser(),
+        gain: null,
+        analyser: null,
         synth: null,
         soundfont: null,
         sourceKey: null,
         sfLoading: false
       };
-      nodes.analyser.fftSize = 512;
-      nodes.gain.connect(nodes.analyser);
-      nodes.analyser.connect(this.masterGain);
+      /* 引擎模式：不构建 WebAudio 节点链（发声全走原生引擎；节点仅在
+         webaudio 模式创建）。analyser 电平在引擎模式读 __engineLevels */
+      if (this.ctx) {
+        nodes.gain = this.ctx.createGain();
+        nodes.analyser = this.ctx.createAnalyser();
+        nodes.analyser.fftSize = 512;
+        nodes.gain.connect(nodes.analyser);
+        nodes.analyser.connect(this.masterGain);
+      }
       this.trackNodes[track.id] = nodes;
       created = true;
     }
@@ -191,23 +213,27 @@
       nodes.sfLoading = false;
 
       if (src.type === "sf2") {
-        nodes.soundfont = new window.SoundFontPlayer(this.ctx, nodes.gain);
-        nodes.soundfont.init();
+        if (this.ctx) {
+          nodes.soundfont = new window.SoundFontPlayer(this.ctx, nodes.gain);
+          nodes.soundfont.init();
+        }
         this.loadTrackSoundFont(track, nodes, src);
       } else if (src.type === "builtin") {
-        nodes.soundfont = new window.SoundFontPlayer(this.ctx, nodes.gain);
-        nodes.soundfont.init();
-        nodes.soundfont.setPreset(src.tone || "piano");
+        if (this.ctx) {
+          nodes.soundfont = new window.SoundFontPlayer(this.ctx, nodes.gain);
+          nodes.soundfont.init();
+          nodes.soundfont.setPreset(src.tone || "piano");
+        }
+        /* 引擎模式：builtin 轨映射随包 GeneralUser GS 预设（原生轨 idx） */
+        this._ensureTrackBuiltinPreset(track, src);
       } else {
-        nodes.synth = new window.SynthEngine(this.ctx, nodes.gain);
-        nodes.synth.init();
-        nodes.synth.setWaveform(src.wave || "sawtooth");
-        // 默认走 JUCE 时，编曲亦走引擎；仅 WEBAUDIO 强制留 WebAudio
-        var useNativeSynth = isNativePreferred();
-        nodes.synth._forceWebAudio = !useNativeSynth;
-        // 标记是否原生直通（供 _triggerDue 分流，SF2与synth统一用 _useNative）
-        nodes._useNative = useNativeSynth;
-        nodes._isNativeSynth = useNativeSynth;
+        if (this.ctx) {
+          nodes.synth = new window.SynthEngine(this.ctx, nodes.gain);
+          nodes.synth.init();
+          nodes.synth.setWaveform(src.wave || "sawtooth");
+        }
+        // 引擎模式：该轨经引擎内置波形声部（setTrackVoice）；WEBAUDIO 留 Web
+        nodes._isNativeSynth = isEngineMode();
       }
     }
     // synth 轨原生直通：把引擎同 idx 轨切到内置波形声部（不依赖 SF2；
@@ -219,58 +245,92 @@
     return nodes;
   };
 
+  /** builtin 轨引擎映射：随包 GeneralUser GS 的 (0,0) Stereo Grand /
+      (0,48) Stereo Strings Fast。依赖 /api/audio/status 的 defaultSoundfont；
+      缺失时该轨静音 + 明确提示（严格路由，不降级）。
+      失败 3s 冷却重试（对齐 _ensureTrackWaveVoice）：成功才记录准备标记，
+      失败清除——引擎冷启动/重启期间的临时失败不会让该轨永久静音 */
+  ArrangeEngine.prototype._ensureTrackBuiltinPreset = function (track, src) {
+    var self = this;
+    var trackId = track.id;
+    if (this._builtinRetryAt && Date.now() < this._builtinRetryAt) return;
+    if (this._builtinPrepared && this._builtinPrepared.trackId === trackId
+        && this._builtinPrepared.tone === (src.tone || "piano")) return;
+    var fail = function (msg) {
+      self._builtinPrepared = null;              // 失败：下次 ensureTrack 重试
+      self._builtinRetryAt = Date.now() + 3000;  // 冷却：期间不重复 toast/请求
+      if (window.UI && UI.toast) UI.toast(msg, "err");
+    };
+    this._builtinPrepared = { trackId: trackId, tone: src.tone || "piano" };
+    var idx = trackIndexOf(trackId, this.getTracks ? this.getTracks() : null);
+    if (idx < 0) return;
+    var program = (src.tone || "piano") === "strings" ? 48 : 0;
+    fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (j) {
+      var path = j && j.default_soundfont;
+      if (!path) { fail("✗ 缺少内置音色库（引擎模式），请在音色目录放置 SF2"); return; }
+      window.EngineBridge.loadSoundFont(path, idx)
+        .then(function () { return window.EngineBridge.setTrackPreset(idx, 0, program); })
+        .then(function () { self._builtinRetryAt = 0; })
+        .catch(function (e) {
+          fail("✗ 内置音色加载失败: " + ((e && e.message) || "引擎不可用"));
+        });
+    }).catch(function () {
+      fail("✗ 获取引擎状态失败，内置音色不可用");
+    });
+  };
+
   /** synth 轨原生直通：把引擎同 idx 轨切到内置波形声部（合成波音色的
       原生渲染路径，不依赖 SF2）。按「idx+参数」签名去重（ensureTrack 每个调度窗
-      都会调用）；失败按 3s 冷却重试（引擎冷启动未就绪属瞬态），冷却期间
-      该轨走 WebAudio（nodes._useNative=false） */
+      都会调用）；失败按 3s 冷却重试（引擎冷启动未就绪属瞬态）。
+      严格路由：失败/未确认期间该轨静音（_useNative=false），绝不回退 WebAudio */
   ArrangeEngine.prototype._ensureTrackWaveVoice = function (track, nodes) {
-    if (!nodes || !nodes.synth || !nodes._isNativeSynth) return;
+    if (!nodes || !nodes._isNativeSynth) return;
     if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.setTrackVoice) return;
     if (nodes._voiceRetryAt && Date.now() < nodes._voiceRetryAt) {
       nodes._useNative = false;
       return;
     }
-    var s = nodes.synth;
     var idx = trackIndexOf(track.id, this.getTracks ? this.getTracks() : null);
     if (idx < 0) return;
-    var sig = [idx, s.waveform, s.attack, s.decay, s.sustain, s.release, s.cutoff, s.resonance, s.volume].join("|");
+    /* 声部参数：webaudio 模式下读 SynthEngine 实例（setter 已应用）；
+       引擎模式无实例，用默认值 + 轨道波形 */
+    var s = nodes.synth;
+    var p = {
+      wave: (s && s.waveform) || (track.source && track.source.wave) || "sawtooth",
+      attack: s ? s.attack : 0.01,
+      decay: s ? s.decay : 0.15,
+      sustain: s ? s.sustain : 0.6,
+      release: s ? s.release : 0.25,
+      cutoff: s ? s.cutoff : 8000,
+      resonance: s ? s.resonance : 1.0,
+      gain: s ? s.volume : 0.7
+    };
+    var sig = [idx, p.wave, p.attack, p.decay, p.sustain, p.release, p.cutoff, p.resonance, p.gain].join("|");
     if (nodes._voiceSig === sig) return;
-    window.EngineBridge.setTrackVoice(idx, {
-      wave: s.waveform,
-      attack: s.attack,
-      decay: s.decay,
-      sustain: s.sustain,
-      release: s.release,
-      cutoff: s.cutoff,
-      resonance: s.resonance,
-      gain: s.volume
-    }).then(function () {
+    window.EngineBridge.setTrackVoice(idx, p).then(function () {
       nodes._voiceSig = sig;
       nodes._voiceRetryAt = 0;
       nodes._useNative = true;
-      // 此前失败冷却期把 synth 强制 WebAudio；恢复成功后解除，该轨回到原生
-      if (nodes.synth) nodes.synth._forceWebAudio = false;
     }).catch(function (e) {
-      console.warn("[ArrangeEngine] setTrackVoice 失败，3s 后重试，期间该轨走 WebAudio:", e);
+      console.warn("[ArrangeEngine] setTrackVoice 失败，3s 后重试，期间该轨静音:", e);
       nodes._voiceSig = null;
       nodes._voiceRetryAt = Date.now() + 3000;
       nodes._useNative = false;
-      if (nodes.synth) nodes.synth._forceWebAudio = true;
     });
-    // 声部切换 IPC 未确认前该轨走 WebAudio：立即置 _useNative=true 会把
-    // 音符发往仍持旧声部的引擎轨——切音色后第一下仍旧音色（synth.js
-    // _ensureNativeVoice 同源修复）
+    // 声部切换 IPC 未确认前该轨静音（_useNative=false，_triggerDue 引擎
+    // 模式不落 WebAudio）：首音瞬态由确认后的直发接受
     nodes._useNative = false;
   };
 
-  /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立） */
+  /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立）。
+      严格路由：引擎模式下加载失败 → onSoundFontError 上浮 UI 提示，
+      该轨静音，绝不回退 WebAudio 解析 */
   ArrangeEngine.prototype.loadTrackSoundFont = function (track, nodes, src) {
     var self = this;
     if (!window.SoundLibrary || !src.libId) return;
     nodes.sfLoading = true;
     window.SoundLibrary.getSoundFont(src.libId).then(function (rec) {
       if (!rec || !rec.data) throw new Error("音源数据不存在");
-      // 原生优先：尝试经 JUCE 加载（每轨独立SF2，为VST铺垫）
       if (isNativePreferred() && window.EngineBridge && window.EngineBridge.loadSoundFont) {
         var tracks = self.getTracks ? self.getTracks() : [];
         var idx = trackIndexOf(track.id, tracks);
@@ -286,31 +346,43 @@
           if (!safe) safe = "soundfont";
           diskPath = "Library/soundfonts/" + safe + ".sf2";
         }
-        // 优先用磁盘路径（已镜像），失败则回退 Web 解析
+        // 原生优先：经 JUCE 加载；失败即上浮错误（不回退 Web 解析）
         return window.EngineBridge.loadSoundFont(diskPath, idx).then(function(){
           nodes.sfLoading = false;
           nodes._useNative = true;
           nodes._nativeTrackIdx = idx;
+          if (src.presetId) {
+            // 多预设音色库：选择目标预设（预设不存在时引擎侧拒绝）
+            var preset = null;
+            var parts = String(src.presetId).replace(/^sf2_/, "").split("_");
+            if (nodes.soundfont && nodes.soundfont.loadedPresets) {
+              for (var i = 0; i < nodes.soundfont.loadedPresets.length; i++) {
+                if (nodes.soundfont.loadedPresets[i] && nodes.soundfont.loadedPresets[i].id === src.presetId) { preset = nodes.soundfont.loadedPresets[i]; break; }
+              }
+            }
+            var bank = preset ? (preset.bank || 0) : (parseInt(parts[0], 10) || 0);
+            var program = preset ? (preset.program || 0) : (parseInt(parts[1], 10) || 0);
+            return window.EngineBridge.setTrackPreset(idx, bank, program).catch(function (e) {
+              // 预设不存在：回退该文件预设 0 并提示
+              return window.EngineBridge.setTrackPreset(idx, 0, 0).then(function () {
+                if (window.UI && UI.toast) UI.toast("⚠ 预设不存在，已用该音色库首个预设", "warn");
+              }).catch(function () { throw e; });
+            });
+          }
+        }).then(function(){
           if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, { name: rec.name, presets: rec.presets, native: true });
         }).catch(function(e){
-          // 回退 WebAudio
-          try {
-            var parsed = nodes.soundfont.parseSF2(rec.data);
-            if (src.presetId) nodes.soundfont.setPreset(src.presetId);
-            nodes._useNative = false;
-            nodes.sfLoading = false;
-            if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, parsed);
-          } catch(err2){
-            nodes.sfLoading = false;
-            throw err2;
-          }
+          nodes.sfLoading = false;
+          nodes._useNative = false;
+          if (self.onSoundFontError) self.onSoundFontError(track.id, e);
         });
-      } else {
-        var parsed = nodes.soundfont.parseSF2(rec.data);
-        if (src.presetId) nodes.soundfont.setPreset(src.presetId);
-        nodes.sfLoading = false;
-        if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, parsed);
       }
+      // webaudio 模式：Web 解析（引擎模式永不走到这里——isNativePreferred
+      // 在引擎模式下等于"引擎就绪"，未就绪时播放已被门控拦截）
+      var parsed = nodes.soundfont.parseSF2(rec.data);
+      if (src.presetId) nodes.soundfont.setPreset(src.presetId);
+      nodes.sfLoading = false;
+      if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, parsed);
     }).catch(function (err) {
       nodes.sfLoading = false;
       console.warn("轨道音源加载失败:", err);
@@ -447,8 +519,9 @@
       }
       return beat;
     }
-    if (!this.ctx) return this._playStartBeat;
-    var posLocal = (this.ctx.currentTime - this._anchorCtxTime) / this.secondsPerBeat();
+    /* 本地时钟路径：引擎模式无 AudioContext，_now() 以 performance.now
+       兜底（锚点与调度器同源，播放头不冻结） */
+    var posLocal = (this._now() - this._anchorCtxTime) / this.secondsPerBeat();
     return this._posToBeat(posLocal);
   };
 
@@ -531,7 +604,7 @@
   ArrangeEngine.prototype._beginPlay = function (startBeat) {
     this.stopSchedule();
     this._playStartBeat = startBeat;
-    this._anchorCtxTime = this.ctx.currentTime + 0.08;
+    this._anchorCtxTime = this._now() + 0.08;
     this._schedPos = -0.0001;
     this._pendingOn = [];
     this._pendingOff = [];
@@ -671,8 +744,14 @@
   /* ═══════════ v2 核心：心跳 → 入队 → 临近触发 ═══════════ */
 
   ArrangeEngine.prototype._onHeartbeat = function () {
-    if (!this.isPlaying || !this.ctx) return;
-    var now = this.ctx.currentTime;
+    if (!this.isPlaying) return;
+    /* 引擎模式播放中引擎掉线（崩溃/重启/失败）：自动停止走带并提示，
+       避免无声空转——徽章轮询 5s 才翻转，这里每心跳即检（严格路由） */
+    if (isEngineMode() && window.__engineState && window.__engineState !== "ready") {
+      if (this.onEngineLost) { try { this.onEngineLost(); } catch (e) {} }
+      return;
+    }
+    var now = this._now();
     var spb = this.secondsPerBeat();
 
     // 1) 入队：把 [schedPos, now+LOOKAHEAD) 窗口内的事件展开为纯数据
@@ -771,10 +850,10 @@
       （颗粒/合唱感的重要来源之一）。起点错过窗口的（起播点在剪辑
       中段的定位播放）由 _startAudioClip 的迟到接入逻辑兜底。 */
   ArrangeEngine.prototype._queueAudioClip = function (clip, track, nodes, evFrom, evTo, seg, spb) {
-    // 原生优先时样本走 JUCE SamplePool（批量调度），Web队列跳过以免双重播放；
-    // 批量调度失败（素材目录未挂载/引擎拒绝）时置 _nativeSamplesFailed，
-    // 后续窗口回退 Web 队列（失败原因已由 arrange.js toast 提示）
-    if (isNativePreferred() && !this._nativeSamplesFailed) return;
+    // 原生路径（引擎模式）样本走 JUCE SamplePool（arrange.js 批量调度），
+    // Web 队列跳过以免双重播放；SamplePool 失败时该素材静音（严格路由，
+    // 不静默回退 Web 队列——此前 _nativeSamplesFailed 会回退，属降级路径）
+    if (isNativePreferred()) return;
     if (clip.start < evFrom || clip.start >= evTo) return;
     // 循环开启时窗口段会截断 clip：播放时长按本窗口内剩余长度计算。
     // 此前取整段 clip.length，起点落在 [loop.end-length, loop.end) 的
@@ -805,6 +884,7 @@
     // 播放窗口，跳过以免长时间卡顿恢复后整段齐发
     var stillOn = [];
     var nativeWanted = isNativePreferred();
+    var engineMode = isEngineMode();
     for (i = 0; i < this._pendingOn.length; i++) {
       ev = this._pendingOn[i];
       if (ev.t <= now + TRIGGER_S) {
@@ -824,7 +904,9 @@
               handledNative = true;
             }
           }
-          if (!handledNative) {
+          /* 引擎模式：未确认/失败的轨静音（严格路由，不回退 WebAudio）；
+             webaudio 模式维持原 Web 发声路径 */
+          if (!handledNative && !engineMode) {
             var whenOn = Math.max(ev.t, now);
             if (ev.nodes.soundfont) {
               ev.nodes.soundfont.noteOn(ev.midi, ev.vel, whenOn);
@@ -865,7 +947,7 @@
               handledOff = true;
             }
           }
-          if (!handledOff) {
+          if (!handledOff && !engineMode) {
             var whenOff = ev.t < now ? now : ev.t;
             if (ev.nodes.soundfont) {
               ev.nodes.soundfont.noteOff(ev.midi, whenOff);
@@ -974,8 +1056,16 @@
     }).catch(function () {});
   };
 
-  /** 节拍器 click（触发时调用，when 临近 → 包络近端） */
+  /** 节拍器 click（触发时调用，when 临近 → 包络近端）。
+      引擎模式：引擎侧合成（试听轨 29，事件环即时触发，无 when 语义） */
   ArrangeEngine.prototype.click = function (when, isDownbeat) {
+    if (isEngineMode()) {
+      if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.click) return;
+      try {
+        window.EngineBridge.click((window.EngineBridge.PREVIEW_TRACK) || 29, !!isDownbeat);
+      } catch (e) {}
+      return;
+    }
     var osc = this.ctx.createOscillator();
     var gain = this.ctx.createGain();
     osc.type = "sine";
@@ -999,6 +1089,12 @@
   /** 单次试听素材（素材库双击）——即时触发，包络天然近端 */
   ArrangeEngine.prototype.previewSample = function (absPath) {
     var self = this;
+    /* 引擎模式：无素材试听 IPC（严格路由，不引入 WebAudio 发声），
+       明确提示并给出替代路径而非静默 */
+    if (isEngineMode()) {
+      if (window.UI && UI.toast) UI.toast("✗ 引擎模式下素材试听暂不支持（可在设置页切换 WEBAUDIO 模式试听）", "err");
+      return Promise.resolve();
+    }
     this.resume().catch(function (e) {
       console.warn("[ArrangeEngine] 试听前 AudioContext 恢复失败:", e);
     });

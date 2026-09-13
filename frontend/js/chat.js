@@ -129,7 +129,12 @@
     if (!currentProjectId || !input) return;
     draftDirty = false;
     return UI.postJSON("/api/projects/" + currentProjectId + "/draft", { text: input.value })
-      .catch(function () {});
+      .catch(function (e) {
+        /* 静默失败会无声丢草稿：如实提示（此前 catch 空实现，
+           返回档案库/切项目时编辑内容丢失且无法归因） */
+        if (window.UI && UI.toast) UI.toast("⚠ 草稿保存失败，未发送的内容可能丢失: " + ((e && e.message) || "网络错误"), "warn");
+        draftDirty = true;
+      });
   }
 
   function springEls() {
@@ -269,6 +274,9 @@
     thinkUserCollapsed = false;
     lastMessages = [];
     streamSysLines = [];
+    stopBgPoll();          /* 后台轮询绑定旧上下文，随视图切换一并停止 */
+    bgHint = null;
+    bgLastTasksJson = "";
     var btn = $("#sendBtn");
     if (btn) {
       btn.textContent = "▶ 发送";
@@ -337,6 +345,11 @@
         stopBtn.title = "停止后台生成（保留已输出的内容）";
         stopBtn.classList.add("stop");
       }
+      /* 后台续跑同步：提示行 + 轻量轮询——内容逐段长出来（后端流式
+         期间周期性写快照），任务离开 running 自动收尾（见 startBgPoll） */
+      bgHint = "后台生成中——内容将自动同步";
+      appendBgHint();
+      startBgPoll();
     }
   }
 
@@ -509,7 +522,7 @@
       }, 550);
       setTimeout(function () { $("#msgInput").focus(); }, 60);
     }).catch(function (e) {
-      UI.toast("✗ 打开项目失败: " + e.message, "err");
+      UI.toast("✗ 打开项目失败: " + e.message + "（可重试；持续失败请检查服务状态）", "err");
       isTransitioning = false;
     });
   }
@@ -568,6 +581,7 @@
     /* 断开旧流（任务转后台续跑）+ 递增会话代数，旧流收尾不再触碰档案库视图 */
     if (abortController) abortController.abort();
     chatEpoch++;
+    stopBgPoll();          /* 后台轮询绑定工作台上下文，随返回档案库一并停止 */
     /* 修改模式离开：尽力恢复被截断的对话（异步、不阻塞返回动画），
        避免下次打开同一项目时内存会话仍是截断态 */
     if (editingIndex >= 0 && currentProjectId) {
@@ -862,7 +876,7 @@
     var parts = name.split("/");
     var curDir = parts.slice(0, -1).join("/");
     if (curDir === target) {
-      UI.toast("文件已在该位置", "warn");
+      UI.toast("✓ 文件已在该位置", "warn");
       return;
     }
     UI.postJSON("/api/projects/" + currentProjectId + "/files/move", {
@@ -942,7 +956,7 @@
 
   /* 下载：文件单文件 / 文件夹内全部文件（多文件后端自动打包 zip） */
   function downloadByNames(names) {
-    if (!names.length) { UI.toast("文件夹内没有文件", "warn"); return; }
+    if (!names.length) { UI.toast("⚠ 文件夹内没有文件", "warn"); return; }
     window.location.href = "/api/projects/" + currentProjectId + "/download?names=" +
       encodeURIComponent(names.join(","));
   }
@@ -1724,6 +1738,19 @@
       return u;
     }
 
+    /* 后台续跑期间的流式占位（快照拍摄于生成中途）：role=assistant、
+       无内容、非提问卡 = 排队/思考/生成中——渲染为三点生成中气泡，
+       后台轮询带到内容后整表重建自然取代。实时流路径不会渲染到空占位
+       （全量帧只在占位写入前/后发出），此分支只命中快照场景 */
+    if (content === "" && m.role === "assistant") {
+      var gen = document.createElement("div");
+      gen.className = "msg ai typing";
+      gen.innerHTML =
+        '<div class="msg-label">AI · 乐理专家</div>' +
+        '<div class="typing-dots"><span></span><span></span><span></span></div>';
+      return gen;
+    }
+
     /* 助手消息处理：
        1. 检查是否为纯工具执行日志块（以 <details> 开头且剔除所有折叠块后无正文）
        2. 包含回复正文、思考过程或普通文本的助手消息均渲染为标准 .msg.ai 卡片 */
@@ -1999,7 +2026,7 @@
           (a.other && a.other.trim());
       });
       if (!filled) {
-        UI.toast("请先选择至少一个选项，或点击「跳过」", "err");
+        UI.toast("✗ 请先选择至少一个选项，或点击「跳过」", "err");
         return;
       }
     }
@@ -2201,7 +2228,7 @@
      再原位显示三选项（不截断、不进入编辑） */
   function showEditMenu(idx) {
     if (guardTasksActive("修改消息")) return;
-    if (chatBusy) { UI.toast("回复进行中，请稍候再修改", "warn"); return; }
+    if (chatBusy) { UI.toast("⚠ 回复进行中，请稍候再修改", "warn"); return; }
     if (!currentProjectId) return;
     restoreEditMenu();
     /* 令牌校验：连续点击两条消息时 edit-info 响应可能乱序返回，
@@ -2225,7 +2252,7 @@
      发送前可点输入框上方的撤回按钮恢复被截断的对话 */
   function startEdit(idx) {
     if (guardTasksActive("修改消息")) return;
-    if (chatBusy) { UI.toast("回复进行中，请稍候再修改", "warn"); return; }
+    if (chatBusy) { UI.toast("⚠ 回复进行中，请稍候再修改", "warn"); return; }
     if (!currentProjectId) return;
     UI.postJSON("/api/projects/" + currentProjectId + "/messages/edit", { index: idx })
       .then(function (data) { enterEditMode(idx, data); })
@@ -2239,7 +2266,7 @@
     if (!currentProjectId) return;
     UI.postJSON("/api/projects/" + currentProjectId + "/messages/undo-edit", { index: idx })
       .then(function (data) {
-        if (data.note) UI.toast(data.note, "warn");
+        if (data.note) UI.toast("⚠ " + data.note, "warn");
         enterEditMode(idx, data);
       })
       .catch(function (e) { UI.toast("✗ " + e.message, "err"); });
@@ -2299,6 +2326,10 @@
   /* ═══════════ 发送消息（SSE） ═══════════ */
 
   var abortController = null;   /* 当前回复的停止控制器 */
+  var bgPollTimer = null;       /* 后台续跑轮询定时器 */
+  var bgPollInFlight = false;   /* 轮询请求防重入 */
+  var bgHint = null;            /* 后台生成提示行文本（完成收尾时移除） */
+  var bgLastTasksJson = "";     /* 任务条增量刷新：无变化不重建 */
 
   /* 项目有未完成任务（进行中/需要确认）时的操作守卫 */
   function guardTasksActive(what) {
@@ -2329,6 +2360,97 @@
       }
     }
     if (abortController) abortController.abort();
+  }
+
+  /* ═══════════ 后台续跑轮询（重进恢复的停止态） ═══════════
+     任务转后台续跑后重进：界面停在快照态且不再订阅流。此处以轻量轮询
+     同步后台进度——内容逐段长出来（后端流式期间周期性写快照），任务
+     离开 running 时收尾复位并渲染最终内容。轮询严格绑定当前项目+任务
+     （视图切换/新流开始/任务切换后条件不满足即自停，过期响应丢弃） */
+  var BG_POLL_MS = 3000;
+
+  function startBgPoll() {
+    if (bgPollTimer) return;
+    bgPollTimer = setTimeout(bgPollTick, BG_POLL_MS);
+  }
+
+  function stopBgPoll() {
+    if (bgPollTimer) { clearTimeout(bgPollTimer); bgPollTimer = null; }
+  }
+
+  function appendBgHint() {
+    /* 提示行不走 appendSysLine：它会在 chatBusy 时把文本登记进
+       streamSysLines，chatDone 收尾会把它重新追加回聊天区——而后台
+       提示应在任务完成时消失 */
+    var chat = $("#chat");
+    var line = document.createElement("div");
+    line.className = "sys-line";
+    line.textContent = bgHint;
+    chat.appendChild(line);
+    if (nearBottom) chat.scrollTop = chat.scrollHeight;
+  }
+
+  function bgPollTick() {
+    bgPollTimer = null;
+    if (!(chatBusy && !liveStreaming && currentProjectId && currentTaskId)) return;
+    if (bgPollInFlight) { startBgPoll(); return; }
+    bgPollInFlight = true;
+    var pid = currentProjectId;
+    var tid = currentTaskId;
+    UI.getJSON("/api/projects/" + pid + "?task_id=" + encodeURIComponent(tid))
+      .then(function (payload) {
+        bgPollInFlight = false;
+        /* 过期响应（视图已切换/已停流/已切任务）一律丢弃 */
+        if (!(chatBusy && !liveStreaming && currentProjectId && currentTaskId)) return;
+        if (pid !== currentProjectId || tid !== currentTaskId || !payload || payload.meta.id !== pid) return;
+
+        var running = false;
+        (payload.tasks || []).forEach(function (t) {
+          if (t && t.id === tid && t.status === "running") running = true;
+        });
+
+        if (!running) {
+          /* 编辑态中不整表重建（否则修改条被销毁）：延后收尾，退出编辑
+             后的下一轮 tick 再完成 */
+          if (editingIndex >= 0) { startBgPoll(); return; }
+          /* 后台任务完成/停止/待确认：chatDone 复位停止态并以最新快照收尾
+             （幂等，与手动点停止的 stopReply 路径并存） */
+          lastMessages = payload.display_messages || [];
+          chatDone();
+          files = payload.midi_files || [];
+          dirsList = payload.dirs || [];
+          bgLastTasksJson = "";
+          renderFiles();
+          renderTaskSwitcher(payload.tasks || []);
+          bgHint = null;
+          return;
+        }
+
+        /* 仍在生成：内容/文件有变化才刷新（避免整表重建打断阅读）；
+           编辑态中跳过渲染，仅记录最新快照 */
+        var msgs = payload.display_messages || [];
+        if (JSON.stringify(msgs) !== JSON.stringify(lastMessages)) {
+          lastMessages = msgs;
+          if (editingIndex < 0) {
+            renderMessages(msgs);
+            if (bgHint) appendBgHint();
+          }
+        }
+        if (JSON.stringify(files) !== JSON.stringify(payload.midi_files || [])) {
+          files = payload.midi_files || [];
+          renderFiles();
+        }
+        var tasksJson = JSON.stringify(payload.tasks || []);
+        if (tasksJson !== bgLastTasksJson) {
+          bgLastTasksJson = tasksJson;
+          renderTaskSwitcher(payload.tasks || []);
+        }
+        startBgPoll();
+      })
+      .catch(function () {
+        bgPollInFlight = false;
+        startBgPoll();   /* 网络抖动：下一轮重试，不中断后台模式 */
+      });
   }
 
   function sendMessage() {
@@ -2808,13 +2930,13 @@
       return;
     }
     if (qtFunc === "translate") {
-      if (!lyrics) { UI.toast("翻译歌词需要先粘贴歌词文本", "warn"); return; }
+      if (!lyrics) { UI.toast("⚠ 翻译歌词需要先粘贴歌词文本", "warn"); return; }
       if (!$("#qtOrigLang").value.trim() || !$("#qtTargetLang").value.trim()) {
-        UI.toast("请填写原语言与目标语言", "warn"); return;
+        UI.toast("⚠ 请填写原语言与目标语言", "warn"); return;
       }
     } else if (qtFunc === "melisma") {
-      if (!lyrics) { UI.toast("设计转音需要先粘贴歌词文本", "warn"); return; }
-      if (!req) { UI.toast("请填写具体要求（转音风格/位置）", "warn"); return; }
+      if (!lyrics) { UI.toast("⚠ 设计转音需要先粘贴歌词文本", "warn"); return; }
+      if (!req) { UI.toast("⚠ 请填写具体要求（转音风格/位置）", "warn"); return; }
     } else if (!req) {
       UI.toast("请填写具体要求", "warn"); return;
     }
@@ -2884,6 +3006,8 @@
     if (e.key !== "Escape") return;
     var disclaimer = $("#disclaimerOverlay");
     if (disclaimer && !disclaimer.hidden) { hideDisclaimer(); return; }
+    var star = $("#starOverlay");
+    if (star && !star.hidden) { markStarSeen(starPromptVer); hideStarPrompt(); return; }
     var modal = $("#modalOverlay");
     var confirm = $("#confirmOverlay");
     var quick = $("#quickTaskOverlay");
@@ -2913,10 +3037,91 @@
     if (overlay) overlay.hidden = true;
   }
 
+  /* ═══════════ 请求 Star（每个新版本首次打开弹一次） ═══════════ */
+
+  var STAR_SEEN_KEY = "aimidi_star_seen";
+  var STAR_REPO_URL = "https://github.com/abab996/AI_MIDI";
+  var starPromptVer = "";   /* 本次提示对应的版本（关闭时写入记忆键） */
+
+  function showStarPrompt(ver) {
+    starPromptVer = ver;
+    var overlay = $("#starOverlay");
+    if (!overlay) return;
+    /* 强制更新全屏遮罩在场时暂不弹出（避免被盖住又抢焦点） */
+    var force = $("#forceUpdateOverlay");
+    if (force && !force.hidden) return;
+    modalToken++;
+    overlayIn(overlay, modalToken);
+    setTimeout(function () {
+      var ok = $("#starOkBtn");
+      if (ok) ok.focus();
+    }, 50);
+  }
+
+  function markStarSeen(ver) {
+    try { localStorage.setItem(STAR_SEEN_KEY, ver); } catch (e) {}
+  }
+
+  function hideStarPrompt() {
+    var overlay = $("#starOverlay");
+    if (overlay && !overlay.hidden) overlayOut(overlay, modalToken);
+  }
+
+  /* 版本记忆键取 /api/version（与设置页同源 ← wails.json）；取版本失败
+     时本次静默不打扰。免责声明显示时排队等它关闭后再弹，避免叠弹窗 */
+  function initStarPrompt() {
+    var overlay = $("#starOverlay");
+    if (!overlay) return;
+
+    var okBtn = $("#starOkBtn");
+    if (okBtn) {
+      okBtn.addEventListener("click", function () {
+        if (window.UI && window.UI.openExternal) window.UI.openExternal(STAR_REPO_URL);
+        markStarSeen(starPromptVer);
+        hideStarPrompt();
+      });
+    }
+    var laterBtn = $("#starLaterBtn");
+    if (laterBtn) {
+      laterBtn.addEventListener("click", function () {
+        markStarSeen(starPromptVer);
+        hideStarPrompt();
+      });
+    }
+    /* 点遮罩空白处 = 视同「不再提示」 */
+    overlay.addEventListener("click", function (e) {
+      if (e.target === overlay) {
+        markStarSeen(starPromptVer);
+        hideStarPrompt();
+      }
+    });
+
+    UI.getJSON("/api/version").then(function (v) {
+      var ver = v && v.version ? String(v.version) : "";
+      if (!ver) return;   /* 无版本号（dev 未注入）不弹 */
+      var seen = "";
+      try { seen = localStorage.getItem(STAR_SEEN_KEY) || ""; } catch (e) {}
+      if (seen === ver) return;
+
+      var dis = $("#disclaimerOverlay");
+      if (dis && !dis.hidden) {
+        var disOk = $("#disclaimerOk");
+        if (disOk) {
+          disOk.addEventListener("click", function () {
+            setTimeout(function () { showStarPrompt(ver); }, 500);
+          });
+        }
+        return;
+      }
+      setTimeout(function () { showStarPrompt(ver); }, 800);
+    }).catch(function () { /* 版本获取失败：本次不打扰 */ });
+  }
+
   /* ═══════════ 初始化 ═══════════ */
 
   function init() {
     initDisclaimer();
+    initStarPrompt();
 
     reloadProjects().catch(function (e) {
       UI.toast("✗ 加载项目列表失败: " + e.message, "err");
@@ -3657,13 +3862,22 @@
   window.__openProject = openProject;
   if (window.Tasks) {
     Tasks.onProjectTaskChange = function (changed) {
-      if (!currentProjectId || chatBusy || editingIndex >= 0) return;
+      /* 页内活动流（liveStreaming）期间不打扰：流帧自会更新界面。
+         后台续跑模式（重进恢复的停止态：busy 但无活动流）放行——
+         任务完成后这里立即刷新出最终回复，不再卡在停止态等人手动操作 */
+      if (!currentProjectId || (chatBusy && liveStreaming) || editingIndex >= 0) return;
       var pid = currentProjectId;
       var tid = currentTaskId;
       var url = "/api/projects/" + pid + (tid ? "?task_id=" + encodeURIComponent(tid) : "");
       UI.getJSON(url).then(function (payload) {
         /* tid 校验：请求期间用户切走任务时丢弃过期响应，防旧任务消息覆盖新任务 */
-        if (pid !== currentProjectId || tid !== currentTaskId || chatBusy) return;
+        if (pid !== currentProjectId || tid !== currentTaskId || (chatBusy && liveStreaming)) return;
+        /* 后台模式完成刷新：先复位停止态（chatDone 幂等；lastMessages 清空
+           避免重渲染旧快照——下方 renderMessages 用新载荷渲染最终内容） */
+        if (chatBusy && !liveStreaming) {
+          lastMessages = [];
+          chatDone();
+        }
         files = payload.midi_files || [];
         renderMessages(payload.display_messages || []);
         dirsList = payload.dirs || [];

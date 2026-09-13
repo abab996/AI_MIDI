@@ -174,17 +174,23 @@
 
     window.addEventListener("keydown", function (e) {
       if (self.settings.typingKeyboard === false) return;
+      /* 幽灵触发守卫：钢琴卷帘未打开时按键不发声（此前监听挂在 window
+         且只挡输入框——关掉抽屉后在档案库/聊天区按字母键也会弹奏，
+         若正录制还会把按键写进音符数据） */
+      if (!window.PianoRoll || !window.PianoRoll.isOpen) return;
       var tag = (e.target && e.target.tagName) || "";
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable)) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-      // 八度升降快捷键
-      if (e.code === "BracketLeft" || e.code === "Minus" || e.code === "PageDown") {
+      // 八度升降快捷键（键位查表：Shortcuts 注册表 global.octaveDown/Up，
+      // 设置页可自定义；弹奏键区本身是乐器布局，固定不自定义）
+      var KS = window.Shortcuts;
+      if (KS && KS.matches(e, "global.octaveDown")) {
         self.baseOctave = Math.max(1, self.baseOctave - 1);
         if (window.UI && window.UI.toast) window.UI.toast("键盘八度: C" + self.baseOctave, "ok");
         return;
       }
-      if (e.code === "BracketRight" || e.code === "Equal" || e.code === "PageUp") {
+      if (KS && KS.matches(e, "global.octaveUp")) {
         self.baseOctave = Math.min(7, self.baseOctave + 1);
         if (window.UI && window.UI.toast) window.UI.toast("键盘八度: C" + self.baseOctave, "ok");
         return;

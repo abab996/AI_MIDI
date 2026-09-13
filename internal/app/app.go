@@ -102,6 +102,25 @@ func (a *App) EngineSetTrackVoice(track int, voice map[string]any) error {
 	return sup.SetTrackVoice(track, voice)
 }
 
+// EngineSetTrackPreset 选择引擎轨道 SF2 的预设（多预设音色库；
+// bank/program 为 General MIDI 编号，预设不存在由引擎侧拒绝）
+func (a *App) EngineSetTrackPreset(track, bank, program int) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.SetTrackPreset(track, bank, program)
+}
+
+// EngineClick 节拍器木鱼音（引擎侧合成；high=true 重拍 1600Hz / false 弱拍 900Hz）
+func (a *App) EngineClick(track int, high bool) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.Click(track, high)
+}
+
 // EngineSetTrackMix 设置音轨混音参数（M3 混音图）
 func (a *App) EngineSetTrackMix(track int, gain, pan float32, mute, solo, active bool) error {
 	sup := engine.Get()

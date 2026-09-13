@@ -163,7 +163,7 @@
         <!-- 任务切换条：下拉选择任务（显示任务名称）+ 重命名 -->
         <div class="task-switcher">
           <select id="taskSelect" title="选择任务"></select>
-          <button class="btn btn-secondary btn-sm" id="renameTaskBtn" title="重命名任务" disabled>✎ 重命名</button>
+          <button class="btn btn-secondary btn-sm" id="renameTaskBtn" title="打开项目后可用（重命名当前任务）" disabled>✎ 重命名</button>
         </div>
 
         <!-- 任务状态条：仅显示当前项目三种任务状态（进行中/需要确认/已完成） -->
@@ -191,7 +191,7 @@
         <div class="console-foot">
           <a class="download-link" id="newMidiLink" href="#" hidden>↓ 新生成的 MIDI</a>
           <button class="btn btn-primary btn-sm" id="newTaskBtn">＋ 新建任务</button>
-          <button class="btn btn-danger btn-sm" id="deleteTaskBtn" disabled>🗑 删除任务</button>
+          <button class="btn btn-danger btn-sm" id="deleteTaskBtn" title="打开项目后可用（删除当前任务的对话记录）" disabled>🗑 删除任务</button>
         </div>
       </main>
     </div>
@@ -265,7 +265,7 @@
           <span class="stamp ok" id="arrSaveStamp">SAVED</span>
           <button type="button" class="btn btn-sm btn-secondary" id="arrRackBtn" title="打开工程输出机架 (Channel / Output Rack)，可试听并拖拽音源与采样到轨道">🎛 输出机架</button>
           <button type="button" class="btn btn-sm btn-primary" id="arrExportWavBtn" title="离线导出 WAV（按全局采样率，尾音到静默不截断）">⬇ WAV</button>
-          <button type="button" class="btn btn-sm btn-secondary" id="arrShortcutsBtn" title="快捷键一览">⌨ 快捷键</button>
+          <a class="btn btn-sm btn-secondary" href="/settings.html?tab=paneShortcuts" data-dir="forward" title="设置页可查看与自定义全部快捷键">⌨ 快捷键</a>
         </div>
 
         <div class="arr-hud-badge" id="arrHudBadge"></div>
@@ -394,9 +394,9 @@
           <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 0a.75.75 0 0 1 .75.75c0 3.176 2.074 5.25 5.25 5.25a.75.75 0 0 1 0 1.5c-3.176 0-5.25 2.074-5.25 5.25a.75.75 0 0 1-1.5 0c0-3.176-2.074-5.25-5.25-5.25a.75.75 0 0 1 0-1.5c3.176 0 5.25-2.074 5.25-5.25A.75.75 0 0 1 8 0z"/></svg>
           <span>发送给 AI</span>
         </button>
-        <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prShortcutsHelpBtn" title="快捷键一览">
+        <a class="btn btn-sm btn-secondary pr-icon-btn" href="/settings.html?tab=paneShortcuts" data-dir="forward" title="设置页可查看与自定义全部快捷键">
           <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2zm1.5.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zM1 5v1.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 0-1H2V5a.5.5 0 0 0-1 0zm14.5.5a.5.5 0 0 0-.5-.5v1h-.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 .5-.5v-1zM4.5 5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zM2 8.5a.5.5 0 0 0-.5.5v.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 0-1H2.5V9a.5.5 0 0 0-.5-.5zm2.5.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm2.5 0a.5.5 0 0 0-.5.5v.5h-.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 .5-.5V9a.5.5 0 0 0-.5-.5zM1.5 11.5a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zm3 0a.5.5 0 0 0 0 1h1a.5.5 0 0 0 0-1h-1zM3 4.5a.5.5 0 0 0 0 1H3a.5.5 0 0 0 0-1h0z"/></svg>
-        </button>
+        </a>
         <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prMaxBtn" title="最大化 / 还原">
           <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 0 1 0V2h3.5a.5.5 0 0 0 0-1h-4zm10 0a.5.5 0 0 0 0 1H14v3.5a.5.5 0 0 0 1 0v-4a.5.5 0 0 0-.5-.5h-4zM1 10.5a.5.5 0 0 0 .5.5H5a.5.5 0 0 0 0-1H2v-3.5a.5.5 0 0 0-1 0v4zm14 0a.5.5 0 0 0-1 0V14h-3.5a.5.5 0 0 0 0 1h4a.5.5 0 0 0 .5-.5v-4z"/></svg>
         </button>
@@ -621,34 +621,6 @@
   </div>
 </div>
 
-<!-- FL Studio 快捷键一览弹窗 -->
-<div class="modal-overlay" id="prShortcutsModal" hidden role="dialog" aria-modal="true" aria-label="快捷键一览">
-  <div class="modal card brackets" style="max-width:540px">
-    <div class="modal-title">⌨ FL Studio 钢琴卷帘快捷键一览</div>
-    <div style="max-height:320px; overflow-y:auto; font-size:12px; line-height:1.8">
-      <div style="font-weight:bold; color:var(--color-primary); margin-bottom:4px">常用工具单键（关闭键盘弹奏时有效）：</div>
-      <div><code>P</code>: 画笔 (Draw) ｜ <code>B</code>: 笔刷 (Paint) ｜ <code>D</code>: 擦除 (Erase)</div>
-      <div><code>C</code>: 切片刀 (Slice) ｜ <code>E</code>: 框选 (Select) ｜ <code>T</code>: 静音 (Mute) ｜ <code>Z</code>: 缩放 (Zoom)</div>
-      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">🎹 电脑键盘作为 MIDI 弹奏输入：</div>
-      <div><code>Ctrl + T</code>: 切换“键盘弹奏”模式。<b>开启时</b>：电脑键盘按键（Z~M、Q~P）直接作为 MIDI 琴键弹奏发声，单键快捷键挂起；<b>关闭时</b>：单键快捷键恢复生效。</div>
-      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">力度与鼠标高级手势：</div>
-      <div><code>鼠标中键拖拽</code> / <code>Shift + 右键拖拽</code>: <b>视图平移模式 (Pan View)</b>，直接自由拖动卷帘画布</div>
-      <div><code>Alt + 滚轮</code>: 悬浮音符 / 批量调节选中音符力度 (带 HUD 提示)</div>
-      <div><code>Shift + 拖拽音符</code>: 克隆复制音符副本 ｜ <code>Alt + 拖拽</code>: 自由微调 (绕过网格吸附)</div>
-      <div><code>Ctrl + 左键拖拽</code>: 任意工具下快捷拉出选框 ｜ <code>右键划过音符</code>: 极速擦除</div>
-      <div><code>力度窗画线/涂抹</code>: 在下方力度窗按住拖拽划出连续力度斜坡</div>
-      <div><code>双击音符</code>: 打开音符属性弹窗 (Note Properties)</div>
-      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">常用组合键：</div>
-      <div><code>Ctrl + A</code>: 全选 ｜ <code>Ctrl + D</code>: 取消全选 ｜ <code>Ctrl + I</code>: 反选</div>
-      <div><code>Ctrl + B</code>: 顺延复制至下一小节 ｜ <code>Ctrl + Q</code>: 快速量化 ｜ <code>Ctrl + L</code>: 快速连奏</div>
-      <div><code>Alt + X</code>: 力度缩放器 ｜ <code>Alt + S</code>: 扫弦工具 ｜ <code>Alt + A</code>: 琶音器 ｜ <code>Alt + R</code>: 随机化</div>
-      <div><code>Shift + 上/下</code>: 半音移调 ｜ <code>Ctrl + 上/下</code>: 八度移调 ｜ <code>Space</code>: 播放/暂停</div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-primary btn-sm" id="prShortcutsClose">我知道了</button>
-    </div>
-  </div>
-</div>
 
 <!-- 输出机架 (Channel / Output Rack) 独立浮动窗口：FL Studio 通道机架设计，支持自由拖动与直接拖拽音源/采样到轨道 -->
 <div class="rack-window" id="arrRackWindow" hidden>
@@ -724,6 +696,23 @@
     </div>
     <div class="modal-actions">
       <button class="btn btn-primary" id="disclaimerOk">我已阅读并知悉</button>
+    </div>
+  </div>
+</div>
+
+<!-- 请求 Star 弹窗（localStorage 按版本记忆：每个新版本首次打开弹一次） -->
+<div class="modal-overlay" id="starOverlay" hidden role="dialog" aria-modal="true" aria-label="请求支持">
+  <div class="modal card brackets" style="max-width:480px">
+    <div class="modal-title">⭐ 支持一下 AI_MIDI</div>
+    <div class="confirm-text" style="text-align:left; line-height:1.9; font-size:12.5px">
+      感谢使用 AI_MIDI！本项目完全<b>免费开源</b>（Apache-2.0），开发全靠兴趣与热情。<br><br>
+      如果这个工具对你有帮助，欢迎到 GitHub 给项目点一个 ⭐ Star——<br>
+      这是对开发者最大的鼓励，也能帮助更多音乐爱好者发现它。<br><br>
+      你的每一次支持，都会让 AI_MIDI 变得更好！
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="starLaterBtn">不再提示</button>
+      <button class="btn btn-primary" id="starOkBtn">⭐ 去 GitHub 点个 Star</button>
     </div>
   </div>
 </div>
@@ -859,38 +848,10 @@
   </div>
 </div>
 
-<!-- 编排快捷键一览弹窗（参考 FL Studio） -->
-<div class="modal-overlay" id="arrShortcutsModal" hidden role="dialog" aria-modal="true" aria-label="编排快捷键一览">
-  <div class="modal card brackets" style="max-width:580px">
-    <div class="modal-title">⌨ 编曲窗快捷键一览 · 参考 FL Studio</div>
-    <div style="max-height:340px; overflow-y:auto; font-size:12px; line-height:1.8">
-      <div style="font-weight:bold; color:var(--color-primary); margin-bottom:4px">走带控制：</div>
-      <div><code>Space</code>: 播放 / 暂停 ｜ <code>Home</code>: 回到开头 ｜ <code>End</code>: 跳到末尾 ｜ <code>L</code>: 循环选区开关</div>
-      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">播放头与轨道导航：</div>
-      <div><code>← / →</code>: 播放头按吸附步进 ｜ <code>Shift + ← / →</code>: 按小节步进 ｜ <code>↑ / ↓</code>: 切换选中轨道</div>
-      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">轨道操作：</div>
-      <div><code>M</code>: 当前轨静音 ｜ <code>Shift + S</code>: 当前轨独奏 ｜ <code>F2</code>: 重命名当前轨道</div>
-      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">Clip 编辑：</div>
-      <div><code>S</code>: 在播放头处拆分所选 Clip ｜ <code>Ctrl + Z / Y</code>: 撤销 / 重做 ｜ <code>Ctrl + C / X / V</code>: 复制 / 剪切 / 粘贴（保持源轨道）</div>
-      <div><code>Ctrl + D</code>: 原地克隆选中 Clip ｜ <code>Ctrl + B</code>: 向右顺延复制 ｜ <code>Del / Backspace</code>: 删除选中</div>
-      <div><code>Ctrl + A</code>: 全选 ｜ <code>Esc</code>: 取消选择 / 关闭菜单</div>
-      <div style="font-weight:bold; color:var(--color-primary); margin-top:8px; margin-bottom:4px">鼠标手势：</div>
-      <div><code>拖动 Clip</code>: 移动（自动吸附）｜ <code>Ctrl + 拖动</code>: 克隆副本（FL 惯例）｜ <code>Alt + 拖动</code>: 临时禁用吸附</div>
-      <div><code>拖动 Clip 边缘</code>: 裁剪长度 ｜ <code>拖入 MIDI/音频文件</code>: 剪影指示真实落点，松手即放置</div>
-      <div><code>拖动 Clip 角部三角</code>: 渐入渐出曲线 ｜ <code>双击 MIDI Clip</code>: 在底部钢琴卷帘打开源文件</div>
-      <div><code>右键 Clip → 在此拆分</code>: 按点击位置拆分 ｜ 播放中编辑内容立即生效</div>
-      <div><code>标尺下半部拖拽</code>: 移动播放头 ｜ <code>标尺上半部拖拽</code>: 拉出循环区间（双击清除）</div>
-      <div><code>+ / -</code> 或 <code>Ctrl+滚轮</code>: 横向缩放 ｜ <code>Shift+滚轮</code>: 横向滚动</div>
-      <div style="margin-top:10px; color:var(--color-ink-faint)">※ 快捷键按焦点区域生效：聊天输入框、钢琴卷帘、编排窗口各自独立，与 FL Studio 多窗口逻辑一致。单键快捷键在输入框聚焦或中文输入法组合时不触发。</div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-primary btn-sm" id="arrShortcutsClose">我知道了</button>
-    </div>
-  </div>
-</div>
 
 <script src="/js/vendor/marked.min.js" defer></script>
 <script src="/js/app.js" defer></script>
+<script src="/js/shortcuts.js" defer></script>
 <script src="/js/update.js" defer></script>
 <script src="/js/theme.js" defer></script>
 <script src="/js/tasks.js" defer></script>
@@ -923,36 +884,55 @@
       var cfg = arr[1] || {};
       var backend = (cfg.backend === "webaudio" ? "webaudio" : "auto");
       var state = st.state || "unknown";
-      var isWeAudioForced = backend === "webaudio";
+      /* 浏览器模式（无 Wails 桥）：实际发声恒为 WebAudio——徽章必须
+         如实反映，不得显示引擎就绪（此前只按服务端 backend+引擎状态
+         渲染，浏览器模式下显示 JUCE ● 与实际路由相反，属误导） */
+      var noBridge = !(window.EngineBridge && window.EngineBridge.available);
+      var isWeAudioForced = backend === "webaudio" || noBridge;
       var text = "";
       var cls = "stamp";
       if (isWeAudioForced) {
         text = "WEB ○";
         cls = "stamp warn";
-        badge.title = "已强制 WEBAUDIO（设置页可切回 AUTO）";
+        badge.title = noBridge
+          ? "浏览器模式（无引擎桥）· 全部走 Web Audio（设置页可配置后端，桌面应用内生效）"
+          : "已强制 WEBAUDIO（设置页可切回 ENGINE）";
       } else {
         if (state === "ready") {
-          text = "JUCE ●"; cls = "stamp ok";
-          var sfNote = (st.soundfont_loaded === false) ? " · 未加载音色（SF2 轨逐轨回退）" : "";
-          badge.title = (st.device_summary||"JUCE就绪") + sfNote + " · AUTO";
+          text = "ENGINE ●"; cls = "stamp ok";
+          var sfNote = (st.soundfont_loaded === false) ? " · 未加载音色（SF2 轨静音）" : "";
+          badge.title = (st.device_summary||"引擎就绪") + sfNote + " · ENGINE 仅引擎";
         }
-        else if (state === "starting" || state === "restarting") { text = "JUCE …"; cls = "stamp warn"; badge.title = "JUCE启动中"; }
-        else if (state === "failed" || state === "stopped" || state === "disabled") { text = "WEB ○"; cls = "stamp warn"; badge.title = "JUCE不可用，已回退 WebAudio："+(st.last_error||state); }
-        else { text = "WEB ○"; cls = "stamp"; badge.title = "引擎状态："+state; }
+        else if (state === "starting" || state === "restarting") { text = "ENGINE …"; cls = "stamp warn"; badge.title = "引擎启动中（ENGINE 模式播放暂不可用）"; }
+        else if (state === "failed" || state === "stopped" || state === "disabled") {
+          text = "ENGINE ✗"; cls = "stamp warn";
+          badge.title = "音频引擎不可用（ENGINE 模式不发声）："+(st.last_error||state)+"；可在设置页切 WEBAUDIO";
+        }
+        else { text = "ENGINE ?"; cls = "stamp"; badge.title = "引擎状态："+state; }
       }
       badge.textContent = "ENGINE: " + text;
       badge.className = cls;
       var prevState = window.__engineState;
       window.__engineState = state;
       window.__engineBackend = backend;
+      // 引擎模式（不降级路由）下切换/残留的 AudioContext 一律销毁——
+      // 杜绝"切到 ENGINE 还有 Web 音在响"（webaudio 模式由 SharedAudio 惰性重建）
+      if (!isWeAudioForced && window.SharedAudio && window.SharedAudio.dispose) {
+        try { window.SharedAudio.dispose(); } catch (e) {}
+      }
       // 卡音兜底：后端从原生切走（引擎挂掉/强制 WEBAUDIO）时，之前经
       // 原生路径发出的音符没有对应的前端 voice 可停——清引擎侧残留
       if (prevState === "ready" && state !== "ready" && window.EngineBridge && window.EngineBridge.panic) {
         try { window.EngineBridge.panic().catch(function(){}); } catch (e) {}
       }
-      // 失败转态 toast（仅一次）
-      if (state === "failed" && lastState !== "failed" && !isWeAudioForced) {
-        if (window.UI && window.UI.toast) window.UI.toast("⚠ 原生引擎不可用，已自动回退到浏览器音频（可在设置页切 WEBAUDIO 或检查声卡）", "warn");
+      // 失败转态 toast（仅一次）：严格路由——引擎模式不降级，明确告知。
+      // 浏览器模式（无桥）不弹此提示（WebAudio 从未失效）
+      if (state === "failed" && lastState !== "failed" && !isWeAudioForced && !noBridge) {
+        if (window.UI && window.UI.toast) window.UI.toast("⚠ 音频引擎不可用（ENGINE 模式播放不可用，不降级）。可到设置页切换 WEBAUDIO 或检查声卡", "warn");
+      }
+      // 引擎恢复（starting/restarting → ready）转态提示一次（此前恢复全程静默）
+      if (state === "ready" && (lastState === "starting" || lastState === "restarting" || lastState === "failed") && !isWeAudioForced && !noBridge) {
+        if (window.UI && window.UI.toast) window.UI.toast("✓ 音频引擎已就绪（ENGINE 模式播放可用）", "ok");
       }
       lastState = state;
     });

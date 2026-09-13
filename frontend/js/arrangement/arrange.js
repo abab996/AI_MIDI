@@ -81,6 +81,15 @@
     this.engine.onSoundFontError = function (tid, err) {
       UI.toast("✗ 轨道音源加载失败: " + (err && err.message ? err.message : "未知错误"), "err");
     };
+    /* 引擎模式播放中引擎掉线（崩溃/重启）：自动停止走带 + 清引擎残留音 +
+       明确提示（严格路由，不无声空转） */
+    this.engine.onEngineLost = function () {
+      if (self.isPlaying) {
+        self.stopEngineClock();
+        try { if (window.EngineBridge && window.EngineBridge.panic) window.EngineBridge.panic().catch(function(){}); } catch (e) {}
+        UI.toast("⚠ 音频引擎已中断，播放已停止（引擎恢复后可重新播放）", "warn");
+      }
+    };
 
     this.undoStack = [];
     this.redoStack = [];
@@ -109,7 +118,7 @@
       "arrHomeBtn", "arrPlayBtn", "arrPlayIconPath", "arrPlayLabel", "arrStopBtn", "arrLoopBtn", "arrMetroBtn", "arrResumeBtn",
       "arrBpmInput", "arrPosDisplay", "arrSnapDropdown", "arrSnapBtn", "arrSnapMenu",
       "arrZoomOutBtn", "arrZoomRange", "arrZoomInBtn", "arrUndoBtn", "arrRedoBtn",
-      "arrSaveStamp", "arrShortcutsBtn", "arrRackBtn", "arrHudBadge",
+      "arrSaveStamp", "arrRackBtn", "arrHudBadge",
       "arrMidiCount", "arrMidiList",
       "arrTracksScroll", "arrInner", "arrRulerCanvas", "arrLanes", "arrAddTrackRow", "arrAddTrackBtn", "arrPlayline",
       "arrFileTree", "arrAddDirBtn"];
@@ -408,10 +417,14 @@
       });
       return track;
     });
-    // 引擎/导出 32 轨上限：超出部分现场播放与导出行为不一致，加载时截断
-    if (this.tracks.length > 32) {
-      this.tracks = this.tracks.slice(0, 32);
-      this.showHUD("⚠ 工程超过 32 条轨道，已保留前 32 条");
+    // 引擎模式：29-31 为试听/钢琴窗专用轨，加载时截断（webaudio 模式 32 轨）
+    var engMode2 = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
+    var cutLimit = engMode2 ? 29 : 32;
+    if (this.tracks.length > cutLimit) {
+      this.tracks = this.tracks.slice(0, cutLimit);
+      this.showHUD(engMode2
+        ? "⚠ 工程超过 29 条轨道（引擎轨位上限，29-31 为试听/钢琴窗专用），已保留前 29 条"
+        : "⚠ 工程超过 32 条轨道，已保留前 32 条");
     }
     if (!this.tracks.length) this.tracks = [this.makeTrack(1)];
     this._pruneTrackNodes();
@@ -510,9 +523,13 @@
     this.loop = s.loop || { on: false, start: 0, end: 16 };
     this.tracks = s.tracks || [];
     // 引擎/导出 32 轨上限：撤销/重做恢复超限快照时截断
-    if (this.tracks.length > 32) {
-      this.tracks = this.tracks.slice(0, 32);
-      this.showHUD("⚠ 快照超过 32 条轨道，已保留前 32 条");
+    var engMode3 = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
+    var cutLimit3 = engMode3 ? 29 : 32;
+    if (this.tracks.length > cutLimit3) {
+      this.tracks = this.tracks.slice(0, cutLimit3);
+      this.showHUD(engMode3
+        ? "⚠ 快照超过 29 条轨道（引擎轨位上限），已保留前 29 条"
+        : "⚠ 快照超过 32 条轨道，已保留前 32 条");
     }
     if (!this.tracks.length) this.tracks = [this.makeTrack(1)];
     this._pruneTrackNodes();
@@ -615,6 +632,14 @@
   };
 
   Arrange.prototype.startPlayback = function () {
+    /* 引擎模式播放门控（严格路由）：引擎未就绪不播放、不静默回退 */
+    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
+        && !window.AudioBackend.isEngineReady()) {
+      /* 门控提示双通道：toast（显眼、不被 HUD 顶掉）+ HUD 状态条 */
+      if (window.UI && window.UI.toast) UI.toast("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+      this.showHUD("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）");
+      return;
+    }
     this.engine.resume().catch(function (e) {
       console.warn("[Arrange] AudioContext 恢复失败:", e);
     });
@@ -804,7 +829,17 @@
     var useNative = false;
     try { useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred(); } catch(e) {}
     if (!useNative) {
-      if (window.UI && window.UI.toast) window.UI.toast("⚠ 当前为 WEBAUDIO 模式，导出走浏览器（无离线尾音保障）。请切回 AUTO 后重试", "warn");
+      /* 区分两种成因：真 WEBAUDIO 模式 / ENGINE 模式引擎未就绪——
+         后者提示必须如实（此前统一说"当前为 WEBAUDIO…切回 AUTO"，
+         而设置页早已没有 AUTO 一词，用户无从照做） */
+      var isEng = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
+      if (window.UI && window.UI.toast) {
+        if (isEng) {
+          UI.toast("✗ 音频引擎未就绪，导出需要引擎离线渲染（可在设置页切换 WEBAUDIO 模式后重试）", "err");
+        } else {
+          UI.toast("⚠ 当前为 WEBAUDIO 模式，导出走浏览器（无离线尾音保障）", "warn");
+        }
+      }
       return;
     }
     if (!this.tracks || !this.tracks.length) {
@@ -846,7 +881,7 @@
       a.click();
       setTimeout(function(){ try{ a.remove(); }catch(e){} }, 1000);
     }).catch(function(err){
-      self.showHUD("✗ 导出失败");
+      self.showHUD("✗ 导出失败（可重试；持续失败请检查磁盘空间或引擎状态）");
       if (window.UI && window.UI.toast) window.UI.toast("✗ 导出失败: " + (err && err.message || err), "err");
     }).finally(finish);
   };
@@ -889,7 +924,7 @@
       menu.innerHTML = "";
       SNAPS.forEach(function (s) {
         var opt = document.createElement("div");
-        opt.className = "select-option" + (self.snap === s.v ? " active" : "");
+        opt.className = "select-option" + (self.snap === s.v ? " selected" : "");
         opt.textContent = s.label;
         opt.addEventListener("click", function () {
           self.snap = s.v;
@@ -1422,8 +1457,9 @@
 
   /** 汇总当前全部音频 clip → 引擎调度表。scheduleSamples 为全量重建语义，
       SamplePool 按路径缓存已解码样本，重复下发只做表重建不重新解码。
-      失败时置 engine._nativeSamplesFailed（播放中回退 Web 队列）并 toast
-      具体原因（素材目录未挂载等此前只写日志，用户侧表现为"没声音"） */
+      失败时 toast 具体原因（素材目录未挂载等此前只写日志，用户侧表现为
+      "没声音"）。严格路由：引擎模式下失败即静音该素材，不回退 Web 渲染
+      （_nativeSamplesFailed 仅作状态标记，不再驱动降级） */
   Arrange.prototype.sendSampleSchedule = function () {
     if (!window.EngineBridge) return null;
     var clips = [];
@@ -1443,7 +1479,7 @@
           self.engine._nativeSamplesFailed = false;
         }).catch(function (err) {
           self.engine._nativeSamplesFailed = true;
-          if (UI.toast) UI.toast("⚠ 音频素材调度失败，相关剪辑回退浏览器渲染：" + (err && err.message || err), "warn");
+          if (UI.toast) UI.toast("⚠ 音频素材调度失败，相关剪辑静音（ENGINE 模式不降级）：" + (err && err.message || err), "warn");
         });
       }
       return p;
@@ -2093,6 +2129,17 @@
 
   Arrange.prototype.deleteSelected = function () {
     if (!this.selectedClips.length) return;
+    /* 多选删除确认：连选多个片段时 Del 一下全删（此前无确认，习惯性
+       按 Del 本意删 1 个却全没了）；单片段保持直接删 */
+    var ids = this.selectedClips.slice();
+    if (ids.length > 1) {
+      var self = this;
+      this.openConfirm("删除 " + ids.length + " 个片段？", "选中的 " + ids.length + " 个片段将被删除（可用 Ctrl+Z 撤销）", function () {
+        self.deleteSelectedSilent(ids);
+        self.showHUD("🗑 已删除 " + ids.length + " 个片段");
+      });
+      return;
+    }
     this.pushHistory();
     var ids = this.selectedClips.slice();
     this.tracks.forEach(function (t) {
@@ -2288,10 +2335,14 @@
   /* ═══════════ 轨道操作 ═══════════ */
 
   Arrange.prototype.addTrack = function () {
-    // 引擎合成器与 bounce 均为 32 轨上限：超出部分现场被钳到演奏轨、
-    // 导出被静默丢弃，两路径行为不一致——源头限制轨道数
-    if (this.tracks.length >= 32) {
-      this.showHUD("✗ 最多支持 32 条轨道（引擎/导出上限）");
+    // 引擎模式：32 轨上限且 29-31 为试听/钢琴窗专用轨（见 engine_bridge.js
+    // 轨位表），编曲轨上限 0..28；webaudio 模式无轨位预留约束（32 轨上限）
+    var engMode = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
+    var limit = engMode ? 29 : 32;
+    if (this.tracks.length >= limit) {
+      this.showHUD(engMode
+        ? "✗ 最多支持 29 条轨道（引擎轨位上限：29-31 为试听/钢琴窗专用）"
+        : "✗ 最多支持 32 条轨道（WebAudio 模式上限）");
       return;
     }
     this.pushHistory();
@@ -3293,19 +3344,6 @@
       });
     }
 
-    var shortcutsOverlay = document.getElementById("arrShortcutsModal");
-    if (shortcutsOverlay) {
-      this.$("arrShortcutsBtn").addEventListener("click", function () {
-        self.showOverlay(shortcutsOverlay);
-        self.$("arrShortcutsBtn").blur();
-      });
-      document.getElementById("arrShortcutsClose").addEventListener("click", function () {
-        self.hideOverlay(shortcutsOverlay);
-      });
-      shortcutsOverlay.addEventListener("mousedown", function (e) {
-        if (e.target === shortcutsOverlay) self.hideOverlay(shortcutsOverlay);
-      });
-    }
   };
 
   Arrange.prototype.openRenameModal = function (idx) {
@@ -3321,7 +3359,7 @@
 
   /** 当前可见的最上层编排弹窗（无则 null） */
   Arrange.prototype._topOverlay = function () {
-    var ids = ["arrConfirmModal", "arrRenameModal", "arrShortcutsModal", "arrBetaModal"];
+    var ids = ["arrConfirmModal", "arrRenameModal", "arrBetaModal"];
     for (var i = ids.length - 1; i >= 0; i--) {
       var m = document.getElementById(ids[i]);
       if (m && !m.hidden) return m;
@@ -3383,8 +3421,9 @@
 
       var ctrl = e.ctrlKey || e.metaKey;
       var k = String(e.key || "");
+      var K = window.Shortcuts;
 
-      // Esc 分层：确认/重命名弹窗（上方分支）→ 输出机架窗口
+      // Esc 分层：确认/重命名弹窗（上方分支）→ 输出机架窗口（系统保留，不可自定义）
       if (k === "Escape" || k === "Esc") {
         var rackWin = document.getElementById("arrRackWindow");
         if (rackWin && !rackWin.hidden) {
@@ -3395,55 +3434,55 @@
 
       // Space 走走带停；焦点在按钮/链接上时让位给浏览器激活语义
       // （否则机架的试听/分配等按钮无法用空格操作）
-      if (e.code === "Space") {
+      if (K && K.matches(e, "arrange.playPause")) {
         if (self.isActivatableTarget(e.target)) return;
         e.preventDefault();
         self.togglePlay();
         return;
       }
 
-      if (k === "Home") { e.preventDefault(); self.seekTo(0, false); self.updatePlayButton(); return; }
-      if (k === "End") { e.preventDefault(); self.seekTo(self.contentEndBeat(), false); return; }
-      if (k === "ArrowLeft" || k === "ArrowRight") {
+      if (K && K.matches(e, "arrange.home")) { e.preventDefault(); self.seekTo(0, false); self.updatePlayButton(); return; }
+      if (K && K.matches(e, "arrange.end")) { e.preventDefault(); self.seekTo(self.contentEndBeat(), false); return; }
+      if (K && K.matches(e, "arrange.nudgeLeft")) {
         e.preventDefault();
-        var dir = k === "ArrowLeft" ? -1 : 1;
-        var step = e.shiftKey ? BAR_BEATS : (self.snap || 0.25);
-        self.seekTo(Math.max(0, self.playheadBeat + dir * step), false);
+        self.seekTo(Math.max(0, self.playheadBeat - (self.snap || 0.25)), false);
         return;
       }
-      if (k === "ArrowUp" || k === "ArrowDown") {
+      if (K && K.matches(e, "arrange.nudgeRight")) {
         e.preventDefault();
-        self.moveTrackSelection(k === "ArrowUp" ? -1 : 1);
+        self.seekTo(Math.max(0, self.playheadBeat + (self.snap || 0.25)), false);
         return;
       }
-      if (!ctrl && (k === "m" || k === "M")) { self.toggleMute(self.selectedTrackIdx); return; }
-      if (!ctrl && e.shiftKey && (k === "s" || k === "S")) { self.toggleSolo(self.selectedTrackIdx); return; }
-      if (!ctrl && !e.shiftKey && (k === "s" || k === "S")) { self.splitSelectedAtPlayhead(); return; }
-      if (!ctrl && (k === "l" || k === "L")) { self.toggleLoop(); return; }
-      if (k === "F2") { e.preventDefault(); self.openRenameModal(self.selectedTrackIdx); return; }
-
-      if (ctrl) {
-        switch (k.toLowerCase()) {
-          case "z":
-            e.preventDefault();
-            if (e.shiftKey) self.redo(); else self.undo();
-            return;
-          case "y": e.preventDefault(); self.redo(); return;
-          case "c": e.preventDefault(); self.copySelection(false); return;
-          case "x": e.preventDefault(); self.cutSelection(); return;
-          case "v": e.preventDefault(); self.pasteClipboard(); return;
-          case "d": e.preventDefault(); self.duplicateSelection(); return;
-          case "b": e.preventDefault(); self.repeatRight(); return;
-          case "a": e.preventDefault(); self.selectAllClips(); return;
-          case "=": case "+": e.preventDefault(); self.zoomStep(1); return;
-          case "-": e.preventDefault(); self.zoomStep(-1); return;
-        }
+      if (K && K.matches(e, "arrange.nudgeBarLeft")) {
+        e.preventDefault();
+        self.seekTo(Math.max(0, self.playheadBeat - BAR_BEATS), false);
         return;
       }
+      if (K && K.matches(e, "arrange.nudgeBarRight")) {
+        e.preventDefault();
+        self.seekTo(Math.max(0, self.playheadBeat + BAR_BEATS), false);
+        return;
+      }
+      if (K && K.matches(e, "arrange.trackUp")) { e.preventDefault(); self.moveTrackSelection(-1); return; }
+      if (K && K.matches(e, "arrange.trackDown")) { e.preventDefault(); self.moveTrackSelection(1); return; }
+      if (K && K.matches(e, "arrange.muteTrack")) { self.toggleMute(self.selectedTrackIdx); return; }
+      if (K && K.matches(e, "arrange.soloTrack")) { self.toggleSolo(self.selectedTrackIdx); return; }
+      if (K && K.matches(e, "arrange.splitAtPlayhead")) { self.splitSelectedAtPlayhead(); return; }
+      if (K && K.matches(e, "arrange.toggleLoop")) { self.toggleLoop(); return; }
+      if (K && K.matches(e, "arrange.renameTrack")) { e.preventDefault(); self.openRenameModal(self.selectedTrackIdx); return; }
 
-      if (k === "Delete" || k === "Backspace") { e.preventDefault(); self.deleteSelected(); return; }
-      if (k === "+" || k === "=") { self.zoomStep(1); return; }
-      if (k === "-" || k === "_") { self.zoomStep(-1); return; }
+      if (K && K.matches(e, "arrange.undo")) { e.preventDefault(); self.undo(); return; }
+      if (K && K.matches(e, "arrange.redo")) { e.preventDefault(); self.redo(); return; }
+      if (K && K.matches(e, "arrange.copy")) { e.preventDefault(); self.copySelection(false); return; }
+      if (K && K.matches(e, "arrange.cut")) { e.preventDefault(); self.cutSelection(); return; }
+      if (K && K.matches(e, "arrange.paste")) { e.preventDefault(); self.pasteClipboard(); return; }
+      if (K && K.matches(e, "arrange.clone")) { e.preventDefault(); self.duplicateSelection(); return; }
+      if (K && K.matches(e, "arrange.duplicateNext")) { e.preventDefault(); self.repeatRight(); return; }
+      if (K && K.matches(e, "arrange.selectAll")) { e.preventDefault(); self.selectAllClips(); return; }
+      if (K && K.matches(e, "arrange.zoomIn")) { e.preventDefault(); self.zoomStep(1); return; }
+      if (K && K.matches(e, "arrange.zoomOut")) { e.preventDefault(); self.zoomStep(-1); return; }
+
+      if (K && K.matches(e, "arrange.delete")) { e.preventDefault(); self.deleteSelected(); return; }
       if (k === "Escape") {
         /* Esc 分层：吸附下拉 → 右键菜单 → 清选区（下拉此前只能点外部关闭，
            与弹层 Esc 分层惯例不一致） */
@@ -3842,11 +3881,74 @@
     });
   };
 
-  /** 预览机架音源 (在编曲引擎的 AudioContext 上播放一个 C4 音符) */
+  /** 预览机架音源 (播放一个 C4 音符)。
+      引擎模式：发到专用试听轨（PREVIEW_TRACK=29，见 engine_bridge.js 轨位表）；
+      webaudio 模式：在共享 AudioContext 上播放（原行为） */
   Arrange.prototype.previewRackSource = function (source) {
     var self = this;
     if (!source) return;
     try {
+      var engineMode = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
+      if (engineMode) {
+        // 引擎模式试听：严格原生。未就绪时明确提示，不落 WebAudio
+        if (!(window.AudioBackend && window.AudioBackend.isEngineReady())) {
+          if (window.UI && window.UI.toast) UI.toast("✗ 音频引擎未就绪，试听不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+          this.showHUD("✗ 音频引擎未就绪，试听不可用（可在设置页切换 WEBAUDIO 模式）");
+          return;
+        }
+        var trk = (window.EngineBridge && window.EngineBridge.PREVIEW_TRACK) || 29;
+        var playNativeNote = function () {
+          window.EngineBridge.noteOnTrack(trk, 60, 100);
+          setTimeout(function () {
+            try { window.EngineBridge.noteOffTrack(trk, 60); } catch (e) {}
+          }, 600);
+        };
+        if (source.type === "synth") {
+          var p = {
+            wave: source.wave || "sawtooth",
+            attack: 0.01, decay: 0.15, sustain: 0.6, release: 0.25,
+            cutoff: 8000, resonance: 1.0, gain: 0.7
+          };
+          window.EngineBridge.setTrackVoice(trk, p).then(playNativeNote).catch(function (e) {
+            self.showHUD("✗ 试听失败: " + (e && e.message ? e.message : "引擎不可用"));
+          });
+        } else if (source.type === "sf2" && source.libId && window.SoundLibrary) {
+          window.SoundLibrary.getSoundFont(source.libId).then(function (rec) {
+            if (!rec || !rec.data) throw new Error("音源数据不存在");
+            var diskPath = rec.diskPath;
+            if (!diskPath) {
+              var safe = (rec.name || "soundfont").replace(/[^\p{L}\p{N}_\-\.]/gu, "_").replace(/\.[^/.]+$/, "");
+              diskPath = "Library/soundfonts/" + (safe || "soundfont") + ".sf2";
+            }
+            return window.EngineBridge.loadSoundFont(diskPath, trk).then(function () {
+              if (!source.presetId) return;
+              var parts = String(source.presetId).replace(/^sf2_/, "").split("_");
+              var bank = parseInt(parts[0], 10) || 0;
+              var program = parseInt(parts[1], 10) || 0;
+              return window.EngineBridge.setTrackPreset(trk, bank, program).catch(function () {
+                return window.EngineBridge.setTrackPreset(trk, 0, 0).then(function () {
+                  if (self.showHUD) self.showHUD("⚠ 预设不存在，已用该音色库首个预设");
+                });
+              });
+            });
+          }).then(playNativeNote).catch(function (err) {
+            if (self.showHUD) self.showHUD("✗ 试听失败: " + (err && err.message ? err.message : "引擎不可用"));
+          });
+        } else {
+          // builtin 预设音色：映射随包 GeneralUser GS (0,0) Stereo Grand
+          fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (j) {
+            var path = j && j.default_soundfont;
+            if (!path) throw new Error("缺少内置音色库（引擎模式）");
+            var program = (source.tone || "piano") === "strings" ? 48 : 0;
+            return window.EngineBridge.loadSoundFont(path, trk)
+              .then(function () { return window.EngineBridge.setTrackPreset(trk, 0, program); });
+          }).then(playNativeNote).catch(function (err) {
+            if (self.showHUD) self.showHUD("✗ 试听失败: " + (err && err.message ? err.message : "引擎不可用"));
+          });
+        }
+        return;
+      }
+
       this.engine.resume();
       var ctx = this.engine.ctx;
       if (!ctx) return;
@@ -3869,7 +3971,6 @@
         var synth = new window.SynthEngine(ctx, gain);
         synth.init();
         synth.setWaveform(source.wave || "sawtooth");
-        synth._forceWebAudio = true; // 试听强制走 Web Audio，避免直发原生引擎轨道
         playNote(synth);
       } else if (source.type === "sf2" && source.libId && window.SoundLibrary) {
         window.SoundLibrary.getSoundFont(source.libId).then(function (rec) {

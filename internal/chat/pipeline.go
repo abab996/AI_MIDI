@@ -873,16 +873,23 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 	var reasoningBuilder strings.Builder
 	toolCallMap := make(map[int]*llm.ToolCall)
 
-	// 占位 assistant 消息
+	// 占位 assistant 消息（快照写入的目标索引：流式循环期间恒为末条——
+	// 工具块由调用方在本函数返回后才追加，同项目对话锁保证无并发写入者）
 	fl.Lock()
 	st.ChatDisplay = append(st.ChatDisplay, map[string]any{
 		"role":    "assistant",
 		"content": "",
 	})
+	placeholderIdx := len(st.ChatDisplay) - 1
 	fl.Unlock()
 
 	lastEmit := time.Now()
 	sentReasoning, sentContent := 0, 0
+	// 快照节流：流式期间周期性把已生成内容写入占位消息（与轮末最终写入
+	// 同款显示格式），使 GET 快照（重进页面/后台续跑轮询）能读到部分内容
+	// 而非空气泡；锁内仅一次字符串赋值，与快照 RLock 并发安全
+	lastSnapshotAt := time.Now()
+	snapReasoning, snapContent := 0, 0
 	var streamErr error
 
 	// 上游空闲看门狗：长时间收不到任何字节视为死连，主动关闭 body 打断
@@ -975,6 +982,22 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 									"reasoning_delta": rd,
 									"content_delta":   cd,
 								})
+							}
+						}
+
+						// 后台续跑可见性：200ms 节流写快照（独立于上方 8ms 增量帧
+						// 节流），内容无新增时跳过，避免无谓的锁竞争
+						if time.Since(lastSnapshotAt) >= 200*time.Millisecond {
+							lastSnapshotAt = time.Now()
+							r := reasoningBuilder.String()
+							c := contentBuilder.String()
+							if (r != "" || c != "") && (len(r) != snapReasoning || len(c) != snapContent) {
+								snapReasoning, snapContent = len(r), len(c)
+								fl.Lock()
+								if placeholderIdx >= 0 && placeholderIdx < len(st.ChatDisplay) {
+									st.ChatDisplay[placeholderIdx]["content"] = llm.FormatDisplayMessage(r, c)
+								}
+								fl.Unlock()
 							}
 						}
 					}

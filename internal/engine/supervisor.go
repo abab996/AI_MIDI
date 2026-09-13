@@ -47,15 +47,16 @@ type Supervisor struct {
 	status         EngineStatus
 	client         *Client
 	cmd            *exec.Cmd
-	startedEnabled bool            // 当前守护会话是否以启用状态启动
-	parked         bool            // 引擎文件缺失等不可重试错误：驻留失败态直至退出
-	sessionCnt     int             // 已建立的会话数（Restarts = sessionCnt - 1）
-	lastApply      *map[string]any // 最近一次 applySetup 参数（重启后重放）
-	lastGood       AudioSettings   // 最近一次成功应用的音频设置（applySetup 超时后回退目标）
-	lastSoundFont  string          // 兼容旧单轨（track 0）
-	lastSoundFonts map[int]string  // 每轨独立 SF2（重启后重放）
+	startedEnabled bool                   // 当前守护会话是否以启用状态启动
+	parked         bool                   // 引擎文件缺失等不可重试错误：驻留失败态直至退出
+	sessionCnt     int                    // 已建立的会话数（Restarts = sessionCnt - 1）
+	lastApply      *map[string]any        // 最近一次 applySetup 参数（重启后重放）
+	lastGood       AudioSettings          // 最近一次成功应用的音频设置（applySetup 超时后回退目标）
+	lastSoundFont  string                 // 兼容旧单轨（track 0）
+	lastSoundFonts map[int]string         // 每轨独立 SF2（重启后重放）
+	lastPresets    map[int][2]int         // 每轨 SF2 预设选择 bank/program（重启后重放）
 	lastVoices     map[int]map[string]any // 每轨内置波形声部参数（重启后重放）
-	hasSoundfont   bool            // 当前会话是否已加载任何音色（/api/audio/status 透出）
+	hasSoundfont   bool                   // 当前会话是否已加载任何音色（/api/audio/status 透出）
 	exePath        string
 	stopOnce       sync.Once
 	doneCh         chan struct{} // 关闭表示主循环退出
@@ -176,6 +177,9 @@ func (s *Supervisor) Status() EngineStatus {
 	defer s.mu.RUnlock()
 	st := s.status
 	st.SoundfontLoaded = s.hasSoundfont
+	// 内置 piano/strings 的原生映射目标：每次快照实时计算，
+	// 音色目录增删后无需重启即生效
+	st.DefaultSoundfont = s.defaultSoundFontPath()
 	if s.audio.EngineEnabled {
 		st.Protocol = ProtocolVersion
 	} else {
@@ -434,6 +438,51 @@ func (s *Supervisor) SetTrackVoice(track int, voice map[string]any) error {
 	s.lastVoices[track] = voice
 	s.mu.Unlock()
 	return nil
+}
+
+// SetTrackPreset 选择轨道 SF2 的预设（多预设音色库）。bank/program 为
+// General MIDI 编号；预设不存在由引擎侧拒绝。崩溃重启后随会话重放
+// （loadSoundFont → setTrackPreset → setTrackVoice 顺序）
+func (s *Supervisor) SetTrackPreset(track, bank, program int) error {
+	if track < 0 || track >= 32 {
+		return fmt.Errorf("track 超出范围（0-31）: %d", track)
+	}
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	resp, err := cli.Request("setTrackPreset", map[string]any{
+		"track": track, "bank": bank, "program": program,
+	}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if err := resp.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.lastPresets == nil {
+		s.lastPresets = make(map[int][2]int)
+	}
+	s.lastPresets[track] = [2]int{bank, program}
+	s.mu.Unlock()
+	return nil
+}
+
+// Click 节拍器木鱼音（引擎侧合成，见协议文档 click）。实时性要求高：
+// 直呼当前会话，引擎未就绪/重启期间静默丢弃（节拍器可接受瞬断）
+func (s *Supervisor) Click(track int, high bool) error {
+	s.mu.Lock()
+	cli := s.client
+	s.mu.Unlock()
+	if cli == nil {
+		return fmt.Errorf("引擎未就绪")
+	}
+	resp, err := cli.Request("click", map[string]any{"track": track, "high": high}, s.cfg.RequestTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
 }
 
 // OpenControlPanel 打开当前声卡的控制面板（ASIO 驱动专用）
@@ -782,6 +831,33 @@ func (s *Supervisor) runOnce() string {
 		s.mu.Lock()
 		s.hasSoundfont = loadedFonts > 0
 		s.mu.Unlock()
+	}
+
+	// 重放预设选择（多预设 SF2）：音色重放之后、波形声部之前——
+	// loadSoundFont 会重置预设状态，顺序颠倒预设会被默认 (0,0) 覆盖；
+	// setTrackVoice 会撤下 SF2，必须排在最后
+	s.mu.RLock()
+	presets := make(map[int][2]int, len(s.lastPresets))
+	for k, v := range s.lastPresets {
+		presets[k] = v
+	}
+	s.mu.RUnlock()
+	if failReason == "" {
+		for tr, bp := range presets {
+			if _, err := cli.Request("setTrackPreset", map[string]any{
+				"track": tr, "bank": bp[0], "program": bp[1],
+			}, 10*time.Second); err != nil {
+				select {
+				case <-cli.Done():
+					failReason = "冷启动重放失败: IPC 会话失效"
+				default:
+					slog.Warn("[engine] 重放预设选择失败（track)", "track", tr, "err", err)
+				}
+			}
+			if failReason != "" {
+				break
+			}
+		}
 	}
 
 	// 重放波形声部（合成波音色的原生路径）：音色重放之后执行——loadSoundFont

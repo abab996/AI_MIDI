@@ -2226,12 +2226,156 @@ a.btn {
    设置页（settings.html）
    ════════════════════════════════════════════════════════════════ */
 .settings-wrap {
-  max-width: 900px;
+  /* 宽度必须固定：.page 是 flex 列容器，子项 margin:auto 会按内容收缩
+     居中——各面板内容宽窄不一，切换标签时左右两栏整体横移。
+     width:100% + minmax(0,1fr) 锁定两栏尺寸，只允许高度随内容变化 */
+  width: 100%;
+  max-width: 960px;
   margin: 16px auto 0;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  padding-bottom: 24px;   /* 内容超出一屏时页面自然滚动 */
+}
+
+/* 各面板高度差异大，滚动条出现/消失会让居中布局横移十几像素；
+   设置页预留滚动条槽位，切换标签时页面纹丝不动 */
+html:has(.settings-wrap) {
+  scrollbar-gutter: stable;
+}
+
+/* 左侧标签栏：sticky 跟随滚动；窄屏降级为顶部横排（见响应式块） */
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: sticky;
+  top: 16px;
+}
+
+.settings-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  font-size: 13px;
+  color: var(--color-ink-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 9px 10px;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+
+.settings-tab:hover {
+  color: var(--color-ink);
+  background: var(--color-bg-soft);
+  border-color: var(--color-border);
+}
+
+.settings-tab .tab-icon {
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.72;
+  transition: transform 0.2s cubic-bezier(0.34, 1.45, 0.64, 1), opacity 0.2s ease;
+}
+
+.settings-tab .tab-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.settings-tab .tab-text small {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+  margin-top: 1px;
+}
+
+.settings-tab.active {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border-color: var(--color-border-strong);
+}
+
+.settings-tab.active .tab-icon {
+  opacity: 1;
+  transform: scale(1.15);
+}
+
+/* 激活指示条：弹簧纵向弹出 */
+.settings-tab::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  background: var(--color-accent);
+  border-radius: 2px;
+  transform: scaleY(0.35);
+  opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.34, 1.45, 0.64, 1), opacity 0.2s ease;
+}
+
+.settings-tab.active::before {
+  transform: scaleY(1);
+  opacity: 1;
+}
+
+/* 标签按压 Q 弹（切换撞击点） */
+.settings-tab.pressed {
+  animation: fn-press 0.4s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+}
+
+.settings-main {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding-bottom: 24px;   /* 内容超出一屏时页面自然滚动 */
+}
+
+/* 面板切换动画：纵向滚动 + 运动模糊（filter: blur 在位移峰值最大、
+   落定归零）。方向随标签顺序：切到更靠后的标签 = 向下滚动（新面板从下方
+   推入、旧面板向上退出），反之向上。整卡作为一个单位移动，子字段不再级联 */
+.settings-pane.sc-out-down {
+  animation: sc-out-down 0.34s cubic-bezier(0.55, 0.06, 0.68, 0.19) both;
+}
+.settings-pane.sc-in-down {
+  animation: sc-in-down 0.46s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.settings-pane.sc-out-up {
+  animation: sc-out-up 0.34s cubic-bezier(0.55, 0.06, 0.68, 0.19) both;
+}
+.settings-pane.sc-in-up {
+  animation: sc-in-up 0.46s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 向下滚动：旧面板向上退出（位移 + 模糊 + 淡出） */
+@keyframes sc-out-up {
+  from { opacity: 1; transform: translateY(0); filter: blur(0); }
+  to   { opacity: 0; transform: translateY(-46px); filter: blur(6px); }
+}
+/* 向下滚动：新面板从下方推入（先带模糊，落定时清晰） */
+@keyframes sc-in-down {
+  from { opacity: 0; transform: translateY(46px); filter: blur(6px); }
+  to   { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+/* 向上滚动：旧面板向下退出 */
+@keyframes sc-out-down {
+  from { opacity: 1; transform: translateY(0); filter: blur(0); }
+  to   { opacity: 0; transform: translateY(46px); filter: blur(6px); }
+}
+/* 向上滚动：新面板从上方推入 */
+@keyframes sc-in-up {
+  from { opacity: 0; transform: translateY(-46px); filter: blur(6px); }
+  to   { opacity: 1; transform: translateY(0); filter: blur(0); }
 }
 
 .settings-card {
@@ -2317,6 +2461,16 @@ a.btn {
 
 @media (max-width: 720px) {
   .field-grid { grid-template-columns: 1fr; }
+  /* 设置页：窄屏标签栏降级为顶部横排滚动 */
+  .settings-wrap { grid-template-columns: 1fr; }
+  .settings-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+    position: static;
+    padding-bottom: 2px;
+  }
+  .settings-tab { width: auto; flex: 0 0 auto; }
+  .settings-tab .tab-text small { display: none; }
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -2549,6 +2703,13 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
   .proj-card.land-pop,
   .dyn-control.dyn-in,
   .dyn-control.dyn-out,
+  .settings-pane.sc-in-up,
+  .settings-pane.sc-in-down,
+  .settings-pane.sc-out-up,
+  .settings-pane.sc-out-down,
+  .settings-tab.pressed,
+  .settings-tab::before,
+  .settings-tab .tab-icon,
   .fn.pressed,
   .modal-overlay.modal-in,
   .modal-overlay.modal-out,
@@ -4839,4 +5000,248 @@ body.is-panning *,
 @media (prefers-reduced-motion: reduce) {
   .update-notice { animation: none; }
   .update-progress > i { transition: none; }
+}
+
+/* ═══════════ 设置页：快捷键面板 ═══════════ */
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border-bottom: 1px solid var(--color-line, rgba(128,128,128,.18));
+}
+.shortcut-row:hover { background: var(--color-bg-soft, rgba(128,128,128,.08)); }
+.shortcut-row.capturing {
+  outline: 2px solid var(--accent, #7aa2f7);
+  outline-offset: 1px;
+  background: var(--color-bg-soft, rgba(128,128,128,.12));
+}
+.shortcut-name { flex: 1; font-size: 13px; }
+.shortcut-keys {
+  font-family: var(--font-mono, Consolas, monospace);
+  font-size: 12px;
+  min-width: 90px;
+  text-align: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--color-bg-soft, rgba(128,128,128,.1));
+  color: var(--accent, #7aa2f7);
+}
+.shortcut-row.capturing .shortcut-keys { color: var(--color-warn, #e5c07b); }
+.shortcut-reset { opacity: .75; }
+
+/* ═══════════ 下拉菜单当前选中项高亮（此前无样式规则，选中项与其余
+   选项外观完全一致，无法确认当前值） ═══════════ */
+.select-option.selected,
+.select-option.is-selected {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-weight: 600;
+}
+.select-option.selected:hover,
+.select-option.is-selected:hover {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+/* ═══════════ 设置页 · 用户知识库（paneLibrary） ═══════════
+   Library/user/ 知识文件管理：说明区 + 工具条 + 文件行列表 + 内置折叠区 */
+.lib-hint {
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--color-ink-dim);
+}
+
+.lib-hint b {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.lib-hint code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 0 5px;
+  color: var(--color-ink);
+}
+
+.lib-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.lib-toolbar .lib-status {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+/* 文件行：名称占满剩余宽度并省略号截断，元信息与操作组靠右 */
+.lib-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--color-bg-card);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.lib-file-row:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-alt);
+}
+
+.lib-file-row .lib-file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib-file-row .lib-file-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lib-file-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.lib-file-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-ink-dim);
+}
+
+.lib-file-empty {
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 6px;
+  padding: 18px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-ink-dim);
+}
+
+/* 预览内嵌展开块：跟在触发行的下方，控制台底色区分正文 */
+.lib-preview {
+  margin: -2px 0 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-console);
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--color-ink-dim);
+}
+
+.lib-builtin { margin-top: 16px; }
+
+.lib-builtin summary {
+  cursor: pointer;
+  color: var(--color-ink-dim);
+  font-size: 12px;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+
+.lib-builtin summary:hover { color: var(--color-primary); }
+
+.lib-builtin[open] { margin-bottom: 4px; }
+
+/* ═══════════ 设置页 · 关于面板（paneAbout） ═══════════
+   居中竖排：Logo（随主题换图，theme.js 驱动 .app-logo-img）→ 名称 →
+   版本 → 功能介绍 → 外链 → 日志/报障 */
+.about-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 20px 0 4px;
+}
+
+.about-logo {
+  width: 96px;
+  height: 96px;
+  border-radius: 22px;
+  box-shadow: 0 8px 28px var(--color-shadow);
+}
+
+.about-name {
+  margin-top: 16px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--color-ink);
+}
+
+.about-tagline {
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--color-ink-dim);
+}
+
+.about-version {
+  margin-top: 9px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+.about-desc {
+  margin-top: 18px;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--color-ink-dim);
+  text-align: center;
+}
+
+.about-links {
+  margin-top: 18px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.about-link {
+  font-size: 12.5px;
+  color: var(--color-ink-dim);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 6px 12px;
+  text-decoration: none;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.about-link:hover {
+  color: var(--color-primary);
+  border-color: var(--color-border-strong);
+  background: var(--color-bg-soft);
+}
+
+.about-foot {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
 }

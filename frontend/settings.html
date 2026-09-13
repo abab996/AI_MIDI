@@ -42,204 +42,302 @@
   </div>
 
   <div class="settings-wrap">
-    <!-- 连接参数 -->
-    <section class="card brackets settings-card">
-      <div class="group-title">连接参数 · Connection</div>
+    <!-- 左侧标签栏：切换时当前面板朝标签收拢、新面板从标签中心起飞 -->
+    <nav class="settings-tabs" aria-label="设置分类">
+      <button class="settings-tab active" data-pane="paneConnect" type="button" aria-selected="true">
+        <span class="tab-icon">🔌</span>
+        <span class="tab-text">连接<small>Connection</small></span>
+      </button>
+      <button class="settings-tab" data-pane="paneGen" type="button" aria-selected="false">
+        <span class="tab-icon">🧠</span>
+        <span class="tab-text">生成<small>Generation</small></span>
+      </button>
+      <button class="settings-tab" data-pane="paneAudio" type="button" aria-selected="false">
+        <span class="tab-icon">🎛️</span>
+        <span class="tab-text">音频<small>Audio</small></span>
+      </button>
+      <button class="settings-tab" data-pane="paneMidi" type="button" aria-selected="false">
+        <span class="tab-icon">🎹</span>
+        <span class="tab-text">MIDI<small>Input</small></span>
+      </button>
+      <button class="settings-tab" data-pane="paneLibrary" type="button" aria-selected="false">
+        <span class="tab-icon">📚</span>
+        <span class="tab-text">知识库<small>Library</small></span>
+      </button>
+      <button class="settings-tab" data-pane="paneShortcuts" type="button" aria-selected="false">
+        <span class="tab-icon">⌨️</span>
+        <span class="tab-text">快捷键<small>Shortcuts</small></span>
+      </button>
+      <button class="settings-tab" data-pane="paneAbout" type="button" aria-selected="false">
+        <span class="tab-icon">ℹ️</span>
+        <span class="tab-text">关于<small>About</small></span>
+      </button>
+    </nav>
 
-      <div class="field">
-        <label class="field-label" for="apiKey">API Key</label>
-        <div class="row">
-          <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
-          <button class="btn btn-secondary btn-sm" id="showKeyBtn">显示</button>
-        </div>
-      </div>
+    <!-- 右侧设置面板 -->
+    <div class="settings-main">
+      <!-- 连接参数 -->
+      <section class="card brackets settings-card settings-pane" id="paneConnect">
+        <div class="group-title">连接参数 · Connection</div>
 
-      <div class="field-grid">
         <div class="field">
-          <label class="field-label" for="baseUrl">Base URL</label>
-          <input type="url" id="baseUrl" placeholder="如: https://api.deepseek.com">
-        </div>
-        <div class="field">
-          <label class="field-label" for="apiPath">API 路径</label>
-          <input type="text" id="apiPath" placeholder="如: /v1beta/openai（Gemini 专用）">
-          <div class="stat-line"><span class="dim">仅 Gemini 服务商生效；其他服务商请留空</span></div>
-        </div>
-      </div>
-
-      <div class="field">
-        <label class="field-label" for="model">模型 · Model</label>
-        <div class="row">
-          <div class="select-wrap">
-            <input type="text" id="model" placeholder="输入或从列表选择…">
-            <button type="button" class="select-toggle" id="modelToggle" title="从列表选择">▾</button>
-            <div class="select-menu" id="modelMenu" hidden></div>
+          <label class="field-label" for="apiKey">API Key</label>
+          <div class="row">
+            <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+            <button class="btn btn-secondary btn-sm" id="showKeyBtn">显示</button>
           </div>
-          <button class="btn btn-secondary btn-sm" id="refreshModelsBtn">刷新列表</button>
         </div>
-        <div class="stat-line"><span class="dim" id="modelStatus">点击刷新按钮从 API 获取模型列表</span></div>
-      </div>
-    </section>
 
-    <!-- 生成参数 -->
-    <section class="card brackets settings-card">
-      <div class="group-title">生成参数 · Generation</div>
+        <div class="field-grid">
+          <div class="field">
+            <label class="field-label" for="baseUrl">Base URL</label>
+            <input type="url" id="baseUrl" placeholder="如: https://api.deepseek.com">
+          </div>
+          <div class="field">
+            <label class="field-label" for="apiPath">API 路径</label>
+            <input type="text" id="apiPath" placeholder="如: /v1beta/openai（Gemini 专用）">
+            <div class="stat-line"><span class="dim">仅 Gemini 服务商生效；其他服务商请留空</span></div>
+          </div>
+        </div>
 
-      <div class="field-grid">
         <div class="field">
-          <label class="field-label" for="maxTokens">最大上下文 · max_tokens</label>
-          <input type="number" id="maxTokens" placeholder="留空使用默认值">
+          <label class="field-label" for="model">模型 · Model</label>
+          <div class="row">
+            <div class="select-wrap">
+              <input type="text" id="model" placeholder="输入或从列表选择…">
+              <button type="button" class="select-toggle" id="modelToggle" title="从列表选择">▾</button>
+              <div class="select-menu" id="modelMenu" hidden></div>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="refreshModelsBtn">刷新列表</button>
+          </div>
+          <div class="stat-line"><span class="dim" id="modelStatus">点击刷新按钮从 API 获取模型列表</span></div>
         </div>
+      </section>
+
+      <!-- 生成参数 -->
+      <section class="card brackets settings-card settings-pane" id="paneGen" hidden>
+        <div class="group-title">生成参数 · Generation</div>
+
+        <div class="field-grid">
+          <div class="field">
+            <label class="field-label" for="maxTokens">最大上下文 · max_tokens</label>
+            <input type="number" id="maxTokens" placeholder="留空使用默认值">
+          </div>
+          <div class="field">
+            <label class="field-label" for="maxCompletion">最大输出长度 · max_completion_tokens</label>
+            <input type="number" id="maxCompletion" placeholder="留空使用默认值">
+          </div>
+        </div>
+
+        <label class="field-label">推理努力程度 · reasoning_effort</label>
+        <div class="func-selector" style="grid-template-columns:repeat(3,1fr)" id="effortSelector">
+          <button class="fn" data-effort="low">LOW</button>
+          <button class="fn" data-effort="medium">MEDIUM</button>
+          <button class="fn" data-effort="max">MAX</button>
+        </div>
+
+        <label class="toggle-text">
+          <input type="checkbox" id="thinkingEnabled" checked>
+          <span>启用 thinking 模式</span>
+        </label>
+      </section>
+
+      <!-- 音频引擎 · Audio Engine -->
+      <section class="card brackets settings-card settings-pane" id="paneAudio" hidden>
+        <div class="group-title">音频引擎 · Audio Engine</div>
+
+        <div style="margin-bottom:10px">
+          <span class="field-label">引擎状态：</span>
+          <span id="engineState" style="font-family:monospace">检测中…</span>
+          <span id="engineDetail" style="opacity:.7;font-size:12px"></span>
+          <span id="latencyHint" style="opacity:.7;font-size:12px;margin-left:8px"></span>
+        </div>
+
+        <label class="field-label">驱动类型（含 ASIO）</label>
+        <select id="drvSel" style="width:100%;margin-bottom:8px"><option value="">检测中…</option></select>
+
+        <label class="field-label">输出设备</label>
+        <select id="devSel" style="width:100%;margin-bottom:8px"></select>
+
+        <div class="field-grid">
+          <div class="field">
+            <label class="field-label">采样率</label>
+            <select id="rateSel" style="width:100%">
+              <option value="">默认</option><option>44100</option><option>48000</option>
+              <option>88200</option><option>96000</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">缓冲区（samples）</label>
+            <select id="bufSel" style="width:100%">
+              <option value="">默认</option><option>64</option><option>128</option>
+              <option>256</option><option>512</option><option>1024</option><option>2048</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="fn" id="applyAudioBtn" style="margin-top:10px">应用音频设置</button>
+        <span id="applyHint" style="font-size:12px;opacity:.7;margin-left:8px"></span>
+
+        <label class="field-label" style="margin-top:12px">演奏合成后端</label>
+        <div class="func-selector" style="grid-template-columns:repeat(2,1fr)" id="backendSelector">
+          <button class="fn" data-backend="auto">ENGINE · 仅音频引擎（不降级）</button>
+          <button class="fn" data-backend="webaudio">WEBAUDIO · 浏览器合成</button>
+        </div>
+        <div style="font-size:12px;opacity:.7;margin-top:6px;line-height:1.6">
+          ENGINE：所有发声只走原生音频引擎；引擎未就绪/失败时播放被阻断并提示，绝不回退浏览器合成。
+          WEBAUDIO：全部走浏览器 Web Audio（无需引擎）。
+        </div>
+
+        <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
+          <button class="fn" id="testToneBtn">▶ 测试音 开/关</button>
+          <button class="fn" id="openPanelBtn">🎛️ 打开声卡控制面板 (ASIO)</button>
+          <span style="align-self:center;font-size:12px;opacity:.7" id="sf2Hint"></span>
+        </div>
+      </section>
+
+      <!-- MIDI 硬件与输入设备 -->
+      <section class="card brackets settings-card settings-pane" id="paneMidi" hidden>
+        <div class="group-title">MIDI 硬件与输入设备 · MIDI Input</div>
+
+        <label class="toggle-text">
+          <input type="checkbox" id="midiInputEnabled" checked>
+          <span>启用 Web MIDI 硬件输入</span>
+        </label>
+
         <div class="field">
-          <label class="field-label" for="maxCompletion">最大输出长度 · max_completion_tokens</label>
-          <input type="number" id="maxCompletion" placeholder="留空使用默认值">
+          <label class="field-label" for="midiDeviceSelect">MIDI 输入设备 · Input Device</label>
+          <div class="row">
+            <select id="midiDeviceSelect" style="flex:1">
+              <option value="">（未检测到设备，请连接 MIDI 键盘后刷新）</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" id="refreshMidiBtn">扫描设备</button>
+          </div>
+          <div class="stat-line">
+            <span class="dim" id="midiDeviceStatus">等待扫描 MIDI 输入端口…</span>
+            <span class="stamp" id="midiSignalStamp" style="margin-left:auto; display:none">● MIDI IN</span>
+          </div>
         </div>
-      </div>
 
-      <label class="field-label">推理努力程度 · reasoning_effort</label>
-      <div class="func-selector" style="grid-template-columns:repeat(3,1fr)" id="effortSelector">
-        <button class="fn" data-effort="low">LOW</button>
-        <button class="fn" data-effort="medium">MEDIUM</button>
-        <button class="fn" data-effort="max">MAX</button>
-      </div>
-
-      <label class="toggle-text">
-        <input type="checkbox" id="thinkingEnabled" checked>
-        <span>启用 thinking 模式</span>
-      </label>
-    </section>
-
-    <!-- 音频引擎 · Audio Engine -->
-    <section class="card brackets settings-card">
-      <div class="group-title">音频引擎 · Audio Engine</div>
-
-      <div style="margin-bottom:10px">
-        <span class="field-label">引擎状态：</span>
-        <span id="engineState" style="font-family:monospace">检测中…</span>
-        <span id="engineDetail" style="opacity:.7;font-size:12px"></span>
-        <span id="latencyHint" style="opacity:.7;font-size:12px;margin-left:8px"></span>
-      </div>
-
-      <label class="field-label">驱动类型（含 ASIO）</label>
-      <select id="drvSel" style="width:100%;margin-bottom:8px"><option value="">检测中…</option></select>
-
-      <label class="field-label">输出设备</label>
-      <select id="devSel" style="width:100%;margin-bottom:8px"></select>
-
-      <div class="field-grid">
-        <div class="field">
-          <label class="field-label">采样率</label>
-          <select id="rateSel" style="width:100%">
-            <option value="">默认</option><option>44100</option><option>48000</option>
-            <option>88200</option><option>96000</option>
-          </select>
+        <div class="field-grid">
+          <div class="field">
+            <label class="field-label" for="midiChannel">接收通道 · Channel</label>
+            <select id="midiChannel">
+              <option value="all">全部通道 (Omni / All)</option>
+              <option value="1">Channel 1</option>
+              <option value="2">Channel 2</option>
+              <option value="3">Channel 3</option>
+              <option value="4">Channel 4</option>
+              <option value="5">Channel 5</option>
+              <option value="6">Channel 6</option>
+              <option value="7">Channel 7</option>
+              <option value="8">Channel 8</option>
+              <option value="9">Channel 9</option>
+              <option value="10">Channel 10 (Drums)</option>
+              <option value="11">Channel 11</option>
+              <option value="12">Channel 12</option>
+              <option value="13">Channel 13</option>
+              <option value="14">Channel 14</option>
+              <option value="15">Channel 15</option>
+              <option value="16">Channel 16</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="midiVelocityCurve">力度曲线 · Velocity Curve</label>
+            <select id="midiVelocityCurve">
+              <option value="linear">线性响应 (Linear)</option>
+              <option value="compressed">软力度压缩 (Soft/Compressed)</option>
+              <option value="expanded">高动态扩展 (Hard/Expanded)</option>
+              <option value="fixed_100">固定力度 100 (Fixed 100)</option>
+              <option value="fixed_127">固定全开 127 (Fixed 127)</option>
+            </select>
+          </div>
         </div>
-        <div class="field">
-          <label class="field-label">缓冲区（samples）</label>
-          <select id="bufSel" style="width:100%">
-            <option value="">默认</option><option>64</option><option>128</option>
-            <option>256</option><option>512</option><option>1024</option><option>2048</option>
-          </select>
+
+        <label class="toggle-text" style="margin-top:8px">
+          <input type="checkbox" id="typingKeyboardEnabled" checked>
+          <span>启用电脑键盘模拟钢琴键盘（Z-M 白键 / S,D,G,H,J 黑键 / Q-U 高八度）</span>
+        </label>
+      </section>
+
+      <!-- 用户知识库（Library/user）：AI 可查阅的自定义乐理知识 -->
+      <section class="card brackets settings-card settings-pane" id="paneLibrary" hidden>
+        <div class="group-title">用户知识库 · Library</div>
+
+        <div class="lib-hint">
+          此处的文件会与内置乐理知识一同展示给 AI，<b>文件名即内容概括</b>，AI 据此判断是否读取该文件。<br>
+          命名示例：<code>爵士和声进阶.md</code> <code>国风编曲要点.txt</code>；支持 UTF-8 编码，单文件 ≤ 2MB、最多 100 个，增删改即时生效。
         </div>
-      </div>
 
-      <button class="fn" id="applyAudioBtn" style="margin-top:10px">应用音频设置</button>
-      <span id="applyHint" style="font-size:12px;opacity:.7;margin-left:8px"></span>
-
-      <label class="field-label" style="margin-top:12px">演奏合成后端</label>
-      <div class="func-selector" style="grid-template-columns:repeat(2,1fr)" id="backendSelector">
-        <button class="fn" data-backend="auto">AUTO · 原生引擎优先</button>
-        <button class="fn" data-backend="webaudio">WEBAUDIO · 浏览器合成</button>
-      </div>
-
-      <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
-        <button class="fn" id="testToneBtn">▶ 测试音 开/关</button>
-        <button class="fn" id="openPanelBtn">🎛️ 打开声卡控制面板 (ASIO)</button>
-        <span style="align-self:center;font-size:12px;opacity:.7" id="sf2Hint"></span>
-      </div>
-    </section>
-
-    <!-- MIDI 硬件与输入设备 -->
-    <section class="card brackets settings-card">
-      <div class="group-title">MIDI 硬件与输入设备 · MIDI Input</div>
-
-      <label class="toggle-text">
-        <input type="checkbox" id="midiInputEnabled" checked>
-        <span>启用 Web MIDI 硬件输入</span>
-      </label>
-
-      <div class="field">
-        <label class="field-label" for="midiDeviceSelect">MIDI 输入设备 · Input Device</label>
-        <div class="row">
-          <select id="midiDeviceSelect" style="flex:1">
-            <option value="">（未检测到设备，请连接 MIDI 键盘后刷新）</option>
-          </select>
-          <button class="btn btn-secondary btn-sm" id="refreshMidiBtn">扫描设备</button>
+        <div class="lib-toolbar">
+          <button class="btn btn-primary btn-sm" id="libUploadBtn" type="button">＋ 上传知识文件</button>
+          <input type="file" id="libFileInput" accept=".md,.txt" multiple hidden>
+          <button class="btn btn-secondary btn-sm" id="libOpenDirBtn" type="button">📁 打开文件夹</button>
+          <span class="dim lib-status" id="libStatus"></span>
         </div>
-        <div class="stat-line">
-          <span class="dim" id="midiDeviceStatus">等待扫描 MIDI 输入端口…</span>
-          <span class="stamp" id="midiSignalStamp" style="margin-left:auto; display:none">● MIDI IN</span>
+
+        <div id="libFileList" style="margin-top:14px"></div>
+
+        <details class="lib-builtin">
+          <summary>内置乐理知识文件（只读，随程序安装）</summary>
+          <div id="libBuiltinList" style="margin-top:10px"></div>
+        </details>
+      </section>
+
+      <!-- 关于 -->
+      <section class="card brackets settings-card settings-pane" id="paneAbout" hidden>
+        <div class="group-title">关于 · About</div>
+
+        <div class="about-hero">
+          <img class="app-logo-img about-logo" src="/app_icon_warm.png" alt="AI_MIDI Logo">
+          <div class="about-name">AI_MIDI</div>
+          <div class="about-tagline">AI 编曲助手 · 让 AI 帮你写和弦、编旋律、做编曲</div>
+          <div class="about-version mono" id="aboutVersion">v--</div>
         </div>
+
+        <div class="about-desc">
+          AI 直接读写 MIDI，配和弦、译词、转音、编曲全程可见可撤销；多轨编排与钢琴窗编辑、SF2 音色与原生音频引擎，一个 API Key 即可开始，项目与对话只存在本机。
+        </div>
+
+        <div class="about-links">
+          <a class="about-link" data-ext href="https://aimidi.baimoo.top">🌐 软件官网</a>
+          <a class="about-link" data-ext href="https://github.com/abab996/AI_MIDI">🐙 GitHub 仓库</a>
+          <a class="about-link" data-ext href="https://github.com/abab996/AI_MIDI/blob/main/LICENSE">⚖️ Apache-2.0 License</a>
+        </div>
+
+        <div class="about-foot">
+          <a class="about-link" href="/api/files/download?path=output%2Fai_midi.log">📄 运行日志（output/ai_midi.log）</a>
+          <button class="btn btn-secondary btn-sm" id="issueBtn" title="跳转到 GitHub 提交 Issue">🐛 提交 Issue</button>
+        </div>
+        <div class="stat-line" style="margin-top:8px"><span class="dim">报障时请附上日志文件与触发操作的描述</span></div>
+      </section>
+
+      <!-- 快捷键 -->
+      <section class="card brackets settings-card settings-pane" id="paneShortcuts" hidden>
+        <div class="group-title">快捷键 · Shortcuts</div>
+        <div class="stat-line" style="line-height:1.7">
+          <span class="dim">点击「更改」后按下新键位即可绑定；冲突键位会被拒绝。</span><br>
+          <span class="dim">系统保留不可自定义：Esc（关闭弹窗/菜单）、Enter（输入框确认/发送）、键盘弹奏 27 键（乐器布局）、鼠标手势。</span>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+          <button class="btn btn-secondary btn-sm" id="shortcutsResetAllBtn">恢复全部默认</button>
+          <span class="dim" id="shortcutsHint" style="font-size:12px"></span>
+        </div>
+        <div id="shortcutsList" style="margin-top:12px"></div>
+      </section>
+
+      <!-- 保存 -->
+      <div class="save-row">
+        <span class="save-status" id="saveStatus"></span>
+        <button class="btn btn-secondary" id="resetBtn">恢复默认</button>
+        <button class="btn btn-primary" id="saveBtn">保存配置</button>
       </div>
-
-      <div class="field-grid">
-        <div class="field">
-          <label class="field-label" for="midiChannel">接收通道 · Channel</label>
-          <select id="midiChannel">
-            <option value="all">全部通道 (Omni / All)</option>
-            <option value="1">Channel 1</option>
-            <option value="2">Channel 2</option>
-            <option value="3">Channel 3</option>
-            <option value="4">Channel 4</option>
-            <option value="5">Channel 5</option>
-            <option value="6">Channel 6</option>
-            <option value="7">Channel 7</option>
-            <option value="8">Channel 8</option>
-            <option value="9">Channel 9</option>
-            <option value="10">Channel 10 (Drums)</option>
-            <option value="11">Channel 11</option>
-            <option value="12">Channel 12</option>
-            <option value="13">Channel 13</option>
-            <option value="14">Channel 14</option>
-            <option value="15">Channel 15</option>
-            <option value="16">Channel 16</option>
-          </select>
-        </div>
-        <div class="field">
-          <label class="field-label" for="midiVelocityCurve">力度曲线 · Velocity Curve</label>
-          <select id="midiVelocityCurve">
-            <option value="linear">线性响应 (Linear)</option>
-            <option value="compressed">软力度压缩 (Soft/Compressed)</option>
-            <option value="expanded">高动态扩展 (Hard/Expanded)</option>
-            <option value="fixed_100">固定力度 100 (Fixed 100)</option>
-            <option value="fixed_127">固定全开 127 (Fixed 127)</option>
-          </select>
-        </div>
-      </div>
-
-      <label class="toggle-text" style="margin-top:8px">
-        <input type="checkbox" id="typingKeyboardEnabled" checked>
-        <span>启用电脑键盘模拟钢琴键盘（Z-M 白键 / S,D,G,H,J 黑键 / Q-U 高八度）</span>
-      </label>
-    </section>
-
-    <!-- 关于 -->
-    <section class="card brackets settings-card">
-      <div class="group-title">关于 · About</div>
-      <div class="stat-line"><span class="dim">版本</span>&nbsp;<span class="mono" id="aboutVersion">v--</span></div>
-      <div class="stat-line"><span class="dim">运行日志</span>&nbsp;<span class="mono">output/ai_midi.log</span></div>
-      <div class="stat-line"><span class="dim">报障时请附上日志文件与触发操作的描述</span></div>
-    </section>
-
-    <!-- 保存 -->
-    <div class="save-row">
-      <span class="save-status" id="saveStatus"></span>
-      <button class="btn btn-secondary" id="resetBtn">恢复默认</button>
-      <button class="btn btn-primary" id="saveBtn">保存配置</button>
     </div>
   </div>
 </div>
 
 <script src="/js/app.js"></script>
+<script src="/js/shortcuts.js"></script>
 <script src="/js/update.js"></script>
 <script src="/js/theme.js"></script>
 <script src="/js/settings.js"></script>
@@ -393,9 +491,15 @@
     btn.addEventListener("click", function () {
       var mode = btn.dataset.backend;
       var p = window.AudioBackend ? window.AudioBackend.setMode(mode) : Promise.resolve();
-      Promise.resolve(p).then(function () {
+      Promise.resolve(p).then(function (res) {
         paintBackend(mode);
-        if (window.UI && window.UI.toast) window.UI.toast(mode === "auto" ? "✅ 已切为 AUTO·原生优先（全链路 JUCE）" : "✅ 已切为 WEBAUDIO·浏览器合成（全链路 WebAudio）", "");
+        /* setMode 返回 {ok} 状态：本地已生效但服务器保存失败时如实提示
+           （此前无条件 toast 成功，重启后设置回滚且无任何解释） */
+        if (res && res.ok === false) {
+          if (window.UI && window.UI.toast) window.UI.toast("⚠ 已切换为 " + (mode === "auto" ? "ENGINE" : "WEBAUDIO") + "（本页立即生效），但保存到服务器失败，重启后可能恢复原设置", "warn");
+          return;
+        }
+        if (window.UI && window.UI.toast) window.UI.toast(mode === "auto" ? "✅ 已切为 ENGINE·仅音频引擎（不降级，全链路 JUCE）" : "✅ 已切为 WEBAUDIO·浏览器合成（全链路 WebAudio）", "");
       });
     });
   });

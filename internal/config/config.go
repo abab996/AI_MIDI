@@ -20,6 +20,9 @@ var (
 	DoingOutputTxt = filepath.Join(DoingDir, "midi_output.txt")
 	ProjectsDir    = filepath.Join(ProjectRoot, "projects")
 	LibraryDir     = filepath.Join(ProjectRoot, "Library")
+	// LibraryUserDir 用户自定义乐理知识文件目录（Library/user）：设置页
+	// 「知识库」分区可管理，AI 清单中以 LibraryUserPrefix 与内置文件区分
+	LibraryUserDir = filepath.Join(LibraryDir, "user")
 	WebDir         = filepath.Join(ProjectRoot, "frontend")
 	SettingsFile   = filepath.Join(ProjectRoot, "settings.json")
 	LogFile        = filepath.Join(OutputDir, "ai_midi.log")
@@ -29,6 +32,10 @@ const (
 	DraftFilename = "draft.txt"
 	ServerPort    = 7860
 	WindowTitle   = "AI_MIDI · AI 编曲助手"
+	// LibraryUserPrefix ListLibraryFiles 中用户自定义知识文件的文件名前缀
+	// （如 "user/爵士和声.md"），同时是 read_library_file 工具读取用户文件
+	// 时使用的相对路径参数
+	LibraryUserPrefix = "user/"
 	// UpdateManifestURL 更新清单地址（R2 桶绑定的公开自定义域名）。
 	// 应用启动时拉取并比较版本；清单必须公开可读（S3 API 端点不行）。
 	UpdateManifestURL = "https://aimidi-r2.baimoo.top/update.json"

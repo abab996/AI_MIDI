@@ -34,6 +34,9 @@ doing/
 projects/
 internal/midi/output/
 
+# ---------- 用户自定义乐理知识（设置页上传，运行时数据不入库） ----------
+Library/user/
+
 # ---------- 前端生成绑定（wails build 自动重建） ----------
 frontend/wailsjs/
 

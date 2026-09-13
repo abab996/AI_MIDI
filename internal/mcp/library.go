@@ -10,7 +10,17 @@ import (
 	"aimidi/internal/config"
 )
 
-// ListLibraryFiles 返回 Library 目录下所有 .md 文件名列表
+// IsKnowledgeFile 判断文件名是否为知识库文本文件（.md/.txt，大小写不敏感）。
+// 仅放行纯文本两种格式：Library 下还存放 soundfonts 等二进制资源，
+// 扩展名白名单防止 read_library_file 把二进制读进模型上下文
+func IsKnowledgeFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".txt")
+}
+
+// ListLibraryFiles 返回 Library 目录下的知识文件名列表：内置文件取根目录
+// 的 .md/.txt；用户自定义文件（Library/user/，设置页「知识库」分区可管理）
+// 以 config.LibraryUserPrefix 前缀返回。内置在前、用户文件在后，各自排序。
 func ListLibraryFiles() []string {
 	if _, err := os.Stat(config.LibraryDir); os.IsNotExist(err) {
 		return nil
@@ -21,21 +31,33 @@ func ListLibraryFiles() []string {
 		return nil
 	}
 
-	var files []string
+	var builtin, user []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
-			files = append(files, e.Name())
+		if !e.IsDir() && IsKnowledgeFile(e.Name()) {
+			builtin = append(builtin, e.Name())
 		}
 	}
-	sort.Strings(files)
-	return files
+	if userEntries, err := os.ReadDir(config.LibraryUserDir); err == nil {
+		for _, e := range userEntries {
+			if !e.IsDir() && IsKnowledgeFile(e.Name()) {
+				user = append(user, config.LibraryUserPrefix+e.Name())
+			}
+		}
+	}
+	sort.Strings(builtin)
+	sort.Strings(user)
+	return append(builtin, user...)
 }
 
-// ReadLibraryFile 读取指定乐理文件内容，做路径逃逸防御
+// ReadLibraryFile 读取指定乐理文件内容，做路径逃逸防御。
+// filename 可含 user/ 前缀（用户自定义文件，即 Library/user/ 下的相对路径）
 func ReadLibraryFile(filename string) (string, error) {
 	filename = strings.TrimSpace(filename)
 	if filename == "" || strings.Contains(filename, "\x00") || strings.Contains(filename, "..") {
 		return "", fmt.Errorf("非法的文件名: %s", filename)
+	}
+	if !IsKnowledgeFile(filename) {
+		return "", fmt.Errorf("仅支持读取 .md/.txt 知识文件: %s", filename)
 	}
 
 	target := filepath.Join(config.LibraryDir, filename)

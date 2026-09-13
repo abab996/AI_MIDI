@@ -117,6 +117,47 @@ func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// openURLPrefixes /api/open-url 放行的外部链接前缀：本应用自己的 GitHub 仓库
+// 与官网（Star 请求弹窗、设置页提交 Issue / 关于页链接），不接受任意 URL
+// （防开放跳转——与更新降级通道同思路，URL 语义由前端写死）
+var openURLPrefixes = []string{
+	"https://github.com/abab996/AI_MIDI",
+	"https://aimidi.baimoo.top",
+}
+
+// handleOpenURL POST /api/open-url：调起系统默认浏览器打开应用内入口的
+// GitHub / 官网链接（openExternal 与更新降级通道同实现）。白名单外返回 400。
+func (r *Router) handleOpenURL(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var in struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
+		return
+	}
+	url := strings.TrimSpace(in.URL)
+	allowed := false
+	for _, prefix := range openURLPrefixes {
+		if strings.HasPrefix(url, prefix) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusBadRequest, "链接不在允许范围内")
+		return
+	}
+	if err := openExternal(url); err != nil {
+		writeError(w, http.StatusInternalServerError, "打开浏览器失败，请手动访问："+url)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // handleTransportPrefs 走带偏好：编曲窗走带条上的「暂停后光标回起点」
 // 开关直接写这里。独立轻量端点——不走 /api/settings 的表单校验，
 // 也避免与设置页整单保存互相干扰

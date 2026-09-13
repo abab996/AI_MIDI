@@ -117,9 +117,12 @@ func requestLimitFor(path, method string) int64 {
 	case path == "/api/parse":
 		return 64 << 20 // MIDI 上传（handler 内存阈值 32MB，超限部分 spool 临时目录）
 	case strings.HasPrefix(path, "/api/audio/"):
-		return 48 << 20 // soundfont 上传（handler 内部 32MB）+ bounce tracks（5MB）
+		return 288 << 20 // soundfont 上传（handler 内部 256MB，留 32MB 头）+ bounce tracks（5MB）
 	case strings.HasPrefix(path, "/api/arrangement/"):
 		return 8 << 20 // 编排数据（handler 内部 5MB）
+	case strings.HasPrefix(path, "/api/library/"):
+		return 2 << 20 // 用户知识文件上传（handler 内部同值 2MB：.md/.txt 纯文本）。
+		// 必须先于下方 "*/files" 通配 case，否则 POST /api/library/files 落进 256MB
 	case method == http.MethodPost && strings.HasSuffix(path, "/files"):
 		return 256 << 20 // 项目文件上传（ParseMultipartForm 128MB 内存阈值）
 	default:
@@ -197,6 +200,9 @@ func (r *Router) registerRoutes() {
 	// 版本信息（设置页 About 卡片）
 	r.mux.HandleFunc("/api/version", r.handleVersion)
 
+	// 打开外部链接（设置页提交 Issue / 主界面 Star 请求共用；仅放行仓库链接）
+	r.mux.HandleFunc("/api/open-url", r.handleOpenURL)
+
 	// MIDI
 	r.mux.HandleFunc("/api/parse", r.handleParseMIDI)
 	r.mux.HandleFunc("/api/run", r.handleRunTask)
@@ -228,6 +234,9 @@ func (r *Router) registerRoutes() {
 
 	// Audio 原生音频引擎
 	r.mux.HandleFunc("/api/audio/", r.handleAudioSub)
+
+	// Library 用户知识库文件管理（设置页「知识库」分区；写操作锁定 Library/user/）
+	r.mux.HandleFunc("/api/library/", r.handleLibrarySub)
 
 	// Wails 桌面运行时脚本：chat.html 显式引用 /wails/runtime.js 与
 	// /wails/ipc.js 以启用事件桥。桌面模式由 Wails assetserver 先行拦截提供

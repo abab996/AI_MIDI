@@ -2,8 +2,10 @@ package chat
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
+	"aimidi/internal/config"
 	"aimidi/internal/mcp"
 	"aimidi/internal/project"
 )
@@ -13,6 +15,12 @@ const noteTableIntro = `由于无法直接上传midi文件，我们会使用类�
 示例 ：
 [note: "C4", velocity: "80", start: "1", end: "2" ] 
 表示音符对应的按键是C4，演奏力度80，时间是第一拍到第二拍。`
+
+// libFileDesc 由知识文件名推导清单中的描述：去扩展名、下划线转空格
+// （如 02_配和弦指南.md → "02 配和弦指南"），.md/.txt 通用
+func libFileDesc(fname string) string {
+	return strings.ReplaceAll(strings.TrimSuffix(fname, filepath.Ext(fname)), "_", " ")
+}
 
 // BuildSystemPrompt 构建包含乐理知识库与工具调用铁律的 System Prompt。
 // BuildSystemPrompt 构建包含乐理知识库与工具调用铁律的 System Prompt。
@@ -55,11 +63,27 @@ func BuildSystemPrompt(files []project.MidiFileInfo, globalBPM int) string {
 	sb.WriteString("以下是你拥有的知识文件，**你必须在对应场景下主动读取**：\n\n")
 
 	if len(libraryFiles) > 0 {
-		for i, fname := range libraryFiles {
-			desc := strings.ReplaceAll(strings.ReplaceAll(fname, ".md", ""), "_", " ")
-			sb.WriteString(fmt.Sprintf("%d. `%s` → %s\n", i+1, fname, desc))
+		var builtin, custom []string
+		for _, fname := range libraryFiles {
+			if strings.HasPrefix(fname, config.LibraryUserPrefix) {
+				custom = append(custom, fname)
+			} else {
+				builtin = append(builtin, fname)
+			}
+		}
+		for i, fname := range builtin {
+			sb.WriteString(fmt.Sprintf("%d. `%s` → %s\n", i+1, fname, libFileDesc(fname)))
 		}
 		sb.WriteString("\n")
+		if len(custom) > 0 {
+			sb.WriteString("### 用户自定义知识文件\n")
+			sb.WriteString("以下是用户自行添加的知识文件，**文件名即内容概括**。当用户的请求与某个文件的主题相关时，必须优先读取它；与内置知识冲突时，以用户自定义文件为准：\n\n")
+			for _, fname := range custom {
+				desc := libFileDesc(strings.TrimPrefix(fname, config.LibraryUserPrefix))
+				sb.WriteString(fmt.Sprintf("- `%s` → %s\n", fname, desc))
+			}
+			sb.WriteString("\n")
+		}
 	} else {
 		// 知识库缺失（安装包漏装/目录被删）时不再静默：此前「铁律」仍要求
 		// 必须先读文件，AI 会拿着下方硬编码映射反复调用注定失败的工具。

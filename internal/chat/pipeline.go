@@ -114,59 +114,59 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 	st := s.GetTaskState(tid)
 	// 项目全局 BPM：AI 生成新 MIDI 的默认速度（已存在文件不改写）
 	globalBPM := project.GetProjectBPM(projectID)
-	// 会话状态锁：ChatDisplay/MidiFiles 的所有读写（含 HTTP 处理器里的
-	// 读路径）都必须经过它，否则流式写入与 GET 载荷快照并发读写 map
-	// 会触发 Go runtime fatal（recover 无法拦截，整个应用崩溃）
-	fl := GetSessionLock(projectID)
+	// 会话状态锁说明：ChatDisplay/MidiFiles 的所有读写（含 HTTP 处理器里
+	// 的读路径）都必须经过 GetSessionLock(projectID)，否则流式写入与 GET
+	// 载荷快照并发读写 map 会触发 Go runtime fatal（recover 无法拦截，
+	// 整个应用崩溃）。本文件中所有持锁点统一走 WithSessionLock。
 
 	// 若用户未回答提问便发新消息：自动标记跳过
 	if !resume && st.PendingQuestion != nil {
-		fl.Lock()
-		SkipPendingQuestion(st, projectID, tid, s.MidiFiles, taskRec.Legacy)
-		fl.Unlock()
+		WithSessionLock(projectID, func() {
+			SkipPendingQuestion(st, projectID, tid, s.MidiFiles, taskRec.Legacy)
+		})
 	}
 
 	// 绑定工作区同步
 	if project.GetWorkspaceDir(projectID) != "" {
-		fl.Lock()
-		s.MidiFiles = project.SyncWorkspaceToProjects(projectID, s.MidiFiles)
-		fl.Unlock()
+		WithSessionLock(projectID, func() {
+			s.MidiFiles = project.SyncWorkspaceToProjects(projectID, s.MidiFiles)
+		})
 	}
 
 	// 处理用户消息
 	var userMsgSnapshot []map[string]any
 	if !resume {
-		fl.Lock()
-		st.UndoStack = append(st.UndoStack, UndoEntry{
-			Files: SnapshotMidiFiles(s.MidiFiles),
-		})
-		if edit && st.PendingEdit != nil {
-			// 修改模式：/messages/edit 已截断并把旧 user 消息留在末尾，
-			// 这里原地替换为编辑后的文本（此前误做追加，出现连续重复的用户消息）
-			if n := len(st.FullHistory); n > 0 && st.FullHistory[n-1]["role"] == "user" {
-				st.FullHistory[n-1] = map[string]any{"role": "user", "content": message}
+		WithSessionLock(projectID, func() {
+			st.UndoStack = append(st.UndoStack, UndoEntry{
+				Files: SnapshotMidiFiles(s.MidiFiles),
+			})
+			if edit && st.PendingEdit != nil {
+				// 修改模式：/messages/edit 已截断并把旧 user 消息留在末尾，
+				// 这里原地替换为编辑后的文本（此前误做追加，出现连续重复的用户消息）
+				if n := len(st.FullHistory); n > 0 && st.FullHistory[n-1]["role"] == "user" {
+					st.FullHistory[n-1] = map[string]any{"role": "user", "content": message}
+				} else {
+					st.FullHistory = append(st.FullHistory, map[string]any{"role": "user", "content": message})
+				}
+				if n := len(st.ChatDisplay); n > 0 && st.ChatDisplay[n-1]["role"] == "user" {
+					st.ChatDisplay[n-1] = map[string]any{"role": "user", "content": message}
+				} else {
+					st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "user", "content": message})
+				}
+				st.PendingEdit = nil
 			} else {
+				st.PendingEdit = nil
 				st.FullHistory = append(st.FullHistory, map[string]any{"role": "user", "content": message})
-			}
-			if n := len(st.ChatDisplay); n > 0 && st.ChatDisplay[n-1]["role"] == "user" {
-				st.ChatDisplay[n-1] = map[string]any{"role": "user", "content": message}
-			} else {
 				st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "user", "content": message})
 			}
-			st.PendingEdit = nil
-		} else {
-			st.PendingEdit = nil
-			st.FullHistory = append(st.FullHistory, map[string]any{"role": "user", "content": message})
-			st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "user", "content": message})
-		}
-		userMsgSnapshot = SnapshotDisplay(st.ChatDisplay)
-		fl.Unlock()
+			userMsgSnapshot = SnapshotDisplay(st.ChatDisplay)
+		})
 	} else {
 		// resume 路径只读快照：绝不把活切片直接交给锁外回调序列化，
 		// 否则与其它持锁写入方并发读写 map 会触发 runtime fatal
-		fl.RLock()
-		userMsgSnapshot = SnapshotDisplay(st.ChatDisplay)
-		fl.RUnlock()
+		WithSessionLock(projectID, func() {
+			userMsgSnapshot = SnapshotDisplay(st.ChatDisplay)
+		})
 	}
 
 	_ = onEvent(map[string]any{
@@ -246,15 +246,16 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		}
 		endedWithToolCalls = false
 
-		fl.Lock()
-		apiMessages := buildApiMessages(st.FullHistory, s.MidiFiles)
-
-		// 检查是否需要压缩并立即重新构建 API 消息
-		if ShouldCompact(apiMessages) {
-			st.FullHistory = CompactFullHistory(st.FullHistory)
+		var apiMessages []llm.ChatCompletionMessage
+		WithSessionLock(projectID, func() {
 			apiMessages = buildApiMessages(st.FullHistory, s.MidiFiles)
-		}
-		fl.Unlock()
+
+			// 检查是否需要压缩并立即重新构建 API 消息
+			if ShouldCompact(apiMessages) {
+				st.FullHistory = CompactFullHistory(st.FullHistory)
+				apiMessages = buildApiMessages(st.FullHistory, s.MidiFiles)
+			}
+		})
 
 		var tools []llm.ToolDefinition
 		tools = append(tools, mcp.GetMCPTools(projectID)...)
@@ -271,16 +272,16 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 				_ = onEvent(map[string]any{"type": "done"})
 			}
 			// 用户消息与上下文已入内存：落盘，避免重启后从历史中消失
-			fl.Lock()
-			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
-			fl.Unlock()
+			WithSessionLock(projectID, func() {
+				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+			})
 			// 错误退出而非轮数耗尽：不计入循环结束后的补提示条件
 			endedWithToolCalls = false
 			break
 		}
 
-		// 消费流式响应
-		deltaContent, deltaReasoning, toolCalls, err := processStreamChunks(streamResp, st, fl, onEvent, tid)
+		// 消费流式响应（processStreamChunks 内部经 withFLock 使用会话锁）
+		deltaContent, deltaReasoning, toolCalls, err := processStreamChunks(streamResp, st, GetSessionLock(projectID), onEvent, tid)
 		_ = streamResp.Body.Close()
 		cancelled := tasks.TaskIsCancelled(tid) || taskCtx.Err() != nil
 		if err != nil {
@@ -290,16 +291,16 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 			// 停止/断流：保留已生成的部分内容并落盘（停止按钮的语义就是
 			// "终止并保留已输出的内容"；断流同理，避免已生成内容丢失），
 			// 丢弃半截工具调用（参数 JSON 可能被截断，执行会产生意外副作用）
-			fl.Lock()
-			if deltaContent != "" || deltaReasoning != "" {
-				st.FullHistory = append(st.FullHistory, map[string]any{
-					"role":              "assistant",
-					"content":           deltaContent,
-					"reasoning_content": deltaReasoning,
-				})
-			}
-			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
-			fl.Unlock()
+			WithSessionLock(projectID, func() {
+				if deltaContent != "" || deltaReasoning != "" {
+					st.FullHistory = append(st.FullHistory, map[string]any{
+						"role":              "assistant",
+						"content":           deltaContent,
+						"reasoning_content": deltaReasoning,
+					})
+				}
+				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+			})
 			if cancelled {
 				_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
 			} else if err != nil {
@@ -313,31 +314,32 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 
 		if len(toolCalls) == 0 {
 			// 无工具调用：回合结束
-			fl.Lock()
-			formatted := llm.FormatDisplayMessage(deltaReasoning, deltaContent)
-			assistantMsg := map[string]any{
-				"role":              "assistant",
-				"content":           deltaContent,
-				"reasoning_content": deltaReasoning,
-			}
-			st.FullHistory = append(st.FullHistory, assistantMsg)
-			// 提问卡片（role=assistant 且带 type=question）不可被空响应覆盖
-			lastIdx := len(st.ChatDisplay) - 1
-			if lastIdx >= 0 && st.ChatDisplay[lastIdx]["role"] == "assistant" && st.ChatDisplay[lastIdx]["type"] != "question" {
-				st.ChatDisplay[lastIdx] = map[string]any{
-					"role":    "assistant",
-					"content": formatted,
+			var finalSnapshot []map[string]any
+			WithSessionLock(projectID, func() {
+				formatted := llm.FormatDisplayMessage(deltaReasoning, deltaContent)
+				assistantMsg := map[string]any{
+					"role":              "assistant",
+					"content":           deltaContent,
+					"reasoning_content": deltaReasoning,
 				}
-			} else {
-				st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-					"role":    "assistant",
-					"content": formatted,
-				})
-			}
+				st.FullHistory = append(st.FullHistory, assistantMsg)
+				// 提问卡片（role=assistant 且带 type=question）不可被空响应覆盖
+				lastIdx := len(st.ChatDisplay) - 1
+				if lastIdx >= 0 && st.ChatDisplay[lastIdx]["role"] == "assistant" && st.ChatDisplay[lastIdx]["type"] != "question" {
+					st.ChatDisplay[lastIdx] = map[string]any{
+						"role":    "assistant",
+						"content": formatted,
+					}
+				} else {
+					st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+						"role":    "assistant",
+						"content": formatted,
+					})
+				}
 
-			finalSnapshot := SnapshotDisplay(st.ChatDisplay)
-			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
-			fl.Unlock()
+				finalSnapshot = SnapshotDisplay(st.ChatDisplay)
+				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+			})
 			_ = onEvent(map[string]any{
 				"type":     "chat",
 				"messages": finalSnapshot,
@@ -359,14 +361,14 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 			})
 		}
 
-		fl.Lock()
-		st.FullHistory = append(st.FullHistory, map[string]any{
-			"role":              "assistant",
-			"content":           deltaContent,
-			"reasoning_content": deltaReasoning,
-			"tool_calls":        tcHistoryList,
+		WithSessionLock(projectID, func() {
+			st.FullHistory = append(st.FullHistory, map[string]any{
+				"role":              "assistant",
+				"content":           deltaContent,
+				"reasoning_content": deltaReasoning,
+				"tool_calls":        tcHistoryList,
+			})
 		})
-		fl.Unlock()
 
 		pausedByQuestion := false
 		baseDir := project.GetMidiBaseDir(projectID)
@@ -391,19 +393,20 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 				if len(questions) == 0 {
 					errText := "错误：ask_user_question 参数无效（缺少 questions 或选项不足）"
 					entry := llm.FormatSingleToolEntry(fnName, rawArgs, errText)
-					fl.Lock()
-					st.FullHistory = append(st.FullHistory, map[string]any{
-						"role":         "tool",
-						"tool_call_id": tc.ID,
-						"name":         fnName,
-						"content":      errText,
+					var invalidSnapshot []map[string]any
+					WithSessionLock(projectID, func() {
+						st.FullHistory = append(st.FullHistory, map[string]any{
+							"role":         "tool",
+							"tool_call_id": tc.ID,
+							"name":         fnName,
+							"content":      errText,
+						})
+						st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+							"role":    "assistant",
+							"content": entry,
+						})
+						invalidSnapshot = SnapshotDisplay(st.ChatDisplay)
 					})
-					st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-						"role":    "assistant",
-						"content": entry,
-					})
-					invalidSnapshot := SnapshotDisplay(st.ChatDisplay)
-					fl.Unlock()
 					_ = onEvent(map[string]any{
 						"type":     "chat",
 						"messages": invalidSnapshot,
@@ -433,34 +436,35 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 				}
 
 				qid := SetPendingQuestion(projectID, tid, tc.ID, questions, remCalls)
-				fl.Lock()
-				st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-					"role":        "assistant",
-					"type":        "question",
-					"question_id": qid,
-					"questions":   questions,
-					"status":      "pending",
-				})
-
-				for _, extra := range extraAsks {
-					note := "本轮已有一个提问正在等待用户回答，请等待其结果后再提问"
-					st.FullHistory = append(st.FullHistory, map[string]any{
-						"role":         "tool",
-						"tool_call_id": extra.ID,
-						"name":         extra.Function.Name,
-						"content":      note,
-					})
-					var extraArgs map[string]any
-					_ = json.Unmarshal([]byte(extra.Function.Arguments), &extraArgs)
+				var questionSnapshot []map[string]any
+				WithSessionLock(projectID, func() {
 					st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-						"role":    "assistant",
-						"content": llm.FormatSingleToolEntry(extra.Function.Name, extraArgs, note),
+						"role":        "assistant",
+						"type":        "question",
+						"question_id": qid,
+						"questions":   questions,
+						"status":      "pending",
 					})
-				}
 
-				questionSnapshot := SnapshotDisplay(st.ChatDisplay)
-				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
-				fl.Unlock()
+					for _, extra := range extraAsks {
+						note := "本轮已有一个提问正在等待用户回答，请等待其结果后再提问"
+						st.FullHistory = append(st.FullHistory, map[string]any{
+							"role":         "tool",
+							"tool_call_id": extra.ID,
+							"name":         extra.Function.Name,
+							"content":      note,
+						})
+						var extraArgs map[string]any
+						_ = json.Unmarshal([]byte(extra.Function.Arguments), &extraArgs)
+						st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+							"role":    "assistant",
+							"content": llm.FormatSingleToolEntry(extra.Function.Name, extraArgs, note),
+						})
+					}
+
+					questionSnapshot = SnapshotDisplay(st.ChatDisplay)
+					project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+				})
 				_ = onEvent(map[string]any{
 					"type":     "chat",
 					"messages": questionSnapshot,
@@ -472,13 +476,14 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 			// 工具「执行中」占位块：用户第一时间看到工具标签 + ⏳ 进度标记，
 			// 完成后由完成块整体替换。
 			pendingEntry := llm.FormatPendingToolEntry(fnName, rawArgs)
-			fl.Lock()
-			st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-				"role":    "assistant",
-				"content": pendingEntry,
+			var pendingSnapshot []map[string]any
+			WithSessionLock(projectID, func() {
+				st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+					"role":    "assistant",
+					"content": pendingEntry,
+				})
+				pendingSnapshot = SnapshotDisplay(st.ChatDisplay)
 			})
-			pendingSnapshot := SnapshotDisplay(st.ChatDisplay)
-			fl.Unlock()
 			_ = onEvent(map[string]any{
 				"type":     "chat",
 				"messages": pendingSnapshot,
@@ -508,17 +513,18 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 						NoteTable: strings.Join(noteList, "\n"),
 					}
 
-					fl.Lock()
-					var updated []project.MidiFileInfo
-					for _, f := range s.MidiFiles {
-						if f.Name != newInfo.Name && f.Path != newInfo.Path {
-							updated = append(updated, f)
+					var filesSnapshot []project.MidiFileInfo
+					WithSessionLock(projectID, func() {
+						var updated []project.MidiFileInfo
+						for _, f := range s.MidiFiles {
+							if f.Name != newInfo.Name && f.Path != newInfo.Path {
+								updated = append(updated, f)
+							}
 						}
-					}
-					updated = append(updated, newInfo)
-					s.MidiFiles = updated
-					filesSnapshot := SnapshotMidiFiles(s.MidiFiles)
-					fl.Unlock()
+						updated = append(updated, newInfo)
+						s.MidiFiles = updated
+						filesSnapshot = SnapshotMidiFiles(s.MidiFiles)
+					})
 					_ = onEvent(map[string]any{
 						"type":  "files",
 						"files": filesSnapshot,
@@ -533,58 +539,60 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 			} else if fnName == "delete_midi" {
 				fn, _ := rawArgs["filename"].(string)
 				cleanFn := filepath.ToSlash(filepath.Clean(fn))
-				fl.Lock()
-				var updated []project.MidiFileInfo
-				for _, f := range s.MidiFiles {
-					fClean := filepath.ToSlash(filepath.Clean(f.Name))
-					if strings.Contains(cleanFn, "/") {
-						if fClean != cleanFn && f.Name != fn {
-							updated = append(updated, f)
-						}
-					} else {
-						if fClean != cleanFn && f.Name != fn && filepath.Base(f.Name) != fn {
-							updated = append(updated, f)
+				var deletedSnapshot []project.MidiFileInfo
+				WithSessionLock(projectID, func() {
+					var updated []project.MidiFileInfo
+					for _, f := range s.MidiFiles {
+						fClean := filepath.ToSlash(filepath.Clean(f.Name))
+						if strings.Contains(cleanFn, "/") {
+							if fClean != cleanFn && f.Name != fn {
+								updated = append(updated, f)
+							}
+						} else {
+							if fClean != cleanFn && f.Name != fn && filepath.Base(f.Name) != fn {
+								updated = append(updated, f)
+							}
 						}
 					}
-				}
-				s.MidiFiles = updated
-				deletedSnapshot := SnapshotMidiFiles(s.MidiFiles)
-				fl.Unlock()
+					s.MidiFiles = updated
+					deletedSnapshot = SnapshotMidiFiles(s.MidiFiles)
+				})
 				_ = onEvent(map[string]any{
 					"type":  "files",
 					"files": deletedSnapshot,
 				})
 			}
 
-			fl.Lock()
-			st.FullHistory = append(st.FullHistory, map[string]any{
-				"role":         "tool",
-				"tool_call_id": tc.ID,
-				"name":         fnName,
-				"content":      resText,
-			})
-
-			// 工具完成块替换占位块（summary 一致，正文换为结果）
-			completedEntry := llm.FormatSingleToolEntry(fnName, rawArgs, resText)
-			if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == pendingEntry {
-				st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = completedEntry
-			} else {
-				st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-					"role":    "assistant",
-					"content": completedEntry,
+			var completedSnapshot []map[string]any
+			WithSessionLock(projectID, func() {
+				st.FullHistory = append(st.FullHistory, map[string]any{
+					"role":         "tool",
+					"tool_call_id": tc.ID,
+					"name":         fnName,
+					"content":      resText,
 				})
-			}
-			completedSnapshot := SnapshotDisplay(st.ChatDisplay)
-			fl.Unlock()
+
+				// 工具完成块替换占位块（summary 一致，正文换为结果）
+				completedEntry := llm.FormatSingleToolEntry(fnName, rawArgs, resText)
+				if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == pendingEntry {
+					st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = completedEntry
+				} else {
+					st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+						"role":    "assistant",
+						"content": completedEntry,
+					})
+				}
+				completedSnapshot = SnapshotDisplay(st.ChatDisplay)
+			})
 			_ = onEvent(map[string]any{
 				"type":     "chat",
 				"messages": completedSnapshot,
 			})
 		}
 
-		fl.Lock()
-		project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
-		fl.Unlock()
+		WithSessionLock(projectID, func() {
+			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+		})
 
 		if pausedByQuestion {
 			// 提问暂停不算轮数耗尽
@@ -600,12 +608,13 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 	// 此前静默退出，用户看到对话「无声结束」且无任何指引
 	if endedWithToolCalls && !tasks.TaskIsCancelled(tid) && taskCtx.Err() == nil {
 		hint := "⚠ 本轮已达到单次任务的工具调用次数上限，自动停止。请继续发送消息，我会接着完成剩余操作。"
-		fl.Lock()
-		st.FullHistory = append(st.FullHistory, map[string]any{"role": "assistant", "content": hint})
-		st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "assistant", "content": hint})
-		hintSnapshot := SnapshotDisplay(st.ChatDisplay)
-		project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
-		fl.Unlock()
+		var hintSnapshot []map[string]any
+		WithSessionLock(projectID, func() {
+			st.FullHistory = append(st.FullHistory, map[string]any{"role": "assistant", "content": hint})
+			st.ChatDisplay = append(st.ChatDisplay, map[string]any{"role": "assistant", "content": hint})
+			hintSnapshot = SnapshotDisplay(st.ChatDisplay)
+			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+		})
 		_ = onEvent(map[string]any{
 			"type":     "chat",
 			"messages": hintSnapshot,
@@ -637,7 +646,6 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 	tid := taskRec.ID
 	s.SwitchTask(tid)
 	st := s.GetTaskState(tid)
-	fl := GetSessionLock(projectID)
 	globalBPM := project.GetProjectBPM(projectID)
 
 	if st.PendingQuestion == nil {
@@ -647,39 +655,42 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 		return nil
 	}
 
-	fl.Lock()
-	pending := st.PendingQuestion
-	st.PendingQuestion = nil
+	var pending, remCalls []map[string]any // pending 为提问载荷；remCalls 为待补执行调用
+	var questions []map[string]any
+	var tcID, ansText string
+	WithSessionLock(projectID, func() {
+		rawPending := st.PendingQuestion
+		st.PendingQuestion = nil
 
-	// 记录撤销快照（回答前状态）
-	st.UndoStack = append(st.UndoStack, UndoEntry{
-		Files: SnapshotMidiFiles(s.MidiFiles),
-	})
+		// 记录撤销快照（回答前状态）
+		st.UndoStack = append(st.UndoStack, UndoEntry{
+			Files: SnapshotMidiFiles(s.MidiFiles),
+		})
 
-	questions := NormalizeQuestions(pending["questions"])
-	tcID, _ := pending["tool_call_id"].(string)
+		questions = NormalizeQuestions(rawPending["questions"])
+		tcID, _ = rawPending["tool_call_id"].(string)
 
-	var remCalls []map[string]any
-	if rcList, ok := pending["remaining_calls"].([]any); ok {
-		for _, rc := range rcList {
-			if rcMap, ok := rc.(map[string]any); ok {
-				remCalls = append(remCalls, rcMap)
+		if rcList, ok := rawPending["remaining_calls"].([]any); ok {
+			for _, rc := range rcList {
+				if rcMap, ok := rc.(map[string]any); ok {
+					remCalls = append(remCalls, rcMap)
+				}
 			}
+		} else if rcList, ok := rawPending["remaining_calls"].([]map[string]any); ok {
+			remCalls = rcList
 		}
-	} else if rcList, ok := pending["remaining_calls"].([]map[string]any); ok {
-		remCalls = rcList
-	}
 
-	ansText := FormatAnswerResult(questions, answers)
-	st.FullHistory = append(st.FullHistory, map[string]any{
-		"role":         "tool",
-		"tool_call_id": tcID,
-		"name":         "ask_user_question",
-		"content":      ansText,
+		ansText = FormatAnswerResult(questions, answers)
+		st.FullHistory = append(st.FullHistory, map[string]any{
+			"role":         "tool",
+			"tool_call_id": tcID,
+			"name":         "ask_user_question",
+			"content":      ansText,
+		})
+
+		MarkQuestionBlock(st.ChatDisplay, questionID, answers)
 	})
-
-	MarkQuestionBlock(st.ChatDisplay, questionID, answers)
-	fl.Unlock()
+	_ = pending
 
 	// 补执行排在提问之后的工具调用
 	baseDir := project.GetMidiBaseDir(projectID)
@@ -697,13 +708,14 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 
 		// 占位 + 执行 + 完成块（与主循环一致，用户能看到补执行的即时反馈）
 		pendingEntry := llm.FormatPendingToolEntry(fnName, args)
-		fl.Lock()
-		st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-			"role":    "assistant",
-			"content": pendingEntry,
+		var pendingSnapshot []map[string]any
+		WithSessionLock(projectID, func() {
+			st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+				"role":    "assistant",
+				"content": pendingEntry,
+			})
+			pendingSnapshot = SnapshotDisplay(st.ChatDisplay)
 		})
-		pendingSnapshot := SnapshotDisplay(st.ChatDisplay)
-		fl.Unlock()
 		_ = onEvent(map[string]any{
 			"type":     "chat",
 			"messages": pendingSnapshot,
@@ -731,17 +743,18 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 					Size:      size,
 					NoteTable: strings.Join(noteList, "\n"),
 				}
-				fl.Lock()
-				var updated []project.MidiFileInfo
-				for _, f := range s.MidiFiles {
-					if f.Name != newInfo.Name && f.Path != newInfo.Path {
-						updated = append(updated, f)
+				var filesSnapshot []project.MidiFileInfo
+				WithSessionLock(projectID, func() {
+					var updated []project.MidiFileInfo
+					for _, f := range s.MidiFiles {
+						if f.Name != newInfo.Name && f.Path != newInfo.Path {
+							updated = append(updated, f)
+						}
 					}
-				}
-				updated = append(updated, newInfo)
-				s.MidiFiles = updated
-				filesSnapshot := SnapshotMidiFiles(s.MidiFiles)
-				fl.Unlock()
+					updated = append(updated, newInfo)
+					s.MidiFiles = updated
+					filesSnapshot = SnapshotMidiFiles(s.MidiFiles)
+				})
 				_ = onEvent(map[string]any{"type": "files", "files": filesSnapshot})
 				relToProj, _ := filepath.Rel(config.ProjectRoot, targetPath)
 				_ = onEvent(map[string]any{
@@ -751,29 +764,36 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 			}
 		}
 
-		fl.Lock()
-		st.FullHistory = append(st.FullHistory, map[string]any{
-			"role":         "tool",
-			"tool_call_id": call["id"],
-			"name":         fnName,
-			"content":      resText,
-		})
-
-		completedEntry := llm.FormatSingleToolEntry(fnName, args, resText)
-		if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == pendingEntry {
-			st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = completedEntry
-		} else {
-			st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-				"role":    "assistant",
-				"content": completedEntry,
+		var completedSnapshot []map[string]any
+		WithSessionLock(projectID, func() {
+			st.FullHistory = append(st.FullHistory, map[string]any{
+				"role":         "tool",
+				"tool_call_id": call["id"],
+				"name":         fnName,
+				"content":      resText,
 			})
-		}
-		fl.Unlock()
+
+			completedEntry := llm.FormatSingleToolEntry(fnName, args, resText)
+			if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == pendingEntry {
+				st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = completedEntry
+			} else {
+				st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+					"role":    "assistant",
+					"content": completedEntry,
+				})
+			}
+			completedSnapshot = SnapshotDisplay(st.ChatDisplay)
+		})
+		_ = onEvent(map[string]any{
+			"type":     "chat",
+			"messages": completedSnapshot,
+		})
 	}
-	fl.Lock()
-	finalSnapshot := SnapshotDisplay(st.ChatDisplay)
-	project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
-	fl.Unlock()
+	var finalSnapshot []map[string]any
+	WithSessionLock(projectID, func() {
+		finalSnapshot = SnapshotDisplay(st.ChatDisplay)
+		project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, tid, taskRec.Legacy)
+	})
 	_ = onEvent(map[string]any{
 		"type":     "chat",
 		"messages": finalSnapshot,
@@ -867,6 +887,15 @@ func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm
 	return nil, fmt.Errorf("重试次数耗尽，未能完成流式请求")
 }
 
+// withFLock 在已获取的会话文件锁保护下执行 fn（defer 释放：fn 内 panic
+// 时锁不被永久占住，panic 继续传播由上层 recover 兜底）。供没有 projectID
+// 上下文、只持有锁指针的调用点（processStreamChunks）使用。
+func withFLock(fl *sync.RWMutex, fn func()) {
+	fl.Lock()
+	defer fl.Unlock()
+	fn()
+}
+
 func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, onEvent StreamCallback, tid string) (string, string, []llm.ToolCall, error) {
 	reader := bufio.NewReader(resp.Body)
 	var contentBuilder strings.Builder
@@ -875,13 +904,13 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 
 	// 占位 assistant 消息（快照写入的目标索引：流式循环期间恒为末条——
 	// 工具块由调用方在本函数返回后才追加，同项目对话锁保证无并发写入者）
-	fl.Lock()
-	st.ChatDisplay = append(st.ChatDisplay, map[string]any{
-		"role":    "assistant",
-		"content": "",
+	withFLock(fl, func() {
+		st.ChatDisplay = append(st.ChatDisplay, map[string]any{
+			"role":    "assistant",
+			"content": "",
+		})
 	})
 	placeholderIdx := len(st.ChatDisplay) - 1
-	fl.Unlock()
 
 	lastEmit := time.Now()
 	sentReasoning, sentContent := 0, 0
@@ -993,11 +1022,11 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 							c := contentBuilder.String()
 							if (r != "" || c != "") && (len(r) != snapReasoning || len(c) != snapContent) {
 								snapReasoning, snapContent = len(r), len(c)
-								fl.Lock()
-								if placeholderIdx >= 0 && placeholderIdx < len(st.ChatDisplay) {
-									st.ChatDisplay[placeholderIdx]["content"] = llm.FormatDisplayMessage(r, c)
-								}
-								fl.Unlock()
+								withFLock(fl, func() {
+									if placeholderIdx >= 0 && placeholderIdx < len(st.ChatDisplay) {
+										st.ChatDisplay[placeholderIdx]["content"] = llm.FormatDisplayMessage(r, c)
+									}
+								})
 							}
 						}
 					}
@@ -1009,18 +1038,18 @@ func processStreamChunks(resp *http.Response, st *TaskState, fl *sync.RWMutex, o
 		}
 	}
 
-	fl.Lock()
 	var finalSnapshot []map[string]any
-	if contentBuilder.Len() == 0 && reasoningBuilder.Len() == 0 {
-		if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == "" {
-			st.ChatDisplay = st.ChatDisplay[:len(st.ChatDisplay)-1]
+	withFLock(fl, func() {
+		if contentBuilder.Len() == 0 && reasoningBuilder.Len() == 0 {
+			if len(st.ChatDisplay) > 0 && st.ChatDisplay[len(st.ChatDisplay)-1]["content"] == "" {
+				st.ChatDisplay = st.ChatDisplay[:len(st.ChatDisplay)-1]
+			}
+		} else if len(st.ChatDisplay) > 0 {
+			formatted := llm.FormatDisplayMessage(reasoningBuilder.String(), contentBuilder.String())
+			st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = formatted
+			finalSnapshot = SnapshotDisplay(st.ChatDisplay)
 		}
-	} else if len(st.ChatDisplay) > 0 {
-		formatted := llm.FormatDisplayMessage(reasoningBuilder.String(), contentBuilder.String())
-		st.ChatDisplay[len(st.ChatDisplay)-1]["content"] = formatted
-		finalSnapshot = SnapshotDisplay(st.ChatDisplay)
-	}
-	fl.Unlock()
+	})
 	if finalSnapshot != nil {
 		_ = onEvent(map[string]any{
 			"type":     "chat",

@@ -1,4 +1,5 @@
 //go:build ignore
+
 // 独立 e2e 运行器：启动临时 Go 服务器，测试关键 API
 package main
 

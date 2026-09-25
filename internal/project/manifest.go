@@ -202,7 +202,7 @@ func SaveProjectBPM(projectID string, bpm int) {
 	if err != nil {
 		return
 	}
-	tmp := mfile + ".tmp"
+	tmp := mfile + fmt.Sprintf(".tmp.%d.%d", os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, out, 0644); err != nil {
 		return
 	}
@@ -216,7 +216,7 @@ func SaveMidiManifest(projectID string, files []MidiFileInfo) {
 		return
 	}
 	mfile := filepath.Join(pdir, "midi.json")
-	tmp := mfile + ".tmp"
+	tmp := mfile + fmt.Sprintf(".tmp.%d.%d", os.Getpid(), time.Now().UnixNano())
 
 	root := map[string]any{"midi_files": files}
 	if bpm := GetProjectBPM(projectID); bpm != DefaultBPM {

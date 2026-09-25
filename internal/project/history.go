@@ -49,7 +49,7 @@ func SaveHistory(projectID string, messages []map[string]any, midiFiles []MidiFi
 		return
 	}
 
-	tmp := hfile + ".tmp"
+	tmp := hfile + fmt.Sprintf(".tmp.%d.%d", os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, data, 0644); err == nil {
 		_ = os.Rename(tmp, hfile)
 	}
@@ -112,7 +112,7 @@ func SaveEditHistory(projectID string, history []map[string]any, taskID string, 
 		return
 	}
 
-	tmp := efile + ".tmp"
+	tmp := efile + fmt.Sprintf(".tmp.%d.%d", os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, data, 0644); err == nil {
 		_ = os.Rename(tmp, efile)
 	}

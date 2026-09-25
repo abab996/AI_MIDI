@@ -19,14 +19,25 @@ func TestEstimateBounceTimeout(t *testing.T) {
 		t.Fatalf("超时下限应不低于 30s, 实际 %v", got)
 	}
 
-	// notes[].end 放宽：end=1440 拍 @120bpm = 720s → 封顶 20min
+	// notes[].end 放宽：end=1440 拍 @120bpm = 720s → 2*720+60 = 1500s（25min 封顶正好覆盖）
 	got = estimateBounceTimeout(map[string]any{
 		"bpm":   120.0,
 		"beats": 16.0,
 		"notes": []any{map[string]any{"end": 1440.0}},
 	})
-	if got != 20*time.Minute {
-		t.Fatalf("长渲染超时应封顶 20min, 实际 %v", got)
+	if got != 25*time.Minute {
+		t.Fatalf("长渲染超时应封顶 25min（覆盖 600s 音频×2+60s 最坏情形）, 实际 %v", got)
+	}
+
+	// 引擎允许的最长渲染（600s 音频 = 1200 拍 @120bpm + tail 30s）：
+	// 2*(600+30)+60 = 1320s = 22min，必须高于 20min 旧上限且不被 25min 截断
+	got = estimateBounceTimeout(map[string]any{
+		"bpm":     120.0,
+		"beats":   1200.0,
+		"tailSec": 30.0,
+	})
+	if got != 22*time.Minute {
+		t.Fatalf("最坏情形超时 = %v, 期望 22min（600s 音频×2+60s+tail）", got)
 	}
 
 	// tracks[].clips[].start+length 放宽（与引擎 computeBeats 对齐）

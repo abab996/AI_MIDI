@@ -139,7 +139,7 @@ func saveLocked() {
 		return
 	}
 
-	tmp := tfile + ".tmp"
+	tmp := tfile + fmt.Sprintf(".tmp.%d.%d", os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, data, 0644); err == nil {
 		_ = os.Rename(tmp, tfile)
 	}

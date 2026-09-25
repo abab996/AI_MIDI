@@ -73,15 +73,20 @@ func (r *Router) handleLibrarySub(w http.ResponseWriter, req *http.Request) {
 
 // sanitizeKnowledgeName 校验并消毒用户知识文件名：必须带 .md/.txt 后缀
 // （大小写不敏感，统一小写化），词干经 sf2NameRe 消毒（保留各语言字母/
-// 数字/_-.，中文文件名合法）。返回空串表示非法。
+// 数字/_-.，中文文件名合法）。只接受裸文件名——含路径分隔符（/、\）或
+// 点目录（..）的名字直接拒绝，而不是 filepath.Base 静默截断：截断会让
+// "?name=../escape.md" 变成操作 "escape.md"，造成对合法同名文件的误删/
+// 覆盖（此前已被安全审查与 E2E 攻击矩阵实证）。返回空串表示非法。
 func sanitizeKnowledgeName(name string) string {
 	name = strings.TrimSpace(name)
-	base := filepath.Base(name)
-	ext := strings.ToLower(filepath.Ext(base))
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return ""
+	}
+	ext := strings.ToLower(filepath.Ext(name))
 	if ext != ".md" && ext != ".txt" {
 		return ""
 	}
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
 	stem = sf2NameRe.ReplaceAllString(stem, "_")
 	stem = strings.TrimRight(stem, "._ ")
 	if strings.TrimSpace(stem) == "" {

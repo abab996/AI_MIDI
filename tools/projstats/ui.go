@@ -944,15 +944,15 @@ func (m *model) drawDetail(c *canvas) {
 	if m.fileRel != "" {
 		if fd, ok := m.stats.FileMap[m.fileRel]; ok {
 			share := pctOf(fd.Code, m.stats.Totals.Code)
-		rows := []panelRow{
-			{"路径", fd.Rel},
-			{"所属模块", orDash(fd.Group)},
-			{"代码行", num(fd.Code) + " 行"},
-			{"注释行", fmt.Sprintf("%s 行 (%.1f%%)", num(fd.Comment), pctOf(fd.Comment, fd.Total))},
-			{"空行", fmt.Sprintf("%s 行 (%.1f%%)", num(fd.Blank), pctOf(fd.Blank, fd.Total))},
-			{"总行数", fmt.Sprintf("%s 行  ·  占全项目代码 %.2f%%", num(fd.Total), share)},
-			{"文件大小", SizeStr(fd.Size)},
-		}
+			rows := []panelRow{
+				{"路径", fd.Rel},
+				{"所属模块", orDash(fd.Group)},
+				{"代码行", num(fd.Code) + " 行"},
+				{"注释行", fmt.Sprintf("%s 行 (%.1f%%)", num(fd.Comment), pctOf(fd.Comment, fd.Total))},
+				{"空行", fmt.Sprintf("%s 行 (%.1f%%)", num(fd.Blank), pctOf(fd.Blank, fd.Total))},
+				{"总行数", fmt.Sprintf("%s 行  ·  占全项目代码 %.2f%%", num(fd.Total), share)},
+				{"文件大小", SizeStr(fd.Size)},
+			}
 			m.panel(c, fd.Color, "文件详情", rows, nil)
 			return
 		}
@@ -989,7 +989,7 @@ func (m *model) panel(c *canvas, color, title string, rows []panelRow, links []l
 	c.add("  ", "", nil)
 	c.addStyled("╭─ ", bc, "")
 	c.addStyled(title, "\x1b[1m"+bc, "")
-	c.addStyled(" " + strings.Repeat("─", max(0, PW-5-runewidth.StringWidth(title))) + "╮", bc, "")
+	c.addStyled(" "+strings.Repeat("─", max(0, PW-5-runewidth.StringWidth(title)))+"╮", bc, "")
 	c.newline()
 
 	for _, row := range rows {

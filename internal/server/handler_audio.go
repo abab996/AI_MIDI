@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"aimidi/internal/config"
 	"aimidi/internal/engine"
 	"aimidi/internal/midi"
@@ -184,9 +186,13 @@ func (r *Router) handleAudioSettingsPost(w http.ResponseWriter, req *http.Reques
 		if err := sup.ApplySettings(s.Audio); err != nil {
 			// 超时（驱动卡死）或业务失败（设备不存在）：ApplySettings 已把
 			// 内存设置回滚到最近可用配置，这里统一持久化之，保持 settings.json
-			// 与实际设备一致
-			s.Audio = sup.CurrentAudio()
-			_ = config.SaveSettings(s)
+			// 与实际设备一致。
+			// 注：回滚以磁盘最新值为基底只更新 audio 段——若直接整单覆盖，
+			// 并发保存（双标签页/设置页与引擎回滚回调交错）会用本请求的旧
+			// 快照抹掉另一请求刚落盘的字段（如 API Key）
+			fresh := config.LoadSettings()
+			fresh.Audio = sup.CurrentAudio()
+			_ = config.SaveSettings(fresh)
 			name := attemptedDevice
 			if name == "" {
 				name = attemptedDriver
@@ -351,6 +357,8 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 	// 采样率语义说明：此处复用「设备采样率」设置作为导出渲染率。
 	// 两者语义不同（设备可能跑 44.1kHz 而导出想要 48kHz），当前产品
 	// 未区分——显式传参 sampleRate 可覆盖。详见 docs/audit-audio-update-2026-09-05.md
+	// 上下钳制：恶意/异常参数（超大 sampleRate/beats/tailSec）会渲染出
+	// 磁盘耗尽级的 WAV，这里封顶
 	sampleRate := settings.Audio.SampleRate
 	if body.SampleRate != nil && *body.SampleRate > 8000 {
 		sampleRate = *body.SampleRate
@@ -358,13 +366,22 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 	if sampleRate <= 0 {
 		sampleRate = 44100
 	}
+	if sampleRate > 192000 {
+		sampleRate = 192000
+	}
 	beats := 16.0
 	if body.Beats != nil && *body.Beats > 0 {
 		beats = *body.Beats
 	}
+	if beats > 600 {
+		beats = 600 // 约 600 秒 @120bpm；再长属于异常输入
+	}
 	tailSec := 2.5
 	if body.TailSec != nil && *body.TailSec >= 0 {
 		tailSec = *body.TailSec
+	}
+	if tailSec > 30 {
+		tailSec = 30
 	}
 	// 若提供了 tracks，尝试从中推导最大拍（取 clips/midi 的最远 end，含 clip内 notes）
 	if body.Tracks != nil {
@@ -406,10 +423,11 @@ func (r *Router) handleAudioBounce(w http.ResponseWriter, req *http.Request) {
 	}
 	// 输出路径：output/bounce_<ts>.wav（全局生效采样率，尾音已含）。
 	// 固定用 config.OutputDir（exe 目录），与下载白名单一致；避免从
-	// 其他工作目录启动时文件落到预期外位置。毫秒级时间戳：同秒内两次
-	// 导出（Wails 直通与 HTTP 双路径并发）不会互相覆盖
+	// 其他工作目录启动时文件落到预期外位置。毫秒级时间戳 + 短随机后缀：
+	// 同秒/同毫秒内两次导出（Wails 直通与 HTTP 双路径并发、双击导出）
+	// 也不会互相覆盖
 	ts := time.Now().Format("20060102_150405.000")
-	outPath := filepath.Join(config.OutputDir, fmt.Sprintf("bounce_%s.wav", ts))
+	outPath := filepath.Join(config.OutputDir, fmt.Sprintf("bounce_%s_%s.wav", ts, uuid.New().String()[:6]))
 	_ = os.MkdirAll(filepath.Dir(outPath), 0755)
 	abs := outPath
 	params := map[string]any{

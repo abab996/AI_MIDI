@@ -96,3 +96,29 @@ func TestAudioSampleRateAndTail(t *testing.T) {
 		t.Fatalf("latency %.2f out of expected 2.67", latency)
 	}
 }
+
+// TestIsTempDirCoverage：go run 的 exe 可能落在 os.TempDir() 之下，
+// 也可能落在 GOCACHE（%LOCALAPPDATA%\go-build\<hash>-d，位于 Temp 之外）。
+// 两者都必须识别为开发临时区，否则 ProjectRoot 会解析到构建缓存目录，
+// settings/Library/projects 全线错位（E2E 中实际发生过：第二次 go run
+// 读到默认设置且知识库不可用）
+func TestIsTempDirCoverage(t *testing.T) {
+	if !isTempDir(os.TempDir()) {
+		t.Fatal("os.TempDir() 及其子目录应识别为临时区")
+	}
+	if !isTempDir(filepath.Join(os.TempDir(), "go-build123", "b001", "exe")) {
+		t.Fatal("Temp 下的 go run 子目录应识别为临时区")
+	}
+	if cache := buildCacheDir(); cache != "" {
+		if !isTempDir(cache) {
+			t.Fatalf("Go 构建缓存根应识别为临时区: %s", cache)
+		}
+		if !isTempDir(filepath.Join(cache, "97", "975ebe-deadbeef-d")) {
+			t.Fatal("构建缓存内的 go run 目录应识别为临时区")
+		}
+	}
+	// 真实安装目录（任意非临时路径）不得误判
+	if isTempDir(`C:\Program Files\AI_MIDI`) {
+		t.Fatal("常规安装目录不应识别为临时区")
+	}
+}

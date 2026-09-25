@@ -90,6 +90,17 @@ func GetSessionLock(projectID string) *sync.RWMutex {
 	return l
 }
 
+// WithSessionLock 在项目文件锁保护下执行 fn。defer 释放保证 fn 内 panic
+// 时锁不会被永久占住（此前 pipeline 里 fl.Lock()...fl.Unlock() 若在锁内
+// panic，锁永不释放，同项目对话后续永久卡死、只能重启应用）；panic 本身
+// 继续向上传播，由调用方的 recover 兜底。
+func WithSessionLock(projectID string, fn func()) {
+	fl := GetSessionLock(projectID)
+	fl.Lock()
+	defer fl.Unlock()
+	fn()
+}
+
 // SnapshotDisplay 逐条浅拷贝 ChatDisplay（每条消息复制为独立 map）。
 // 调用方须已持有对应项目的会话读锁；拷贝出来的切片可安全地在锁外
 // 序列化/返回给 HTTP 响应，不会与流式写入方竞争。

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,10 @@ import (
 )
 
 func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -117,12 +122,18 @@ func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// openURLPrefixes /api/open-url 放行的外部链接前缀：本应用自己的 GitHub 仓库
+// openURLAllowHosts /api/open-url 放行的外部链接：本应用自己的 GitHub 仓库
 // 与官网（Star 请求弹窗、设置页提交 Issue / 关于页链接），不接受任意 URL
-// （防开放跳转——与更新降级通道同思路，URL 语义由前端写死）
-var openURLPrefixes = []string{
-	"https://github.com/abab996/AI_MIDI",
-	"https://aimidi.baimoo.top",
+// （防开放跳转——与更新降级通道同思路，URL 语义由前端写死）。
+// 校验用 host + 路径前缀（host 精确匹配，路径带边界），天然挡掉
+// "github.com/abab996/AI_MIDI.evil.com"（域名吞并）、
+// "github.com/abab996/AI_MIDI@evil.com"（userinfo）等前缀绕过变体。
+var openURLAllow = []struct {
+	host string
+	path string
+}{
+	{"github.com", "/abab996/AI_MIDI"},
+	{"aimidi.baimoo.top", ""},
 }
 
 // handleOpenURL POST /api/open-url：调起系统默认浏览器打开应用内入口的
@@ -139,23 +150,43 @@ func (r *Router) handleOpenURL(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
 		return
 	}
-	url := strings.TrimSpace(in.URL)
-	allowed := false
-	for _, prefix := range openURLPrefixes {
-		if strings.HasPrefix(url, prefix) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	parsed, err := url.Parse(strings.TrimSpace(in.URL))
+	if err != nil || !allowedOpenURL(parsed) {
 		writeError(w, http.StatusBadRequest, "链接不在允许范围内")
 		return
 	}
-	if err := openExternal(url); err != nil {
-		writeError(w, http.StatusInternalServerError, "打开浏览器失败，请手动访问："+url)
+	if err := openExternal(parsed.String()); err != nil {
+		writeError(w, http.StatusInternalServerError, "打开浏览器失败，请手动访问："+parsed.String())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// allowedOpenURL 校验站点与路径边界：host 必须精确匹配白名单域名，
+// 路径必须是白名单路径本身或其子路径（以 / 衔接），且不允许 userinfo
+// （"https://site@evil.com" 中有害部分）。
+func allowedOpenURL(u *url.URL) bool {
+	if u == nil || u.Scheme != "https" || u.User != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, allow := range openURLAllow {
+		if host != allow.host {
+			continue
+		}
+		p := u.Path
+		if allow.path == "" {
+			return true // 官网整站放行
+		}
+		if p == allow.path {
+			return true
+		}
+		if strings.HasPrefix(p, allow.path+"/") {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // handleTransportPrefs 走带偏好：编曲窗走带条上的「暂停后光标回起点」
@@ -192,9 +223,12 @@ func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
 
 	switch req.Method {
 	case http.MethodGet:
-		apiKey = req.URL.Query().Get("api_key")
-		baseURL = req.URL.Query().Get("base_url")
-		apiPath = req.URL.Query().Get("api_path")
+		// 仅用已保存配置拉取模型列表：GET 可被跨站 <img> 无 Origin 触发，
+		// 若接受 query 参数指定 base_url，恶意站点可携带已保存的 API Key
+		// 请求任意 HTTPS 主机（凭据外泄）。前端刷新模型列表走 POST。
+		apiKey = ""
+		baseURL = ""
+		apiPath = ""
 
 	case http.MethodPost:
 		var in struct {

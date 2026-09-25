@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // ArrangementMaxBytes 编排数据写入上限（5MB）
@@ -57,7 +58,7 @@ func WriteArrangement(projectID string, data []byte) error {
 		pretty = ind
 	}
 
-	tmp := file + ".tmp"
+	tmp := file + fmt.Sprintf(".tmp.%d.%d", os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, pretty, 0644); err != nil {
 		return fmt.Errorf("写入临时文件失败: %w", err)
 	}

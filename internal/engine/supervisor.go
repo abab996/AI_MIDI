@@ -58,6 +58,7 @@ type Supervisor struct {
 	lastVoices     map[int]map[string]any // 每轨内置波形声部参数（重启后重放）
 	hasSoundfont   bool                   // 当前会话是否已加载任何音色（/api/audio/status 透出）
 	exePath        string
+	lastReadyAt    time.Time // 最近一次进入 StateReady 的时间（秒崩判定用）
 	stopOnce       sync.Once
 	doneCh         chan struct{} // 关闭表示主循环退出
 	wakeCh         chan struct{} // StateDisabled 驻留时由 ApplySettings 启用引擎唤醒
@@ -159,12 +160,17 @@ func (s *Supervisor) Stop() {
 			_ = cli.Close()
 		}
 		// 等主循环收尾（其内部会 Kill 残留进程）；从未 Start 时 doneCh
-		// 为 nil，直接跳过等待
-		if s.doneCh == nil {
+		// 为 nil，直接跳过等待。doneCh 的赋值在 Start（非持锁）与关闭在
+		// loop 的 defer（持锁与否均可）——Stop 与 Start 并发时无锁读取
+		// 是数据竞态，这里持锁快照
+		s.mu.Lock()
+		doneCh := s.doneCh
+		s.mu.Unlock()
+		if doneCh == nil {
 			return
 		}
 		select {
-		case <-s.doneCh:
+		case <-doneCh:
 		case <-time.After(3 * time.Second):
 			s.killProcess()
 		}
@@ -568,6 +574,7 @@ func (s *Supervisor) loop() {
 
 		reason := s.runOnce()
 		// runOnce 返回即意味着会话失效（进程退出 / 心跳失败 / ctx 取消）
+		// reason 为空 = 正常停止（外层随即 return），不参与失败计数。
 
 		select {
 		case <-s.ctx.Done():
@@ -577,14 +584,41 @@ func (s *Supervisor) loop() {
 		default:
 		}
 
+		// 秒崩判据：上次会话在进入 Ready 后极短时间内就崩溃 = 引擎本体不可用
+		// （驱动损坏/坏 exe），连续失败计数继续累计；若会话曾稳定运行过
+		// （Ready 后存活超过秒崩窗口），崩溃属偶发，清零后重计——否则零星
+		// 闪退会在多天里把计数累计到熔断阈值，误伤可恢复场景。
+		s.mu.RLock()
+		readyAt := s.lastReadyAt
+		s.mu.RUnlock()
+		if !readyAt.IsZero() && time.Since(readyAt) > crashWindow {
+			consecutiveFail = 0
+		}
+
+		// 连续快速失败退避：500ms 起，封顶 3s。防无限重启风暴：引擎不可修复
+		// 地秒崩（驱动损坏、exe 被替换成坏文件等）时若无熔断会每 3s kill→重启
+		// 一次直到应用退出——CPU/日志/声卡抢占无意义且掩盖真实故障。达到
+		// maxConsecutiveRestarts 后驻留失败态，不再自动拉起（用户重新启用
+		// 引擎或重启应用后重新开始）。
+		const (
+			maxConsecutiveRestarts = 10
+			maxRestartBackoff      = 3 * time.Second
+		)
 		consecutiveFail++
 		s.setState(StateRestarting,
 			fmt.Sprintf("第 %d 次重启: %s", consecutiveFail, reason))
 
-		// 连续快速失败的退避：500ms 起，封顶 3s
+		if consecutiveFail >= maxConsecutiveRestarts {
+			slog.Error("引擎连续重启次数过多，已停止自动重启",
+				"restarts", consecutiveFail, "reason", reason)
+			s.setState(StateFailed, "引擎连续崩溃超过 10 次，已停止自动重启")
+			s.parkUntilDone()
+			return
+		}
+
 		backoff := time.Duration(consecutiveFail) * 500 * time.Millisecond
-		if backoff > 3*time.Second {
-			backoff = 3 * time.Second
+		if backoff > maxRestartBackoff {
+			backoff = maxRestartBackoff
 		}
 		select {
 		case <-s.ctx.Done():
@@ -595,6 +629,9 @@ func (s *Supervisor) loop() {
 		}
 	}
 }
+
+// crashWindow 秒崩判定窗口：Ready 后存活超过该时长视为会话健康
+const crashWindow = 30 * time.Second
 
 // parkUntilDone 驻留直至守护器停止（用于不可重试的部署类错误）
 func (s *Supervisor) parkUntilDone() {
@@ -700,6 +737,7 @@ func (s *Supervisor) runOnce() string {
 	if s.sessionCnt > 1 {
 		s.status.Restarts = s.sessionCnt - 1
 	}
+	s.lastReadyAt = time.Now()
 	s.mu.Unlock()
 	s.setState(StateReady, "")
 
@@ -1223,8 +1261,10 @@ func estimateBounceTimeout(params map[string]any) time.Duration {
 	if timeout < 30*time.Second {
 		timeout = 30 * time.Second
 	}
-	if timeout > 20*time.Minute {
-		timeout = 20 * time.Minute
+	// 上限须覆盖最坏情形（600s 音频 × 2 + 60s 余量 = 21min），此前 20min
+	// 会把它截断——临界长工程可能在渲染将完成时被判超时杀掉会话
+	if timeout > 25*time.Minute {
+		timeout = 25 * time.Minute
 	}
 	return timeout
 }

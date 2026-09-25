@@ -109,8 +109,27 @@ func (c *Client) Request(method string, params map[string]any, timeout time.Dura
 		return nil, ErrSessionDead
 	default:
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// 等锁预算与请求超时共享：事务锁可能被在途长请求（bounce 最长 20min、
+	// applySetup 60s）占用，若直接 c.mu.Lock() 排队，后续所有请求（设备
+	// 枚举、音色加载、走带控制）都会无界阻塞在锁上——前端表现为设置页/
+	// 钢琴窗整体转圈且无超时兜底。这里轮询 TryLock，超预算或会话判死
+	// 即快速失败返回（语义同 TryRequest 的"引擎忙"，调用方按忙处理）。
+	deadline := time.Now().Add(timeout)
+	for {
+		if c.mu.TryLock() {
+			defer c.mu.Unlock()
+			break
+		}
+		select {
+		case <-c.dead:
+			return nil, ErrSessionDead
+		default:
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("引擎忙（有在途长请求），请求超时: %s", method)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	req := Request{
 		ID:     c.nextRequestID(),

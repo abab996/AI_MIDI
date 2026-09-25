@@ -25,7 +25,7 @@ func TestLibraryUploadGuards(t *testing.T) {
 	}
 	s := string(data)
 	for _, frag := range []string{
-		"2 << 20",      // handler 层大小上限
+		"2 << 20",         // handler 层大小上限
 		`".md"`, `".txt"`, // 扩展名强制
 		"utf8.Valid", // 非 UTF-8 拒绝
 		"isSubPath",  // 路径白名单
@@ -166,5 +166,82 @@ func TestLibraryHandlersCRUD(t *testing.T) {
 	_ = doLibraryReq(mux, "DELETE", "/api/library/files?name="+url.QueryEscape("01_乐理基础.md"), nil)
 	if _, err := os.Stat(builtin); err != nil {
 		t.Fatalf("内置文件不应可被删除端点触及: %v", err)
+	}
+}
+
+// TestLibraryRejectsPathNames：路径成分文件名必须直接拒绝，而不是
+// filepath.Base 静默截断成同名文件去操作——截断会让 "?name=../escape.md"
+// 实际删除/覆盖 Library/user/escape.md（安全审查 + E2E 攻击矩阵实证过）
+func TestLibraryRejectsPathNames(t *testing.T) {
+	mux, cleanup := libraryHandlers(t)
+	defer cleanup()
+	if err := os.MkdirAll(config.LibraryUserDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 同名合法文件：若名字被截断操作就会碰到它
+	victim := filepath.Join(config.LibraryUserDir, "victim.md")
+	if err := os.WriteFile(victim, []byte("原内容"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, bad := range []string{"../victim.md", `..\victim.md`, "a/b/victim.md", "..%2Fvictim.md", "sub/victim.md"} {
+		if w := doLibraryReq(mux, "DELETE", "/api/library/files?name="+url.QueryEscape(bad), nil); w.Code != http.StatusBadRequest {
+			t.Errorf("DELETE 带路径名字 %q 应 400: %d", bad, w.Code)
+		}
+		if w := doLibraryReq(mux, "POST", "/api/library/files?name="+url.QueryEscape(bad), []byte("x")); w.Code != http.StatusBadRequest {
+			t.Errorf("上传带路径名字 %q 应 400: %d", bad, w.Code)
+		}
+		if w := doLibraryReq(mux, "GET", "/api/library/files/content?scope=user&name="+url.QueryEscape(bad), nil); w.Code != http.StatusBadRequest {
+			t.Errorf("预览带路径名字 %q 应 400: %d", bad, w.Code)
+		}
+	}
+	// 重命名两个方向都拒绝
+	if w := doLibraryReq(mux, "POST", "/api/library/files/rename",
+		[]byte(`{"from":"../x.md","to":"ok.md"}`)); w.Code != http.StatusBadRequest {
+		t.Errorf("重命名源名带路径应 400: %d", w.Code)
+	}
+	if w := doLibraryReq(mux, "POST", "/api/library/files/rename",
+		[]byte(`{"from":"victim.md","to":"../y.md"}`)); w.Code != http.StatusBadRequest {
+		t.Errorf("重命名目标名带路径应 400: %d", w.Code)
+	}
+
+	// 同名合法文件必须原封不动
+	if data, err := os.ReadFile(victim); err != nil || string(data) != "原内容" {
+		t.Fatalf("合法同名文件被误动: %v / %q", err, string(data))
+	}
+}
+
+// TestAllowedOpenURL：外链白名单须拒绝前缀冒名与 userinfo 变体，
+// 只接受 host 精确匹配 + 路径边界（防开放跳转）
+func TestAllowedOpenURL(t *testing.T) {
+	allow := []string{
+		"https://github.com/abab996/AI_MIDI",
+		"https://github.com/abab996/AI_MIDI/issues/new",
+		"https://github.com/abab996/AI_MIDI?tab=readme",
+		"https://aimidi.baimoo.top",
+		"https://aimidi.baimoo.top/anything",
+	}
+	deny := []string{
+		"https://github.com/abab996/AI_MIDI.evil.com",            // 域名吞并
+		"https://github.com/abab996/AI_MIDI@evil.com",            // userinfo 变体
+		"https://github.com/abab996/AI_MIDIness",                 // 前缀同源但路径不同
+		"https://evil.com/?x=https://github.com/abab996/AI_MIDI", // 参数注入
+		"http://github.com/abab996/AI_MIDI",                      // 非 https
+		"https://github.com/other/repo",                          // 同站其他仓库
+		"https://aimidi.baimoo.top.evil.com",                     // 官网域名吞并
+		"javascript:alert(1)",
+		"",
+	}
+	for _, u := range allow {
+		parsed, err := url.Parse(u)
+		if err != nil || !allowedOpenURL(parsed) {
+			t.Errorf("应放行 %q", u)
+		}
+	}
+	for _, u := range deny {
+		parsed, err := url.Parse(u)
+		if err == nil && allowedOpenURL(parsed) {
+			t.Errorf("应拒绝 %q", u)
+		}
 	}
 }

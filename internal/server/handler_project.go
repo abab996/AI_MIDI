@@ -1159,6 +1159,14 @@ func moveOneFile(srcPath, dstPath string) error {
 }
 
 func (r *Router) handleProjectDownload(w http.ResponseWriter, req *http.Request, projectID string) {
+	// 先校验项目存在再取会话：download 是 GET 且无项目存在性检查，
+	// 若直接 GetSession，任意 projectID 都会在进程内创建永不回收的
+	// 会话/锁对象（跨站 <img> 循环请求即可无界增长内存）
+	if _, err := project.LoadProject(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "项目不存在")
+		return
+	}
+
 	namesParam := req.URL.Query().Get("names")
 	s := chat.GetSession(projectID)
 

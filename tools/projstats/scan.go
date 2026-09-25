@@ -48,38 +48,38 @@ type Contrib struct {
 }
 
 type Stats struct {
-	Root        string
-	HasGit      bool
-	Branch      string
-	Hash        string
-	Tag         string
-	LastAuthor  string
-	LastMsg     string
-	LastTime    time.Time
-	FirstTime   time.Time
+	Root         string
+	HasGit       bool
+	Branch       string
+	Hash         string
+	Tag          string
+	LastAuthor   string
+	LastMsg      string
+	LastTime     time.Time
+	FirstTime    time.Time
 	TotalCommits int
-	C7, C30     int
-	Dirty       int
-	NContrib    int
+	C7, C30      int
+	Dirty        int
+	NContrib     int
 	Contributors []Contrib
-	Buckets     [26]int
-	WeekMax     int
+	Buckets      [26]int
+	WeekMax      int
 
-	Mods      []*GroupStat
-	Langs     []*GroupStat
-	Totals    GroupStat
-	Top       []FileStat
-	GroupTop  map[string][]FileStat
-	FileMap   map[string]FileDetail
-	WorkSize  int64
-	GitSize   int64
-	MaxFileSize  int64
+	Mods           []*GroupStat
+	Langs          []*GroupStat
+	Totals         GroupStat
+	Top            []FileStat
+	GroupTop       map[string][]FileStat
+	FileMap        map[string]FileDetail
+	WorkSize       int64
+	GitSize        int64
+	MaxFileSize    int64
 	MaxFileSizeRel string
-	GoVer     string
-	GoDeps    int
-	FilesFound int
-	DirsFound  int
-	Elapsed   time.Duration
+	GoVer          string
+	GoDeps         int
+	FilesFound     int
+	DirsFound      int
+	Elapsed        time.Duration
 }
 
 // ---------------- 扫描配置 ----------------
@@ -104,7 +104,7 @@ var langMap = map[string]langDef{
 	".css": {"CSS", "c"}, ".scss": {"CSS", "c"}, ".less": {"CSS", "c"},
 	".html": {"HTML", "html"}, ".htm": {"HTML", "html"}, ".xml": {"XML", "html"},
 	".json": {"JSON", "none"},
-	".yml": {"YAML/TOML", "hash"}, ".yaml": {"YAML/TOML", "hash"}, ".toml": {"YAML/TOML", "hash"},
+	".yml":  {"YAML/TOML", "hash"}, ".yaml": {"YAML/TOML", "hash"}, ".toml": {"YAML/TOML", "hash"},
 	".py": {"Python", "hash"}, ".md": {"Markdown", "none"},
 	".sh": {"脚本", "hash"}, ".bat": {"脚本", "bat"}, ".cmd": {"脚本", "bat"}, ".ps1": {"脚本", "hash"},
 	".iss": {"Inno/配置", "semi"}, ".isl": {"Inno/配置", "semi"},

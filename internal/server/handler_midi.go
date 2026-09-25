@@ -110,7 +110,13 @@ func (r *Router) handleRunTask(w http.ResponseWriter, req *http.Request) {
 		return fmt.Sprintf("%s（耗时 %.2f 秒）", msg, time.Since(startTime).Seconds())
 	}
 
+	// sendSSE 带写超时：/api/run 未设连接级 WriteTimeout（SSE 不能掐断），
+	// 若无 per-write deadline，客户端停止读取但未关闭（后台标签页节流/
+	// 僵死连接）时 Fprint 会无限阻塞，handler goroutine 与连接永久泄漏。
+	// 与 /api/chat 的 sseCallback（15s deadline）同一手法。
+	rc := http.NewResponseController(w)
 	sendSSE := func(data map[string]any) {
+		_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Second))
 		_, _ = fmt.Fprint(w, sseEvent(data))
 		if flusher != nil {
 			flusher.Flush()

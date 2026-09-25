@@ -26,11 +26,11 @@ import (
 )
 
 const (
-	msgRequest   = 0x01
-	msgResponse  = 0x02
-	ioTimeout    = 15 * time.Second // listDevices 枚举 ASIO/DirectSound 设备可能较慢
-	dialTimeout  = 10 * time.Second
-	maxRedial    = 5
+	msgRequest  = 0x01
+	msgResponse = 0x02
+	ioTimeout   = 15 * time.Second // listDevices 枚举 ASIO/DirectSound 设备可能较慢
+	dialTimeout = 10 * time.Second
+	maxRedial   = 5
 )
 
 type frame struct {

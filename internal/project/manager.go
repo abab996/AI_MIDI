@@ -102,7 +102,7 @@ func loadIndexLocked() ([]ProjectEntry, error) {
 func saveIndexLocked(entries []ProjectEntry) error {
 	ensureProjectsDir()
 	idxFile := getIndexFile()
-	tmp := idxFile + ".tmp"
+	tmp := idxFile + fmt.Sprintf(".tmp.%d.%d", os.Getpid(), time.Now().UnixNano())
 
 	root := map[string]any{"projects": entries}
 	data, err := json.MarshalIndent(root, "", "  ")

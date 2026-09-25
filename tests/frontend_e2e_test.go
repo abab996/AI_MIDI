@@ -27,38 +27,38 @@ func readRepoFile(t *testing.T, rel string) []byte {
 func TestAllDefaultIsJUCE(t *testing.T) {
 	// 验证所有默认路径都经 JUCE，而非 WebAudio
 	checks := []struct {
-		file    string
+		file           string
 		mustContain    []string
 		mustNotContain []string
 	}{
 		{
-			file: "frontend/js/arrangement/audio_engine.js",
-			mustContain: []string{"isNativePreferred", "noteOnTrack"},
+			file:           "frontend/js/arrangement/audio_engine.js",
+			mustContain:    []string{"isNativePreferred", "noteOnTrack"},
 			mustNotContain: []string{},
 		},
 		{
-			file: "frontend/js/pianoroll/pianoroll.js",
-			mustContain: []string{"isNativePreferred", "noteOnTrack"},
+			file:           "frontend/js/pianoroll/pianoroll.js",
+			mustContain:    []string{"isNativePreferred", "noteOnTrack"},
 			mustNotContain: []string{},
 		},
 		{
-			file: "frontend/js/engine/engine_bridge.js",
-			mustContain: []string{"__engineTimecode", "__engineLevels", "getLevels", "setLoop"},
+			file:           "frontend/js/engine/engine_bridge.js",
+			mustContain:    []string{"__engineTimecode", "__engineLevels", "getLevels", "setLoop"},
 			mustNotContain: []string{},
 		},
 		{
-			file: "internal/engine/procattr_windows.go",
-			mustContain: []string{"HideWindow", "CREATE_NO_WINDOW"},
+			file:           "internal/engine/procattr_windows.go",
+			mustContain:    []string{"HideWindow", "CREATE_NO_WINDOW"},
 			mustNotContain: []string{},
 		},
 		{
-			file: "internal/engine/supervisor.go",
-			mustContain: []string{"engineSysProcAttr()"},
+			file:           "internal/engine/supervisor.go",
+			mustContain:    []string{"engineSysProcAttr()"},
 			mustNotContain: []string{"HideWindow:"},
 		},
 		{
-			file: "main.go",
-			mustContain: []string{"5000 * time.Millisecond", "engineSup.Status()", "StateReady"},
+			file:           "main.go",
+			mustContain:    []string{"5000 * time.Millisecond", "engineSup.Status()", "StateReady"},
 			mustNotContain: []string{"1400 * time.Millisecond"},
 		},
 	}

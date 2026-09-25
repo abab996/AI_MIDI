@@ -106,21 +106,44 @@ func getProjectRoot() string {
 	return "."
 }
 
+// isTempDir 判断 exe 目录是否属于开发/构建临时区：os.TempDir() 下的
+// go run 临时目录，以及 GOCACHE 下的 go run 编译缓存目录
+// （%LOCALAPPDATA%\go-build\<hash>-d，位于 Temp 之外）。两者都是
+// 开发态产物，真实 install 目录在此之外。
 func isTempDir(dir string) bool {
 	clean := filepath.Clean(dir)
-	tmp := filepath.Clean(os.TempDir())
-	rel, err := filepath.Rel(tmp, clean)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
+	for _, root := range []string{os.TempDir(), buildCacheDir()} {
+		rootClean := filepath.Clean(root)
+		if rootClean == "" {
+			continue
+		}
+		rel, err := filepath.Rel(rootClean, clean)
+		if err != nil {
+			continue
+		}
+		if rel == "." {
+			return true
+		}
+		// rel 以 ".." 开头表示在 root 之外，继续尝试下一个根
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
 		return true
 	}
-	// rel 以 ".." 开头表示在 tmp 之外
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
+	return false
+}
+
+// buildCacheDir 返回 Go 构建缓存根（go run 的 exe 缓存于其子目录）。
+// 优先环境变量 GOCACHE，回退 os.UserCacheDir()/go-build；两者都取不到
+// 时返回空串（调用方跳过该根）。
+func buildCacheDir() string {
+	if dir := os.Getenv("GOCACHE"); dir != "" {
+		return dir
 	}
-	return true
+	if cache, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cache, "go-build")
+	}
+	return ""
 }
 
 // SetupLogging 初始化 slog 文件与控制台双写日志

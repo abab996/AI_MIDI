@@ -210,6 +210,7 @@ func main() {
 		Height:            height,
 		MinWidth:          minW,
 		MinHeight:         minH,
+		Frameless:         true, // 自绘标题栏（frontend/js/titlebar.js）；拖拽/边缘缩放走 Wails 内置 --wails-draggable 机制
 		StartHidden:       true, // 先隐藏，等桌面透明 Splash 播放完成再展示
 		HideWindowOnClose: false,
 		OnStartup: func(ctx context.Context) {

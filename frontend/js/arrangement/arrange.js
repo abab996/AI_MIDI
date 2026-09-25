@@ -475,13 +475,16 @@
     // 保存。若等响应回来再清 flag，会误清掉在途编辑（保存期间打的音符
     // 静默丢失且 UI 仍显示 SAVED，关窗兜底也因 dirty=false 跳过）
     this.dirty = false;
+    this.saveInFlight = true; // 关窗兜底（beforeunload beacon）据此判断"保存仍在途"
     this.setSaveStamp("SAVING", false);
     UI.putJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement", this.serialize())
       .then(function () {
+        self.saveInFlight = false;
         self.setSaveStamp("SAVED", false);
         if (self.dirty) self.scheduleSave(); // 保存期间有编辑：补一轮
       })
       .catch(function (e) {
+        self.saveInFlight = false;
         self.dirty = true; // 保存失败：恢复 dirty，防抖重试与关窗兜底仍有效
         self.setSaveStamp("SAVE ERR", true);
         if (UI.toast) UI.toast("✗ 编排保存失败: " + e.message, "err");
@@ -4014,11 +4017,14 @@
   document.addEventListener("DOMContentLoaded", function () {
     window.Arrange.init();
   });
-  /* 应用退出兜底：800ms 防抖窗口内的编排改动用 sendBeacon 落盘
-     （后端 /arrangement 已同时接受 POST），不阻塞卸载 */
+/* 应用退出兜底：800ms 防抖窗口内或保存请求在途时，用 sendBeacon 落盘
+   （后端 /arrangement 已同时接受 POST），不阻塞卸载。
+   注意不能只看 dirty：doSave 已把 dirty 认领为 false 而请求尚未完成时，
+   直接跳过会丢最后编辑（fetch 在卸载时被浏览器中断） */
   window.addEventListener("beforeunload", function () {
     var a = window.Arrange;
-    if (!a || !a.projectId || !a.dirty) return;
+    if (!a || !a.projectId) return;
+    if (!a.dirty && !a.saveInFlight) return;
     if (navigator.sendBeacon) {
       navigator.sendBeacon(
         "/api/projects/" + encodeURIComponent(a.projectId) + "/arrangement",

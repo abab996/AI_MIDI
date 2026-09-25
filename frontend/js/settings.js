@@ -728,6 +728,125 @@
     });
   }
 
+  /* ═══════════ 关于页专属特效（paneAbout） ═══════════
+     纯白球 + mix-blend-mode: difference：浅色主题呈黑球白字、深色主题呈
+     浅色球洞，随主题自动翻转。三态：
+     - 文字：48px 圆球跟随光标；
+     - Logo：26px 小球，::after 三层光影（深核/暗晕/隆起高光）定位到光标处
+       ——触点局部凹陷，整块仅 0.985 微缩；
+     - 按钮：瞬间"吸附"——球弹到按钮中心、变形为按钮矩形（含圆角），
+       覆盖处整体反色；离开按钮恢复跟随。 */
+  function initAboutFx() {
+    var pane = $("#paneAbout");
+    if (!pane) return;
+
+    /* 系统开启"减弱动态效果"时跳过整个特效：
+       CSS 侧只关了 transition，JS 侧不跳过的话光标仍会被球体盖住
+       （cursor 样式）且球体跟随导致整屏反色重绘 */
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    var ball = document.createElement("div");
+    ball.className = "about-ball";
+    pane.appendChild(ball);
+
+    var logoWrap = pane.querySelector(".about-logo-wrap");
+    var raf = null;
+    var mx = 0, my = 0, size = 48;
+    var snapBtn = null;
+
+    function paint() {
+      raf = null;
+      if (snapBtn) return;   // 吸附态：球钉在按钮中心，不跟光标
+      ball.style.transform = "translate3d(" + mx + "px," + my + "px,0) translate(-50%,-50%)";
+      ball.style.width = size + "px";
+      ball.style.height = size + "px";
+    }
+
+    function releaseSnap() {
+      if (!snapBtn) return;
+      snapBtn = null;
+      ball.classList.remove("snap");
+      ball.style.borderRadius = "50%";
+    }
+
+    function snapTo(btn) {
+      if (snapBtn === btn) return;
+      snapBtn = btn;
+      /* 几何测量只在"进入新按钮"时做一次（光标停在按钮上移动期间
+         按钮几何不变）：此前每次 pointermove 都同步
+         getBoundingClientRect + getComputedStyle，强制布局/样式重算，
+         光标在 About 页按钮上快速移动时产生每帧抖动 */
+      var r = btn.getBoundingClientRect();
+      var cs = getComputedStyle(btn);
+      ball.classList.add("snap");
+      ball.style.transform = "translate3d(" + (r.left + r.width / 2) + "px," + (r.top + r.height / 2) + "px,0) translate(-50%,-50%)";
+      ball.style.width = Math.round(r.width) + "px";
+      ball.style.height = Math.round(r.height) + "px";
+      ball.style.borderRadius = cs.borderRadius || "4px";
+    }
+
+    var TILT_MAX = 18;   // 3D 倾斜最大角度（度）：触点一侧明显下沉
+
+    function moveLogoDent(x, y) {
+      if (!logoWrap) return;
+      var lr = logoWrap.getBoundingClientRect();
+      /* 钳制到 [0,1]：光标贴边越界时（凸出条带上仍可能派发 move），
+         倾斜角与凹陷位置不得越界放大 */
+      var px = Math.min(1, Math.max(0, (x - lr.left) / lr.width));
+      var py = Math.min(1, Math.max(0, (y - lr.top) / lr.height));
+      logoWrap.style.setProperty("--dx", (px * 100).toFixed(1) + "%");
+      logoWrap.style.setProperty("--dy", (py * 100).toFixed(1) + "%");
+      /* rotateX 正值 = 上边下沉、rotateY 负值 = 右边下沉：
+         光标在哪一侧，哪一侧朝屏幕里陷进去 */
+      logoWrap.style.setProperty("--rx", ((0.5 - py) * TILT_MAX).toFixed(2) + "deg");
+      logoWrap.style.setProperty("--ry", ((0.5 - px) * TILT_MAX).toFixed(2) + "deg");
+    }
+
+    function clearLogoDent() {
+      if (!logoWrap) return;
+      logoWrap.classList.remove("pressed");
+      ["--dx", "--dy", "--rx", "--ry"].forEach(function (p) {
+        logoWrap.style.removeProperty(p);
+      });
+    }
+
+    pane.addEventListener("pointermove", function (e) {
+      mx = e.clientX; my = e.clientY;
+      var t = e.target;
+      var btn = t.closest ? t.closest(".about-link, .btn") : null;
+      var onLogo = t.closest ? t.closest(".about-logo-wrap") : null;
+      if (btn) {
+        /* 只在目标按钮变化时重测几何（snapTo 内 snapBtn===btn 直接
+           return）：光标在按钮上连续移动时不再每帧 getBoundingClientRect
+           + getComputedStyle，消除布局抖动 */
+        snapTo(btn);
+      } else {
+        releaseSnap();
+        if (onLogo) {
+          size = 26;
+          moveLogoDent(mx, my);
+        } else {
+          size = 48;
+        }
+        if (!raf) raf = requestAnimationFrame(paint);
+      }
+    });
+
+    pane.addEventListener("pointerenter", function () { ball.classList.add("on"); });
+    pane.addEventListener("pointerleave", function () {
+      ball.classList.remove("on");
+      releaseSnap();
+      clearLogoDent();
+    });
+
+    if (logoWrap) {
+      logoWrap.addEventListener("pointerenter", function () { logoWrap.classList.add("pressed"); });
+      logoWrap.addEventListener("pointerleave", clearLogoDent);
+    }
+  }
+
   function init() {
     /* 标签页：默认激活「连接」；支持 ?tab=paneXXX 深链（chat.html 的
        「⌨ 快捷键」入口直达快捷键面板） */
@@ -747,6 +866,7 @@
       loadLibraryFiles();
     }
     bindLibraryPane();
+    initAboutFx();
 
     /* 提交 Issue：跳转 GitHub issue 新建页（系统默认浏览器） */
     if ($("#issueBtn")) {

@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
 <meta charset="UTF-8">
 <title>AI_MIDI-go · 功能过场</title>
 <style>
@@ -225,7 +226,13 @@
   const step = parseInt(q.get("step") || "1", 10);
   document.getElementById("shot").src = "/demo/assets/shots/" + (q.get("img") || "pianoroll.png");
   document.getElementById("stamp").textContent = "[ " + (q.get("stamp") || "FEATURE 0" + step) + " ]";
-  document.getElementById("cn").innerHTML = (q.get("cn") || "标题").replace(/\|/g, "<br>");
+  /* cn 支持 "|" 换行：用 DOM 分段而非 innerHTML 拼接——URL 参数直进
+     innerHTML 是反射型 XSS（?cn=<img src=x onerror=...>） */
+  const cnEl = document.getElementById("cn");
+  (q.get("cn") || "标题").split("|").forEach((seg, i) => {
+    if (i > 0) cnEl.appendChild(document.createElement("br"));
+    cnEl.appendChild(document.createTextNode(seg));
+  });
   document.getElementById("en").textContent = q.get("en") || "";
   document.getElementById("tag").textContent = q.get("tag") || "LIVE DEMO →";
   document.getElementById("wm").textContent = "0" + step;

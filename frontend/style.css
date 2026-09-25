@@ -1039,12 +1039,19 @@ a.btn {
 
 /* 档案库卡片网格：应用窗口布局下的内部滚动区（此前卡片多时撑破
    #archiveView 直接引发页面级滚动——#archiveView 注释声称"内部滚动
-   各自负责"但从未落地，此为整页滚动的根因） */
+   各自负责"但从未落地，此为整页滚动的根因）。
+   overflow-y:auto 会按规范把 overflow-x 从 visible 计算为 auto，而
+   .card.draft::before 的 right:-4px 虚线框常驻 DOM（opacity:0 仍计入
+   溢出区），最右列恒超 4px → 横向滚动条必现；显式 hidden 关闭横滚，
+   padding-inline 给 hover 虚线框留出裁切余量 */
 #archiveView .card-grid {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;   /* 滚到头不再外溢给页面 */
+  padding-inline: 6px;            /* 兜住 ::before 虚线框的 4px 外扩 */
+  margin-inline: -6px;            /* 网格视觉宽度不变 */
   padding-bottom: 24px;           /* 滚动容器内底部留白 */
 }
 
@@ -1058,6 +1065,7 @@ a.btn {
   font-weight: 600;
   margin-bottom: 10px;
   color: var(--color-ink);
+  overflow-wrap: anywhere;        /* 超长无空格项目名不撑宽网格轨道 */
 }
 
 .proj-meta {
@@ -5244,4 +5252,214 @@ body.is-panning *,
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+/* ═══════════ 自绘标题栏（Wails Frameless，仅桌面模式） ═══════════
+   main.go Frameless 移除系统边框后，titlebar.js 在桌面模式注入 .title-bar；
+   浏览器模式不加 has-titlebar 类、不注入 DOM，页面外观与从前完全一致。
+   拖拽移动/边缘缩放走 Wails 内置 --wails-draggable 机制（runtime.js 在
+   mousedown 时读取计算样式），按钮区必须标 no-drag 否则点击被吞。 */
+:root {
+  --titlebar-h: 40px;
+}
+
+.title-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-left: 12px;
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  z-index: 1000;
+  user-select: none;
+  -webkit-user-select: none;
+  --wails-draggable: drag;
+}
+
+/* Win11 圆角在 frameless 下由系统保留，最大化时去掉圆角观感差异 */
+.title-bar-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.title-bar-name {
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  color: var(--color-ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.title-bar-name b {
+  color: var(--color-ink);
+  font-weight: 700;
+}
+
+.title-bar-sub {
+  opacity: 0.75;
+}
+
+.title-bar-spacer {
+  flex: 1;
+  --wails-draggable: drag;
+}
+
+.title-bar-actions {
+  display: flex;
+  align-self: stretch;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
+.title-bar-btn {
+  width: 46px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.title-bar-btn:hover {
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+}
+
+.title-bar-btn.tb-close:hover {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+/* —— has-titlebar 时各页布局下移一条标题栏 —— */
+html.has-titlebar body {
+  padding-top: var(--titlebar-h);
+}
+
+html.has-titlebar .page {
+  min-height: calc(100vh - var(--titlebar-h));
+  min-height: calc(100dvh - var(--titlebar-h));
+}
+
+html.has-titlebar .page-app {
+  height: calc(100vh - var(--titlebar-h));
+  height: calc(100dvh - var(--titlebar-h));
+}
+
+/* sticky 顶栏吸顶位置让出标题栏：仅 .top-nav（滚动容器是视口，top:0 会吸到
+   标题栏底下）。档案库 .toolbar 的 sticky 相对 #archiveView（overflow:hidden
+   亦是滚动容器）且永不滚动，top 必须保持 0——设偏移反而把它向下推 40px
+   压住下方 API 横幅（实测重叠 28px 的根因） */
+html.has-titlebar .top-nav {
+  top: var(--titlebar-h);
+}
+
+/* ═══════════ 设置页 · 关于面板专属特效 ═══════════
+   反色球光标：mix-blend-mode: difference + 纯白球——浅色主题下奶油底被
+   压成近黑、深墨字反成近白（黑球白字）；深色主题下呈浅色球洞，观感随主题翻转。
+   三态：文字 48px 圆球跟随；Logo 26px 小球 + 像素级局部凹陷；
+   按钮 = 瞬间吸附到按钮中心并变形为按钮矩形（覆盖处整体反色）。
+   Logo 下沉：SVG feDisplacementMap 位移图（JS canvas 生成、feImage 跟随光标）
+   把图标像素朝触点推挤，::after 再叠压暗核心 + 外圈高光强化深度。 */
+#paneAbout,
+#paneAbout a,
+#paneAbout button {
+  cursor: none;
+}
+
+#paneAbout .about-ball {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #fff;
+  mix-blend-mode: difference;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 50;
+  will-change: transform, width, height;
+  transition: opacity 0.18s ease,
+              width 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+              height 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+              border-radius 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+#paneAbout .about-ball.on { opacity: 1; }
+
+/* 吸附态：弹到按钮中心 + 变形为按钮矩形，弹性过冲的"咔哒"手感 */
+#paneAbout .about-ball.snap {
+  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1),
+              width 0.16s cubic-bezier(0.34, 1.56, 0.64, 1),
+              height 0.16s cubic-bezier(0.34, 1.56, 0.64, 1),
+              border-radius 0.16s ease;
+}
+
+.about-logo-wrap {
+  position: relative;
+  display: inline-block;
+  border-radius: 22px;
+}
+
+/* img 不参与命中测试：倾斜时贴近光标的边会向观察者凸出 1-2px，
+   若可命中，光标贴边移出时会落在凸出条带上、被 Logo 重新捕获
+   （"刚移出就又移入"的根源）。命中判定统一交给盒子静止的外层 wrap */
+.about-logo-wrap .about-logo {
+  pointer-events: none;
+}
+
+/* 所有变换只作用于内层 img——外层 wrap 盒子保持静止，pointerenter/leave
+   的判定边界不随动画改变（否则边界缩放↔事件互相触发，光标慢速移动时
+   会在门口无限振荡、进不来也出不去）。
+   3D 倾斜：--rx/--ry 由 JS 按光标比例写入（最大 ~12°），触点一侧下沉；
+   transform-origin 取触点，微缩朝触点收拢，下陷更立体 */
+.about-logo-wrap.pressed .about-logo {
+  transform: perspective(300px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) scale(0.96);
+  transform-origin: var(--dx, 50%) var(--dy, 50%);
+  transition: transform 0.16s ease-out;
+  will-change: transform;
+}
+
+.about-logo-wrap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 22px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  background:
+    /* 深核：触点正中最暗，压出"洞底" */
+    radial-gradient(circle 15px at var(--dx, 50%) var(--dy, 50%),
+      rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.5) 60%, transparent 100%),
+    /* 暗晕：下陷斜坡 */
+    radial-gradient(circle 38px at var(--dx, 50%) var(--dy, 50%),
+      rgba(0, 0, 0, 0.66) 0%, rgba(0, 0, 0, 0.36) 45%, transparent 70%),
+    /* 隆起亮边：凹陷外圈被挤起的高光，暗/浅主题都读得出立体 */
+    radial-gradient(circle 46px at var(--dx, 50%) var(--dy, 50%),
+      transparent 48%, rgba(255, 255, 255, 0.44) 61%, transparent 74%);
+}
+
+.about-logo-wrap.pressed::after { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  #paneAbout .about-ball,
+  .about-logo-wrap.pressed .about-logo,
+  .about-logo-wrap::after {
+    transition: none;
+  }
 }

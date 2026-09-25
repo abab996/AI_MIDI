@@ -28,6 +28,13 @@
     }
   })();
 </script>
+<!-- Wails 运行时/绑定：assetserver 只对 "/" 与 "/index.html" 自动注入这两个脚本，
+     本页经导航链接直达时拿不到 window.runtime/window.go。自绘标题栏（titlebar.js）
+     依赖 window.runtime 判定桌面模式并执行窗口控制，此处显式引用（同 chat.html）；
+     -browser 模式这两个路径由后端返回无害空 JS，window.runtime 不存在 → 标题栏
+     整体不渲染，页面外观不变。 -->
+<script src="/wails/ipc.js" defer></script>
+<script src="/wails/runtime.js" defer></script>
 </head>
 <body>
 
@@ -289,7 +296,7 @@
         <div class="group-title">关于 · About</div>
 
         <div class="about-hero">
-          <img class="app-logo-img about-logo" src="/app_icon_warm.png" alt="AI_MIDI Logo">
+          <span class="about-logo-wrap"><img class="app-logo-img about-logo" src="/app_icon_warm.png" alt="AI_MIDI Logo"></span>
           <div class="about-name">AI_MIDI</div>
           <div class="about-tagline">AI 编曲助手 · 让 AI 帮你写和弦、编旋律、做编曲</div>
           <div class="about-version mono" id="aboutVersion">v--</div>
@@ -340,6 +347,7 @@
 <script src="/js/shortcuts.js"></script>
 <script src="/js/update.js"></script>
 <script src="/js/theme.js"></script>
+<script src="/js/titlebar.js"></script>
 <script src="/js/settings.js"></script>
 <script src="/js/engine/engine_bridge.js"></script>
 <script src="/js/pianoroll/synth.js"></script>

@@ -89,7 +89,6 @@
         body: arrayBuffer
       }).then(function (res) { return res.json(); })
         .then(function (j) {
-          console.log("[SoundLibrary] 已同步到引擎音色库", j);
           return (j && j.saved) ? j.saved : null;
         })
         .catch(function (err) {

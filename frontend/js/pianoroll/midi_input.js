@@ -101,6 +101,17 @@
     });
     this.activeInputs = [];
 
+    /* 设备拔出/重绑（onstatechange）时补发 noteoff 释放 held 音符：
+       拔线瞬间按住的键收不到 noteoff，合成器会一直响下去（无
+       All-Notes-Off 兜底的路径）。先清 held 再继续绑定 */
+    var held = Object.keys(this.heldNotes || {});
+    if (held.length) {
+      held.forEach(function (n) {
+        self.emit("noteoff", parseInt(n, 10), 0);
+      });
+      this.heldNotes = {};
+    }
+
     if (!this.midiAccess || this.settings.enabled === false) return;
 
     var inputs = Array.from(this.midiAccess.inputs.values());

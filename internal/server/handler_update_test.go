@@ -236,3 +236,25 @@ func TestUpdateApplyRejectsBadVersion(t *testing.T) {
 		t.Fatalf("含路径分隔符的版本号应被拒绝, got %d", resp.StatusCode)
 	}
 }
+
+// TestUpdateApplyRejectsBadVersionBeforePlatformCheck 清单不含当前平台
+// 下载链接时，非法版本号仍须先被拒绝（502）而非提前 404：校验必须排在
+// 平台分支之前，否则 Linux（清单通常只带 windows 链接）永远绕过消毒
+// ——CI Linux job 曾据此失败（Windows job 通过）
+func TestUpdateApplyRejectsBadVersionBeforePlatformCheck(t *testing.T) {
+	r := NewRouter(nil, nil)
+	installTestManifest(t, r, `{"version":"99.0.0/../evil","downloads":{}}`)
+	r.updater.downloader = update.NewDownloader(nil)
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/update/apply", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("apply 请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("平台无链接时非法版本号仍应先被拒绝(502), got %d", resp.StatusCode)
+	}
+}

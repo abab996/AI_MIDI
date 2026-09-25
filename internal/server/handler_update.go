@@ -85,6 +85,14 @@ func (r *Router) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadGateway, "无法获取更新信息，请稍后重试")
 		return
 	}
+	// 版本号来自远程清单，必须先消毒再用于任何分支（拼下载路径 / 比较）。
+	// 此前校验放在"非 Windows 浏览器降级"分支之后：Linux 上清单缺 linux
+	// 链接会提前返回 404，非法版本号（如 "1.0/../evil"）永远走不到校验
+	// ——CI 的 Linux job 正是据此发现（Windows job 通过、Linux 失败）。
+	if !update.IsValidVersionString(mani.Version) {
+		writeError(w, http.StatusBadGateway, "更新清单版本号非法: "+mani.Version)
+		return
+	}
 	if update.CompareVersions(mani.Version, config.AppVersion) <= 0 {
 		writeError(w, http.StatusBadRequest, "当前已是最新版本")
 		return
@@ -103,12 +111,7 @@ func (r *Router) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Windows：单飞下载（重复点击直接返回当前进度）。
-	// 版本号来自远程清单，必须消毒后才能拼路径（防 ..\ 路径穿越）
-	if !update.IsValidVersionString(mani.Version) {
-		writeError(w, http.StatusBadGateway, "更新清单版本号非法: "+mani.Version)
-		return
-	}
+	// Windows：单飞下载（重复点击直接返回当前进度）
 	dest := filepath.Join(updateDownloadDir(), fmt.Sprintf("AI_MIDI_Setup_%s_windows_amd64.exe", mani.Version))
 	// 注意：下载生命周期独立于本次 HTTP 请求——req.Context() 在 handler
 	// 返回后即被取消，传入会让下载瞬间中断（这是此前的致命 bug）

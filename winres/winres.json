@@ -16,10 +16,10 @@
       "0409": {
         "identity": {
           "name": "com.wails.AI_MIDI",
-          "version": "3.1.0.0",
+          "version": "3.1.1.0",
           "processorArchitecture": "*"
         },
-        "description": "AI_MIDI Assistant v3.1.0",
+        "description": "AI_MIDI Assistant v3.1.1",
         "minimum-os": "win7",
         "execution-level": "asInvoker",
         "ui-access": false,
@@ -33,19 +33,19 @@
     "#1": {
       "0000": {
         "fixed": {
-          "file_version": "3.1.0.0",
-          "product_version": "3.1.0.0"
+          "file_version": "3.1.1.0",
+          "product_version": "3.1.1.0"
         },
         "info": {
           "0409": {
             "CompanyName": "AI_MIDI",
             "FileDescription": "AI_MIDI · AI 编曲助手",
-            "FileVersion": "3.1.0.0",
+            "FileVersion": "3.1.1.0",
             "InternalName": "AI_MIDI",
             "LegalCopyright": "Copyright 2026",
             "OriginalFilename": "AI_MIDI.exe",
             "ProductName": "AI_MIDI · AI 编曲助手",
-            "ProductVersion": "3.1.0.0"
+            "ProductVersion": "3.1.1.0"
           }
         }
       }

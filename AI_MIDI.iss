@@ -1,6 +1,6 @@
 ; AI_MIDI v3 安装脚本 — Inno Setup 6
 ; 编译命令: ISCC.exe AI_MIDI.iss
-; 产物: dist\installer\AI_MIDI_Setup_3.1.0.exe
+; 产物: dist\installer\AI_MIDI_Setup_3.1.1.exe
 ;
 ; 发布物约定（长期规范）:
 ;   - Windows 版仅上传本安装包（AI_MIDI_Setup_<ver>.exe），不再分发便携压缩包
@@ -15,7 +15,7 @@
 ;   - 卸载时保留用户数据（设置/项目/输出），不主动删除。
 
 #define MyAppName "AI_MIDI"
-#define MyAppVersion "3.1.0"
+#define MyAppVersion "3.1.1"
 #define MyAppPublisher "abab996"
 #define MyAppExeName "AI_MIDI.exe"
 

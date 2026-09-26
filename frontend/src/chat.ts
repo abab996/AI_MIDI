@@ -498,6 +498,10 @@
     /* 进入即置过渡锁：此前在 fetch 回调里才置位，双击两张卡片会并发
        两次请求、后到者胜——最终展示的可能不是用户最后点击的项目 */
     isTransitioning = true;
+    /* 即时反馈：载荷拉取期间卡片进入加载态（此前 fetch 期间只锁点击
+       无任何指示，慢时"点了没反应"像死机） */
+    var loadingCard = UI.qs('.proj-card[data-id="' + projectId + '"]');
+    if (loadingCard) loadingCard.classList.add("is-loading");
     /* 切换视图：断开旧流（任务转后台续跑）+ 递增会话代数，使旧流帧/收尾全部过期 */
     if (abortController) abortController.abort();
     chatEpoch++;
@@ -546,6 +550,7 @@
       setTimeout(function () { $("#msgInput").focus(); }, 60);
     }).catch(function (e) {
       UI.toast!("✗ 打开项目失败: " + e.message + "（可重试；持续失败请检查服务状态）", "err");
+      if (loadingCard) loadingCard.classList.remove("is-loading");
       isTransitioning = false;
     });
   }
@@ -2655,7 +2660,10 @@
     chat.scrollTop = chat.scrollHeight;
   }
 
-  /* 失败行：文案 + 分类引导动作（auth → 去设置）+ 可折叠上游详情。
+  /* 最近一次发出的消息：失败行「↻ 重试」的数据源（重试=回填输入框重发） */
+  var lastSentPrompt = "";
+
+  /* 失败行：文案 + 分类引导动作（auth → 去设置）+ 可折叠上游详情 + 重试。
      此前只有一行 sys-line：密钥失效/限流这类可自助修复的错误没有修复入口，
      网关 HTML 错误页全文刷屏；后端现在随 error 事件带 code 与截断 detail */
   function appendErrorLine(ev: any) {
@@ -2690,6 +2698,19 @@
       toggle.addEventListener("click", function () { pre.hidden = !pre.hidden; });
       line.appendChild(toggle);
       line.appendChild(pre);
+    }
+    /* 一键重试：回填原文重发（此前失败只能手动复制原文重新输入） */
+    if (!chatBusy && lastSentPrompt) {
+      var retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "sys-err-toggle sys-err-retry";
+      retry.textContent = "↻ 重试";
+      retry.addEventListener("click", function () {
+        if (chatBusy || !currentProjectId) return;
+        $("#msgInput").value = lastSentPrompt;
+        sendMessage();
+      });
+      line.appendChild(retry);
     }
     chat.appendChild(line);
     chat.scrollTop = chat.scrollHeight;
@@ -3304,6 +3325,7 @@
     thinkUserCollapsed = false;
     lastMessages = [];
     streamSysLines = [];
+    lastSentPrompt = message;   /* 失败重试按钮的数据源 */
 
     var messages = [];
     messages.push({ role: "user", content: message });
@@ -3624,8 +3646,12 @@
   }
 
   /* MIDI 上传解析（复用 /api/parse；对齐快捷操作页 handleFile） */
+  var qtParseBusy = false;
   function qtHandleFile(file: any) {
-    if (!file) return;
+    if (!file || qtParseBusy) return;
+    /* busy 防并发：连续拖入/连点会并发两次解析请求，后到者的 toast
+       与状态可能交错覆盖（对齐快捷操作页 setParseBusy 的守卫） */
+    qtParseBusy = true;
     var form = new FormData();
     form.append("file", file);
     UI.toast!("正在解析 " + file.name + " …", "");
@@ -3645,7 +3671,8 @@
         $("#qtParseStatus").textContent = "✗ " + e.message;
         $("#qtParseStatus").className = "err";
         UI.toast!("✗ " + e.message, "err");
-      });
+      })
+      .finally(function () { qtParseBusy = false; });
   }
 
   function resetQuickTaskForm() {
@@ -3995,6 +4022,45 @@
     $("#qtFuncSelector").addEventListener("click", function (e) {
       var btn = e.target!.closest!(".fn");
       if (btn && btn.dataset.func) qtApplyFunc(btn, btn.dataset.func);
+    });
+
+    /* 全局拖拽导入：.mid/.midi 拖到窗口任意位置都能解析进快速任务。
+       此前必须精准找到快速任务弹窗里的小 dropzone 才能拖入 */
+    var globalDragDepth = 0;
+    document.addEventListener("dragenter", function (e) {
+      if (!(e as DragEvent).dataTransfer || (e as DragEvent).dataTransfer!.types.indexOf("Files") === -1) return;
+      e.preventDefault();
+      globalDragDepth++;
+      var dz = $("#qtDropzone");
+      if (dz) dz.classList.add("dragover");
+    });
+    document.addEventListener("dragover", function (e) {
+      e.preventDefault();   /* 允许 drop：否则浏览器会打开文件 */
+    });
+    document.addEventListener("dragleave", function (e) {
+      globalDragDepth--;
+      if (globalDragDepth <= 0) {
+        globalDragDepth = 0;
+        var dz = $("#qtDropzone");
+        if (dz) dz.classList.remove("dragover");
+      }
+    });
+    document.addEventListener("drop", function (e) {
+      globalDragDepth = 0;
+      var dz = $("#qtDropzone");
+      if (dz) dz.classList.remove("dragover");
+      var dt = (e as DragEvent).dataTransfer;
+      if (!dt || !dt.files || !dt.files.length) return;
+      var f = dt.files[0];
+      var ext = (f.name || "").toLowerCase();
+      if (ext.indexOf(".mid") === -1 && ext.indexOf(".midi") === -1) return;
+      e.preventDefault();
+      /* 快速任务弹窗没开时先打开，否则解析结果无处展示 */
+      var quick = $("#quickTaskOverlay");
+      if (quick && quick.hidden) openQuickTask();
+      /* 快速任务弹窗自身的 drop 处理器已覆盖：这里只兜住弹窗外的区域 */
+      if ((e.target as Element) && (e.target as Element).closest && (e.target as Element).closest("#qtDropzone")) return;
+      qtHandleFile(f);
     });
 
     /* 快速任务 MIDI 输入区：点击选择 / 拖入（对齐快捷操作页 dropzone） */

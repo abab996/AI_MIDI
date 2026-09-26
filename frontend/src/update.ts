@@ -33,6 +33,7 @@
     '<div class="update-actions" data-f="actions">' +
     '  <button class="btn btn-primary act-apply">立即更新</button>' +
     '  <button class="btn act-log">更新日志</button>' +
+    '  <button class="btn act-skip">跳过此版本</button>' +
     '  <button class="btn act-close">关闭</button>' +
     "</div>";
 
@@ -92,6 +93,11 @@
     qs(els.notice!, ".act-log").onclick = showLog;
     qs(els.force!, ".act-log").onclick = showLog;
     qs(els.notice!, ".act-close").onclick = function () { els.notice!.hidden = true; };
+    /* 跳过此版本：持久记忆（此前「关闭」不持久，每次导航都重新弹出） */
+    qs(els.notice!, ".act-skip").onclick = function () {
+      try { localStorage.setItem(SKIP_KEY, info ? info.latest : ""); } catch (e) {}
+      els.notice!.hidden = true;
+    };
     qs(els.log!, ".act-log-close").onclick = hideLog;
     els.log!.addEventListener("click", function (e) { if (e.target === els.log) hideLog(); });
     document.addEventListener("keydown", function (e) {
@@ -201,10 +207,19 @@
 
   /* ───────────────── 启动检查与手动检查 ───────────────── */
 
-  /* 应用一次检查结果：有更新弹自带的通知卡/强制卡，返回结果供调用方提示 */
-  function applyCheck(r: UpdateInfo | null) {
+  var SKIP_KEY = "update.skippedVersion";
+
+  /* 应用一次检查结果：有更新弹自带的通知卡/强制卡，返回结果供调用提示。
+     respectSkip：启动检查时尊重「跳过此版本」记忆；手动检查（关于页）
+     是用户主动发起，不受跳过记忆影响 */
+  function applyCheck(r: UpdateInfo | null, respectSkip?: boolean) {
     if (!r || !r.available) return r;
     info = r;
+    if (respectSkip && !r.mandatory) {
+      var skipped = "";
+      try { skipped = localStorage.getItem(SKIP_KEY) || ""; } catch (e) {}
+      if (skipped && skipped === r.latest) return r;
+    }
     buildOnce();
     if (r.mandatory) showForce(); else showNotice();
     return r;
@@ -214,7 +229,7 @@
      永不 reject——失败以 { error } 形式返回，调用方据 error 字段提示 */
   function checkNow(): Promise<any> {
     return UI.getJSON<UpdateInfo | null>("/api/update/check").then(function (r) {
-      return applyCheck(r);
+      return applyCheck(r, false);
     }, function (e: any) {
       return { error: e && e.message || String(e) };
     });
@@ -222,7 +237,7 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     UI.getJSON<UpdateInfo | null>("/api/update/check").then(function (r) {
-      applyCheck(r);
+      applyCheck(r, true);
     }).catch(function () { /* 检查失败保持静默 */ });
   });
 

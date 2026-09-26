@@ -15,6 +15,8 @@ interface UIApi {
     cancelText?: string;
     danger?: boolean;
   }): Promise<boolean>;
+  /* 应用内输入弹窗（替代 window.prompt）：确定返回输入值，取消/Esc 为 null */
+  prompt(title: string, defaultValue?: string): Promise<string | null>;
   esc(s: unknown): string;
   fmtSize(bytes: number): string;
   fmtDate(s: string): string;

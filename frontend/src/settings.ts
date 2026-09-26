@@ -1369,16 +1369,19 @@
 
   function renameLibFile(row: any) {
     var name = row.dataset.name;
-    var input = window.prompt("重命名知识文件（文件名即内容概括，供 AI 判断是否调用）：", name);
-    if (input === null) return;
-    var to = input.trim();
-    if (!to || to === name) return;
-    UI.postJSON("/api/library/files/rename", { from: name, to: to }).then(function () {
-      UI.toast!("✓ 已重命名为 " + to, "ok");
-      loadLibraryFiles();
-    }).catch(function (e) {
-      UI.toast!("✗ 重命名失败: " + e.message, "err");
-    });
+    /* UI.prompt 应用内弹窗：原生 window.prompt 外观突兀且阻塞渲染 */
+    UI.prompt!("重命名知识文件（文件名即内容概括，供 AI 判断是否调用）：", name)
+      .then(function (input) {
+        if (input === null) return;
+        var to = input.trim();
+        if (!to || to === name) return;
+        UI.postJSON("/api/library/files/rename", { from: name, to: to }).then(function () {
+          UI.toast!("✓ 已重命名为 " + to, "ok");
+          loadLibraryFiles();
+        }).catch(function (e) {
+          UI.toast!("✗ 重命名失败: " + e.message, "err");
+        });
+      });
   }
 
   /* 逐个串行上传（单文件失败不阻断后续），完成后统一刷新列表 */

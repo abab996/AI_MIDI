@@ -1130,6 +1130,22 @@ a.btn {
   align-content: start;
 }
 
+/* 打开项目的加载态：载荷拉取期间卡片呼吸提示（点击即时反馈） */
+.proj-card.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
+  animation: card-loading 1.1s ease-in-out infinite;
+}
+
+@keyframes card-loading {
+  0%, 100% { border-color: var(--color-border); }
+  50% { border-color: var(--color-primary); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .proj-card.is-loading { animation: none; }
+}
+
 /* 档案库卡片网格：应用窗口布局下的内部滚动区（此前卡片多时撑破
    #archiveView 直接引发页面级滚动——#archiveView 注释声称"内部滚动
    各自负责"但从未落地，此为整页滚动的根因）。
@@ -1570,6 +1586,26 @@ a.btn {
   border-radius: 2px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.sys-err-toggle:hover { background: var(--color-danger-soft); }
+
+/* 应用内输入弹窗（UI.prompt，复用 modal/card 外观体系） */
+#uiPromptOverlay .prompt-input {
+  width: 100%;
+  margin: 10px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+#uiPromptOverlay .prompt-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
 }
 
 .sys-err-detail {

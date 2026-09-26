@@ -198,8 +198,26 @@ func main() {
 
 	width := int(float64(workW) * ratio)
 	height := int(float64(workH) * ratio)
-	minW := int(float64(width) * 0.8)
-	minH := int(float64(height) * 0.8)
+	// 最小尺寸改用绝对值：此前按比例推导（0.8×0.8=0.64×工作区），
+	// 分屏/小屏用户无法把窗口缩到半屏以下
+	minW, minH := 960, 600
+
+	// 恢复上次退出的窗口几何：无效或越界时回退默认居中尺寸
+	var wasMaximized bool
+	savedState, hasSavedState := app.LoadWindowState()
+	winX, winY := 0, 0
+	centered := true
+	if hasSavedState {
+		if savedState.Width <= workW && savedState.Height <= workH {
+			width, height = savedState.Width, savedState.Height
+		}
+		winX, winY = savedState.X, savedState.Y
+		// 位置越界（保存过显示器已拔出等）：回退居中，避免窗口不可见
+		if winX >= -width+80 && winY >= -height+80 && winX < workW-80 && winY < workH-80 {
+			centered = false
+		}
+		wasMaximized = savedState.Maximized
+	}
 
 	fmt.Printf("[AI_MIDI] DPI scale=%.2f, work area=%dx%d (logical), window=%dx%d (logical), ratio=%.2f\n",
 		dpiScale, workW, workH, width, height, ratio)
@@ -218,9 +236,29 @@ func main() {
 			go func() {
 				// 等待原生桌面透明 Splash 完成（DOM 就绪后会提前关闭）
 				splashCtrl.Wait()
-				runtime.WindowCenter(ctx)
+				// 有有效的已保存位置时不再强制居中
+				if !centered {
+					runtime.WindowSetPosition(ctx, winX, winY)
+				} else {
+					runtime.WindowCenter(ctx)
+				}
 				runtime.WindowShow(ctx)
+				if wasMaximized {
+					runtime.WindowMaximise(ctx)
+				}
 			}()
+		},
+		// 退出前保存窗口几何（尺寸/位置/最大化），下次启动恢复
+		OnBeforeClose: func(ctx context.Context) bool {
+			maximized := runtime.WindowIsMaximised(ctx)
+			if !maximized {
+				w, h := runtime.WindowGetSize(ctx)
+				x, y := runtime.WindowGetPosition(ctx)
+				app.SaveWindowState(app.WindowState{Width: w, Height: h, X: x, Y: y, Maximized: false})
+			} else {
+				app.SaveWindowState(app.WindowState{Maximized: true})
+			}
+			return false
 		},
 		// 前端 DOM 就绪后不再假等待 400ms，启动图已由引擎就绪驱动关闭
 		OnDomReady: func(ctx context.Context) {

@@ -989,7 +989,18 @@
     });
   }
   updateBadge();
-  setInterval(updateBadge, 5000);
+  /* 轮询仅用于徽章显示：5s 常驻请求过密（与 tasks.ts 的自适应降频不一致），
+     放宽到 15s；页面隐藏（后台标签）时暂停，回到前台立即刷新一次 */
+  var badgeTimer = setInterval(updateBadge, 15000);
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      clearInterval(badgeTimer);
+      badgeTimer = null;
+    } else {
+      updateBadge();
+      if (!badgeTimer) badgeTimer = setInterval(updateBadge, 15000);
+    }
+  });
   // 后端切换后 badge 立即刷新（监听 storage 事件与自定义事件）
   window.addEventListener("storage", function(e){ if(e.key==="ai_midi_audio_backend") updateBadge(); });
   // 暴露给 settings.html 调用

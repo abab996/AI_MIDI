@@ -3588,12 +3588,15 @@
         });
 
         row.querySelector(".action-del") .addEventListener("click", function () {
-          if (!window.confirm("确定删除音色库「" + f.name + "」？此操作不可恢复。")) return;
-          window.SoundLibrary.deleteSoundFont(f.id, f.name).then(function () {
-            self.refreshSoundLibraryList();
-            if (window.UI && window.UI.toast) window.UI.toast ("✓ 已删除音色库: " + f.name, "ok");
-          }).catch(function (err) {
-            if (window.UI && window.UI.toast) window.UI.toast ("✗ 删除失败: " + (err && err.message ? err.message : "未知错误"), "err");
+          /* UI.confirm 应用内弹窗：与全站弹窗外观一致（原生 confirm 突兀且阻塞渲染） */
+          UI.confirm ("确定删除音色库「" + f.name + "」？此操作不可恢复。").then(function (ok) {
+            if (!ok) return;
+            window.SoundLibrary.deleteSoundFont(f.id, f.name).then(function () {
+              self.refreshSoundLibraryList();
+              if (window.UI && window.UI.toast) window.UI.toast ("✓ 已删除音色库: " + f.name, "ok");
+            }).catch(function (err) {
+              if (window.UI && window.UI.toast) window.UI.toast ("✗ 删除失败: " + (err && err.message ? err.message : "未知错误"), "err");
+            });
           });
         });
 

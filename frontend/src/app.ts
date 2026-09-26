@@ -13,7 +13,9 @@
     lastErrMsg = e.message;
     lastErrAt = now;
     try {
-      toast("✗ 脚本错误: " + e.message, "err");
+      /* 用户可读文案而非原始异常直出（"Cannot read properties of
+         undefined" 这类英文技术文本不可理解也不可操作）；原文仅落日志 */
+      toast("✗ 出现内部错误，请重试；若持续出现请重启应用并在控制台查看详情", "err");
     } catch (t) {}
     try {
       fetch("/api/client-error", {
@@ -688,9 +690,125 @@
     });
   }
 
+  /* ---- 应用内输入弹窗 ----
+     替代 window.prompt：原生 prompt 用浏览器/WebView 外观且阻塞渲染。
+     UI.prompt("标题", "默认值") → Promise<string|null>（取消为 null） */
+  var uiPromptState: { resolve: ((v: string | null) => void) | null; el: HTMLElement | null } = {
+    resolve: null,
+    el: null,
+  };
+  var promptFocusReturn: HTMLElement | null = null;
+
+  function settlePrompt(result: string | null) {
+    var overlay = uiPromptState.el;
+    var resolve = uiPromptState.resolve;
+    uiPromptState.resolve = null;
+    if (resolve) resolve(result);
+    if (!overlay) return;
+    var el: HTMLElement = overlay;
+    if (uiReducedMotion()) {
+      el.hidden = true;
+      el.classList.remove("modal-in", "modal-out");
+    } else {
+      el.classList.remove("modal-in");
+      el.classList.add("modal-out");
+      setTimeout(function () {
+        if (uiPromptState.el !== el || uiPromptState.resolve) return;
+        el.hidden = true;
+        el.classList.remove("modal-out");
+      }, 220);
+    }
+    var back = promptFocusReturn;
+    promptFocusReturn = null;
+    if (back && back.focus && document.contains(back)) {
+      try { back.focus(); } catch (e) {}
+    }
+  }
+
+  function ensurePromptDom() {
+    if (uiPromptState.el && document.contains(uiPromptState.el)) return uiPromptState.el;
+    var overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.id = "uiPromptOverlay";
+    overlay.hidden = true;
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "uiPromptTitle");
+    var box = document.createElement("div");
+    box.className = "modal card brackets";
+    var title = document.createElement("div");
+    title.className = "modal-title";
+    title.id = "uiPromptTitle";
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "prompt-input";
+    input.autocomplete = "off";
+    var actions = document.createElement("div");
+    actions.className = "modal-actions";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn btn-secondary";
+    var ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "btn btn-primary";
+    actions.appendChild(cancel);
+    actions.appendChild(ok);
+    box.appendChild(title);
+    box.appendChild(input);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener("click", function (e) {
+      if (e.target === overlay) settlePrompt(null);
+    });
+    overlay.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        settlePrompt(null);
+      } else if (e.key === "Enter") {
+        e.stopPropagation();
+        settlePrompt(input.value);
+      }
+    });
+    cancel.addEventListener("click", function () { settlePrompt(null); });
+    ok.addEventListener("click", function () { settlePrompt(input.value); });
+
+    uiPromptState.el = overlay;
+    return overlay;
+  }
+
+  function promptDialog(title: string, defaultValue?: string): Promise<string | null> {
+    if (uiPromptState.resolve) settlePrompt(null);   /* 前一个未决的先收尾 */
+    var overlay = ensurePromptDom();
+    var titleEl = overlay.querySelector(".modal-title") as HTMLElement;
+    var input = overlay.querySelector(".prompt-input") as HTMLInputElement;
+    var buttons = overlay.querySelectorAll(".modal-actions .btn");
+    (buttons[0] as HTMLButtonElement).textContent = "取消";
+    (buttons[1] as HTMLButtonElement).textContent = "确定";
+    titleEl.textContent = title || "请输入";
+    input.value = defaultValue == null ? "" : String(defaultValue);
+
+    promptFocusReturn = document.activeElement as HTMLElement;
+    overlay.hidden = false;
+    if (!uiReducedMotion()) {
+      overlay.classList.remove("modal-in", "modal-out");
+      void overlay.offsetWidth;
+      overlay.classList.add("modal-in");
+    }
+    setTimeout(function () {
+      try { input.focus(); input.select(); } catch (e) {}
+    }, 30);
+
+    return new Promise(function (resolve) {
+      uiPromptState.resolve = resolve;
+    });
+  }
+
   global.UI = {
     qs: qs, qsa: qsa, toast: toast, esc: esc,
     confirm: confirmDialog,
+    prompt: promptDialog,
     fmtSize: fmtSize, fmtDate: fmtDate, friendlyText: friendlyText,
     isLocalEndpoint: isLocalEndpoint,
     getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,

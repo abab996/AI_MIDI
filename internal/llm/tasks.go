@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,12 @@ const (
 
 // Chat 非流式统一调用通道
 func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, error) {
+	return ChatWithContext(context.Background(), userContent, s, timeoutSeconds)
+}
+
+// ChatWithContext 带取消的非流式调用：ctx 取消（如用户点停止）会立刻
+// 打断在途 HTTP 请求与重试等待，不再等满整个超时周期
+func ChatWithContext(ctx context.Context, userContent string, s config.Settings, timeoutSeconds int) (string, error) {
 	baseURL := s.BaseURL
 	if baseURL == "" {
 		baseURL = config.DefaultBaseURL
@@ -80,14 +87,18 @@ func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, er
 	if err != nil {
 		return "", err
 	}
+	// 非流式对话/快捷任务的完整响应周期覆盖整个推理过程：思考型模型
+	// effort=max 时 60s 内几乎必然超不完，默认放宽到 ChatTimeoutSeconds
 	if timeoutSeconds <= 0 {
-		timeoutSeconds = config.DefaultTimeoutSeconds
+		timeoutSeconds = config.ChatTimeoutSeconds
 	}
 	client := NewHTTPClient(time.Duration(timeoutSeconds) * time.Second)
 
-	// 尝试带有参数剥除与重试的循环
+	// 瞬态重试（429/5xx/网络抖动）与 400 参数剥除相互独立计数：
+	// 此前共用 attempt 预算，限流重试会把参数剥除的次数挤占掉
 	strippableSteps := []string{"extra_body", "reasoning_effort", "max_tokens", "max_completion_tokens"}
 	stepIdx := 0
+	transientRetries := 0
 
 	for attempt := 0; attempt < UpstreamMaxRetries+len(strippableSteps)+1; attempt++ {
 		jsonBytes, err := json.Marshal(reqBody)
@@ -95,7 +106,7 @@ func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, er
 			return "", err
 		}
 
-		httpReq, err := http.NewRequest("POST", endpoint, bytes.NewReader(jsonBytes))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBytes))
 		if err != nil {
 			return "", err
 		}
@@ -106,18 +117,21 @@ func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, er
 
 		resp, err := client.Do(httpReq)
 		if err != nil {
-			if IsUpstreamTransient(err, 0) && attempt < UpstreamMaxRetries {
-				slog.Warn("上游瞬时故障，等待重试...", "attempt", attempt+1)
-				time.Sleep(time.Duration(RetryWaitSeconds) * time.Second)
+			if transientRetries < UpstreamMaxRetries && IsUpstreamTransient(err, 0) {
+				transientRetries++
+				slog.Warn("上游瞬时故障，等待重试...", "attempt", transientRetries, "err", err)
+				if !sleepRetry(ctx) {
+					return "", err
+				}
 				continue
 			}
-			return "", err
+			return "", ClassifyUpstreamError(0, nil, err)
 		}
 
 		respBody, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
-			return "", readErr
+			return "", ClassifyUpstreamError(0, nil, readErr)
 		}
 
 		if resp.StatusCode == http.StatusOK {
@@ -149,44 +163,61 @@ func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, er
 				}
 				continue
 			}
-			return "", fmt.Errorf("API 返回 400: %s", string(respBody))
+			return "", ClassifyUpstreamError(resp.StatusCode, respBody, nil)
 		}
 
-		if IsUpstreamTransient(nil, resp.StatusCode) && attempt < UpstreamMaxRetries {
-			slog.Warn("上游状态码故障，等待重试...", "status", resp.StatusCode, "attempt", attempt+1)
-			time.Sleep(time.Duration(RetryWaitSeconds) * time.Second)
+		if transientRetries < UpstreamMaxRetries && IsUpstreamTransient(nil, resp.StatusCode) {
+			transientRetries++
+			slog.Warn("上游状态码故障，等待重试...", "status", resp.StatusCode, "attempt", transientRetries)
+			if !sleepRetry(ctx) {
+				return "", ClassifyUpstreamError(resp.StatusCode, respBody, nil)
+			}
 			continue
 		}
 
-		return "", fmt.Errorf("API 请求失败 (%d): %s", resp.StatusCode, string(respBody))
+		return "", ClassifyUpstreamError(resp.StatusCode, respBody, nil)
 	}
 
-	return "", fmt.Errorf("重试次数耗尽，未能完成请求")
+	return "", &UpstreamError{Code: ErrCodeUpstream, Message: "重试次数耗尽，未能完成请求，请稍后再试"}
+}
+
+// sleepRetry 重试等待：ctx 取消（用户停止）时提前返回 false，不再空等
+func sleepRetry(ctx context.Context) bool {
+	if ctx == nil {
+		time.Sleep(time.Duration(RetryWaitSeconds) * time.Second)
+		return true
+	}
+	select {
+	case <-time.After(time.Duration(RetryWaitSeconds) * time.Second):
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // AddChord 配和弦任务
-func AddChord(noteTable, bpm, timeSig, requirements string, s config.Settings) (string, error) {
+func AddChord(ctx context.Context, noteTable, bpm, timeSig, requirements string, s config.Settings) (string, error) {
 	content := fmt.Sprintf("音符数据：%s，BPM：%s，拍号：%s，现在你需要给这段旋律配上适合的和弦。%s。有如下要求：%s",
 		noteTable, bpm, timeSig, NoteTableOnlySuffix, requirements)
-	return Chat(content, s, 0)
+	return ChatWithContext(ctx, content, s, 0)
 }
 
 // TranslateLyrics 翻译歌词任务
-func TranslateLyrics(noteTable, lyrics, bpm, timeSig, origLang, targetLang string, s config.Settings) (string, error) {
+func TranslateLyrics(ctx context.Context, noteTable, lyrics, bpm, timeSig, origLang, targetLang string, s config.Settings) (string, error) {
 	content := fmt.Sprintf("音符数据：%s，歌词数据：%s，BPM：%s，拍号：%s，现在你得到的是人声的旋律和一段%s歌词。你需要把这段%s歌词翻译成%s。并且使翻译后的歌词能够与人声旋律完美贴合。注意最终回答中只能包含翻译后的歌词原文（如果翻译的目标语言是日语，请在给出的翻译歌词后面列出其对应的平假名）。有如下要求：",
 		noteTable, lyrics, bpm, timeSig, origLang, origLang, targetLang)
-	return Chat(content, s, 0)
+	return ChatWithContext(ctx, content, s, 0)
 }
 
 // DesignMelisma 设计转音任务
-func DesignMelisma(noteTable, lyrics, bpm, timeSig, requirements string, s config.Settings) (string, error) {
+func DesignMelisma(ctx context.Context, noteTable, lyrics, bpm, timeSig, requirements string, s config.Settings) (string, error) {
 	content := fmt.Sprintf("音符数据：%s，歌词数据：%s，BPM：%s，拍号：%s，你现在需要帮我设计转音%s。有如下要求：%s",
 		noteTable, lyrics, bpm, timeSig, NoteTableOnlySuffix, requirements)
-	return Chat(content, s, 0)
+	return ChatWithContext(ctx, content, s, 0)
 }
 
 // OtherRequirements 其他要求自由任务
-func OtherRequirements(noteTable, lyrics, bpm, timeSig, requirements string, noteOutput bool, s config.Settings) (string, error) {
+func OtherRequirements(ctx context.Context, noteTable, lyrics, bpm, timeSig, requirements string, noteOutput bool, s config.Settings) (string, error) {
 	base := fmt.Sprintf("音符数据：%s，歌词数据：%s，BPM：%s，拍号：%s，现在你可能没有得到有效的音符或歌词数据（也有可能得到了有效数据），",
 		noteTable, lyrics, bpm, timeSig)
 	var content string
@@ -197,5 +228,5 @@ func OtherRequirements(noteTable, lyrics, bpm, timeSig, requirements string, not
 		content = fmt.Sprintf("%s但是你现在不用输出音符文件，请根据以下要求完成任务：%s，并给出回答",
 			base, requirements)
 	}
-	return Chat(content, s, 0)
+	return ChatWithContext(ctx, content, s, 0)
 }

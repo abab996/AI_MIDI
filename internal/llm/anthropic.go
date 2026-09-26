@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -184,14 +185,6 @@ func compactAnthropic(msgs []anthropicMsg) []anthropicMsg {
 	return out
 }
 
-func clipUpstream(b []byte) string {
-	s := string(b)
-	if len(s) > 800 {
-		return s[:800]
-	}
-	return s
-}
-
 func anthropicHTTP(ctx context.Context, s config.Settings, body anthropicReq, stream bool) (*http.Response, error) {
 	endpoint, err := EndpointURL(s.BaseURL, s.APIPath, config.ProtocolAnthropic, "chat")
 	if err != nil {
@@ -218,47 +211,66 @@ func anthropicHTTP(ctx context.Context, s config.Settings, body anthropicReq, st
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
 	var client *http.Client
 	if stream {
-		client = NewStreamHTTPClient(60 * time.Second)
+		client = NewStreamHTTPClient(180 * time.Second)
 	} else {
-		client = NewHTTPClient(time.Duration(config.DefaultTimeoutSeconds) * time.Second)
+		client = NewHTTPClient(time.Duration(config.ChatTimeoutSeconds) * time.Second)
 	}
 	return client.Do(httpReq)
 }
 
 // ChatAnthropic 非流式 Messages 调用，返回拼接后的文本。
 func ChatAnthropic(userContent string, s config.Settings, timeoutSeconds int) (string, error) {
+	// 非流式响应周期覆盖整个推理过程：思考型模型 60s 内几乎必然超不完，
+	// 未显式给超时（调用方传 0）时放宽到 ChatTimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = config.ChatTimeoutSeconds
+	}
 	msgs := []ChatCompletionMessage{
 		{Role: "system", Content: SystemPrompt},
 		{Role: "user", Content: userContent},
 	}
 	thinking := s.ThinkingEnabled
-	for attempt := 0; attempt < 2; attempt++ {
+	thinkingDropped := false
+	transientRetries := 0
+	// 预算 = thinking 降级 1 次 + 瞬态重试 3 次 + 首次 = 5 次尝试
+	for attempt := 0; attempt < UpstreamMaxRetries+2; attempt++ {
 		body := buildAnthropicRequest(s, msgs, nil, false, thinking)
 		ctx := context.Background()
-		if timeoutSeconds > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
-			defer cancel()
-		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 		resp, err := anthropicHTTP(ctx, s, body, false)
+		cancel()
 		if err != nil {
-			return "", err
+			if transientRetries < UpstreamMaxRetries && IsUpstreamTransient(err, 0) {
+				transientRetries++
+				slog.Warn("Anthropic 上游瞬时故障，等待重试...", "attempt", transientRetries, "err", err)
+				time.Sleep(time.Duration(RetryWaitSeconds) * time.Second)
+				continue
+			}
+			return "", ClassifyUpstreamError(0, nil, err)
 		}
 		respBody, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
-			return "", readErr
+			return "", ClassifyUpstreamError(0, nil, readErr)
 		}
 		if resp.StatusCode == http.StatusOK {
 			return anthropicText(respBody)
 		}
-		if resp.StatusCode == http.StatusBadRequest && thinking && attempt == 0 {
+		if resp.StatusCode == http.StatusBadRequest && thinking && !thinkingDropped {
 			thinking = false
+			thinkingDropped = true
 			continue
 		}
-		return "", fmt.Errorf("API 请求失败 (%d): %s", resp.StatusCode, clipUpstream(respBody))
+		if transientRetries < UpstreamMaxRetries && IsUpstreamTransient(nil, resp.StatusCode) {
+			transientRetries++
+			slog.Warn("Anthropic 上游状态码故障，等待重试...", "status", resp.StatusCode, "attempt", transientRetries)
+			time.Sleep(time.Duration(RetryWaitSeconds) * time.Second)
+			continue
+		}
+		return "", ClassifyUpstreamError(resp.StatusCode, respBody, nil)
 	}
-	return "", fmt.Errorf("重试次数耗尽，未能完成请求")
+	return "", &UpstreamError{Code: ErrCodeUpstream, Message: "重试次数耗尽，未能完成请求，请稍后再试"}
 }
 
 func anthropicText(body []byte) (string, error) {
@@ -286,35 +298,59 @@ func anthropicText(body []byte) (string, error) {
 // StreamAnthropic 把 Messages SSE 转成 OpenAI Chat 形态的 SSE，供现有流式解析器消费。
 func StreamAnthropic(ctx context.Context, s config.Settings, messages []ChatCompletionMessage, tools []ToolDefinition) (*http.Response, error) {
 	thinking := s.ThinkingEnabled
-	var lastBody []byte
-	var lastStatus int
-	for attempt := 0; attempt < 2; attempt++ {
+	thinkingDropped := false
+	transientRetries := 0
+	// 预算 = thinking 降级 1 次 + 瞬态重试 3 次 + 首次 = 5 次尝试。
+	// 重试点全部在首字节消费之前（非 OK 直接读完整 body），重放安全
+	for attempt := 0; attempt < UpstreamMaxRetries+2; attempt++ {
 		body := buildAnthropicRequest(s, messages, tools, true, thinking)
 		resp, err := anthropicHTTP(ctx, s, body, true)
 		if err != nil {
-			return nil, err
+			if transientRetries < UpstreamMaxRetries && IsUpstreamTransient(err, 0) {
+				transientRetries++
+				slog.Warn("Anthropic 流式上游瞬时故障，等待重试...", "attempt", transientRetries, "err", err)
+				if !sleepRetry(ctx) {
+					return nil, ClassifyUpstreamError(0, nil, err)
+				}
+				continue
+			}
+			return nil, ClassifyUpstreamError(0, nil, err)
 		}
 		if resp.StatusCode == http.StatusOK {
 			return wrapAnthropicStream(resp), nil
 		}
-		lastStatus = resp.StatusCode
-		lastBody, _ = io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusBadRequest && thinking && attempt == 0 {
+		if resp.StatusCode == http.StatusBadRequest && thinking && !thinkingDropped {
 			thinking = false
+			thinkingDropped = true
 			continue
 		}
-		break
+		if transientRetries < UpstreamMaxRetries && IsUpstreamTransient(nil, resp.StatusCode) {
+			transientRetries++
+			slog.Warn("Anthropic 流式上游状态码故障，等待重试...", "status", resp.StatusCode, "attempt", transientRetries)
+			if !sleepRetry(ctx) {
+				return nil, ClassifyUpstreamError(resp.StatusCode, respBody, nil)
+			}
+			continue
+		}
+		return nil, ClassifyUpstreamError(resp.StatusCode, respBody, nil)
 	}
-	return nil, fmt.Errorf("API 请求失败 (%d): %s", lastStatus, clipUpstream(lastBody))
+	return nil, &UpstreamError{Code: ErrCodeUpstream, Message: "重试次数耗尽，未能完成流式请求，请稍后再试"}
 }
 
 func wrapAnthropicStream(up *http.Response) *http.Response {
 	pr, pw := io.Pipe()
 	go func() {
 		defer up.Body.Close()
-		defer pw.Close()
-		_ = TranslateAnthropicSSE(up.Body, pw)
+		// 翻译层中途遇错（如 Anthropic 流中 error 事件、上游断流）时把
+		// 错误经管道传给读端：processStreamChunks 会拿到非 EOF 读错误，
+		// 按失败收尾上报——而不是把半截回复当成完整回答
+		if err := TranslateAnthropicSSE(up.Body, pw); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		pw.Close()
 	}()
 	h := make(http.Header)
 	h.Set("Content-Type", "text/event-stream")
@@ -416,6 +452,28 @@ func TranslateAnthropicSSE(r io.Reader, w io.Writer) error {
 			writeOpenAIChunk(w, map[string]any{}, finish)
 		case "message_stop":
 			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+		case "error":
+			// Anthropic 流中错误事件（overloaded_error / api_error / 中断）：
+			// 此前被静默吞掉 → 流 EOF → 半截回复被当成完整回答。现在转成
+			// 分类错误经管道传播，读端按失败收尾并上报用户
+			em, _ := ev["error"].(map[string]any)
+			etype := strAny(em["type"])
+			emsg := strAny(em["message"])
+			if etype == "" {
+				etype = "stream_error"
+			}
+			if emsg == "" {
+				emsg = "上游在生成过程中报告错误"
+			}
+			code := ErrCodeUpstream
+			if strings.Contains(etype, "overloaded") {
+				code = ErrCodeRateLimit
+			}
+			return &UpstreamError{
+				Code:    code,
+				Message: "生成中断：" + emsg + "（回复可能不完整，请重试）",
+				Detail:  etype + ": " + emsg,
+			}
 		}
 	}
 	return sc.Err()

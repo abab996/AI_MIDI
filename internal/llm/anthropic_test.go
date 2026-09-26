@@ -165,3 +165,58 @@ func TestAnthropicTokenLimitFallsBackToDefault(t *testing.T) {
 		t.Fatalf("max_tokens = %d, want %d", req.MaxTokens, config.DefaultMaxTokens)
 	}
 }
+
+// 流中 error 事件必须终结翻译并返回错误（此前被静默吞掉，
+// 半截回复会被当成完整回答落进对话）
+func TestTranslateAnthropicSSEErrorEvent(t *testing.T) {
+	in := strings.Join([]string{
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"前半"}}`,
+		``,
+		`event: error`,
+		`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+	var buf bytes.Buffer
+	err := TranslateAnthropicSSE(strings.NewReader(in), &buf)
+	if err == nil {
+		t.Fatalf("error event should terminate with an error, got nil, output=%s", buf.String())
+	}
+	var ue *UpstreamError
+	if !asUpstreamError(err, &ue) {
+		t.Fatalf("error should be *UpstreamError, got %T: %v", err, err)
+	}
+	if ue.Message == "" {
+		t.Fatalf("message empty: %+v", ue)
+	}
+	if !strings.Contains(err.Error(), "生成中断") || !strings.Contains(err.Error(), "Overloaded") {
+		t.Fatalf("message should carry upstream detail: %v", err)
+	}
+	// 错误前已生成的文本仍应输出（保留部分内容供上层落盘）
+	if !strings.Contains(buf.String(), `"content":"前半"`) {
+		t.Fatalf("partial content lost: %s", buf.String())
+	}
+	// 错误后不应再输出 [DONE]（收尾由上层错误路径负责）
+	if strings.Contains(buf.String(), "data: [DONE]") {
+		t.Fatalf("should not emit DONE after error: %s", buf.String())
+	}
+}
+
+func asUpstreamError(err error, target **UpstreamError) bool {
+	for err != nil {
+		if ue, ok := err.(*UpstreamError); ok {
+			*target = ue
+			return true
+		}
+		type unwrapper interface{ Unwrap() error }
+		u, ok := err.(unwrapper)
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
+}

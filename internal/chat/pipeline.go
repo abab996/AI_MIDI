@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -81,13 +81,28 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 	taskCtx, cancelTask := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelTask()
 
-	if err := AcquireProjectChatLock(taskCtx, projectID); err != nil {
-		// 等锁期间任务被停止（如持锁的上游卡死任务被用户点停）：不再无限
-		// 排队，立即退出并如实上报，避免界面一直转圈
-		tasks.TaskFinish(tid)
-		_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
-		_ = onEvent(map[string]any{"type": "done"})
-		return nil
+	// 排队提示：项目对话锁被上一条消息占用时，先发 status 事件告知用户
+	// 「已排队」，消除静默挂起被当成卡死的错觉（用户此时的正确操作是
+	// 等待或点停止，而不是反复重发）
+	lockAcquired := false
+	select {
+	case <-GetProjectChatLock(projectID):
+		lockAcquired = true
+	default:
+		_ = onEvent(map[string]any{
+			"type":    "status",
+			"message": "⏳ 上一次回复仍在生成，本条消息已排队等待…",
+		})
+	}
+	if !lockAcquired {
+		if err := AcquireProjectChatLock(taskCtx, projectID); err != nil {
+			// 等锁期间任务被停止（如持锁的上游卡死任务被用户点停）：不再无限
+			// 排队，立即退出并如实上报，避免界面一直转圈
+			tasks.TaskFinish(tid)
+			_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
+			_ = onEvent(map[string]any{"type": "done"})
+			return nil
+		}
 	}
 	defer ReleaseProjectChatLock(projectID)
 
@@ -272,7 +287,7 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		if err != nil {
 			slog.Error("调用 AI 流式接口失败", "err", err)
 			if taskCtx.Err() == nil {
-				_ = onEvent(map[string]any{"type": "error", "message": fmt.Sprintf("AI 调用失败: %v", err)})
+				emitAIError(onEvent, err)
 			} else {
 				_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
 				_ = onEvent(map[string]any{"type": "done"})
@@ -310,7 +325,7 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 			if cancelled {
 				_ = onEvent(map[string]any{"type": "error", "message": "任务已停止"})
 			} else if err != nil {
-				_ = onEvent(map[string]any{"type": "error", "message": fmt.Sprintf("AI 调用失败: %v", err)})
+				emitAIError(onEvent, err)
 			}
 			_ = onEvent(map[string]any{"type": "done"})
 			// 错误/停止退出而非轮数耗尽：不计入循环结束后的补提示条件
@@ -843,12 +858,20 @@ func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm
 	if err != nil {
 		return nil, err
 	}
-	client := llm.NewStreamHTTPClient(60 * time.Second)
+	// 首包响应头超时 180s：排队慢/冷启动的供应商（Groq、Cerebras 等）
+	// 首包可能超 60s；流建立后的停滞由 processStreamChunks 的 120s 空闲
+	// 看门狗负责，两者互补
+	client := llm.NewStreamHTTPClient(180 * time.Second)
 
 	strippableSteps := []string{"extra_body", "reasoning_effort", "max_tokens", "max_completion_tokens"}
 	stepIdx := 0
+	// 瞬态重试（429/5xx/网络抖动）与 400 参数剥除相互独立计数。重试点全部
+	// 在首字节消费之前（非 OK 时才读 body），请求体重建后重放安全——此前
+	// 流式路径对限流/闪断直接抛错，整轮多步工具流程作废，是对话路径最常见
+	// 的"AI 调用失败"来源
+	transientRetries := 0
 
-	for attempt := 0; attempt < len(strippableSteps)+1; attempt++ {
+	for attempt := 0; attempt < llm.UpstreamMaxRetries+len(strippableSteps)+1; attempt++ {
 		data, err := json.Marshal(reqBody)
 		if err != nil {
 			return nil, err
@@ -863,7 +886,15 @@ func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm
 
 		resp, err := client.Do(httpReq)
 		if err != nil {
-			return nil, err
+			if transientRetries < llm.UpstreamMaxRetries && llm.IsUpstreamTransient(err, 0) {
+				transientRetries++
+				slog.Warn("流式 API 瞬时故障，等待重试", "attempt", transientRetries, "err", err)
+				if !sleepRetry(ctx) {
+					return nil, ctx.Err()
+				}
+				continue
+			}
+			return nil, llm.ClassifyUpstreamError(0, nil, err)
 		}
 
 		if resp.StatusCode == http.StatusOK {
@@ -891,10 +922,48 @@ func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm
 
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("API 请求失败 (%d): %s", resp.StatusCode, string(respBody))
+		if transientRetries < llm.UpstreamMaxRetries && llm.IsUpstreamTransient(nil, resp.StatusCode) {
+			transientRetries++
+			slog.Warn("流式 API 上游状态码故障，等待重试", "status", resp.StatusCode, "attempt", transientRetries)
+			if !sleepRetry(ctx) {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		return nil, llm.ClassifyUpstreamError(resp.StatusCode, respBody, nil)
 	}
 
-	return nil, fmt.Errorf("重试次数耗尽，未能完成流式请求")
+	return nil, &llm.UpstreamError{Code: llm.ErrCodeUpstream, Message: "重试次数耗尽，未能完成流式请求，请稍后再试"}
+}
+
+// sleepRetry 重试等待：ctx 取消（用户停止任务）时立即返回 false，不再空等 5s
+func sleepRetry(ctx context.Context) bool {
+	select {
+	case <-time.After(time.Duration(llm.RetryWaitSeconds) * time.Second):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// emitAIError 把底层错误转成前端 error 事件。UpstreamError（含被包装的）
+// 携带分类码与截断详情，前端可针对性引导（如 auth → 去设置页）；
+// 普通错误原样透传文本
+func emitAIError(onEvent StreamCallback, err error) {
+	var ue *llm.UpstreamError
+	if errors.As(err, &ue) {
+		payload := map[string]any{
+			"type":    "error",
+			"code":    ue.Code,
+			"message": ue.Message,
+		}
+		if ue.Detail != "" {
+			payload["detail"] = ue.Detail
+		}
+		_ = onEvent(payload)
+		return
+	}
+	_ = onEvent(map[string]any{"type": "error", "message": err.Error()})
 }
 
 // withFLock 在已获取的会话文件锁保护下执行 fn（defer 释放：fn 内 panic

@@ -72,6 +72,11 @@ interface RunEvent {
   status?: string;
   result?: string;
   download_url?: string;
+  /* /api/run 注册进任务注册表后随事件下发，供停止按钮调用 stop 端点 */
+  task_id?: string;
+  /* 后端错误分类（auth/rate_limit/network/timeout/param/upstream） */
+  code?: string;
+  detail?: string;
 }
 
 interface SseOpts {

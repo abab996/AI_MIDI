@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"aimidi/internal/config"
 	"aimidi/internal/llm"
 	"aimidi/internal/midi"
+	"aimidi/internal/tasks"
 )
 
 const (
@@ -23,6 +27,10 @@ const (
 	FuncTranslate = "翻译歌词"
 	FuncMelisma   = "设计转音"
 	FuncOther     = "其他要求"
+
+	// quickTaskProject /api/run 快捷任务在任务注册表中挂靠的伪项目：
+	// 不属于任何真实档案库，因此不会出现在项目任务列表里
+	quickTaskProject = "__quicktask__"
 )
 
 func (r *Router) handleParseMIDI(w http.ResponseWriter, req *http.Request) {
@@ -65,6 +73,7 @@ func (r *Router) handleParseMIDI(w http.ResponseWriter, req *http.Request) {
 
 	noteTable, err := midi.GetNote(config.InputMidi, false)
 	if err != nil {
+		slog.Warn("上传 MIDI 解析失败", "file", header.Filename, "err", err)
 		writeError(w, http.StatusBadRequest, "解析失败，请检查 MIDI 文件后重试。")
 		return
 	}
@@ -72,6 +81,10 @@ func (r *Router) handleParseMIDI(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "未解析出音符，请检查 MIDI 文件是否有效。")
 		return
 	}
+
+	// 解析成功才留历史副本：input/in.mid 是固定单槽，下一次上传会覆盖，
+	// 历史副本让上一次的文件仍可找回（只保留最近 10 份）
+	backupInputHistory()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     fmt.Sprintf("✓ 已解析 %d 个音符", len(noteTable)),
@@ -158,37 +171,71 @@ func (r *Router) handleRunTask(w http.ResponseWriter, req *http.Request) {
 
 	noteText := strings.Join(in.NoteTable, "\n")
 
-	sendSSE(map[string]any{"type": "progress", "value": 0.5, "desc": "调用 AI"})
+	// 注册进任务注册表：/api/run 从此可被 /api/tasks/{id}/stop 停止，
+	// 与对话任务共用同一条停止链路。runCtx 独立于 req.Context()——
+	// 断开 SSE（关页面）不算取消，只有显式点停止才中止
+	rec := tasks.TaskEnsure(quickTaskProject, nil, strings.TrimSpace(in.Func)+" "+strings.TrimSpace(in.Requirements))
+	tid := rec.ID
+	tasks.TaskMarkRunning(tid)
+	defer tasks.TaskFinish(tid)
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	if ch := tasks.TaskCancelChan(tid); ch != nil {
+		go func() {
+			select {
+			case <-ch:
+				cancelRun()
+			case <-runCtx.Done():
+			}
+		}()
+	}
+
+	sendSSE(map[string]any{"type": "progress", "value": 0.5, "desc": "调用 AI", "task_id": tid})
 
 	var result string
 	switch in.Func {
 	case FuncAddChord:
-		result, err = llm.AddChord(noteText, bpm, timeSig, in.Requirements, settings)
+		result, err = llm.AddChord(runCtx, noteText, bpm, timeSig, in.Requirements, settings)
 	case FuncTranslate:
 		if strings.TrimSpace(in.OriginalLanguage) == "" || strings.TrimSpace(in.TargetLanguage) == "" {
 			sendSSE(map[string]any{"type": "error", "message": elapsed("⚠ 请填写原语言和目标语言。")})
+			sendSSE(map[string]any{"type": "done"})
 			return
 		}
-		result, err = llm.TranslateLyrics(noteText, in.Lyrics, bpm, timeSig, in.OriginalLanguage, in.TargetLanguage, settings)
+		result, err = llm.TranslateLyrics(runCtx, noteText, in.Lyrics, bpm, timeSig, in.OriginalLanguage, in.TargetLanguage, settings)
 	case FuncMelisma:
-		result, err = llm.DesignMelisma(noteText, in.Lyrics, bpm, timeSig, in.Requirements, settings)
+		result, err = llm.DesignMelisma(runCtx, noteText, in.Lyrics, bpm, timeSig, in.Requirements, settings)
 	default: // FuncOther
 		if strings.TrimSpace(in.Requirements) == "" {
 			sendSSE(map[string]any{"type": "error", "message": elapsed("⚠ 请填写具体要求。")})
+			sendSSE(map[string]any{"type": "done"})
 			return
 		}
-		result, err = llm.OtherRequirements(noteText, in.Lyrics, bpm, timeSig, in.Requirements, in.NoteOutput, settings)
+		result, err = llm.OtherRequirements(runCtx, noteText, in.Lyrics, bpm, timeSig, in.Requirements, in.NoteOutput, settings)
 	}
 
 	if err != nil || result == "" {
-		/* llm 层返回的错误本就是面向用户的中文原因（API Key 缺失/网络/状态码），
-		   透传给用户而非吞掉；空结果单独留痕便于区分"模型回了空串" */
 		slog.Error("LLM 调用失败", "func", in.Func, "err", err, "result_len", len(result))
-		msg := "✗ 调用失败，请稍后重试。"
-		if err != nil {
-			msg = "✗ 调用失败：" + err.Error()
+		if errors.Is(runCtx.Err(), context.Canceled) || tasks.TaskIsCancelled(tid) {
+			sendSSE(map[string]any{"type": "error", "message": elapsed("已停止")})
+			sendSSE(map[string]any{"type": "done"})
+			return
 		}
-		sendSSE(map[string]any{"type": "error", "message": elapsed(msg)})
+		var ev map[string]any
+		var ue *llm.UpstreamError
+		if errors.As(err, &ue) {
+			ev = map[string]any{"type": "error", "code": ue.Code, "message": elapsed("✗ " + ue.Message)}
+			if ue.Detail != "" {
+				ev["detail"] = ue.Detail
+			}
+		} else if err != nil {
+			ev = map[string]any{"type": "error", "message": elapsed("✗ 调用失败：" + err.Error())}
+		} else {
+			ev = map[string]any{"type": "error", "message": elapsed("✗ 调用失败：AI 返回了空结果，请重试。")}
+		}
+		sendSSE(ev)
+		sendSSE(map[string]any{"type": "done"})
 		return
 	}
 
@@ -209,7 +256,11 @@ func (r *Router) handleRunTask(w http.ResponseWriter, req *http.Request) {
 		downloadPath = savePath
 		statusMsg = "✓ 结果已保存"
 	} else {
-		err := midi.OutNote(result, bpmInt, config.OutputMidi)
+		// 输出改用时间戳文件名：固定 output.mid 会让上一次成果被静默
+		// 覆盖（前一次的下载链接指向新文件）。文件面板按目录列举展示，
+		// 历史产物仍可从列表找回
+		savePath := uniqueRunPath()
+		err := midi.OutNote(result, bpmInt, savePath)
 		if err != nil {
 			if err == midi.ErrEmptyNoteTable {
 				sendSSE(map[string]any{
@@ -228,8 +279,8 @@ func (r *Router) handleRunTask(w http.ResponseWriter, req *http.Request) {
 			})
 			return
 		}
-		downloadPath = config.OutputMidi
-		statusMsg = fmt.Sprintf("✓ MIDI 已生成: %s", filepath.Base(config.OutputMidi))
+		downloadPath = savePath
+		statusMsg = fmt.Sprintf("✓ MIDI 已生成: %s", filepath.Base(savePath))
 	}
 
 	rel, _ := filepath.Rel(config.ProjectRoot, downloadPath)
@@ -241,6 +292,48 @@ func (r *Router) handleRunTask(w http.ResponseWriter, req *http.Request) {
 		"download_url": downloadURL,
 		"status":       elapsed(statusMsg),
 	})
+}
+
+// uniqueRunPath 生成不冲突的快捷任务输出路径 output/run-<时间戳>.mid；
+// 同秒多次生成时追加序号后缀
+func uniqueRunPath() string {
+	base := time.Now().Format("20060102-150405")
+	p := filepath.Join(config.OutputDir, "run-"+base+".mid")
+	for i := 2; ; i++ {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			return p
+		}
+		p = filepath.Join(config.OutputDir, fmt.Sprintf("run-%s-%d.mid", base, i))
+	}
+}
+
+// backupInputHistory 把刚上传解析成功的 in.mid 复制到 input/history/，
+// 只保留最近 maxInputBackups 份（input/ 目录整体不入库）
+func backupInputHistory() {
+	const maxInputBackups = 10
+	histDir := filepath.Join(filepath.Dir(config.InputMidi), "history")
+	if err := os.MkdirAll(histDir, 0755); err != nil {
+		return
+	}
+	if data, err := os.ReadFile(config.InputMidi); err == nil {
+		dst := filepath.Join(histDir, "in-"+time.Now().Format("20060102-150405")+".mid")
+		_ = os.WriteFile(dst, data, 0644)
+	}
+	entries, err := os.ReadDir(histDir)
+	if err != nil {
+		return
+	}
+	var backups []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "in-") && strings.HasSuffix(e.Name(), ".mid") {
+			backups = append(backups, filepath.Join(histDir, e.Name()))
+		}
+	}
+	// 时间戳文件名按字典序即时间序，超出保留数从最旧开始删
+	sort.Strings(backups)
+	for i := 0; i < len(backups)-maxInputBackups; i++ {
+		_ = os.Remove(backups[i])
+	}
 }
 
 func (r *Router) handleDownloadFile(w http.ResponseWriter, req *http.Request) {

@@ -2632,6 +2632,46 @@
     chat.scrollTop = chat.scrollHeight;
   }
 
+  /* 失败行：文案 + 分类引导动作（auth → 去设置）+ 可折叠上游详情。
+     此前只有一行 sys-line：密钥失效/限流这类可自助修复的错误没有修复入口，
+     网关 HTML 错误页全文刷屏；后端现在随 error 事件带 code 与截断 detail */
+  function appendErrorLine(ev     ) {
+    var raw = (ev && ev.message) || "AI 调用失败";
+    var msg = UI.friendlyText ? UI.friendlyText(raw) : raw;
+    /* 整表重建恢复时退化为纯文本行（按钮属一次性引导，重建后无需保留） */
+    if (chatBusy) streamSysLines.push("⚠ " + msg);
+    var chat = $("#chat");
+    var line = document.createElement("div");
+    line.className = "sys-line sys-error";
+    var span = document.createElement("span");
+    span.textContent = "⚠ " + msg;
+    line.appendChild(span);
+    if (ev && ev.code === "auth") {
+      var a = document.createElement("a");
+      a.href = "/settings.html";
+      a.setAttribute("data-dir", "forward");
+      a.className = "sys-err-action";
+      a.textContent = "去设置检查密钥";
+      line.appendChild(a);
+    }
+    var detail = ev && ev.detail ? String(ev.detail) : "";
+    if (detail) {
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "sys-err-toggle";
+      toggle.textContent = "详情";
+      var pre = document.createElement("pre");
+      pre.className = "sys-err-detail";
+      pre.hidden = true;
+      pre.textContent = detail;
+      toggle.addEventListener("click", function () { pre.hidden = !pre.hidden; });
+      line.appendChild(toggle);
+      line.appendChild(pre);
+    }
+    chat.appendChild(line);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
   /* ═══════════ 发送消息（SSE） ═══════════ */
 
   var abortController      = null;   /* 当前回复的停止控制器 */
@@ -3300,9 +3340,12 @@
         void link.offsetWidth;
         link.classList.add("pop");
         UI.toast ("✓ AI 生成了新的 MIDI 文件，点上方「↓ 新生成的 MIDI」下载", "ok");
+      } else if (ev.type === "status") {
+        /* 排队提示等无后果状态：以普通系统行展示 */
+        if (ev.message) appendSysLine(ev.message);
       } else if (ev.type === "error") {
         removeTyping();
-        appendSysLine("⚠ " + ev.message);
+        appendErrorLine(ev);
         chatDone();
       } else if (ev.type === "done") {
         chatDone();
@@ -3311,7 +3354,7 @@
       /* 流结束兜底：正常路径 done 事件已调 chatDone（幂等）；
          后端异常提前断流/未发 done 时，这里保证界面不卡死 */
       chatDone();
-    }, { signal: abortController.signal }).catch(function (e) {
+    }, { signal: abortController.signal }).catch(function (e     ) {
       if (e && e.name === "AbortError") {
         /* 用户主动停止：静默收尾，保留已输出的内容 */
         removeTyping();
@@ -3319,7 +3362,7 @@
         return;
       }
       removeTyping();
-      appendSysLine("✗ " + e.message);
+      appendErrorLine({ message: e.message });
       chatDone();
     });
 

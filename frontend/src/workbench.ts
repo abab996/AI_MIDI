@@ -7,6 +7,7 @@
   var busy = false;
   var currentFunc = "配和弦";
   var funcToken = 0;
+  var runningTaskId = "";   /* /api/run 注册的任务 ID：停止按钮据此调 stop 端点 */
   var reducedMotion = typeof window.matchMedia === "function"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -228,6 +229,13 @@
 
     /* 开始任务 */
     $("#startBtn").addEventListener("click", runTask);
+
+    /* 停止任务：走统一的任务 stop 端点，后端取消在途 LLM 请求 */
+    $("#stopBtn").addEventListener("click", function () {
+      if (!runningTaskId) return;
+      UI.postJSON("/api/tasks/" + runningTaskId + "/stop").catch(function () {});
+      consoleLine("> 收到停止请求，正在中断…", "dim");
+    });
   }
 
   function runTask() {
@@ -261,6 +269,11 @@
     UI.ssePost<RunEvent>("/api/run", body, function (ev) {
       if (ev.type === "progress") {
         consoleLine("> " + ev.desc, "dim");
+        /* 后端注册任务后随首个 progress 事件下发 task_id：显示停止按钮 */
+        if (ev.task_id) {
+          runningTaskId = ev.task_id;
+          $("#stopBtn").hidden = false;
+        }
       } else if (ev.type === "warn") {
         consoleLine("⚠ " + ev.message, "warn");
       } else if (ev.type === "error") {
@@ -299,6 +312,8 @@
   function finish() {
     busy = false;
     $("#startBtn").disabled = false;
+    $("#stopBtn").hidden = true;
+    runningTaskId = "";
   }
 
   document.addEventListener("DOMContentLoaded", init);

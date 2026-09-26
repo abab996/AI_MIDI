@@ -18,7 +18,7 @@
   /* 流式逐字渐显与思考块自动展开/收起状态 */
   var liveStreaming = false;             /* 是否处于实时流式输出（仅此时做逐字动画） */
   var streamTrack: any = { el: null, norm: "", parsed: null };  /* 流式消息元素 + 归一化内容 + 解析结构 */
-  var thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };  /* 推理增长跟踪（文本长度/块元素/末次增长时间） */
+  var thinkingTrack: any = { reasoning: "", det: null, lastGrowAt: 0, answerStarted: false };  /* 推理增长跟踪（文本长度/块元素/末次增长时间/回答是否已开始输出） */
   var userToggledStream = false;         /* 用户手动操作过思考块后，自动逻辑让位 */
   var thinkUserCollapsed = false;        /* 用户手动收起了思考块（流式重建恢复时尊重，不撤销） */
   /* 播放中的折叠块过渡数：transitionstart/end/cancel 委托维护。
@@ -269,7 +269,7 @@
     liveStreaming = false;
     streamEnded = false;
     streamTrack = { el: null, norm: "", parsed: null };
-    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };
+    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0, answerStarted: false };
     userToggledStream = false;
     thinkUserCollapsed = false;
     lastMessages = [];
@@ -299,7 +299,6 @@
     resetStreamState();
 
     $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
-    $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
 
     renderMessages(payload.display_messages || []);
     resetEditUI();
@@ -311,6 +310,7 @@
     input.value = payload.draft || "";
     input.disabled = false;
     $("#sendBtn").disabled = false;
+    clearNoteChips();   /* 芯片引用工程内文件：换工程即失效 */
     chatBusy = false;
     $("#newMidiLink").hidden = true;
 
@@ -547,7 +547,6 @@
     expandedDirs = {};
     resetStreamState();
     $("#studioProjectName").textContent = "[PROJECT: " + currentName + "]";
-    $("#modelStamp").textContent = "MODEL: " + (payload.settings.model || "--");
     renderMessages(payload.display_messages || []);
     resetEditUI();
     dirsList = payload.dirs || [];
@@ -1110,14 +1109,65 @@
     label.textContent = "AI · 乐理专家";
     el.appendChild(label);
     parsed.blocks.forEach(function (b) {
-      el.appendChild(buildDetailsBlock(b.summary));
+      var det = buildDetailsBlock(b.summary);
+      appendFadeChars(det.querySelector(".stream-text") as HTMLElement, b.body);
+      el.appendChild(det);
     });
     var ans: any = document.createElement("div");
     ans.className = "stream-answer";
-    ans.innerHTML = UI.md(parsed.answer);
-    ans._mdSrc = UI.md(parsed.answer);
+    appendFadeChars(ans, parsed.answer);
     el.appendChild(ans);
     return { el: el, parsed: parsed };
+  }
+
+  /* ── 流式逐字渐显（仅实时流式）：每 FADE_GROUP 字符一组一个动画，
+     避免逐字建 span 导致上千个并发动画卡顿。流式期间以纯文本呈现，
+     结束后整表重建走 markdown（与旧版行为一致）。
+     单帧超过 FADE_CHAR_CAP 后剩余部分整体作为纯文本追加。
+     按码点迭代，避免 emoji 等代理对字符被拆成两个坏字 ── */
+  var FADE_CHAR_CAP = 200;
+  var FADE_GROUP = 10;
+
+  function makeFadeSpan(text: string, groupIdx: number) {
+    var span = document.createElement("span");
+    span.className = "char-fade";
+    span.style.setProperty("--d", Math.min(groupIdx * 40, 400) + "ms");
+    span.textContent = text;
+    return span;
+  }
+
+  function appendFadeChars(container: HTMLElement, text: string) {
+    if (!text) return;
+    if (reducedMotion) {
+      /* 降动态：CSS 禁用动画后 animationend 永不触发，span 会滞留 DOM
+         （长对话积累大量节点）；直接追加纯文本节点 */
+      container.appendChild(document.createTextNode(text));
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    var added = 0;
+    var groupIdx = 0;
+    var group = "";
+    var remaining = text;
+    while (remaining.length) {
+      if (added >= FADE_CHAR_CAP) {
+        if (group) frag.appendChild(makeFadeSpan(group, groupIdx++));
+        /* 超限：剩余部分整体作为纯文本追加，不做渐显动画 */
+        frag.appendChild(document.createTextNode(remaining));
+        break;
+      }
+      var cp = remaining.codePointAt(0) as number;
+      var ch = String.fromCodePoint(cp);
+      remaining = remaining.slice(ch.length);
+      group += ch;
+      added++;
+      if (group.length >= FADE_GROUP) {
+        frag.appendChild(makeFadeSpan(group, groupIdx++));
+        group = "";
+      }
+    }
+    if (group) frag.appendChild(makeFadeSpan(group, groupIdx));
+    container.appendChild(frag);
   }
 
   /* 单个折叠块骨架（思考过程/工具调用共用），内文 markdown 渲染进 .stream-text */
@@ -1138,9 +1188,11 @@
     return det;
   }
 
-  /* 流式消息内容刷新：块数对齐 + 各块正文 markdown 全量替换。
-     内容不变的部分靠 _mdSrc 缓存跳过 innerHTML 写入；
-     复用既有 details 元素——用户手动开合状态自然保留 */
+  /* 流式消息内容刷新：块数对齐 + 各块正文按增量追加渐显字符。
+     复用既有 details 元素——用户手动开合状态自然保留。
+     流式期间只追加纯文本（逐字渐显），markdown 渲染留给流结束后的
+     整表重建；中途的 markdown 记号（**、```）随打字过程显出再消失，
+     与旧版行为一致 */
   function updateStreamingMessage(entry: any, content: any) {
     var parsed = parseStreamContent(content);
     var el = entry.el;
@@ -1152,8 +1204,6 @@
     while (dets.length < parsed.blocks.length) {
       var b = parsed.blocks[dets.length];
       var det = buildDetailsBlock(b.summary);
-      det.querySelector(".stream-text")!.innerHTML = UI.md(b.body);
-      det.querySelector(".stream-text")!._mdSrc = UI.md(b.body);
       el.insertBefore(det, answerEl);
       dets.push(det);
     }
@@ -1165,17 +1215,37 @@
     for (var j = 0; j < parsed.blocks.length && j < dets.length; j++) {
       var txt: any = dets[j].querySelector(".stream-text");
       if (!txt) continue;
-      var html = UI.md(parsed.blocks[j].body);
-      if (txt._mdSrc !== html) {
-        txt.innerHTML = html;
-        txt._mdSrc = html;
+      var prev = (entry.parsed.blocks[j] && entry.parsed.blocks[j].body) || "";
+      var body = parsed.blocks[j].body || "";
+      /* 内容被截断/重写（非前缀链）时退回整体替换，避免残留旧文本 */
+      if (body.length < prev.length || body.indexOf(prev) !== 0) {
+        txt.innerHTML = "";
+        appendFadeChars(txt, body);
+      } else if (body.length > prev.length) {
+        appendFadeChars(txt, body.slice(prev.length));
+      }
+      /* 展开中的块高度限制跟着内容长：autoExpand 只测量一次，推理在
+         过渡期间/之后继续增长的话，px 限制会把多出的内容裁掉，等
+         transitionend 解除限制时突然长出一截（生硬跳变）。每帧同步
+         一次，px 始终等于内容高，解除限制时视觉无变化 */
+      var dbody = dets[j].querySelector(":scope > .details-body");
+      if (dbody && dbody.classList.contains("open") && dets[j].open &&
+          dbody.style.maxHeight !== "none" && detailsClosing !== dets[j]) {
+        /* detailsClosing 的块正在收起：maxHeight 正被动画压向 0，
+           此处若按内容高回填会跟收起动画打架（块在 0 和全高间抖动，
+           transitionend 永不触发、open 永远撤销着） */
+        var inner2 = dbody.querySelector(".details-inner");
+        dbody.style.maxHeight = (inner2 ? inner2.scrollHeight : dbody.scrollHeight) + "px";
       }
     }
     if (answerEl) {
-      var ah = UI.md(parsed.answer);
-      if (answerEl._mdSrc !== ah) {
-        answerEl.innerHTML = ah;
-        answerEl._mdSrc = ah;
+      var prevAns = (entry.parsed && entry.parsed.answer) || "";
+      var ansText = parsed.answer || "";
+      if (ansText.length < prevAns.length || ansText.indexOf(prevAns) !== 0) {
+        answerEl.innerHTML = "";
+        appendFadeChars(answerEl, ansText);
+      } else if (ansText.length > prevAns.length) {
+        appendFadeChars(answerEl, ansText.slice(prevAns.length));
       }
     }
     entry.parsed = parsed;
@@ -1360,6 +1430,12 @@
               }
             }
           }
+          /* "回答已开始输出"是思考结束的确定性信号：正文一出现就立刻收起
+             思考块。替代旧的"推理停顿 500ms"启发式——停顿判定在思考中途
+             的网络顿挫/交错思考里会提前收起（推理恢复又展开，块来回抽搐），
+             思考真正结束后还要再等满 500ms 才收 */
+          var answerLen = ((streamTrack.parsed && streamTrack.parsed.answer) || "").trim().length;
+          if (answerLen > 0) thinkingTrack.answerStarted = true;
           if (thinkDet !== thinkingTrack.det) {
             /* 思考块元素变化：整表重建（同段，推理未断）或多段思考的新段落。
                新段落重置基线并播展开动画跟随 */
@@ -1369,27 +1445,30 @@
             thinkingTrack.det = thinkDet;
             thinkingTrack.reasoning = reasoning;
             thinkingTrack.lastGrowAt = Date.now();
-            if (!sameSegment && !userToggledStream) autoExpand(thinkDet, true);
+            if (!sameSegment) thinkingTrack.answerStarted = answerLen > 0;
+            if (!sameSegment && !userToggledStream && !thinkingTrack.answerStarted) autoExpand(thinkDet, true);
           } else if (reasoning.length > thinkingTrack.reasoning.length) {
             var wasSettled = Date.now() - thinkingTrack.lastGrowAt >= THINK_SETTLE_MS;
             thinkingTrack.reasoning = reasoning;
             thinkingTrack.lastGrowAt = Date.now();
             /* 持续增长且仍展开时无需动作（autoExpand 对已开块是幂等 no-op）；
-               只有"收起停顿后恢复增长"才平滑重新展开 */
-            if (!userToggledStream && wasSettled) {
+               收起停顿后恢复增长才平滑重新展开——但回答已开始就不该再展开
+               （正文后的补段推理属于下一轮，等它的"新段落"信号） */
+            if (!userToggledStream && wasSettled && !thinkingTrack.answerStarted) {
               autoExpand(thinkDet, true);
             }
-          } else if (reasoning.length && reasoning.length === thinkingTrack.reasoning.length && !userToggledStream) {
-            /* 推理停顿：静默超过 THINK_SETTLE_MS 才平滑收起 */
-            if (Date.now() - thinkingTrack.lastGrowAt >= THINK_SETTLE_MS &&
-                thinkDet !== detailsClosing) {
-              autoCollapse(thinkDet);
-            }
+          }
+          /* 回答开始输出：立刻平滑收起思考块（idempotent——已收起的块
+             autoCollapse 内部直接返回） */
+          if (thinkingTrack.answerStarted && !userToggledStream &&
+              thinkDet !== detailsClosing) {
+            autoCollapse(thinkDet);
           }
         } else {
           thinkingTrack.det = null;
           thinkingTrack.reasoning = "";
           thinkingTrack.lastGrowAt = 0;
+          thinkingTrack.answerStarted = false;
         }
 
         /* 折叠块展开/收起动画同步（自动展开/收起与手动点击后都生效） */
@@ -1643,7 +1722,12 @@
         return;
       }
       msgEl.querySelectorAll("details").forEach(function (d: any, di: any) {
-        if (d.open) opens.push({ idx: msgIdx, di: di });
+        /* 关闭中的块（collapseDetails 撤销关闭保持 open 以播放动画）不记录：
+           否则动画期间的整表重建会把"正在收起"的块恢复成展开——用户的
+           收起/思考结束的自动收起被静默撤销，表现为气泡"闪一下"弹回去。
+           与上面提问卡片分支的跳过规则一致（那里早有此防线） */
+        if (!d.open || detailsClosing === d) return;
+        opens.push({ idx: msgIdx, di: di });
       });
     });
     return opens;
@@ -1728,13 +1812,16 @@
     if (m.role === "user") {
       var u = document.createElement("div");
       u.className = "msg user";
+      /* 音符芯片信封解析：文本干净、芯片挂在气泡文本下方 */
+      var parsed = extractNoteChips(content);
       u.innerHTML =
         '<div class="msg-label">你 · You</div>' +
-        "<p>" + UI.esc(content).replace(/\n/g, "<br>") + "</p>" +
+        "<p>" + UI.esc(parsed.text).replace(/\n/g, "<br>") + "</p>" +
         '<div class="msg-actions">' +
         '<button class="msg-action" data-action="copy" title="复制消息">⧉ 复制</button>' +
         '<button class="msg-action" data-action="edit" title="修改后重新发送">✎ 修改</button>' +
         "</div>";
+      if (parsed.chips.length) renderNoteChipStrip(u, parsed.chips);
       return u;
     }
 
@@ -2056,7 +2143,7 @@
     liveStreaming = true;
     resetStreamDelta();
     streamTrack = { el: null, norm: "", parsed: null };
-    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };
+    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0, answerStarted: false };
     userToggledStream = false;
     thinkUserCollapsed = false;
     lastMessages = [];
@@ -2069,6 +2156,8 @@
     }, function (ev: any) {
       if (epoch !== chatEpoch) return;  /* 视图已切换/新会话已开始：丢弃旧流帧 */
       if (ev.type === "chat") {
+        /* 同主对话流：error 收尾后忽略补发的快照帧，保住错误提示行 */
+        if (streamEnded) return;
         var messages = ev.messages || [];
         lastMessages = messages;
         renderMessages(messages);
@@ -2282,7 +2371,12 @@
     editMenuIndex = -1;
     $("#editBar").hidden = false;
     var input = $("#msgInput");
-    input.value = data.text || "";
+    /* 被编辑消息若带音符芯片：拆回芯片条（重发时再次随消息序列化），
+       输入框只放干净文本 */
+    var parsedEdit = extractNoteChips(data.text || "");
+    noteChips = parsedEdit.chips;
+    renderNoteChipBar();
+    input.value = parsedEdit.text;
     autoGrowInput(input);
     draftDirty = true;
     input.focus();
@@ -2308,6 +2402,223 @@
       })
       .catch(function (e) { UI.toast!("✗ " + e.message, "err"); });
   }
+
+  /* ═══════════ 音符片段芯片（卷帘「发送给 AI」的附着物） ═══════════
+     输入框上方一条可删芯片；发送时序列化为「（音符来自 …）+ note_table」
+     信封块拼在消息文本末尾（后端原样存储并进 LLM 上下文——系统提示词
+     已定义 [note: …] 约定），气泡渲染时解析信封：文本干净、芯片挂在
+     气泡下方。信封格式前后端无感知，仅前端写入/解析 */
+  var noteChips: any[] = [];
+  var chrNL = String.fromCharCode(10);
+  var NOTE_CHIP_HEADER_RE = /^（音符来自 ?"([^"]+)"，?(?:第 ([\d.]+) 拍到第 ([\d.]+) 拍)?）$/;
+
+  function fmtBeat(v: any) {
+    return String(Math.round(Number(v) * 100) / 100);
+  }
+
+  function noteTableLines(notes: any[]) {
+    return notes.map(function (n: any) {
+      return '[note: "' + n.note + '", velocity: "' + n.velocity + '", start: "' + n.start + '", end: "' + n.end + '"]';
+    });
+  }
+
+  /* 信封块 → 消息文本：每芯片一段「（音符来自 "X"…）+ note_table 行」 */
+  function serializeNoteChips() {
+    return noteChips.map(function (c: any) {
+      var range = c.start == null ? "" : "，第 " + fmtBeat(c.start) + " 拍到第 " + fmtBeat(c.end) + " 拍";
+      return "（音符来自 \"" + c.fileName + "\"" + range + "）" + chrNL + noteTableLines(c.notes).join(chrNL);
+    }).join(chrNL);
+  }
+
+  /* 消息文本 → { text, chips }：抽出全部信封块，剩余为干净文本。
+     信封头是全角括号包裹的「音符来自」行，随后的 [note: …] 行归入该芯片 */
+  function extractNoteChips(content: string) {
+    var chips: any[] = [];
+    var textLines: string[] = [];
+    var cur: any = null;
+    String(content || "").split(chrNL).forEach(function (line: string) {
+      var m = NOTE_CHIP_HEADER_RE.exec(line.trim());
+      if (m) {
+        cur = { fileName: m[1], start: m[2] ? Number(m[2]) : null, end: m[3] ? Number(m[3]) : null, notes: [] };
+        chips.push(cur);
+        return;
+      }
+      if (cur && /^\[note: "/.test(line.trim())) {
+        var nm = /^\[note: "([^"]*)", velocity: "([^"]*)", start: "([^"]*)", end: "([^"]*)"\]$/.exec(line.trim());
+        if (nm) {
+          cur.notes.push({ note: nm[1], velocity: Number(nm[2]), start: Number(nm[3]), end: Number(nm[4]) });
+          return;
+        }
+      }
+      cur = null;
+      textLines.push(line);
+    });
+    /* 尾部随信封产生的空行不留 */
+    while (textLines.length && textLines[textLines.length - 1].trim() === "" && chips.length) textLines.pop();
+    return { text: textLines.join(chrNL), chips: chips };
+  }
+
+  function renderNoteChipStrip(container: HTMLElement, chips: any[]) {
+    var strip = document.createElement("div");
+    strip.className = "note-chip-strip";
+    chips.forEach(function (c: any) {
+      var chip = document.createElement("span");
+      chip.className = "note-chip";
+      var icon = document.createElement("span");
+      icon.className = "note-chip-icon";
+      icon.textContent = "♪";
+      var name = document.createElement("span");
+      name.className = "note-chip-name";
+      name.textContent = c.fileName;
+      chip.appendChild(icon);
+      chip.appendChild(name);
+      if (c.start != null) {
+        var range = document.createElement("span");
+        range.className = "note-chip-range";
+        range.textContent = fmtBeat(c.start) + "–" + fmtBeat(c.end) + " 拍";
+        chip.appendChild(range);
+      }
+      chip.title = "点击在钢琴卷帘中定位并选中这些音符";
+      chip.addEventListener("click", function () {
+        jumpToNoteChip(c);
+      });
+      strip.appendChild(chip);
+    });
+    container.appendChild(strip);
+  }
+
+  function renderNoteChipBar() {
+    var bar = $("#noteChipBar");
+    if (!bar) return;
+    bar.innerHTML = "";
+    bar.hidden = !noteChips.length;
+    noteChips.forEach(function (c: any, i: number) {
+      var chip = document.createElement("span");
+      chip.className = "note-chip";
+      var icon = document.createElement("span");
+      icon.className = "note-chip-icon";
+      icon.textContent = "♪";
+      var name = document.createElement("span");
+      name.className = "note-chip-name";
+      name.textContent = c.fileName;
+      name.title = c.fileName;
+      chip.appendChild(icon);
+      chip.appendChild(name);
+      if (c.start != null) {
+        var range = document.createElement("span");
+        range.className = "note-chip-range";
+        range.textContent = fmtBeat(c.start) + "–" + fmtBeat(c.end) + " 拍";
+        chip.appendChild(range);
+      }
+      var del = document.createElement("span");
+      del.className = "note-chip-del";
+      del.textContent = "✕";
+      del.title = "移除该音符片段";
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        noteChips.splice(i, 1);
+        renderNoteChipBar();
+      });
+      chip.appendChild(del);
+      chip.title = "点击在钢琴卷帘中定位并选中这些音符";
+      chip.addEventListener("click", function () {
+        jumpToNoteChip(noteChips[i]);
+      });
+      bar.appendChild(chip);
+    });
+  }
+
+  function clearNoteChips() {
+    noteChips = [];
+    renderNoteChipBar();
+  }
+
+  /* 点击音符芯片：跳转到对应文件的钢琴卷帘，并选中片段内的音符。
+     filePath 优先用芯片记录的（卷帘添加时带上）；历史消息里的芯片
+     （信封只存了文件名）从当前工程的文件清单按名解析 */
+  function jumpToNoteChip(chip: any) {
+    if (!currentProjectId) {
+      UI.toast!("请先打开一个工程", "warn");
+      return;
+    }
+    var pr = (window as any).PianoRoll;
+    if (!pr) return;
+    var filePath = chip.filePath || "";
+    if (!filePath && files && files.length) {
+      for (var i = 0; i < files.length; i++) {
+        if (files[i].name === chip.fileName) { filePath = files[i].path || files[i].name; break; }
+      }
+    }
+    if (!filePath) {
+      UI.toast!("未找到 " + chip.fileName + "（文件可能已被删除或移动）", "warn");
+      return;
+    }
+    pr.openFile(currentProjectId, chip.fileName, filePath, function () {
+      var tab = pr.getActiveTab();
+      if (!tab) return;
+      /* 芯片记录的是音符快照：按 音符名+起止拍 匹配卷帘当前音符
+         （卷帘若编辑过，匹配不上的跳过） */
+      var matched: any[] = [];
+      (chip.notes || []).forEach(function (n: any) {
+        for (var k = 0; k < tab.notes.length; k++) {
+          var t = tab.notes[k];
+          if (t.note === n.note && Math.abs(t.start - n.start) < 0.001 && Math.abs(t.end - n.end) < 0.001) {
+            matched.push(t);
+            return;
+          }
+        }
+      });
+      pr.selectedNotes = matched;
+      if (matched.length) {
+        var minStart = Infinity, sumPitch = 0;
+        matched.forEach(function (n: any) {
+          if (n.start < minStart) minStart = n.start;
+          sumPitch += window.MidiParse ? window.MidiParse.noteNameToNumber(n.note) : 60;
+        });
+        /* 视图定位到片段：横向对准起始拍，纵向对准平均音高（同 autoCenterView 算法） */
+        pr.scrollX = Math.max(0, minStart - 1);
+        var avgPitch = Math.round(sumPitch / matched.length);
+        pr.scrollY = Math.max(0, Math.min(128 * pr.noteRowHeight - 200, (127 - avgPitch) * pr.noteRowHeight - 150));
+      }
+      pr.render();
+      if (pr.showHUD) pr.showHUD(matched.length ? "已选中片段音符 (" + matched.length + ")" : "片段音符未匹配（卷帘内容可能已修改）");
+    });
+  }
+
+  /* 卷帘跨脚本调用入口（同 window.__openProject 约定） */
+  (window as any).ChatNoteChips = {
+    add: function (chip: any) {
+      if (!chip || !chip.fileName || !chip.notes || !chip.notes.length) return false;
+      var start: any = null, end: any = null;
+      chip.notes.forEach(function (n: any) {
+        if (start == null || n.start < start) start = n.start;
+        if (end == null || n.end > end) end = n.end;
+      });
+      /* 部分选择（未覆盖全曲）才标范围；与该文件全音符数一致视为整曲 */
+      var partial = chip.totalCount == null ? true : chip.notes.length < chip.totalCount;
+      if (!partial) { start = null; end = null; }
+      var dup = noteChips.some(function (c: any) {
+        return c.fileName === chip.fileName && c.notes.length === chip.notes.length &&
+          c.start === start && c.end === end &&
+          c.notes.every(function (n: any, i: number) {
+            var o = chip.notes[i];
+            return n.note === o.note && n.start === o.start && n.end === o.end && n.velocity === o.velocity;
+          });
+      });
+      if (dup) return false;
+      noteChips.push({
+        fileName: chip.fileName,
+        filePath: chip.filePath || "",
+        notes: chip.notes.map(function (n: any) {
+          return { note: n.note, velocity: n.velocity, start: n.start, end: n.end };
+        }),
+        start: start, end: end,
+      });
+      renderNoteChipBar();
+      return true;
+    },
+    clear: clearNoteChips,
+  };
 
   function appendSysLine(text: any) {
     /* 流期间的系统行先登记：chatDone 最终整表重建会清空聊天区，随后按序恢复 */
@@ -2451,11 +2762,439 @@
       });
   }
 
+  var chatProviders: any[] = [];
+  var chatActiveProvider = "";
+  var chatActiveModel = "";
+  var modelPickerOpen = false;
+  var pickerProviderId = "";
+
+  function findChatProvider(id: string) {
+    for (var i = 0; i < chatProviders.length; i++) {
+      if (chatProviders[i].id === id) return chatProviders[i];
+    }
+    return null;
+  }
+
+  function modelSelectionOK() {
+    var p = findChatProvider(chatActiveProvider);
+    if (!p || !p.enabled) return false;
+    return (p.models || []).some(function (m: any) { return m.id === chatActiveModel; });
+  }
+
+  function renderModelPickerButton() {
+    var btn = $("#modelPickerBtn");
+    var label = $("#modelPickerLabel");
+    var ok = modelSelectionOK();
+    if (btn) btn.classList.toggle("warn", !ok);
+    if (!btn || !label) return;
+    if (!ok) {
+      label.textContent = "选择模型";
+      btn.title = "还没选好供应商和模型——点这里选一个已开启供应商下的可用模型";
+      return;
+    }
+    var p = findChatProvider(chatActiveProvider);
+    label.textContent = (p.name || "供应商") + " · " + chatActiveModel;
+    btn.title = label.textContent;
+  }
+
+  /* 这个供应商是否已经具备调用条件：有密钥，或本身是本地免密服务 */
+  function providerReady(p: any) {
+    if (!p) return false;
+    return !!p.api_key || !!(UI.isLocalEndpoint && UI.isLocalEndpoint(p.base_url));
+  }
+
+  var chatGlobalThinking = true;
+
+  function applyChatSettings(s: any) {
+    chatProviders = (s && s.providers) || [];
+    chatActiveProvider = (s && s.active_provider_id) || "";
+    chatActiveModel = (s && s.active_model_id) || "";
+    chatGlobalThinking = !!(s && s.thinking_enabled);
+    renderModelPickerButton();
+    // 有任意一家已开启的供应商可调用即可，不再只认扁平 api_key
+    var hasKey = !!(s && s.api_key);
+    chatProviders.forEach(function (p) {
+      if (p.enabled && providerReady(p)) hasKey = true;
+    });
+    var stamp = $("#apiStamp");
+    if (stamp) {
+      stamp.textContent = hasKey ? "API: READY" : "API: NONE";
+      stamp.classList.toggle("ok", hasKey);
+      stamp.classList.toggle("warn", !hasKey);
+    }
+    var banner = $("#apiBanner");
+    if (banner && !hasKey && sessionStorage.getItem("apiBannerDismissed") !== "1") banner.hidden = false;
+    if (banner && hasKey) banner.hidden = true;
+    return hasKey;
+  }
+
+  function closeModelPicker() {
+    var pop = $("#modelPickerPop");
+    if (!pop || !modelPickerOpen) return;
+    pop.hidden = true;
+    pop.classList.remove("menu-in");
+    modelPickerOpen = false;
+  }
+
+  function pickerProtoTag(protocol: string) {
+    return protocol === "anthropic" ? "ANT" : (protocol === "gemini" ? "GEM" : "OAI");
+  }
+
+  /* 模型目录：用来判断某个模型能用哪些思考强度档位。只在第一次打开选择器
+     时拉一次（目录是静态的，随程序走）。 */
+  var chatProfiles: any[] = [];
+  var chatProfilesLoaded = false;
+
+  function loadModelProfiles() {
+    if (chatProfilesLoaded) return Promise.resolve(chatProfiles);
+    return UI.getJSON<any>("/api/model-profiles").then(function (j: any) {
+      chatProfiles = (j && j.profiles) || [];
+      chatProfilesLoaded = true;
+      return chatProfiles;
+    }).catch(function () {
+      chatProfilesLoaded = true;   /* 拉不到就按"全档位"处理，不反复重试 */
+      return chatProfiles;
+    });
+  }
+
+  /* 与后端 llm.SupportedReasoningEfforts 同一套规则：目录里收录的按目录声明
+     （没写 reasoning_efforts 就是不收这个参数），目录外的按全档位。 */
+  function supportedEfforts(modelId: string) {
+    var raw = String(modelId || "").toLowerCase();
+    if (!raw) return ["low", "medium", "max"];
+    var cands = [raw];
+    var slash = raw.lastIndexOf("/");
+    if (slash >= 0 && slash < raw.length - 1) cands.push(raw.slice(slash + 1));
+    var best: any = null;
+    chatProfiles.forEach(function (p: any) {
+      var m = String(p.match || "").toLowerCase();
+      cands.forEach(function (c) {
+        if (!m || c.length < m.length || c.indexOf(m) !== 0) return;
+        var boundary = c.length === m.length || m.charAt(m.length - 1) === "-" || "-.:/".indexOf(c.charAt(m.length)) >= 0;
+        if (!boundary) return;
+        if (!best || m.length > String(best.match).length) best = p;
+      });
+    });
+    if (!best) return ["low", "medium", "max"];
+    return (best.reasoning_efforts as string[]) || [];
+  }
+
+  function findChatModel(providerId: string, modelId: string) {
+    var p = findChatProvider(providerId);
+    if (!p) return null;
+    var list = p.models || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === modelId) return list[i];
+    }
+    return null;
+  }
+
+  /* 该模型启用了哪些档位。后端字段为 null 表示"还没配过"，这时按模型目录的
+     声明当作启用集；空数组表示用户在设置页把所有档位都关了。 */
+  function enabledEfforts(model: any) {
+    if (!model) return [];
+    if (model.reasoning_efforts == null) return supportedEfforts(model.id);
+    return (model.reasoning_efforts as string[]) || [];
+  }
+
+  /* 模型行右侧的「思考强度」折叠菜单。收起时只有一枚小按钮显示当前档位，
+     点击才展开档位列表（高度动画由 .picker-effort-panel 的 grid-template-rows
+     过渡负责，不测高度、内容多高都能动画）。 */
+  function buildEffortMenu(providerId: string, m: any) {
+    var levels = enabledEfforts(m);
+    if (!levels.length) return null;   /* 没启用任何档位 = 这个模型不调思考强度 */
+
+    /* thinking 关着（模型单独关，或跟随「生成参数」页而全局关着）时，档位
+       菜单没有意义——整个不出现。想重新打开回设置页勾「启用 thinking」。 */
+    var thinkingOn = m.thinking_enabled === true ||
+      (m.thinking_enabled == null && chatGlobalThinking);
+    if (!thinkingOn) return null;
+
+    var wrap = document.createElement("div");
+    wrap.className = "picker-effort";
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "picker-effort-btn";
+    var caret = document.createElement("span");
+    caret.className = "picker-effort-caret";
+    caret.textContent = "▾";
+    btn.appendChild(caret);
+    wrap.appendChild(btn);
+
+    var panel = document.createElement("div");
+    panel.className = "picker-effort-panel";
+    var inner = document.createElement("div");
+    inner.className = "picker-effort-inner";
+    panel.appendChild(inner);
+    wrap.appendChild(panel);
+
+    var open = false;
+    var OPTIONS = [{ v: "off", label: "不思考" }].concat(
+      levels.map(function (l: string) { return { v: l, label: l.toUpperCase() }; })
+    );
+
+    function currentSel() {
+      if (m.thinking_enabled === false) return "off";
+      var cur = String(m.reasoning_effort || "").toLowerCase();
+      return levels.indexOf(cur) >= 0 ? cur : levels[0];
+    }
+
+    function paintButton() {
+      var txt = btn.querySelector(".picker-effort-now");
+      if (!txt) {
+        txt = document.createElement("span");
+        txt.className = "picker-effort-now";
+        btn.insertBefore(txt, caret);
+      }
+      txt.textContent = currentSel() === "off" ? "不思考" : currentSel().toUpperCase();
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.title = "这个模型的思考方式（不思考 / " +
+        levels.map(function (l) { return l.toUpperCase(); }).join(" / ") + "）";
+    }
+
+    function paintPanel() {
+      inner.innerHTML = "";
+      var cur = currentSel();
+      OPTIONS.forEach(function (o) {
+        var row = document.createElement("button");
+        row.type = "button";
+        row.className = "picker-effort-item" + (o.v === cur ? " active" : "");
+        var name = document.createElement("span");
+        name.textContent = o.label;
+        row.appendChild(name);
+        if (o.v === cur) {
+          var tick = document.createElement("span");
+          tick.className = "picker-tick";
+          tick.textContent = "● 当前";
+          row.appendChild(tick);
+        }
+        row.title = o.v === "off"
+          ? "这个模型不再思考，直接作答"
+          : "让这个模型用 " + o.label + " 思考";
+        row.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (o.v === cur) { setOpen(false); return; }
+          UI.postJSON<any>("/api/settings/model-effort", {
+            provider_id: providerId,
+            model_id: m.id,
+            selection: o.v,
+          }).then(function () {
+            if (o.v === "off") {
+              m.thinking_enabled = false;
+              setOpen(false);
+              /* thinking 关了，菜单按钮按约定整个收掉（恢复去设置页勾选） */
+              wrap.remove();
+            } else {
+              m.reasoning_effort = o.v;
+              m.thinking_enabled = true;
+              paintButton();
+              paintPanel();
+              setOpen(false);
+            }
+            UI.toast!("✓ " + m.id + "：" + (o.v === "off" ? "不思考" : "思考强度 " + o.label), "ok");
+          }).catch(function (err) {
+            UI.toast!("✗ " + err.message, "err");
+          });
+        });
+        inner.appendChild(row);
+      });
+    }
+
+    function setOpen(next: boolean) {
+      open = next;
+      wrap.classList.toggle("open", open);
+      paintButton();
+    }
+
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();          /* 别连带触发行上的"选中这个模型" */
+      setOpen(!open);
+    });
+    /* 点面板的空白处（缩进/缝隙）也不该触发"选中这个模型" */
+    panel.addEventListener("click", function (e) { e.stopPropagation(); });
+    paintButton();
+    paintPanel();
+    return wrap;
+  }
+
+  function renderPickerModels(providerId: string) {
+    pickerProviderId = providerId;
+    var host = $("#modelPickerModels");
+    var left = $("#modelPickerProviders");
+    var colName = $("#modelPickerColName");
+    var colCount = $("#modelPickerModelCount");
+    if (!host || !left) return;
+    UI.qsa(".picker-provider", left).forEach(function (el) {
+      el.classList.toggle("active", (el as HTMLElement).dataset.pid === providerId);
+    });
+    host.innerHTML = "";
+    var p = findChatProvider(providerId);
+    var models = (p && p.models) || [];
+    if (colName) colName.textContent = (p && p.name) || "模型";
+    if (colCount) colCount.textContent = String(models.length);
+    if (!p) {
+      var none = document.createElement("div");
+      none.className = "select-empty";
+      none.textContent = "左边先选一个供应商。";
+      host.appendChild(none);
+      return;
+    }
+    if (!models.length) {
+      var empty = document.createElement("div");
+      empty.className = "select-empty";
+      empty.innerHTML = "尚未添加可用模型<br>";
+      var a = document.createElement("a");
+      a.href = "/settings.html";
+      a.dataset.dir = "forward";
+      a.textContent = "去设置添加";
+      empty.appendChild(a);
+      host.appendChild(empty);
+      renderPickerFoot("该供应商下还没有可用模型");
+      return;
+    }
+    models.forEach(function (m: any) {
+      var isCurrent = providerId === chatActiveProvider && m.id === chatActiveModel;
+      var wrap = document.createElement("div");
+      wrap.className = "picker-model-wrap" + (isCurrent ? " in-use" : "");
+      var opt = document.createElement("div");
+      opt.className = "select-option picker-model" + (isCurrent ? " active" : "");
+      opt.appendChild(BrandIcons.forModel(m.id, (p && p.preset_id) || "", m.id));
+      var id = document.createElement("span");
+      id.className = "picker-model-id";
+      id.textContent = m.id;
+      opt.appendChild(id);
+      if (isCurrent) {
+        var tick = document.createElement("span");
+        tick.className = "picker-tick";
+        tick.textContent = "● 使用中";
+        opt.appendChild(tick);
+      }
+      /* 思考强度折叠菜单挂在行尾：没启用任何档位的模型不会有这个按钮 */
+      var menu = buildEffortMenu(providerId, m);
+      if (menu) opt.appendChild(menu);
+      opt.title = m.id + "（点击切换到这个模型）";
+      opt.addEventListener("click", function () {
+        UI.postJSON("/api/settings/active", { provider_id: providerId, model_id: m.id }).then(function () {
+          chatActiveProvider = providerId;
+          chatActiveModel = m.id;
+          renderModelPickerButton();
+          closeModelPicker();
+          UI.toast!("✓ 已切换为 " + (p!.name || "供应商") + " · " + m.id, "ok");
+        }).catch(function (e) {
+          UI.toast!("✗ " + e.message, "err");
+        });
+      });
+      wrap.appendChild(opt);
+      host.appendChild(wrap);
+    });
+    renderPickerFoot("");
+  }
+
+  /* 底栏提示：优先说清楚"发出去会用哪一家"，没问题时保持安静 */
+  function renderPickerFoot(note: string) {
+    var foot = $("#modelPickerFoot");
+    if (!foot) return;
+    if (note) {
+      foot.textContent = note;
+      return;
+    }
+    var p = findChatProvider(chatActiveProvider);
+    if (p && providerReady(p)) {
+      foot.textContent = "发送将使用 " + (p.name || "供应商") + " · " + chatActiveModel;
+    } else if (p) {
+      foot.textContent = "「" + (p.name || "供应商") + "」还没填 API Key";
+    } else {
+      foot.textContent = "从左边挑一家供应商";
+    }
+  }
+
+  function openModelPicker() {
+    var pop = $("#modelPickerPop");
+    if (!pop) return;
+    /* 模型目录要先到：右侧「思考强度」栏按目录决定列出哪些档位 */
+    Promise.all([UI.getJSON<any>("/api/settings"), loadModelProfiles()]).then(function (all: any) {
+      applyChatSettings(all[0]);
+      var left = $("#modelPickerProviders");
+      if (!left) return;
+      left.innerHTML = "";
+      var enabled = chatProviders.filter(function (p) { return p.enabled; });
+      var provCount = $("#modelPickerProvCount");
+      if (provCount) provCount.textContent = String(enabled.length);
+      if (!enabled.length) {
+        var empty = document.createElement("div");
+        empty.className = "select-empty";
+        empty.innerHTML = "没有已开启的供应商<br>";
+        var a = document.createElement("a");
+        a.href = "/settings.html";
+        a.dataset.dir = "forward";
+        a.textContent = "去设置添加";
+        empty.appendChild(a);
+        left.appendChild(empty);
+        var host = $("#modelPickerModels");
+        if (host) host.innerHTML = "";
+        var colName = $("#modelPickerColName");
+        if (colName) colName.textContent = "模型";
+        var colCount = $("#modelPickerModelCount");
+        if (colCount) colCount.textContent = "0";
+        renderPickerFoot("先在设置页添加并开启一个供应商");
+      } else {
+        enabled.forEach(function (p) {
+          var opt = document.createElement("div");
+          opt.className = "select-option picker-provider";
+          opt.dataset.pid = p.id;
+          opt.appendChild(BrandIcons.forPreset(p.preset_id || "", p.name));
+          var nm = document.createElement("span");
+          nm.className = "picker-prov-name";
+          nm.textContent = p.name || "未命名";
+          var n = document.createElement("span");
+          n.className = "picker-prov-count";
+          n.textContent = String((p.models || []).length);
+          opt.appendChild(nm);
+          opt.appendChild(n);
+          opt.title = (p.name || "未命名") + " · " + (p.models || []).length + " 个可用模型 · 协议 " + pickerProtoTag(p.protocol);
+          /* 已经停在这一家时别重渲染：会把展开中的档位面板关掉 */
+          opt.addEventListener("mouseenter", function () {
+            if (pickerProviderId !== p.id) renderPickerModels(p.id);
+          });
+          opt.addEventListener("click", function () { renderPickerModels(p.id); });
+          left.appendChild(opt);
+        });
+        var cur = findChatProvider(chatActiveProvider);
+        var initial = cur && cur.enabled ? chatActiveProvider : enabled[0].id;
+        renderPickerModels(initial);
+      }
+      pop.hidden = false;
+      pop.classList.remove("menu-in");
+      void pop.offsetWidth;
+      pop.classList.add("menu-in");
+      modelPickerOpen = true;
+    }).catch(function (e) {
+      UI.toast!("✗ " + e.message, "err");
+    });
+  }
+
   function sendMessage() {
     if (chatBusy || !currentProjectId) return;
+    if (!modelSelectionOK()) {
+      UI.toast!("请先选择一个已开启供应商下的可用模型", "err");
+      openModelPicker();
+      return;
+    }
     var input = $("#msgInput");
     var message = input.value.trim();
-    if (!message) return;
+    /* 音符芯片随消息发出：文字为空但有芯片时以引导句开头（与旧
+       「发送给 AI」按钮的注入文案同款），文字在前、信封块在后 */
+    var hasChips = noteChips.length > 0;
+    if (!message && !hasChips) return;
+    if (hasChips) {
+      var chipBlock = serializeNoteChips();
+      if (message) {
+        message += chrNL + chrNL + chipBlock;
+      } else {
+        message = "请针对以下音符进行配和弦与对位编排：" + chrNL + chipBlock;
+      }
+    }
     /* 修改模式发送：替换被编辑的消息（AI 上下文止于截断点），
        发送瞬间退出编辑态，撤回条随之隐藏，并立刻移除被修改消息及其之后的所有旧消息 */
     var isEdit = editingIndex >= 0;
@@ -2475,8 +3214,9 @@
         }
       });
     }
-    /* 消息发出后立即清空输入框（不等回复结束） */
+    /* 消息发出后立即清空输入框（不等回复结束）；芯片已随消息发出，一并清空 */
     input.value = "";
+    clearNoteChips();
     draftDirty = false;
 
     chatBusy = true;
@@ -2496,7 +3236,7 @@
     liveStreaming = true;
     resetStreamDelta();
     streamTrack = { el: null, norm: "", parsed: null };
-    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0 };
+    thinkingTrack = { reasoning: "", det: null, lastGrowAt: 0, answerStarted: false };
     userToggledStream = false;
     thinkUserCollapsed = false;
     lastMessages = [];
@@ -2510,8 +3250,10 @@
     var chat = $("#chat");
     var userDiv = document.createElement("div");
     userDiv.className = "msg user";
+    var parsedSelf = extractNoteChips(message);
     userDiv.innerHTML = '<div class="msg-label">你 · You</div><p>' +
-      UI.esc(message).replace(/\n/g, "<br>") + "</p>";
+      UI.esc(parsedSelf.text).replace(/\n/g, "<br>") + "</p>";
+    if (parsedSelf.chips.length) renderNoteChipStrip(userDiv, parsedSelf.chips);
     chat.appendChild(userDiv);
     /* 用户消息入场动画：从输入框位置丝滑滑入聊天区（位移量按实测注入） */
     animateMsgEnter(userDiv, true);
@@ -2536,6 +3278,10 @@
     }, function (ev: any) {
       if (epoch !== chatEpoch) return;  /* 视图已切换/新会话已开始：丢弃旧流帧 */
       if (ev.type === "chat") {
+        /* 错误已收尾（streamEnded）后，后端还会补发一轮收尾快照帧：
+           此时聊天区已带着错误提示行重建过，再照常处理会把错误行连同
+           聊天区一起重建抹掉——报错"闪一下就消失"的根源 */
+        if (streamEnded) return;
         messages = ev.messages || [];
         lastMessages = messages;
         renderMessages(messages);
@@ -3129,17 +3875,7 @@
        等消息发送失败后才见到原始报错，且无设置入口）；工作台状态条
        同步显示 API 就绪状态 */
     UI.getJSON("/api/settings").then(function (s: any) {
-      var hasKey = !!s.api_key;
-      var stamp = $("#apiStamp");
-      if (stamp) {
-        stamp.textContent = hasKey ? "API: READY" : "API: NONE";
-        stamp.classList.toggle("ok", hasKey);
-        stamp.classList.toggle("warn", !hasKey);
-      }
-      var banner = $("#apiBanner");
-      if (banner && !hasKey && sessionStorage.getItem("apiBannerDismissed") !== "1") {
-        banner.hidden = false;
-      }
+      applyChatSettings(s);
     }).catch(function () { /* 后端不可达时横幅与状态条保持缺省，不打扰 */ });
     var bannerClose = $("#apiBannerClose");
     if (bannerClose) {
@@ -3613,19 +4349,74 @@
       if (chatBusy) stopReply();
       else sendMessage();
     });
-    /* 用户手动展开/收起思考块后，自动展开/收起逻辑让位；同时记录手动
-       收起方向（流式重建恢复时尊重，不撤销用户的收起）。
-       注意：必须在 click 事件记录方向——toggle 事件会因 collapseDetails
-       撤销关闭而二次派发，在 toggle 里记录会把"收起"标记误清掉。
-       click 时 d.open 还是切换前的值：true = 用户即将收起，false = 展开 */
-    $("#chat").addEventListener("click", function (e) {
-      var sum = e.target!.closest!("summary");
-      if (sum && sum.parentElement && sum.parentElement.tagName === "DETAILS"
-          && sum.textContent.indexOf("思考过程") !== -1) {
-        userToggledStream = true;
-        thinkUserCollapsed = sum.parentElement.open as any;
+    var modelBtn = $("#modelPickerBtn");
+    if (modelBtn) {
+      modelBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (modelPickerOpen) closeModelPicker();
+        else openModelPicker();
+      });
+    }
+    document.addEventListener("click", function (e) {
+      var t = e.target as any;
+      if (!t || !t.closest || !t.closest("#modelPicker")) closeModelPicker();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeModelPicker();
+    });
+    var pickerPop = $("#modelPickerPop");
+    if (pickerPop) {
+      pickerPop.addEventListener("click", function (e) {
+        var t = e.target as any;
+        var a = t && t.closest ? t.closest("a[data-dir]") : null;
+        if (!a) return;
+        try { sessionStorage.setItem("ai-midi-nav-dir", a.getAttribute("data-dir") || "forward"); } catch (err) {}
+      });
+    }
+    /* 渐显完成后的 span 还原为纯文本节点（事件委托，避免长文本积累
+       动画元素拖慢渲染；降动态模式下不建 span，不会触发本委托） */
+    $("#chat").addEventListener("animationend", function (e) {
+      var t = e.target as any;
+      if (t && t.classList && t.classList.contains("char-fade") && t.parentNode) {
+        var tn = document.createTextNode(t.textContent || "");
+        t.parentNode.replaceChild(tn, t);
       }
     });
+    /* summary 点击：capture 阶段同步接管。必须 preventDefault 阻止 UA
+       翻转 open——UA 的翻转是同步的，而 toggle 事件异步派发，收起补偿
+       逻辑要等下一个任务才跑，中间会有一帧"内容瞬间全开/全关"再被
+       拉回去（气泡闪一下）。同步接管后开合都发生在点击帧内，全程
+       走 collapseDetails/syncDetailsBodies 的过渡路径 */
+    $("#chat").addEventListener("click", function (e) {
+      var sum = (e.target as Element).closest!("summary");
+      if (!sum) return;
+      var det = sum.parentElement as any;
+      if (!det || det.tagName !== "DETAILS") return;
+      var opening = !det.open;   /* 翻转前：false = 用户即将收起 */
+      /* 手动操作过思考块 → 自动开合让位；记录收起方向（流式重建恢复
+         时尊重，不撤销用户的收起） */
+      if (sum.textContent.indexOf("思考过程") !== -1) {
+        userToggledStream = true;
+        thinkUserCollapsed = !opening;
+      }
+      e.preventDefault();        /* 自己控制 open，杜绝 UA 翻转的中间帧 */
+      if (det.open) {
+        if (detailsClosing === det) {
+          /* 收起动画进行中再次点击：取消收起，反向展开 */
+          detailsClosing = null;
+          var body = det.querySelector(":scope > .details-body");
+          if (body) {
+            var inner = body.querySelector(".details-inner");
+            body.style.maxHeight = (inner ? inner.scrollHeight : body.scrollHeight) + "px";
+          }
+          return;
+        }
+        collapseDetails(det);
+        return;
+      }
+      det.open = true;
+      syncDetailsBodies($("#chat"));
+    }, true);
     /* 消息操作按钮（复制 / 修改 / 修改菜单三选项）——事件委托，随整表重建存活。
        data-index 由 renderMessages 渲染时写入，据此取 currentMessages 中
        对应的消息数据（内容寻址缓存克隆不携带按钮监听器） */

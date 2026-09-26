@@ -90,6 +90,29 @@
     return s;
   }
 
+  /* 本机接入点判定，与后端 config.IsLocalBaseURL 同一标准：只有 localhost /
+     ::1 / 127.0.0.0/8 算本地。本地推理服务（Ollama、LM Studio、vLLM、
+     llama.cpp）默认不校验密钥，所以设置页与对话页都不能因为"密钥为空"
+     就把它们当成没配好。前缀匹配 127. 会被 127.evil.com 骗过，这里按域名
+     分段和 IPv4 全段校验。 */
+  function isLocalEndpoint(baseURL: unknown) {
+    var raw = String(baseURL == null ? "" : baseURL).trim();
+    if (!raw) return false;
+    if (raw.indexOf("://") < 0) raw = "https://" + raw;
+    var host = "";
+    try {
+      host = new URL(raw).hostname.toLowerCase();
+    } catch (e) {
+      return false;
+    }
+    // 有的引擎把 IPv6 写成 "[::1]"，先剥方括号再判定
+    if (host.charAt(0) === "[" && host.charAt(host.length - 1) === "]") {
+      host = host.slice(1, -1);
+    }
+    if (host === "localhost" || host === "::1") return true;
+    return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  }
+
   /* ---- 工具 ---- */
   function esc(s: unknown) {
     return String(s == null ? "" : s)
@@ -537,9 +560,139 @@
     if (transportPrefs.loaded) fn(transportPrefs);
   }
 
+  /* ═══════════ 应用内确认弹窗 ═══════════
+     替代 window.confirm：原生弹窗用的是浏览器/WebView 的外观，跟图纸主题
+     两回事，而且会连带阻塞渲染。样式复用 chat.html 那套
+     .modal-overlay / .modal.card.brackets，所以两处长得完全一样。
+
+     用法：UI.confirm("要问的话")  或
+           UI.confirm({ text, title, okText, cancelText, danger })
+     返回 Promise<boolean>：确认 true，取消/Esc/点遮罩 false。 */
+  var uiConfirmState: { resolve: ((v: boolean) => void) | null; el: HTMLElement | null } = {
+    resolve: null,
+    el: null,
+  };
+
+  function uiReducedMotion() {
+    return typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function ensureConfirmDom() {
+    if (uiConfirmState.el && document.contains(uiConfirmState.el)) return uiConfirmState.el;
+    var overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.id = "uiConfirmOverlay";
+    overlay.hidden = true;
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    var box = document.createElement("div");
+    box.className = "modal card brackets";
+    var title = document.createElement("div");
+    title.className = "modal-title";
+    title.id = "uiConfirmTitle";
+    var text = document.createElement("div");
+    text.className = "confirm-text";
+    var actions = document.createElement("div");
+    actions.className = "modal-actions";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn btn-secondary";
+    var ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "btn btn-danger";
+    actions.appendChild(cancel);
+    actions.appendChild(ok);
+    box.appendChild(title);
+    box.appendChild(text);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    overlay.setAttribute("aria-labelledby", "uiConfirmTitle");
+
+    /* 点遮罩空白处 = 取消；点弹窗内部不冒泡成取消 */
+    overlay.addEventListener("click", function (e) {
+      if (e.target === overlay) settleConfirm(false);
+    });
+    overlay.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        settleConfirm(false);
+      }
+    });
+    cancel.addEventListener("click", function () { settleConfirm(false); });
+    ok.addEventListener("click", function () { settleConfirm(true); });
+
+    uiConfirmState.el = overlay;
+    return overlay;
+  }
+
+  var confirmFocusReturn: HTMLElement | null = null;
+
+  function settleConfirm(result: boolean) {
+    var overlay = uiConfirmState.el;
+    var resolve = uiConfirmState.resolve;
+    uiConfirmState.resolve = null;
+    if (resolve) resolve(result);
+    if (!overlay) return;
+    var el: HTMLElement = overlay;
+    if (uiReducedMotion()) {
+      el.hidden = true;
+      el.classList.remove("modal-in", "modal-out");
+    } else {
+      el.classList.remove("modal-in");
+      el.classList.add("modal-out");
+      setTimeout(function () {
+        /* 弹窗关完再复位：期间又开了一次的话，别把新的那次一起藏掉 */
+        if (uiConfirmState.el !== el || uiConfirmState.resolve) return;
+        el.hidden = true;
+        el.classList.remove("modal-out");
+      }, 220);
+    }
+    var back = confirmFocusReturn;
+    confirmFocusReturn = null;
+    if (back && back.focus && document.contains(back)) {
+      try { back.focus(); } catch (e) {}
+    }
+  }
+
+  function confirmDialog(opts: any): Promise<boolean> {
+    var o = typeof opts === "string" ? { text: opts } : (opts || {});
+    if (uiConfirmState.resolve) settleConfirm(false);   /* 前一个未决的先按取消收尾 */
+    var overlay = ensureConfirmDom();
+    var box = overlay.querySelector(".modal") as HTMLElement;
+    var titleEl = overlay.querySelector(".modal-title") as HTMLElement;
+    var textEl = overlay.querySelector(".confirm-text") as HTMLElement;
+    var buttons = overlay.querySelectorAll(".modal-actions .btn");
+    var cancel = buttons[0] as HTMLButtonElement;
+    var ok = buttons[1] as HTMLButtonElement;
+    titleEl.textContent = o.title || "确认操作";
+    textEl.textContent = friendlyText(o.text == null ? "" : o.text);
+    cancel.textContent = o.cancelText || "取消";
+    ok.textContent = o.okText || "确定";
+    /* 危险操作沿用 .btn-danger（红字描边），常规操作降为次要按钮 */
+    ok.className = o.danger === false ? "btn btn-secondary" : "btn btn-danger";
+    if (box) box.setAttribute("aria-label", titleEl.textContent || "确认操作");
+
+    confirmFocusReturn = document.activeElement as HTMLElement;
+    overlay.hidden = false;
+    if (!uiReducedMotion()) {
+      overlay.classList.remove("modal-in", "modal-out");
+      void overlay.offsetWidth;
+      overlay.classList.add("modal-in");
+    }
+    setTimeout(function () { try { ok.focus(); } catch (e) {} }, 30);
+
+    return new Promise(function (resolve) {
+      uiConfirmState.resolve = resolve;
+    });
+  }
+
   global.UI = {
     qs: qs, qsa: qsa, toast: toast, esc: esc,
+    confirm: confirmDialog,
     fmtSize: fmtSize, fmtDate: fmtDate, friendlyText: friendlyText,
+    isLocalEndpoint: isLocalEndpoint,
     getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
     openExternal: openExternal,
     ssePost: ssePost, md: md, mdInline: mdInline, projectCard: projectCard,

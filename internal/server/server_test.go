@@ -215,6 +215,104 @@ func TestAnswerEndpoint(t *testing.T) {
 	}
 }
 
+func TestProviderPresetsAndActiveSelection(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/api/provider-presets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var presets struct {
+		Presets []map[string]any `json:"presets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&presets); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(presets.Presets) < 10 {
+		t.Fatalf("presets = %d, want a catalog", len(presets.Presets))
+	}
+
+	body := []byte(`{
+		"providers": [{
+			"id": "p_test",
+			"name": "Anthropic",
+			"protocol": "anthropic",
+			"base_url": "https://api.anthropic.com",
+			"api_path": "/v1",
+			"api_key": "sk-ant-secret",
+			"enabled": true,
+			"models": [{"id": "claude-sonnet-4-5", "max_tokens": 8192}]
+		}],
+		"active_provider_id": "p_test",
+		"active_model_id": "claude-sonnet-4-5",
+		"thinking_enabled": true,
+		"reasoning_effort": "max"
+	}`)
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/settings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	putResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT providers status = %d", putResp.StatusCode)
+	}
+
+	s := config.LoadSettings()
+	resolved, err := config.ResolveCall(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Protocol != config.ProtocolAnthropic || resolved.Model != "claude-sonnet-4-5" {
+		t.Fatalf("resolved protocol=%s model=%s", resolved.Protocol, resolved.Model)
+	}
+	if resolved.MaxTokens == nil || *resolved.MaxTokens != 8192 {
+		t.Fatalf("model max_tokens = %v", resolved.MaxTokens)
+	}
+
+	off := []byte(`{"provider_id":"p_test","model_id":"claude-sonnet-4-5"}`)
+	s.Providers[0].Enabled = false
+	if err := config.SaveSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	act, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/settings/active", bytes.NewReader(off))
+	act.Header.Set("Content-Type", "application/json")
+	actResp, err := http.DefaultClient.Do(act)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actResp.Body.Close()
+	if actResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("disabled provider select status = %d, want 400", actResp.StatusCode)
+	}
+
+	settingsHTML, err := os.ReadFile(filepath.Join("..", "..", "frontend", "settings.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	/* 按 id 断言而不是按钮文案：文案会随界面改动变，id 是前后端绑定的契约 */
+	settings := string(settingsHTML)
+	for _, need := range []string{`id="providerList"`, `id="addPresetBtn"`, `id="addCustomBtn"`, `id="providerForm"`} {
+		if !strings.Contains(settings, need) {
+			t.Fatalf("settings connection pane missing %s", need)
+		}
+	}
+	chatHTML, err := os.ReadFile(filepath.Join("..", "..", "frontend", "chat.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := string(chatHTML)
+	if strings.Contains(chat, "id=\"modelStamp\"") {
+		t.Fatal("studio bar should not keep the MODEL stamp")
+	}
+	if !strings.Contains(chat, "id=\"modelPickerBtn\"") || !strings.Contains(chat, "id=\"newTaskBtn\"") {
+		t.Fatal("chat composer missing model picker next to new task")
+	}
+}
+
 func TestModelsEndpointPOST(t *testing.T) {
 	ts, cleanup := setupTestServer(t)
 	defer cleanup()
@@ -489,5 +587,203 @@ func TestRecallEmptyProjectKeepsFileKeys(t *testing.T) {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("recall response missing %q", key)
 		}
+	}
+}
+
+// 删光供应商 = 真的删光：PUT providers:[] 之后，settings.json 里必须留着一个
+// 空的 providers 数组，扁平字段（含密钥）要清干净。否则下次启动时
+// parseSettings 会把"缺失的 providers 键"当成旧版配置，用残留的扁平字段
+// 重新合成一家供应商——用户刚删掉的供应商会带着密钥复活。
+func TestDeletingAllProvidersStaysDeleted(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	put := func(body string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/settings", bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := put(`{
+		"providers": [{
+			"id": "p_doomed",
+			"name": "DeepSeek",
+			"protocol": "openai",
+			"base_url": "https://api.deepseek.com",
+			"api_path": "",
+			"api_key": "sk-must-not-come-back",
+			"enabled": true,
+			"models": [{"id": "deepseek-v4-pro"}]
+		}],
+		"active_provider_id": "p_doomed",
+		"active_model_id": "deepseek-v4-pro"
+	}`); code != http.StatusOK {
+		t.Fatalf("首次 PUT 状态 = %d", code)
+	}
+
+	// 设置页删掉唯一一家供应商后发出的请求体
+	if code := put(`{"providers": [], "active_provider_id": "", "active_model_id": ""}`); code != http.StatusOK {
+		t.Fatalf("清空 PUT 状态 = %d", code)
+	}
+
+	raw, err := os.ReadFile(config.SettingsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "sk-must-not-come-back") {
+		t.Fatalf("密钥仍留在 settings.json: %s", raw)
+	}
+	var onDisk map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	provRaw, ok := onDisk["providers"]
+	if !ok {
+		t.Fatalf("providers 键丢失，重启会走旧版迁移复活供应商: %s", raw)
+	}
+	if string(provRaw) == "null" {
+		t.Fatalf("providers 被写成 null（等同缺失）: %s", raw)
+	}
+
+	// 读回来也必须是空的
+	resp, err := http.Get(ts.URL + "/api/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got struct {
+		APIKey      string           `json:"api_key"`
+		Providers   []map[string]any `json:"providers"`
+		ActiveProv  string           `json:"active_provider_id"`
+		ActiveModel string           `json:"active_model_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Providers) != 0 {
+		t.Fatalf("供应商复活了: %+v", got.Providers)
+	}
+	if got.APIKey != "" {
+		t.Fatalf("api_key = %q, want empty", got.APIKey)
+	}
+	if got.ActiveProv != "" || got.ActiveModel != "" {
+		t.Fatalf("选中项应为空: %q / %q", got.ActiveProv, got.ActiveModel)
+	}
+	if _, err := config.ResolveCall(config.LoadSettings()); err == nil {
+		t.Fatal("没有供应商时 ResolveCall 应报错")
+	}
+}
+
+// 对话页直接改某个可用模型的思考强度档位：只动那一条模型，
+// 不动全局「生成」页的默认值，也不要求先把对话切过去。
+func TestModelEffortEndpoint(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	put := func(body string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/settings", bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post := func(body string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/settings/model-effort", bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	modelState := func(modelID string) (string, *bool) {
+		t.Helper()
+		s := config.LoadSettings()
+		for i := range s.Providers[0].Models {
+			if s.Providers[0].Models[i].ID == modelID {
+				return s.Providers[0].Models[i].ReasoningEffort, s.Providers[0].Models[i].ThinkingEnabled
+			}
+		}
+		t.Fatalf("模型 %s 不见了", modelID)
+		return "", nil
+	}
+
+	/* deepseek-v4-pro 只开 low/medium；deepseek-v4-flash 一档都不开 */
+	put(`{
+		"reasoning_effort": "max",
+		"providers": [{
+			"id": "p_eff", "name": "DeepSeek", "protocol": "openai",
+			"base_url": "https://api.deepseek.com", "api_path": "", "api_key": "sk-x", "enabled": true,
+			"models": [
+				{"id": "deepseek-v4-pro", "reasoning_efforts": ["low", "medium"]},
+				{"id": "deepseek-v4-flash", "reasoning_efforts": []}
+			]
+		}],
+		"active_provider_id": "p_eff", "active_model_id": "deepseek-v4-pro"
+	}`)
+
+	// 选一个启用的档位：固定该档 + 单独开启 thinking，不动选中项和全局默认
+	if code := post(`{"provider_id":"p_eff","model_id":"deepseek-v4-pro","selection":"low"}`); code != http.StatusOK {
+		t.Fatalf("选档位状态 = %d, want 200", code)
+	}
+	if eff, th := modelState("deepseek-v4-pro"); eff != "low" || th == nil || !*th {
+		t.Fatalf("选档位后 effort=%q thinking=%v, want low + true", eff, th)
+	}
+	if s := config.LoadSettings(); s.ActiveModelID != "deepseek-v4-pro" || s.ReasoningEffort != "max" {
+		t.Fatalf("选中项/全局默认被动了: %q / %q", s.ActiveModelID, s.ReasoningEffort)
+	}
+
+	// 未启用的档位要拒
+	if code := post(`{"provider_id":"p_eff","model_id":"deepseek-v4-pro","selection":"max"}`); code != http.StatusBadRequest {
+		t.Fatalf("未启用档位状态 = %d, want 400", code)
+	}
+
+	// "off"（不思考）：单独关 thinking，档位值保持不变
+	if code := post(`{"provider_id":"p_eff","model_id":"deepseek-v4-pro","selection":"off"}`); code != http.StatusOK {
+		t.Fatalf("不思考状态 = %d, want 200", code)
+	}
+	if eff, th := modelState("deepseek-v4-pro"); eff != "low" || th == nil || *th {
+		t.Fatalf("不思考后 effort=%q thinking=%v, want low 不动 + false", eff, th)
+	}
+
+	// 一档都没开的模型：档位拒绝，"不思考"放行（把 thinking 单独关掉是合法操作）
+	if code := post(`{"provider_id":"p_eff","model_id":"deepseek-v4-flash","selection":"low"}`); code != http.StatusBadRequest {
+		t.Fatalf("全关档位模型选档状态 = %d, want 400", code)
+	}
+	if code := post(`{"provider_id":"p_eff","model_id":"deepseek-v4-flash","selection":"off"}`); code != http.StatusOK {
+		t.Fatalf("全关档位模型不思考状态 = %d, want 200", code)
+	}
+	if _, th := modelState("deepseek-v4-flash"); th == nil || *th {
+		t.Fatalf("flash 的 thinking 应为显式 false, got %v", th)
+	}
+
+	// 目录里不收这个参数、且没配过档位的模型：选档拒；不存在的模型拒；非法值拒
+	put(`{
+		"providers": [{
+			"id": "p_eff", "name": "DeepSeek", "protocol": "openai",
+			"base_url": "https://api.deepseek.com", "api_path": "", "api_key": "sk-x", "enabled": true,
+			"models": [{"id": "deepseek-v4-pro"}, {"id": "gpt-4o"}]
+		}],
+		"active_provider_id": "p_eff", "active_model_id": "deepseek-v4-pro"
+	}`)
+	if code := post(`{"provider_id":"p_eff","model_id":"gpt-4o","selection":"low"}`); code != http.StatusBadRequest {
+		t.Fatalf("不支持档位的模型状态 = %d, want 400", code)
+	}
+	if code := post(`{"provider_id":"p_eff","model_id":"nope","selection":"low"}`); code != http.StatusBadRequest {
+		t.Fatalf("模型不存在状态 = %d, want 400", code)
+	}
+	if code := post(`{"provider_id":"p_eff","model_id":"deepseek-v4-pro","selection":"turbo"}`); code != http.StatusBadRequest {
+		t.Fatalf("非法值状态 = %d, want 400", code)
 	}
 }

@@ -52,6 +52,10 @@ const (
 	DefaultModel   = "deepseek-v4-pro"
 
 	GeminiBaseURLHost = "generativelanguage.googleapis.com"
+
+	ProtocolOpenAI    = "openai"
+	ProtocolAnthropic = "anthropic"
+	ProtocolGemini    = "gemini"
 )
 
 // ===== MIDI 默认参数 =====

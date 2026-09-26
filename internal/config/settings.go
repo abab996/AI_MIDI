@@ -31,6 +31,15 @@ type Settings struct {
 	// TransportResumeOnPause 暂停后播放光标回退到本次播放的起始位置
 	//（关闭时暂停在当前位置，保持原行为）
 	TransportResumeOnPause bool `json:"transport_resume_on_pause"`
+
+	/* 该键必须始终写进 settings.json，不能加 omitempty：空列表被省略后，
+	   parseSettings 会把它当成"旧版配置"去走扁平字段迁移，凭空合成一家
+	   供应商——用户刚删掉的供应商会带着密钥复活 */
+	Providers        []Provider `json:"providers"`
+	ActiveProviderID string     `json:"active_provider_id,omitempty"`
+	ActiveModelID    string     `json:"active_model_id,omitempty"`
+	// Protocol 只在 ResolveCall 的返回值里有效，不写入 settings.json。
+	Protocol string `json:"-"`
 }
 
 var (
@@ -38,21 +47,35 @@ var (
 	/* 配置缓存：LoadSettings 在每个请求（含每次音频白名单校验）都会调用，
 	   此前每次都完整读盘+JSON 解析。缓存 + mtime/size 校验——外部改动仍
 	   能被感知（校验开销仅一次 stat），SaveSettings 写穿更新缓存。 */
-	settingsCache *Settings
-	settingsMod   time.Time
-	settingsSize  int64
+	settingsCache     *Settings
+	settingsCacheFile string
+	settingsMod       time.Time
+	settingsSize      int64
 )
 
 // DefaultSettings 返回填充了系统默认值的配置
 func DefaultSettings() Settings {
+	p := Provider{
+		ID:       "p_default",
+		PresetID: "deepseek",
+		Name:     "DeepSeek",
+		Protocol: ProtocolOpenAI,
+		BaseURL:  DefaultBaseURL,
+		APIPath:  DefaultAPIPath,
+		Enabled:  true,
+		Models:   []ModelConfig{{ID: DefaultModel}},
+	}
 	return Settings{
-		APIKey:          "",
-		BaseURL:         DefaultBaseURL,
-		APIPath:         DefaultAPIPath,
-		Model:           DefaultModel,
-		ReasoningEffort: "max",
-		ThinkingEnabled: true,
-		Audio:           AudioSettings{EngineEnabled: true, Backend: "auto"},
+		APIKey:           "",
+		BaseURL:          DefaultBaseURL,
+		APIPath:          DefaultAPIPath,
+		Model:            DefaultModel,
+		ReasoningEffort:  "max",
+		ThinkingEnabled:  true,
+		Audio:            AudioSettings{EngineEnabled: true, Backend: "auto"},
+		Providers:        []Provider{p},
+		ActiveProviderID: p.ID,
+		ActiveModelID:    DefaultModel,
 	}
 }
 
@@ -72,6 +95,7 @@ func cloneSettings(s *Settings) Settings {
 		v := *s.MaxCompletionTokens
 		cp.MaxCompletionTokens = &v
 	}
+	cp.Providers = cloneProviders(s.Providers)
 	return cp
 }
 
@@ -81,7 +105,7 @@ func LoadSettings() Settings {
 	if fi, err := os.Stat(SettingsFile); err == nil {
 		settingsMu.RLock()
 		cached := settingsCache
-		match := cached != nil && fi.ModTime() == settingsMod && fi.Size() == settingsSize
+		match := cached != nil && settingsCacheFile == SettingsFile && fi.ModTime() == settingsMod && fi.Size() == settingsSize
 		settingsMu.RUnlock()
 		if match {
 			return cloneSettings(cached)
@@ -91,7 +115,7 @@ func LoadSettings() Settings {
 		settingsMu.RLock()
 		cached := settingsCache
 		settingsMu.RUnlock()
-		if cached != nil {
+		if cached != nil && settingsCacheFile == SettingsFile {
 			return cloneSettings(cached)
 		}
 	}
@@ -100,11 +124,11 @@ func LoadSettings() Settings {
 	defer settingsMu.Unlock()
 	// 二次校验：Held Lock 后再次检查，避免 SaveSettings 并发更新后被旧盘覆盖
 	if fi, err := os.Stat(SettingsFile); err == nil {
-		if settingsCache != nil && fi.ModTime() == settingsMod && fi.Size() == settingsSize {
+		if settingsCache != nil && settingsCacheFile == SettingsFile && fi.ModTime() == settingsMod && fi.Size() == settingsSize {
 			return cloneSettings(settingsCache)
 		}
 	} else {
-		if settingsCache != nil {
+		if settingsCache != nil && settingsCacheFile == SettingsFile {
 			return cloneSettings(settingsCache)
 		}
 	}
@@ -208,6 +232,7 @@ func parseSettings(data []byte) Settings {
 
 	res.MaxTokens = toIntPtr(raw["max_tokens"])
 	res.MaxCompletionTokens = toIntPtr(raw["max_completion_tokens"])
+	ApplyProvidersFromRaw(&res, raw)
 
 	return res
 }
@@ -220,6 +245,12 @@ func SaveSettings(s Settings) error {
 	if err := os.MkdirAll(filepath.Dir(SettingsFile), 0755); err != nil {
 		slog.Error("创建设置目录失败", "err", err)
 		return err
+	}
+
+	// nil 会序列化成 null，而 parseSettings 把 null 和"键不存在"一视同仁，
+	// 都会退回旧版迁移分支——统一写成 []
+	if s.Providers == nil {
+		s.Providers = []Provider{}
 	}
 
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -252,6 +283,7 @@ func SaveSettings(s Settings) error {
 	if fi, statErr := os.Stat(SettingsFile); statErr == nil {
 		cp := cloneSettings(&s)
 		settingsCache = &cp
+		settingsCacheFile = SettingsFile
 		settingsMod = fi.ModTime()
 		settingsSize = fi.Size()
 	}
@@ -261,5 +293,9 @@ func SaveSettings(s Settings) error {
 
 // GetAPIKey 获取当前保存的 API Key
 func GetAPIKey() string {
-	return LoadSettings().APIKey
+	s := LoadSettings()
+	if resolved, err := ResolveCall(s); err == nil && resolved.APIKey != "" {
+		return resolved.APIKey
+	}
+	return s.APIKey
 }

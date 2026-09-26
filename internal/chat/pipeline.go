@@ -55,8 +55,14 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		return nil
 	}
 
-	settings := config.LoadSettings()
-	if settings.APIKey == "" {
+	settings, resolveErr := config.ResolveCall(config.LoadSettings())
+	if resolveErr != nil {
+		_ = onEvent(map[string]any{"type": "error", "message": resolveErr.Error()})
+		_ = onEvent(map[string]any{"type": "done"})
+		return nil
+	}
+	// 本地服务（Ollama / LM Studio / vLLM / llama.cpp）不校验密钥，别拦
+	if settings.APIKey == "" && config.RequiresAPIKey(settings.BaseURL) {
 		_ = onEvent(map[string]any{"type": "error", "message": "⚠ 请先在设置页填写并保存 API Key。"})
 		_ = onEvent(map[string]any{"type": "done"})
 		return nil
@@ -179,7 +185,7 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		_ = onEvent(map[string]any{"type": "done"})
 	}()
 
-	isGemini := config.IsGeminiProvider(settings.BaseURL)
+	isGemini := config.EffectiveProtocol(settings) == config.ProtocolGemini
 
 	buildApiMessages := func(history []map[string]any, midiFiles []project.MidiFileInfo) []llm.ChatCompletionMessage {
 		var msgs []llm.ChatCompletionMessage
@@ -262,7 +268,7 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		tools = append(tools, mcp.GetLocalTools()...)
 
 		// 发起流式请求
-		streamResp, err := streamChatCompletion(taskCtx, settings, apiMessages, tools, isGemini)
+		streamResp, err := streamChatCompletion(taskCtx, settings, apiMessages, tools)
 		if err != nil {
 			slog.Error("调用 AI 流式接口失败", "err", err)
 			if taskCtx.Err() == nil {
@@ -805,11 +811,12 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 	return ChatStream(ctx, projectID, "", false, true, &tid, onEvent)
 }
 
-func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm.ChatCompletionMessage, tools []llm.ToolDefinition, isGemini bool) (*http.Response, error) {
-	validatedURL, err := config.ValidateBaseURL(s.BaseURL, s.APIPath)
-	if err != nil {
-		return nil, err
+func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm.ChatCompletionMessage, tools []llm.ToolDefinition) (*http.Response, error) {
+	proto := config.EffectiveProtocol(s)
+	if proto == config.ProtocolAnthropic {
+		return llm.StreamAnthropic(ctx, s, messages, tools)
 	}
+	isGemini := proto == config.ProtocolGemini
 
 	model := s.Model
 	if model == "" {
@@ -832,7 +839,10 @@ func streamChatCompletion(ctx context.Context, s config.Settings, messages []llm
 		}
 	}
 
-	endpoint := llm.JoinEndpoint(validatedURL, "/v1/chat/completions")
+	endpoint, err := llm.EndpointURL(s.BaseURL, s.APIPath, proto, "chat")
+	if err != nil {
+		return nil, err
+	}
 	client := llm.NewStreamHTTPClient(60 * time.Second)
 
 	strippableSteps := []string{"extra_body", "reasoning_effort", "max_tokens", "max_completion_tokens"}

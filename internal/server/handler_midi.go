@@ -134,8 +134,13 @@ func (r *Router) handleRunTask(w http.ResponseWriter, req *http.Request) {
 		sendSSE(map[string]any{"type": "progress", "value": 0.2, "desc": "解析 MIDI"})
 	}
 
-	settings := config.LoadSettings()
-	if settings.APIKey == "" {
+	settings, resolveErr := config.ResolveCall(config.LoadSettings())
+	if resolveErr != nil {
+		sendSSE(map[string]any{"type": "error", "message": elapsed(resolveErr.Error())})
+		return
+	}
+	// 本地服务（Ollama / LM Studio / vLLM / llama.cpp）不校验密钥，别拦
+	if settings.APIKey == "" && config.RequiresAPIKey(settings.BaseURL) {
 		sendSSE(map[string]any{"type": "error", "message": elapsed("⚠ 请先在设置页填写并保存 API Key。")})
 		return
 	}

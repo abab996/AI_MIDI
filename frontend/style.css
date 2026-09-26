@@ -1006,6 +1006,39 @@ a.btn {
   white-space: nowrap;
 }
 
+/* 导航栏左侧成组（返回按钮 + 页面名），避免三点布局把标题挤到中间 */
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 返回上一页：纯图标小方块，页名前的轻量退出位 */
+.nav-back {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--color-ink-dim);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.nav-back:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
 .search-box {
   flex: 1;
   display: flex;
@@ -1500,8 +1533,12 @@ a.btn {
 
 .msg.user .msg-label { color: var(--color-primary); }
 
+/* 宽度固定为最大值、不做内容自适应：AI 气泡里有可折叠的思考/工具块，
+   若宽度跟随内容，展开一个长单行块会把整条气泡撑宽、全部文字重新
+   折行（块长上下抽动）。恒定全宽后展开只改变高度，不再有横向回流 */
 .msg.ai {
   align-self: flex-start;
+  width: 82%;
   background: var(--color-bg-card);
   border: 1px solid var(--color-border);
 }
@@ -2015,6 +2052,18 @@ a.btn {
   word-break: break-word;
 }
 
+/* ── AI 输出分组渐显（仅实时流式）：每 10 字符一组一个动画，
+   避免逐字建 span 导致上千个并发动画卡顿。0.45s 渐显 + 逐组 40ms
+   错峰（封顶 400ms），整段观感约 1 秒的淡入 ── */
+.char-fade {
+  animation: char-fade 0.45s ease-out both;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes char-fade {
+  from { opacity: 0; }
+}
+
 .typing-dots {
   display: inline-flex;
   gap: 5px;
@@ -2061,7 +2110,7 @@ a.btn {
 
 .tool-call {
   align-self: flex-start;
-  max-width: 92%;
+  width: 92%;   /* 同 .msg.ai：恒定全宽，展开不再撑宽回流 */
   min-width: 0;
 }
 
@@ -2157,6 +2206,88 @@ a.btn {
   word-break: break-all;
 }
 
+/* ── 音符片段芯片条（卷帘「发送给 AI」的附着物，位于输入框上方） ── */
+.note-chip-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 6px;
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  background: var(--color-bg-console);
+}
+
+.note-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 4px 6px 4px 9px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  background: var(--color-bg-card);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-ink);
+  cursor: pointer;
+  animation: midi-link-pop 0.32s cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+.note-chip:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.note-chip .note-chip-icon {
+  flex: none;
+  color: var(--color-primary);
+}
+
+.note-chip .note-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-chip .note-chip-range {
+  flex: none;
+  color: var(--color-primary);
+  letter-spacing: 0.02em;
+}
+
+.note-chip .note-chip-del {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  line-height: 12px;
+  text-align: center;
+  border-radius: 2px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+
+.note-chip .note-chip-del:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+/* 用户消息气泡下方的已发送音符芯片（渲染自消息内的信封块） */
+.note-chip-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.note-chip-strip .note-chip {
+  animation: none;
+  max-width: 260px;
+  background: var(--color-bg-soft);
+}
+
 .composer {
   display: flex;
   gap: 10px;
@@ -2206,6 +2337,317 @@ a.btn {
   align-items: center;
   margin-top: 10px;
   gap: 10px;
+}
+
+.foot-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ── 对话页底栏的模型选择器 ──────────────────────────────────
+   按钮是一个状态胶囊：左边小圆点报"选好没有"，右边 caret 提示可展开；
+   弹层是两栏目录（供应商 / 模型）+ 一条说明脚注 */
+.model-picker {
+  position: relative;
+}
+
+#modelPickerBtn {
+  max-width: 260px;
+  gap: 7px;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+#modelPickerBtn .picker-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 6px var(--color-glow);
+}
+
+/* 没选好 = 发不出去，用强调橙提前说清楚 */
+#modelPickerBtn.warn .picker-dot {
+  background: var(--color-accent);
+  box-shadow: 0 0 6px var(--color-accent);
+}
+
+#modelPickerBtn #modelPickerLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#modelPickerBtn .picker-caret {
+  flex: none;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--color-ink-dim);
+  transition: transform 0.18s ease;
+}
+
+.model-picker-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(560px, 84vw);
+  display: grid;
+  grid-template-columns: minmax(130px, 46%) minmax(0, 1fr);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  box-shadow: 0 10px 26px var(--color-shadow);
+  z-index: 40;
+  overflow: hidden;
+}
+
+/* 供应商栏略窄、模型栏略宽：模型的整行更长（图标 + ID + 档位按钮 + 状态） */
+.model-picker-pop {
+  grid-template-columns: minmax(130px, 42%) minmax(0, 1fr);
+}
+
+.model-picker-pop.menu-in {
+  animation: menu-pop 0.22s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+}
+
+.picker-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 292px;
+}
+
+.picker-col:first-child {
+  border-right: 1px solid var(--color-border);
+}
+
+.picker-col-head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--color-bg-alt);
+  border-bottom: 1px solid var(--color-border);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-dim);
+}
+
+.picker-col-head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-count {
+  flex: none;
+  color: var(--color-primary);
+}
+
+.picker-col-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.picker-provider {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+}
+
+.picker-prov-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-prov-count {
+  flex: none;
+  font-size: 10px;
+  color: var(--color-ink-faint);
+}
+
+.picker-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+.picker-model-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 模型行右侧的思考强度折叠菜单 ── */
+.picker-model-wrap {
+  border-bottom: 1px solid transparent;
+}
+
+/* 行尾那枚小按钮：显示当前档位 + 一个随开合翻转的 caret */
+.picker-effort {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+/* 实底是关键：按钮嵌在模型行里，行悬停会变成主色底+反色字，若按钮透明，
+   它自己的深色字就糊进蓝色里了。实底让它在该行上始终是一块可读的芯片 */
+.picker-effort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: var(--color-bg-card);
+  color: var(--color-ink-dim);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.picker-effort-btn:hover,
+.picker-effort.open .picker-effort-btn {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.picker-effort-caret {
+  font-size: 8px;
+  transition: transform 0.2s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/* 面板展开期间禁止行的"主色底悬停"：展开的档位列表也嵌在行里，行一变蓝，
+   选项的深色字全糊掉。压回柔和高亮（或保持选中态），选项保持可读 */
+.model-picker-pop .select-option.picker-model:has(.picker-effort.open):hover {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.picker-effort.open .picker-effort-caret {
+  transform: rotate(180deg);
+}
+
+/* 展开面板：0fr → 1fr，不测高度 */
+.picker-effort-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.24s cubic-bezier(0.34, 1.32, 0.64, 1);
+}
+
+.picker-effort.open .picker-effort-panel {
+  grid-template-rows: 1fr;
+}
+
+.picker-effort-inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px 0 26px;
+}
+
+.picker-effort.open .picker-effort-inner {
+  padding-bottom: 6px;
+}
+
+.picker-effort-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--color-ink-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.picker-effort-item:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-ink);
+  background: var(--color-bg-alt);
+}
+
+.picker-effort-item.active {
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.picker-effort-item .picker-tick {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .picker-effort-panel,
+  .picker-effort-caret {
+    transition: none;
+  }
+}
+
+.picker-foot {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-alt);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+}
+
+.picker-foot .dim {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-foot a {
+  flex: none;
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.picker-foot a:hover {
+  text-decoration: underline;
+}
+
+/* 弹层里的协议徽章比侧栏的小一号 */
+.model-picker-pop .prov-badge {
+  font-size: 8px;
+  padding: 2px 4px;
 }
 
 .download-link {
@@ -2258,7 +2700,7 @@ a.btn {
      居中——各面板内容宽窄不一，切换标签时左右两栏整体横移。
      width:100% + minmax(0,1fr) 锁定两栏尺寸，只允许高度随内容变化 */
   width: 100%;
-  max-width: 960px;
+  max-width: 1120px;
   margin: 16px auto 0;
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
@@ -2268,8 +2710,15 @@ a.btn {
 }
 
 /* 各面板高度差异大，滚动条出现/消失会让居中布局横移十几像素；
-   设置页预留滚动条槽位，切换标签时页面纹丝不动 */
-html:has(.settings-wrap) {
+   设置页预留滚动条槽位，切换标签时页面纹丝不动。
+   浏览器模式滚动容器是视口，槽位留给 html；桌面模式（has-titlebar）页面
+   滚动由 body 承担（见文件末尾「自绘标题栏」一节），槽位要留给 body——
+   此时若还留在 html 上，会白白把整窗宽再扣掉 10px。 */
+html:not(.has-titlebar):has(.settings-wrap) {
+  scrollbar-gutter: stable;
+}
+
+html.has-titlebar:has(body:not(.app-shell)) body:has(.settings-wrap) {
   scrollbar-gutter: stable;
 }
 
@@ -2369,6 +2818,838 @@ html:has(.settings-wrap) {
   gap: 20px;
 }
 
+/* ── 品牌图标（供应商 / 模型前面那一格） ──────────────────────
+   由 /js/brand-icons.js 生成，彩色图标保留品牌配色，单色图标用
+   fill=currentColor 跟随主题文字色。查不到品牌的走首字母方块，
+   保证每行的图标位都有东西，不会一行有一行没有。 */
+.brand-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-dim);
+  opacity: 0.9;
+}
+
+.brand-icon > svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.brand-icon-letter {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  color: var(--color-primary);
+  background: var(--color-bg-soft);
+}
+
+/* 选中/使用中的行里图标亮一点，未启用的压暗 */
+.provider-item.active .brand-icon,
+.provider-item:hover .brand-icon,
+.picker-provider.active .brand-icon,
+.picker-model.active .brand-icon,
+.picker-model:hover .brand-icon,
+.picker-provider:hover .brand-icon {
+  opacity: 1;
+  color: var(--color-ink);
+}
+
+.provider-item.off .brand-icon {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+/* 悬停在选项上时整行反色（.select-option:hover 是主色底 + 反色字），
+   单色图标也要跟着反过来，否则深色图标贴在主色底上看不见 */
+.select-option:hover .brand-icon {
+  color: var(--color-on-primary);
+  opacity: 1;
+}
+
+/* 行变主色底时，行内所有"弱化文字"（计数、徽章）都要跟着反色，
+   否则深色小字贴在主色底上看不见 */
+.select-option:hover .picker-prov-count,
+.select-option:hover .picker-effort-btn {
+  color: var(--color-ink);
+}
+
+.select-option:hover .brand-icon-letter {
+  color: var(--color-on-primary);
+  border-color: var(--color-on-primary);
+  background: transparent;
+}
+
+/* ── 供应商工作台：左栏清单 + 右侧接线表 ─────────────────────────
+   左栏是"零件清单"（点选切换），右栏是选中那件的"接线表"。
+   三块 form-sec 用细规则线分开，跟图纸主题的剖分习惯一致 */
+.connect-split {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.provider-rail {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.rail-title {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-dim);
+}
+
+.rail-count {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  padding: 0 6px;
+  background: var(--color-bg-soft);
+}
+
+.rail-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.rail-actions .btn {
+  flex: 1;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.rail-empty {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  padding: 14px 10px;
+  text-align: center;
+}
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 460px;
+  overflow-y: auto;
+  /* 悬停换色时不要连带滚动条一起抖 */
+  padding-right: 2px;
+}
+
+.provider-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-card);
+  color: var(--color-ink);
+  border-radius: 2px;
+  padding: 7px 8px 7px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.provider-item:hover {
+  border-color: var(--color-border-strong);
+}
+
+/* 选中：主色描边 + 左侧实心标尺（同 .group-title / .settings-tab.active） */
+.provider-item.active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.provider-item.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  background: var(--color-primary);
+}
+
+.provider-item.off {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.provider-item.off:hover {
+  opacity: 0.8;
+}
+
+/* 对话当前在用的那家：名字后面缀一颗橙点，跟"选中"状态区分开 */
+.provider-item.in-use .prov-name::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 5px var(--color-accent);
+  vertical-align: middle;
+}
+
+.prov-badge {
+  flex: 0 0 auto;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 3px 4px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 2px;
+  color: var(--color-primary);
+  background: var(--color-bg-soft);
+}
+
+.provider-item.off .prov-badge {
+  color: var(--color-ink-faint);
+  border-color: var(--color-border);
+}
+
+.prov-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.provider-item .prov-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.provider-item .prov-host {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--color-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-switch {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  position: relative;
+  padding: 0;
+  cursor: pointer;
+}
+
+.provider-switch::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-ink-dim);
+  transition: transform 0.18s cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+.provider-switch.on {
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary);
+}
+
+.provider-switch.on::after {
+  transform: translateX(12px);
+  background: var(--color-primary);
+}
+
+/* ── 预设菜单：盖在清单上方，筛选框与页脚固定，只有列表滚动 ──
+   比左栏略宽（向右压到详情区上），否则长域名会把服务商名挤没 */
+.preset-menu {
+  top: 32px;
+  left: 0;
+  right: auto;
+  width: 324px;
+  max-width: calc(100vw - 48px);
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.preset-menu[hidden] {
+  display: none;
+}
+
+.preset-filter {
+  flex: none;
+  width: auto;
+  margin: 8px 8px 6px;
+  border-radius: 2px;
+}
+
+.preset-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+
+.preset-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 5px 10px 4px;
+  background: var(--color-bg-alt);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-ink-dim);
+}
+
+.preset-list > .preset-group:first-child {
+  border-top: none;
+}
+
+.preset-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+/* 名字优先完整，地址让位截断——否则长域名会把名字挤成空白 */
+.preset-name {
+  flex: 0 1 auto;
+  min-width: 74px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-option .prov-badge {
+  flex: none;
+}
+
+.preset-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+  font-size: 10px;
+  color: var(--color-ink-faint);
+}
+
+.preset-option:hover .preset-url {
+  color: var(--color-on-primary);
+  opacity: 0.8;
+}
+
+.preset-option:hover .prov-badge {
+  color: var(--color-on-primary);
+  border-color: var(--color-on-primary);
+  background: transparent;
+}
+
+.preset-foot {
+  flex: none;
+  padding: 6px 10px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg-alt);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: var(--color-ink-faint);
+}
+
+/* ── 详情区 ─────────────────────────────────────────────────── */
+.provider-detail {
+  min-width: 0;
+}
+
+.prov-empty {
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  padding: 40px 24px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--color-ink-dim);
+}
+
+.prov-empty-mark {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--color-primary);
+  opacity: 0.6;
+  margin-bottom: 10px;
+}
+
+.prov-empty .dim {
+  font-size: 12px;
+}
+
+/* 详情页头：名称 + 协议章 + 主机名，右侧是"使用中"与删除 */
+.prov-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.prov-head-main {
+  min-width: 0;
+}
+
+.prov-head-name {
+  font-size: 17px;
+  line-height: 1.4;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  min-width: 0;
+}
+
+.prov-head-host {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-head-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-in-use {
+  flex: none;
+}
+
+/* 分节：标题像图纸的区块标注，下面用一条测量线收口 */
+.form-sec {
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.form-sec:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.form-sec-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink);
+  padding-left: 9px;
+  border-left: 2px solid var(--color-primary);
+  margin-bottom: 14px;
+}
+
+.form-sec-title > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.form-sec-count {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--color-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  padding: 0 6px;
+  background: var(--color-bg-soft);
+}
+
+.proto-selector {
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 8px;
+}
+
+/* ── 模型区 ─────────────────────────────────────────────────── */
+.model-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.model-status {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.model-status.ok {
+  color: var(--color-primary);
+}
+
+.model-status.err {
+  color: var(--color-danger);
+}
+
+.discovered-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 172px;
+  overflow-y: auto;
+  margin: 10px 0 0;
+  padding: 6px 8px;
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  background: var(--color-bg-console);
+}
+
+.discovered-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.discovered-item.added {
+  cursor: default;
+  color: var(--color-ink-faint);
+}
+
+.discovered-id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovered-tag {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+
+.model-manual {
+  margin-top: 12px;
+}
+
+.model-manual input {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-manual .btn {
+  flex: 0 0 auto;
+}
+
+.model-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.model-empty {
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 2px;
+  padding: 18px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+.model-card {
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: var(--color-bg-card);
+}
+
+.model-card.open {
+  border-color: var(--color-border-strong);
+}
+
+.model-card.in-use {
+  border-left: 2px solid var(--color-accent);
+}
+
+/* 表头本身就是开合按钮：button 的默认外观全部抹掉 */
+.model-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  transition: background 0.15s ease;
+}
+
+.model-card-head:hover {
+  background: var(--color-bg-alt);
+}
+
+.model-card.open .model-card-head {
+  border-bottom: 1px solid var(--color-border);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* 展开/收起：外层 grid 从 0fr 过渡到 1fr，内层 overflow:hidden。
+   不需要测高度，内容多高都能平滑动画（<details> 做不到这一点） */
+.model-card-body-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 0.26s cubic-bezier(0.34, 1.32, 0.64, 1),
+              opacity 0.2s ease;
+}
+
+.model-card.open .model-card-body-wrap {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+/* 收起态高度必须真的是 0：内边距也算在盒高里（上下合计 26px），
+   所以连同 padding 一起过渡，不能只压 grid 行 */
+.model-card-body-wrap > .model-card-body {
+  min-height: 0;
+  overflow: hidden;
+  padding-top: 0;
+  padding-bottom: 0;
+  transition: padding-top 0.26s cubic-bezier(0.34, 1.32, 0.64, 1),
+              padding-bottom 0.26s cubic-bezier(0.34, 1.32, 0.64, 1);
+}
+
+.model-card.open .model-card-body-wrap > .model-card-body {
+  padding-top: 14px;
+  padding-bottom: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-card-body-wrap { transition: none; }
+}
+
+.model-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-caret {
+  flex: none;
+  display: inline-block;
+  width: 10px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-primary);
+  transition: transform 0.18s cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+.model-card.open .model-caret {
+  transform: rotate(90deg);
+}
+
+.model-id {
+  flex: 1;
+  min-width: 0;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-card.in-use .model-id {
+  color: var(--color-accent);
+}
+
+.model-del {
+  flex: none;
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}
+
+.model-card:hover .model-del,
+.model-card:focus-within .model-del,
+.model-card.open .model-del {
+  opacity: 1;
+}
+
+.model-row-meta {
+  display: block;
+  padding-left: 18px;
+}
+
+.model-spec {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--color-ink-faint);
+}
+
+.model-card.in-use .model-spec {
+  color: var(--color-ink-dim);
+}
+
+.model-card-body {
+  padding: 14px 12px 12px;
+}
+
+/* 模型卡里的思考强度：只读展示（改档位挪到了对话页的模型菜单） */
+.model-effort {
+  margin-top: 2px;
+}
+
+.effort-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 逐档开关：点亮 = 这个模型支持这一档。用文字色 + 左边一个小方块表示状态，
+   不用主色填充——一屏里可能同时亮着十几块，铺满橙色反而看不出重点 */
+.effort-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.effort-chip::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 1px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.effort-chip:hover {
+  color: var(--color-ink);
+  border-color: var(--color-border-strong);
+}
+
+.effort-chip.on {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.effort-chip.on::before {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.model-effort-hint {
+  margin-top: 6px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.7;
+  color: var(--color-ink-faint);
+}
+
+.model-think {
+  padding: 10px 0 2px;
+}
+
+.model-follow {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.model-card-body .field {
+  margin-bottom: 12px;
+}
+
+.model-card-body .stat-line {
+  margin-top: 10px;
+}
+
 /* 面板切换动画：纵向滚动 + 运动模糊（filter: blur 在位移峰值最大、
    落定归零）。方向随标签顺序：切到更靠后的标签 = 向下滚动（新面板从下方
    推入、旧面板向上退出），反之向上。整卡作为一个单位移动，子字段不再级联 */
@@ -2428,7 +3709,9 @@ html:has(.settings-wrap) {
   margin-bottom: 16px;
 }
 
-.field .row {
+/* 横排一行：字段内(.field .row)和面板级裸 .row 都用它——此前只定义了
+   .field .row，面板里写裸 .row 的会退化成上下堆叠的块 */
+.row {
   display: flex;
   gap: 10px;
   align-items: center;
@@ -2487,6 +3770,26 @@ html:has(.settings-wrap) {
   .console-wrap { max-height: none; }
 }
 
+/* 连接页：左栏 228px 固定宽，窗口收到这个区间时详情区会被挤到读不了，
+   改为供应商横排在上、表单在下 */
+@media (max-width: 1020px) {
+  .connect-split { grid-template-columns: 1fr; gap: 14px; }
+  .provider-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: none;
+    overflow: visible;
+  }
+  .provider-item {
+    flex: 0 1 auto;
+    width: auto;
+    min-width: 196px;
+  }
+  .provider-item .prov-host { max-width: 190px; }
+  .rail-actions { max-width: 320px; }
+  .preset-menu { width: min(324px, calc(100vw - 48px)); }
+}
+
 @media (max-width: 720px) {
   .field-grid { grid-template-columns: 1fr; }
   /* 设置页：窄屏标签栏降级为顶部横排滚动 */
@@ -2499,6 +3802,10 @@ html:has(.settings-wrap) {
   }
   .settings-tab { width: auto; flex: 0 0 auto; }
   .settings-tab .tab-text small { display: none; }
+  .foot-actions { flex-wrap: wrap; justify-content: flex-end; }
+  #modelPickerBtn { max-width: 46vw; }
+  .prov-head { flex-direction: column; }
+  .model-picker-pop { grid-template-columns: minmax(110px, 42%) minmax(0, 1fr); }
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -5246,6 +6553,7 @@ body.is-panning *,
 .about-links {
   margin-top: 18px;
   display: flex;
+  justify-content: center;
   gap: 10px;
   flex-wrap: wrap;
 }
@@ -5269,9 +6577,16 @@ body.is-panning *,
 .about-foot {
   margin-top: 12px;
   display: flex;
+  justify-content: center;
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.about-foot-hint {
+  justify-content: center;
+  border-top: none;
+  padding-top: 0;
 }
 
 /* ═══════════ 自绘标题栏（Wails Frameless，仅桌面模式） ═══════════
@@ -5365,8 +6680,30 @@ body.is-panning *,
 }
 
 /* —— has-titlebar 时各页布局下移一条标题栏 —— */
+/* 对话工作台（body.app-shell）：整页锁死一屏、页面级滚动关掉，用 padding
+   下移即可 */
 html.has-titlebar body {
   padding-top: var(--titlebar-h);
+}
+
+/* 文档式滚动页（快捷操作 / 设置）：页面滚动改由 body 承担，根元素不再滚。
+   根元素滚动时，滚动条是从窗口最顶端开始画的，并会从视口里扣掉自己那
+   10px：position: fixed 的标题栏因此贴不到窗口右上角——设置页的
+   scrollbar-gutter: stable 更是把这 10px 常驻占掉，滚动条出现/消失时
+   标题栏还会左右横移；而硬把标题栏铺到窗口边缘又不行，实测滚动条盖在
+   上面，最右 10px 的点击根本收不到（elementFromPoint 返回 null）。
+   让 body 整体下移一条标题栏的高度、由它来滚：滚动条就从标题栏底下开始，
+   标题栏可以放心铺满整窗宽，窗口控制按钮恒在窗口右上角。 */
+html.has-titlebar:has(body:not(.app-shell)) {
+  overflow: hidden;
+}
+
+html.has-titlebar:has(body:not(.app-shell)) body {
+  padding-top: 0;
+  margin-top: var(--titlebar-h);
+  height: calc(100vh - var(--titlebar-h));
+  height: calc(100dvh - var(--titlebar-h));
+  overflow-y: auto;
 }
 
 html.has-titlebar .page {
@@ -5379,12 +6716,14 @@ html.has-titlebar .page-app {
   height: calc(100dvh - var(--titlebar-h));
 }
 
-/* sticky 顶栏吸顶位置让出标题栏：仅 .top-nav（滚动容器是视口，top:0 会吸到
-   标题栏底下）。档案库 .toolbar 的 sticky 相对 #archiveView（overflow:hidden
-   亦是滚动容器）且永不滚动，top 必须保持 0——设偏移反而把它向下推 40px
-   压住下方 API 横幅（实测重叠 28px 的根因） */
+/* sticky 顶栏的吸顶位置：文档式滚动页的滚动容器是 body，而 body 已经整体
+   下移了一条标题栏的高度，滚动口上沿就在标题栏下边——所以 top 保持 0 即可
+   （此前滚动容器是视口、top:0 会吸到标题栏底下，才需要补 40px）。
+   档案库 .toolbar 的 sticky 相对 #archiveView（overflow:hidden 亦是滚动
+   容器）且永不滚动，top 必须保持 0——设偏移反而把它向下推 40px 压住下方
+   API 横幅（实测重叠 28px 的根因） */
 html.has-titlebar .top-nav {
-  top: var(--titlebar-h);
+  top: 0;
 }
 
 /* ═══════════ 设置页 · 关于面板专属特效 ═══════════

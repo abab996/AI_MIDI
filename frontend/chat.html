@@ -96,7 +96,6 @@
       <button class="btn btn-secondary" id="backBtn">← 返回档案库</button>
       <div class="studio-title" id="studioProjectName">[PROJECT: --]</div>
       <span class="stamp warn" id="wsStamp">WS: --</span>
-      <span class="stamp" id="modelStamp">MODEL: --</span>
       <span class="stamp" id="apiStamp">API: --</span>
       <span class="stamp" id="engineStamp" title="音频引擎状态">ENGINE: --</span>
       <div class="nav-right">
@@ -183,6 +182,11 @@
           <button class="btn btn-secondary btn-sm" id="recallEditBtn">↩ 撤回</button>
         </div>
 
+        <!-- 音符片段芯片条：钢琴卷帘「发送给 AI」添加的片段在此堆叠，
+             每片可单独移除；发送时序列化为 note_table 附在消息末尾，
+             气泡里只渲染芯片不渲染原始文本 -->
+        <div class="note-chip-bar" id="noteChipBar" hidden></div>
+
         <div class="composer">
           <textarea id="msgInput" rows="1" placeholder="输入你的要求…（Enter 发送 / Shift+Enter 换行）"></textarea>
           <button class="btn btn-primary" id="sendBtn">▶ 发送</button>
@@ -190,8 +194,29 @@
 
         <div class="console-foot">
           <a class="download-link" id="newMidiLink" href="#" hidden>↓ 新生成的 MIDI</a>
-          <button class="btn btn-primary btn-sm" id="newTaskBtn">＋ 新建任务</button>
-          <button class="btn btn-danger btn-sm" id="deleteTaskBtn" title="打开项目后可用（删除当前任务的对话记录）" disabled>🗑 删除任务</button>
+          <div class="foot-actions">
+            <button class="btn btn-primary btn-sm" id="newTaskBtn">＋ 新建任务</button>
+            <div class="model-picker" id="modelPicker">
+              <button type="button" class="btn btn-secondary btn-sm" id="modelPickerBtn" title="选择供应商和模型">
+                <span class="picker-dot"></span><span id="modelPickerLabel">选择模型</span><span class="picker-caret">▾</span>
+              </button>
+              <div class="model-picker-pop" id="modelPickerPop" hidden>
+                <div class="picker-col">
+                  <div class="picker-col-head"><span>供应商</span><span class="picker-count" id="modelPickerProvCount"></span></div>
+                  <div class="picker-col-list" id="modelPickerProviders"></div>
+                </div>
+                <div class="picker-col">
+                  <div class="picker-col-head"><span id="modelPickerColName">模型</span><span class="picker-count" id="modelPickerModelCount"></span></div>
+                  <div class="picker-col-list" id="modelPickerModels"></div>
+                </div>
+                <div class="picker-foot">
+                  <span class="dim" id="modelPickerFoot"></span>
+                  <a href="/settings.html" data-dir="forward">管理供应商 ↗</a>
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-danger btn-sm" id="deleteTaskBtn" title="打开项目后可用（删除当前任务的对话记录）" disabled>🗑 删除任务</button>
+          </div>
         </div>
       </main>
     </div>
@@ -851,6 +876,7 @@
 
 <script src="/js/vendor/marked.min.js" defer></script>
 <script src="/js/app.js" defer></script>
+<script src="/js/brand-icons.js" defer></script>
 <script src="/js/shortcuts.js" defer></script>
 <script src="/js/update.js" defer></script>
 <script src="/js/theme.js" defer></script>

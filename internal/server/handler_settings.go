@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,23 +38,48 @@ func isMaskedAPIKey(key string) bool {
 	return strings.HasPrefix(key, "••••")
 }
 
+func settingsPublic(s config.Settings) map[string]any {
+	providers := make([]config.Provider, len(s.Providers))
+	for i := range s.Providers {
+		providers[i] = s.Providers[i]
+		providers[i].APIKey = maskAPIKey(s.Providers[i].APIKey)
+		if providers[i].Models == nil {
+			providers[i].Models = []config.ModelConfig{}
+		}
+	}
+	return map[string]any{
+		"api_key":                   maskAPIKey(s.APIKey),
+		"base_url":                  s.BaseURL,
+		"api_path":                  s.APIPath,
+		"model":                     s.Model,
+		"max_tokens":                s.MaxTokens,
+		"max_completion_tokens":     s.MaxCompletionTokens,
+		"reasoning_effort":          s.ReasoningEffort,
+		"thinking_enabled":          s.ThinkingEnabled,
+		"transport_resume_on_pause": s.TransportResumeOnPause,
+		"providers":                 providers,
+		"active_provider_id":        s.ActiveProviderID,
+		"active_model_id":           s.ActiveModelID,
+	}
+}
+
 func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
-		s := config.LoadSettings()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"api_key":                   maskAPIKey(s.APIKey),
-			"base_url":                  s.BaseURL,
-			"api_path":                  s.APIPath,
-			"model":                     s.Model,
-			"max_tokens":                s.MaxTokens,
-			"max_completion_tokens":     s.MaxCompletionTokens,
-			"reasoning_effort":          s.ReasoningEffort,
-			"thinking_enabled":          s.ThinkingEnabled,
-			"transport_resume_on_pause": s.TransportResumeOnPause,
-		})
+		writeJSON(w, http.StatusOK, settingsPublic(config.LoadSettings()))
 
 	case http.MethodPut:
+		body, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
+			return
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
+			return
+		}
+
 		var in struct {
 			APIKey                 string `json:"api_key"`
 			BaseURL                string `json:"base_url"`
@@ -64,14 +90,11 @@ func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 			ReasoningEffort        string `json:"reasoning_effort"`
 			ThinkingEnabled        bool   `json:"thinking_enabled"`
 			TransportResumeOnPause *bool  `json:"transport_resume_on_pause"`
+			ActiveProviderID       string `json:"active_provider_id"`
+			ActiveModelID          string `json:"active_model_id"`
 		}
-		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+		if err := json.Unmarshal(body, &in); err != nil {
 			writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
-			return
-		}
-
-		if _, err := config.ValidateBaseURL(in.BaseURL, in.APIPath); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
@@ -88,38 +111,146 @@ func (r *Router) handleSettings(w http.ResponseWriter, req *http.Request) {
 			return nil
 		}
 
-		apiKey := strings.TrimSpace(in.APIKey)
-		// 掩码值/空值 = 保持已保存的密钥不变（此前表单原样回传会把
-		// 密钥悄悄清空；掩码值也可能被回存覆盖真实密钥）
-		if apiKey == "" || isMaskedAPIKey(apiKey) {
-			apiKey = config.LoadSettings().APIKey
-		}
-
-		// 基于已保存配置做覆盖式合并：设置页表单只包含 API/生成参数，
-		// 直接新建结构体会把 material_dirs、audio 等未在表单里的字段抹掉
 		s := config.LoadSettings()
-		s.APIKey = apiKey
-		s.BaseURL = strings.TrimSpace(in.BaseURL)
-		s.APIPath = strings.TrimSpace(in.APIPath)
-		s.Model = strings.TrimSpace(in.Model)
 		s.MaxTokens = toIntPtr(in.MaxTokens)
 		s.MaxCompletionTokens = toIntPtr(in.MaxCompletionTokens)
-		s.ReasoningEffort = strings.TrimSpace(in.ReasoningEffort)
-		s.ThinkingEnabled = in.ThinkingEnabled
+		if _, ok := raw["reasoning_effort"]; ok {
+			s.ReasoningEffort = strings.TrimSpace(in.ReasoningEffort)
+		}
+		if _, ok := raw["thinking_enabled"]; ok {
+			s.ThinkingEnabled = in.ThinkingEnabled
+		}
 		if in.TransportResumeOnPause != nil {
 			s.TransportResumeOnPause = *in.TransportResumeOnPause
-		} /* 未提供（设置页表单已不包含此字段）时保持原值，避免覆盖走带条上的开关 */
+		}
+
+		if rawProv, ok := raw["providers"]; ok {
+			var list []config.Provider
+			if err := json.Unmarshal(rawProv, &list); err != nil {
+				writeError(w, http.StatusBadRequest, "供应商列表无效")
+				return
+			}
+			list = config.NormalizeProviderList(list)
+			list = config.MergeProviderKeys(s.Providers, list)
+			for i := range list {
+				if _, err := config.ValidateBaseURL(list[i].BaseURL, list[i].APIPath); err != nil {
+					writeError(w, http.StatusBadRequest, list[i].Name+"："+err.Error())
+					return
+				}
+			}
+			s.Providers = list
+			if _, ok := raw["active_provider_id"]; ok {
+				s.ActiveProviderID = strings.TrimSpace(in.ActiveProviderID)
+			}
+			if _, ok := raw["active_model_id"]; ok {
+				s.ActiveModelID = strings.TrimSpace(in.ActiveModelID)
+			}
+			config.EnsureActiveSelection(&s)
+			config.MirrorActive(&s)
+		} else {
+			if _, err := config.ValidateBaseURL(in.BaseURL, in.APIPath); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			apiKey := strings.TrimSpace(in.APIKey)
+			if apiKey == "" || isMaskedAPIKey(apiKey) {
+				apiKey = s.APIKey
+			}
+			s.APIKey = apiKey
+			s.BaseURL = strings.TrimSpace(in.BaseURL)
+			s.APIPath = strings.TrimSpace(in.APIPath)
+			s.Model = strings.TrimSpace(in.Model)
+			config.SyncLegacyFlat(&s)
+			config.MirrorActive(&s)
+		}
 
 		if err := config.SaveSettings(s); err != nil {
 			writeError(w, http.StatusInternalServerError, "保存配置失败")
 			return
 		}
-
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "✓ 配置已保存"})
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+func (r *Router) handleSettingsActive(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var in struct {
+		ProviderID string `json:"provider_id"`
+		ModelID    string `json:"model_id"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
+		return
+	}
+	s := config.LoadSettings()
+	if err := config.SelectActive(&s, in.ProviderID, in.ModelID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := config.SaveSettings(s); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存配置失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+/*
+handleSettingsModelEffort 对话页一键设定某个模型的思考方式，
+
+	不必先把对话切过去。selection = "off"（不思考，模型单独关闭 thinking）
+	或一个该模型**启用**的档位（单独开启 thinking 并固定为该档）；启用集在
+	设置页的模型卡里逐档开关，模型没配过时按模型目录的声明当作启用集。
+*/
+func (r *Router) handleSettingsModelEffort(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var in struct {
+		ProviderID string `json:"provider_id"`
+		ModelID    string `json:"model_id"`
+		Selection  string `json:"selection"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "无效的 JSON 请求体")
+		return
+	}
+	s := config.LoadSettings()
+	allowed, configured := config.ModelReasoningEfforts(&s, in.ProviderID, in.ModelID)
+	if !configured {
+		allowed = llm.SupportedReasoningEfforts(in.ModelID)
+	}
+	if err := config.SetModelThinkingSelection(&s, in.ProviderID, in.ModelID, in.Selection, allowed); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := config.SaveSettings(s); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存配置失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (r *Router) handleProviderPresets(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"presets": config.ProviderPresets})
+}
+
+func (r *Router) handleModelProfiles(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": llm.ModelProfiles})
 }
 
 // openURLAllowHosts /api/open-url 放行的外部链接：本应用自己的 GitHub 仓库
@@ -219,7 +350,7 @@ func (r *Router) handleTransportPrefs(w http.ResponseWriter, req *http.Request) 
 }
 
 func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
-	var apiKey, baseURL, apiPath string
+	var apiKey, baseURL, apiPath, protocol, providerID string
 
 	switch req.Method {
 	case http.MethodGet:
@@ -232,14 +363,18 @@ func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
 
 	case http.MethodPost:
 		var in struct {
-			APIKey  string `json:"api_key"`
-			BaseURL string `json:"base_url"`
-			APIPath string `json:"api_path"`
+			APIKey     string `json:"api_key"`
+			BaseURL    string `json:"base_url"`
+			APIPath    string `json:"api_path"`
+			Protocol   string `json:"protocol"`
+			ProviderID string `json:"provider_id"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		apiKey = in.APIKey
 		baseURL = in.BaseURL
 		apiPath = in.APIPath
+		protocol = in.Protocol
+		providerID = in.ProviderID
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -247,11 +382,30 @@ func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// 掩码值/空值（设置页表单原样回传）= 使用已保存的真实密钥
+	saved := config.LoadSettings()
+	var matched *config.Provider
+	for i := range saved.Providers {
+		if saved.Providers[i].ID == providerID {
+			matched = &saved.Providers[i]
+			break
+		}
+	}
 	if apiKey == "" || isMaskedAPIKey(apiKey) {
-		apiKey = config.LoadSettings().APIKey
+		if matched != nil && matched.APIKey != "" {
+			apiKey = matched.APIKey
+		} else {
+			apiKey = saved.APIKey
+		}
+	}
+	if protocol == "" && matched != nil {
+		protocol = matched.Protocol
+	}
+	if baseURL == "" && matched != nil {
+		baseURL = matched.BaseURL
+		apiPath = matched.APIPath
 	}
 
-	models, msg, _ := llm.FetchModels(apiKey, baseURL, apiPath)
+	models, msg, _ := llm.FetchModels(apiKey, baseURL, apiPath, protocol)
 	if models == nil {
 		models = []string{}
 	}

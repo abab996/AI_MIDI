@@ -7,10 +7,20 @@ interface UIApi {
      querySelectorAll 的 Element[] 要在 return 上断言成 HTMLElement[]。 */
   qsa(sel: string, root?: ParentNode): DomEl[];
   toast?(message: unknown, kind?: string): void;
+  /* 应用内确认弹窗（替代 window.confirm）：确认 true，取消/Esc/点遮罩 false */
+  confirm(opts: string | {
+    text: string;
+    title?: string;
+    okText?: string;
+    cancelText?: string;
+    danger?: boolean;
+  }): Promise<boolean>;
   esc(s: unknown): string;
   fmtSize(bytes: number): string;
   fmtDate(s: string): string;
   friendlyText(text: unknown): string;
+  /* 本机接入点（localhost/127.0.0.1/::1）：本地推理服务不需要 API Key */
+  isLocalEndpoint?(baseURL: unknown): boolean;
   getJSON<T = unknown>(url: string): Promise<T>;
   postJSON<T = unknown>(url: string, body?: unknown): Promise<T>;
   putJSON<T = unknown>(url: string, body?: unknown): Promise<T>;
@@ -299,13 +309,34 @@ interface MarkedApi {
   };
 }
 
+/** 品牌图标表（brand-icons.ts 生成，见 tools/dev/gen-brand-icons.mjs） */
+interface BrandIconsApi {
+  /** 建一个图标节点；查不到品牌时给首字母方块 */
+  node(brand: string, fallbackText?: string): HTMLElement;
+  /** 供应商行用：按预设 id 查图标 */
+  forPreset(presetId: string, fallbackText?: string): HTMLElement;
+  /** 模型行用：按模型 ID 认品牌，认不出退回所属供应商的预设 */
+  forModel(modelId: string, fallbackPresetId?: string, fallbackText?: string): HTMLElement;
+  matchBrand(modelId: string): string;
+  brands(): string[];
+}
+
 /** 经典脚本里 window.UI 同时是裸全局。app.ts 在赋值完成前就会在函数体里写 UI.ssePost。 */
 declare const UI: UIApi;
 declare const AudioBackend: AudioBackendApi;
 declare const Tasks: TasksApi;
+declare const BrandIcons: BrandIconsApi;
+
+/** 自动更新检查（update.js）：手动触发检查用 */
+interface UpdateApi {
+  /** 检查更新；有更新会弹自带通知卡。resolve 值：UpdateInfo 或 { error } */
+  checkNow(): Promise<UpdateInfo | { error: string } | null>;
+}
 
 interface Window {
   UI: UIApi;
+  BrandIcons: BrandIconsApi;
+  Update?: UpdateApi;
   Shortcuts: ShortcutsApi;
   Tasks: TasksApi;
   SharedAudio: SharedAudioApi;

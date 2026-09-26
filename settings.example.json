@@ -7,6 +7,29 @@
   "max_completion_tokens": null,
   "reasoning_effort": "max",
   "thinking_enabled": true,
+  "active_provider_id": "p_default",
+  "active_model_id": "deepseek-v4-pro",
+  "providers": [
+    {
+      "id": "p_default",
+      "preset_id": "deepseek",
+      "name": "DeepSeek",
+      "protocol": "openai",
+      "base_url": "https://api.deepseek.com",
+      "api_path": "",
+      "api_key": "",
+      "enabled": true,
+      "models": [
+        {
+          "id": "deepseek-v4-pro",
+          "max_tokens": null,
+          "max_completion_tokens": null,
+          "reasoning_effort": "",
+          "thinking_enabled": null
+        }
+      ]
+    }
+  ],
   "material_dirs": [],
   "transport_resume_on_pause": false,
   "audio": {

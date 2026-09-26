@@ -199,14 +199,32 @@
     });
   }
 
-  /* ───────────────── 启动检查 ───────────────── */
+  /* ───────────────── 启动检查与手动检查 ───────────────── */
+
+  /* 应用一次检查结果：有更新弹自带的通知卡/强制卡，返回结果供调用方提示 */
+  function applyCheck(r: UpdateInfo | null) {
+    if (!r || !r.available) return r;
+    info = r;
+    buildOnce();
+    if (r.mandatory) showForce(); else showNotice();
+    return r;
+  }
+
+  /* 手动检查（关于页「检查更新」按钮）：Promise<UpdateInfo|null>，
+     永不 reject——失败以 { error } 形式返回，调用方据 error 字段提示 */
+  function checkNow(): Promise<any> {
+    return UI.getJSON<UpdateInfo | null>("/api/update/check").then(function (r) {
+      return applyCheck(r);
+    }, function (e: any) {
+      return { error: e && e.message || String(e) };
+    });
+  }
 
   document.addEventListener("DOMContentLoaded", function () {
     UI.getJSON<UpdateInfo | null>("/api/update/check").then(function (r) {
-      if (!r || !r.available) return;
-      info = r;
-      buildOnce();
-      if (r.mandatory) showForce(); else showNotice();
+      applyCheck(r);
     }).catch(function () { /* 检查失败保持静默 */ });
   });
+
+  (window as any).Update = { checkNow: checkNow };
 })();

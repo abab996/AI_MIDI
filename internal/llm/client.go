@@ -138,29 +138,44 @@ type ModelListResponse struct {
 }
 
 // FetchModels 获取上游可用模型列表
-func FetchModels(apiKey, baseURL, apiPath string) ([]string, string, error) {
-	if apiKey == "" {
-		apiKey = config.GetAPIKey()
-	}
+func FetchModels(apiKey, baseURL, apiPath, protocol string) ([]string, string, error) {
 	if baseURL == "" {
 		baseURL = config.DefaultBaseURL
 	}
-
-	if apiKey == "" {
+	// 本地服务（Ollama / LM Studio / vLLM / llama.cpp）不校验密钥，空密钥照样能列模型
+	needKey := config.RequiresAPIKey(baseURL)
+	if apiKey == "" && needKey {
+		apiKey = config.GetAPIKey()
+	}
+	if apiKey == "" && needKey {
 		return nil, "⚠ 请先填写并保存 API Key", nil
 	}
 
-	fullURL, err := config.ValidateBaseURL(baseURL, apiPath)
+	if protocol == "" {
+		protocol = config.ProtocolOpenAI
+		if config.IsGeminiProvider(baseURL) {
+			protocol = config.ProtocolGemini
+		}
+	}
+	fullURL, err := EndpointURL(baseURL, apiPath, protocol, "models")
 	if err != nil {
 		return nil, "✗ 配置错误，请检查 Base URL 与 API 路径。", err
 	}
 
-	url := JoinEndpoint(fullURL, "/v1/models")
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", fullURL, nil)
 	if err != nil {
 		return nil, "✗ 获取模型失败，请检查网络或 API Key。", err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	/* 空密钥时不能发 "Bearer "（裸前缀），部分服务端会直接 400；
+	   Anthropic 的 anthropic-version 仍要带，那是协议版本不是凭证 */
+	if config.NormalizeProtocol(protocol) == config.ProtocolAnthropic {
+		if apiKey != "" {
+			req.Header.Set("x-api-key", apiKey)
+		}
+		req.Header.Set("anthropic-version", anthropicVersion)
+	} else if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	client := NewHTTPClient(15 * time.Second)
 	resp, err := client.Do(req)

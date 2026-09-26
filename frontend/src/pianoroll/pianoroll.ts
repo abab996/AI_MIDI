@@ -342,7 +342,9 @@
 
   /* ═══════════ 标签页与文件载入 ═══════════ */
 
-  PianoRoll.prototype.openFile = function (this: PianoRollController, projectId: any, fileName: any, filePath: any) {
+  /* onReady：加载完成（或标签页已存在直接切过去）后的回调，
+     供外部「跳转到卷帘并选中音符」等流程在数据就绪后继续 */
+  PianoRoll.prototype.openFile = function (this: PianoRollController, projectId: any, fileName: any, filePath: any, onReady: any) {
     var self = this;
     var tabId = projectId + "::" + fileName;
     var existing = this.tabs.find(function (t: any) { return t.id === tabId; });
@@ -350,6 +352,7 @@
     if (existing) {
       this.switchTab(tabId);
       this.open();
+      if (onReady) onReady();
       return;
     }
 
@@ -377,6 +380,7 @@
       self.tabs.push(newTab);
       self.switchTab(tabId);
       self.open();
+      if (onReady) onReady();
     }).catch(function (err) {
       if (window.UI && window.UI.toast) window.UI.toast!("✗ 打开 MIDI 失败: " + err.message, "err");
     });
@@ -3442,17 +3446,27 @@
       if (window.UI && window.UI.toast) window.UI.toast!("卷帘中没有音符可发送", "warn");
       return;
     }
-    var noteLines = targetNotes.map(function (n: any) {
-      return '[note: "' + n.note + '", velocity: "' + n.velocity + '", start: "' + n.start + '", end: "' + n.end + '"]';
-    }).join("\n");
-
-    var input = document.getElementById("msgInput");
-    if (input) {
-      var prompt = "请针对以下音符（来自 " + tab.name + "）进行配和弦与对位编排：\n" + noteLines;
-      input.value = prompt;
-      input.focus();
-      if (window.UI && window.UI.toast) window.UI.toast!("✓ 已将音符注入对话输入框", "ok");
+    /* 不再往输入框塞音符文本：组装片段芯片交给对话页的芯片条
+       （发送时由对话页序列化为 note_table 随消息发出）。
+       音符深拷贝——卷帘后续编辑不影响已加入的片段 */
+    var chips = (window as any).ChatNoteChips;
+    if (!chips || typeof chips.add !== "function") {
+      if (window.UI && window.UI.toast) window.UI.toast!("对话输入区未就绪", "warn");
+      return;
     }
+    var added = chips.add({
+      fileName: tab.name,
+      filePath: tab.fullName,
+      totalCount: tab.notes.length,
+      notes: targetNotes.map(function (n: any) {
+        return { note: n.note, velocity: n.velocity, start: n.start, end: n.end };
+      }),
+    });
+    if (!added) {
+      if (window.UI && window.UI.toast) window.UI.toast!("该音符片段已在对话输入区", "warn");
+      return;
+    }
+    if (window.UI && window.UI.toast) window.UI.toast!("✓ 已添加音符片段到对话输入区", "ok");
   };
 
   PianoRoll.prototype.openSoundLibraryModal = function (this: PianoRollController) {

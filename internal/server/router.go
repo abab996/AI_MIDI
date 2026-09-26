@@ -190,6 +190,10 @@ func (r *Router) registerRoutes() {
 	// Settings & Health & Theme
 	r.mux.HandleFunc("/api/health", r.handleHealth)
 	r.mux.HandleFunc("/api/settings", r.handleSettings)
+	r.mux.HandleFunc("/api/settings/active", r.handleSettingsActive)
+	r.mux.HandleFunc("/api/settings/model-effort", r.handleSettingsModelEffort)
+	r.mux.HandleFunc("/api/provider-presets", r.handleProviderPresets)
+	r.mux.HandleFunc("/api/model-profiles", r.handleModelProfiles)
 	r.mux.HandleFunc("/api/transport/prefs", r.handleTransportPrefs)
 	r.mux.HandleFunc("/api/models", r.handleModels)
 	r.mux.HandleFunc("/api/theme/switch", r.handleThemeSwitch)

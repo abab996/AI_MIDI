@@ -25,29 +25,32 @@ const (
 
 // Chat 非流式统一调用通道
 func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, error) {
-	apiKey := s.APIKey
-	if apiKey == "" {
-		apiKey = config.GetAPIKey()
-	}
-	if apiKey == "" {
-		return "", fmt.Errorf("请先填写并保存 API Key")
-	}
-
 	baseURL := s.BaseURL
 	if baseURL == "" {
 		baseURL = config.DefaultBaseURL
 	}
-	validatedURL, err := config.ValidateBaseURL(baseURL, s.APIPath)
-	if err != nil {
-		return "", fmt.Errorf("无效的 Base URL: %w", err)
+	// 本地服务（Ollama / LM Studio / vLLM / llama.cpp）不校验密钥
+	needKey := config.RequiresAPIKey(baseURL)
+	apiKey := s.APIKey
+	if apiKey == "" && needKey {
+		apiKey = config.GetAPIKey()
 	}
+	if apiKey == "" && needKey {
+		return "", fmt.Errorf("请先填写并保存 API Key")
+	}
+	s.APIKey = apiKey
 
 	model := s.Model
 	if model == "" {
 		model = config.DefaultModel
 	}
+	s.BaseURL = baseURL
+	s.Model = model
+	if config.EffectiveProtocol(s) == config.ProtocolAnthropic {
+		return ChatAnthropic(userContent, s, timeoutSeconds)
+	}
 
-	isGemini := config.IsGeminiProvider(validatedURL)
+	isGemini := config.EffectiveProtocol(s) == config.ProtocolGemini
 
 	reqBody := ChatCompletionRequest{
 		Model: model,
@@ -73,7 +76,10 @@ func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, er
 		}
 	}
 
-	endpoint := JoinEndpoint(validatedURL, "/v1/chat/completions")
+	endpoint, err := EndpointURL(baseURL, s.APIPath, config.EffectiveProtocol(s), "chat")
+	if err != nil {
+		return "", err
+	}
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = config.DefaultTimeoutSeconds
 	}
@@ -94,7 +100,9 @@ func Chat(userContent string, s config.Settings, timeoutSeconds int) (string, er
 			return "", err
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 
 		resp, err := client.Do(httpReq)
 		if err != nil {

@@ -1,6 +1,10 @@
 package llm
 
-import "strings"
+import (
+	"strings"
+
+	"aimidi/internal/config"
+)
 
 // JoinEndpoint 将规范化后的 base_url 与 API 后缀拼接为完整端点。
 //
@@ -16,4 +20,35 @@ func JoinEndpoint(baseURL, suffix string) string {
 		return baseURL + suffix[len("/v1"):]
 	}
 	return baseURL + suffix
+}
+
+// EndpointURL 按协议拼出聊天或模型列表的完整地址。
+// apiPath 为空时补 /v1；apiPath 为 "/" 时接在站点根上，不再插入 /v1；
+// 已经写明的前缀（如智谱 /api/paas/v4）原样接上资源名。
+func EndpointURL(baseURL, apiPath, protocol, resource string) (string, error) {
+	prefix, err := config.ValidateBaseURL(baseURL, apiPath)
+	if err != nil {
+		return "", err
+	}
+	return prefix + endpointSuffix(prefix, apiPath, protocol, resource), nil
+}
+
+func endpointSuffix(prefix, apiPath, protocol, resource string) string {
+	tail := "/chat/completions"
+	if resource == "models" {
+		tail = "/models"
+	}
+	if config.NormalizeProtocol(protocol) == config.ProtocolAnthropic && resource != "models" {
+		tail = "/messages"
+	}
+	path := strings.TrimSpace(apiPath)
+	if path == "/" {
+		return tail
+	}
+	explicit := path != ""
+	endsVersion := strings.HasSuffix(prefix, "/v1") || strings.HasSuffix(prefix, "/openai")
+	if !explicit && !endsVersion {
+		return "/v1" + tail
+	}
+	return tail
 }

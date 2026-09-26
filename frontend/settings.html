@@ -48,7 +48,10 @@
 
 <div class="page">
   <div class="top-nav">
-    <span class="nav-title">设置</span>
+    <div class="nav-left">
+      <button class="nav-back" id="settingsBackBtn" type="button" title="返回上一页" aria-label="返回上一页">←</button>
+      <span class="nav-title">设置</span>
+    </div>
     <div class="nav-right">
       <a class="btn btn-secondary btn-sm" href="/" data-dir="back">快捷操作</a>
       <a class="btn btn-secondary btn-sm" href="/chat.html" data-dir="back">多轮对话</a>
@@ -94,44 +97,109 @@
       <!-- 连接参数 -->
       <section class="card brackets settings-card settings-pane" id="paneConnect">
         <div class="group-title">连接参数 · Connection</div>
-
-        <div class="field">
-          <label class="field-label" for="apiKey">API Key</label>
-          <div class="row">
-            <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
-            <button class="btn btn-secondary btn-sm" id="showKeyBtn">显示</button>
-          </div>
-        </div>
-
-        <div class="field-grid">
-          <div class="field">
-            <label class="field-label" for="baseUrl">Base URL</label>
-            <input type="url" id="baseUrl" placeholder="如: https://api.deepseek.com">
-          </div>
-          <div class="field">
-            <label class="field-label" for="apiPath">API 路径</label>
-            <input type="text" id="apiPath" placeholder="如: /v1beta/openai（Gemini 专用）">
-            <div class="stat-line"><span class="dim">仅 Gemini 服务商生效；其他服务商请留空</span></div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label class="field-label" for="model">模型 · Model</label>
-          <div class="row">
-            <div class="select-wrap">
-              <input type="text" id="model" placeholder="输入或从列表选择…">
-              <button type="button" class="select-toggle" id="modelToggle" title="从列表选择">▾</button>
-              <div class="select-menu" id="modelMenu" hidden></div>
+        <div class="connect-split">
+          <aside class="provider-rail">
+            <div class="rail-head">
+              <span class="rail-title">供应商</span>
+              <span class="rail-count" id="providerCount">0</span>
             </div>
-            <button class="btn btn-secondary btn-sm" id="refreshModelsBtn">刷新列表</button>
+            <div id="providerList" class="provider-list"></div>
+            <div class="rail-actions">
+              <button type="button" class="btn btn-secondary btn-sm" id="addPresetBtn" title="从常用服务商模板添加">＋ 预设</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="addCustomBtn" title="手填接入点">＋ 自定义</button>
+            </div>
+            <div class="select-menu preset-menu" id="presetMenu" hidden></div>
+          </aside>
+
+          <div class="provider-detail">
+            <div id="providerEmpty" class="prov-empty">
+              <div class="prov-empty-mark">⌁</div>
+              <div>左侧还没有供应商</div>
+              <div class="dim">点「＋ 预设」挑一个常用服务商模板，或点「＋ 自定义」手填接入点。</div>
+            </div>
+
+            <div id="providerForm" hidden>
+              <header class="prov-head">
+                <div class="prov-head-main">
+                  <div class="prov-head-name" id="provHeadName">—</div>
+                  <div class="prov-head-meta">
+                    <span class="stamp" id="provHeadProto">OAI</span>
+                    <span class="prov-head-host mono" id="provHeadHost">—</span>
+                  </div>
+                </div>
+                <div class="prov-head-actions">
+                  <span class="stamp ok prov-active-stamp" id="provActiveStamp" hidden>● 对话使用中</span>
+                  <button type="button" class="btn btn-danger btn-sm" id="deleteProviderBtn" title="删除该供应商及其密钥">删除</button>
+                </div>
+              </header>
+
+              <section class="form-sec">
+                <div class="form-sec-title">标识 · Identity</div>
+                <div class="field">
+                  <label class="field-label" for="provName">名称</label>
+                  <input type="text" id="provName" maxlength="80" autocomplete="off">
+                </div>
+                <label class="field-label">接口协议 · Protocol</label>
+                <div class="func-selector proto-selector" id="protocolSelector">
+                  <button type="button" class="fn" data-protocol="openai">OpenAI</button>
+                  <button type="button" class="fn" data-protocol="anthropic">Anthropic</button>
+                  <button type="button" class="fn" data-protocol="gemini">Gemini</button>
+                </div>
+                <div class="stat-line"><span class="dim" id="protocolHint"></span></div>
+              </section>
+
+              <section class="form-sec">
+                <div class="form-sec-title">接入点 · Endpoint</div>
+                <div class="field">
+                  <label class="field-label" for="apiKey">API Key</label>
+                  <div class="row">
+                    <input type="password" id="apiKey" placeholder="由你填写，预设里不含密钥" autocomplete="off">
+                    <button class="btn btn-secondary btn-sm" id="showKeyBtn" type="button">显示</button>
+                  </div>
+                </div>
+                <div class="field-grid">
+                  <div class="field">
+                    <label class="field-label" for="baseUrl">Base URL</label>
+                    <input type="url" id="baseUrl" placeholder="https://api.example.com">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="apiPath">API 路径</label>
+                    <input type="text" id="apiPath" placeholder="留空则按协议补 /v1">
+                  </div>
+                </div>
+                <div class="stat-line"><span class="dim">API 路径是拼在 Base URL 后面的前缀。Gemini 预设为 /v1beta/openai；填 / 表示直接接在站点根上。</span></div>
+              </section>
+
+              <section class="form-sec">
+                <div class="form-sec-title">
+                  <span>可用模型 · Models</span>
+                  <span class="form-sec-count" id="modelCount">0</span>
+                </div>
+
+                <div class="model-tools">
+                  <button type="button" class="btn btn-secondary btn-sm" id="refreshModelsBtn">⟳ 刷新列表</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="addDiscoveredBtn">＋ 添加勾选</button>
+                  <span class="dim model-status" id="modelStatus">刷新后勾选要加入的模型，也可以手填模型 ID</span>
+                </div>
+
+                <div id="discoveredList" class="discovered-list" hidden></div>
+
+                <div class="row model-manual">
+                  <input type="text" id="manualModelId" placeholder="手填模型 ID，添加时自动填充参数" autocomplete="off">
+                  <button type="button" class="btn btn-secondary btn-sm" id="addManualModelBtn">添加</button>
+                </div>
+
+                <div id="modelCards" class="model-cards"></div>
+              </section>
+            </div>
           </div>
-          <div class="stat-line"><span class="dim" id="modelStatus">点击刷新按钮从 API 获取模型列表</span></div>
         </div>
       </section>
 
       <!-- 生成参数 -->
       <section class="card brackets settings-card settings-pane" id="paneGen" hidden>
         <div class="group-title">生成参数 · Generation</div>
+        <div class="stat-line"><span class="dim">某个模型没有单独填写的项，使用这里的默认值。</span></div>
 
         <div class="field-grid">
           <div class="field">
@@ -150,6 +218,7 @@
           <button class="fn" data-effort="medium">MEDIUM</button>
           <button class="fn" data-effort="max">MAX</button>
         </div>
+        <div class="stat-line"><span class="dim">这里是"没在连接页给某个模型单独指定时"用的默认值。想按模型分别指定：连接页展开模型卡片勾选它支持的档位，再到对话页的模型菜单里选具体档位。</span></div>
 
         <label class="toggle-text">
           <input type="checkbox" id="thinkingEnabled" checked>
@@ -321,10 +390,11 @@
         </div>
 
         <div class="about-foot">
-          <a class="about-link" href="/api/files/download?path=output%2Fai_midi.log">📄 运行日志（output/ai_midi.log）</a>
-          <button class="btn btn-secondary btn-sm" id="issueBtn" title="跳转到 GitHub 提交 Issue">🐛 提交 Issue</button>
+          <button class="btn btn-secondary btn-sm" id="checkUpdateBtn" type="button">🔄 检查更新</button>
+          <a class="about-link" href="/api/files/download?path=output%2Fai_midi.log">📄 运行日志</a>
+          <button class="btn btn-secondary btn-sm" id="issueBtn" title="跳转到 GitHub 提交 Issue（请附运行日志与操作描述）">🐛 提交 Issue</button>
         </div>
-        <div class="stat-line" style="margin-top:8px"><span class="dim">报障时请附上日志文件与触发操作的描述</span></div>
+        <div class="stat-line about-foot-hint"><span class="dim">报障时请附上日志文件与触发操作的描述</span></div>
       </section>
 
       <!-- 快捷键 -->
@@ -352,6 +422,7 @@
 </div>
 
 <script src="/js/app.js"></script>
+<script src="/js/brand-icons.js"></script>
 <script src="/js/shortcuts.js"></script>
 <script src="/js/update.js"></script>
 <script src="/js/theme.js"></script>

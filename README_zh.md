@@ -76,6 +76,8 @@ RUN.bat
 
 Linux：`go build -o AI_MIDI . && chmod +x RUN.sh && ./RUN.sh`。架构与设计文档见 [`docs/`](docs/)。
 
+改前端 TypeScript（`frontend/src`）时需要 **Node.js ≥ 20**。在仓库根目录执行 `npm install` 和 `npm run build`，并把擦除后的 `frontend/js` 一起提交。只改 Go 时，上面的 `wails build` / `go build` 仍然直接可用。
+
 ---
 
 ## 📖 使用指引

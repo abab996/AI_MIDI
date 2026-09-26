@@ -22,7 +22,7 @@
      会让无边框窗口没有任何关闭/最小化控件（只能任务管理器杀进程）。
      缺失的方法按按钮粒度隐藏：按钮回调在 isDesktop 阶段已确认存在，
      不会出现"点了没反应"的悬空按钮。 */
-  var rtWin                      = null;
+  var rtWin: WailsRuntime | null = null;
 
   function isDesktop() {
     var rt = window.runtime;
@@ -31,29 +31,29 @@
     return true;
   }
 
-  function hasRuntime(method                    ) {
+  function hasRuntime(method: keyof WailsRuntime) {
     return !!(rtWin && typeof rtWin[method] === "function");
   }
 
-  var maxBtn                           = null;
-  var syncTimer                = null;
+  var maxBtn: HTMLButtonElement | null = null;
+  var syncTimer: number | null = null;
 
   function syncMaxIcon() {
     if (!maxBtn || !hasRuntime("WindowIsMaximised")) return;
-    Promise.resolve(rtWin .WindowIsMaximised()).then(function (max) {
+    Promise.resolve(rtWin!.WindowIsMaximised()).then(function (max) {
       var on = !!max;
-      maxBtn .textContent = on ? GLYPH_RESTORE : GLYPH_MAX;
-      maxBtn .title = on ? "向下还原" : "最大化";
+      maxBtn!.textContent = on ? GLYPH_RESTORE : GLYPH_MAX;
+      maxBtn!.title = on ? "向下还原" : "最大化";
     }).catch(function () {});
   }
 
   /* resize 后窗口状态才稳定，防抖再查；focus 兜底（Win+方向键等系统操作） */
   function scheduleSync() {
-    clearTimeout(syncTimer          );
+    clearTimeout(syncTimer as number);
     syncTimer = setTimeout(syncMaxIcon, 150);
   }
 
-  function makeBtn(cls        , glyph        , title        , fn            ) {
+  function makeBtn(cls: string, glyph: string, title: string, fn: () => void) {
     var b = document.createElement("button");
     b.type = "button";
     b.className = "title-bar-btn " + cls;
@@ -66,7 +66,7 @@
 
   /* 窗口控制调用统一包一层 try/catch：runtime 在关闭竞态/假死时可能
      同步抛异常，落入 window.onerror 产生无意义的 toast 噪音 */
-  function safeRuntime(fn            ) {
+  function safeRuntime(fn: () => void) {
     try {
       fn();
     } catch (e) { /* 静默：窗口控制失败无业务可恢复 */ }
@@ -101,27 +101,27 @@
        可能不存在）对应按钮直接不渲染，而不是整条标题栏消失 */
     if (hasRuntime("WindowMinimise")) {
       actions.appendChild(makeBtn("tb-min", GLYPH_MIN, "最小化", function () {
-        safeRuntime(function () { rtWin .WindowMinimise(); });
+        safeRuntime(function () { rtWin!.WindowMinimise(); });
       }));
     }
     if (hasRuntime("WindowToggleMaximise")) {
       maxBtn = makeBtn("tb-max", GLYPH_MAX, "最大化", function () {
-        safeRuntime(function () { rtWin .WindowToggleMaximise(); });
+        safeRuntime(function () { rtWin!.WindowToggleMaximise(); });
         setTimeout(syncMaxIcon, 60);
       });
       actions.appendChild(maxBtn);
     }
     if (hasRuntime("Quit")) {
       actions.appendChild(makeBtn("tb-close", GLYPH_CLOSE, "关闭", function () {
-        safeRuntime(function () { rtWin .Quit(); });
+        safeRuntime(function () { rtWin!.Quit(); });
       }));
     }
     bar.appendChild(actions);
 
     /* 双击标题栏（按钮区外）= 最大化/还原，与 Windows 惯例一致 */
     bar.addEventListener("dblclick", function (e) {
-      if (e.target .closest (".title-bar-actions") || !hasRuntime("WindowToggleMaximise")) return;
-      safeRuntime(function () { rtWin .WindowToggleMaximise(); });
+      if (e.target!.closest!(".title-bar-actions") || !hasRuntime("WindowToggleMaximise")) return;
+      safeRuntime(function () { rtWin!.WindowToggleMaximise(); });
       setTimeout(syncMaxIcon, 60);
     });
 

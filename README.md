@@ -76,6 +76,8 @@ RUN.bat
 
 Linux: `go build -o AI_MIDI . && chmod +x RUN.sh && ./RUN.sh`. Architecture & design documents live in [`docs/`](docs/).
 
+Frontend TypeScript lives in `frontend/src`. Editing it needs **Node.js ≥ 20**: from the repo root run `npm install` and `npm run build`, then commit the erased `frontend/js` alongside the `.ts` sources. Go-only changes still build with `wails build` / `go build` and do not need Node.
+
 ---
 
 ## 📖 Usage Guide

@@ -26,26 +26,26 @@
     { v: 0.25, label: "1/4 拍" }
   ];
 
-  function uid(prefix     ) {
+  function uid(prefix: any) {
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
   }
 
-  function hexToRgba(hex     , alpha     ) {
+  function hexToRgba(hex: any, alpha: any) {
     var m = /^#([0-9a-f]{6})$/i.exec(hex || "");
     if (!m) return "rgba(0,184,204," + alpha + ")";
     var n = parseInt(m[1], 16);
     return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + alpha + ")";
   }
 
-  function clamp(v     , lo     , hi     ) { return Math.max(lo, Math.min(hi, v)); }
+  function clamp(v: any, lo: any, hi: any) { return Math.max(lo, Math.min(hi, v)); }
 
-  function baseName(path     ) {
+  function baseName(path: any) {
     return String(path || "").split(/[\\/]/).pop();
   }
 
   /* ═══════════ 控制器状态 ═══════════ */
 
-  function Arrange(                       ) {
+  function Arrange(this: ArrangeController) {
     this.el = {};
     this.initialized = false;
     this.isOpen = false;
@@ -78,8 +78,8 @@
     var self = this;
     this.engine.getTracks = function () { return self.tracks; };
     this.engine.onSoundFontLoaded = function () { self.showHUD("✓ 轨道音源已加载"); };
-    this.engine.onSoundFontError = function (tid     , err     ) {
-      UI.toast ("✗ 轨道音源加载失败: " + (err && err.message ? err.message : "未知错误"), "err");
+    this.engine.onSoundFontError = function (tid: any, err: any) {
+      UI.toast!("✗ 轨道音源加载失败: " + (err && err.message ? err.message : "未知错误"), "err");
     };
     /* 引擎模式播放中引擎掉线（崩溃/重启）：自动停止走带 + 清引擎残留音 +
        明确提示（严格路由，不无声空转） */
@@ -87,7 +87,7 @@
       if (self.isPlaying) {
         self.stopEngineClock();
         try { if (window.EngineBridge && window.EngineBridge.panic) window.EngineBridge.panic().catch(function(){}); } catch (e) {}
-        UI.toast ("⚠ 音频引擎已中断，播放已停止（引擎恢复后可重新播放）", "warn");
+        UI.toast!("⚠ 音频引擎已中断，播放已停止（引擎恢复后可重新播放）", "warn");
       }
     };
 
@@ -110,7 +110,7 @@
 
   /* ═══════════ 初始化与 DOM 绑定 ═══════════ */
 
-  Arrange.prototype.init = function (                       ) {
+  Arrange.prototype.init = function (this: ArrangeController) {
     if (this.initialized) return;
     this.initialized = true;
 
@@ -169,11 +169,11 @@
     this.loadMaterialDirs();
   };
 
-  Arrange.prototype.$ = function (id     ) { return this.el[id] || document.getElementById(id); };
+  Arrange.prototype.$ = function (id: any) { return this.el[id] || document.getElementById(id); };
 
   /* ═══════════ 折叠展开 ═══════════ */
 
-  Arrange.prototype.bindToggle = function (                       ) {
+  Arrange.prototype.bindToggle = function (this: ArrangeController) {
     var self = this;
     if (this.el.arrangeToggleBtn) {
       this.el.arrangeToggleBtn.addEventListener("click", function () {
@@ -182,11 +182,11 @@
     }
   };
 
-  Arrange.prototype.toggle = function (                       ) {
+  Arrange.prototype.toggle = function (this: ArrangeController) {
     if (this.isOpen) this.close(); else this.open();
   };
 
-  Arrange.prototype.open = function (                       ) {
+  Arrange.prototype.open = function (this: ArrangeController) {
     if (this.isOpen) return;
     this.isOpen = true;
     var ws = document.getElementById("arrangeWorkspace");
@@ -223,7 +223,7 @@
     this.startUILoop();
   };
 
-  Arrange.prototype.close = function (                       ) {
+  Arrange.prototype.close = function (this: ArrangeController) {
     if (!this.isOpen) return;
     this.doSave();   // 关窗即冲刷防抖窗口内的编辑（此前 <800ms 内的改动静默丢失）
     this.isOpen = false;
@@ -247,7 +247,7 @@
   /* ═══════════ 项目接入与持久化 ═══════════ */
 
   /** chat.js 打开/切换项目时调用；projectId 为 null 表示返回档案库 */
-  Arrange.prototype.setProject = function (                         projectId     ) {
+  Arrange.prototype.setProject = function (this: ArrangeController, projectId: any) {
     if (this.projectId === projectId) return;
     this.doSave();   // 切走前冲刷：此后 projectId 被清空，挂起的保存定时器会静默空转
     this.stopPlayback();
@@ -275,8 +275,8 @@
       UI.getJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement"),
       bpmReq
     ]).then(function (results) {
-        var data      = results[0];
-        var bpmData      = results[1];
+        var data: any = results[0];
+        var bpmData: any = results[1];
         if (data && data.tracks) {
           self.deserialize(data);
         } else {
@@ -294,7 +294,7 @@
       })
       .catch(function (e) {
         /* 读取失败不再静默回退空白（用户会以为编排数据丢了） */
-        if (UI.toast) UI.toast ("⚠ 编排数据读取失败，已载入空白编排: " + ((e && e.message) || ""), "err");
+        if (UI.toast) UI.toast!("⚠ 编排数据读取失败，已载入空白编排: " + ((e && e.message) || ""), "err");
         self.defaultState();
         self.loadedProjectId = self.projectId;
         if (self.isOpen) self.renderAll();
@@ -302,19 +302,19 @@
   };
 
   /** chat.js 文件清单变化时同步左栏 MIDI 列表 */
-  Arrange.prototype.refreshMidiList = function (                         files     ) {
+  Arrange.prototype.refreshMidiList = function (this: ArrangeController, files: any) {
     this.midiFiles = files || [];
     this.renderMidiList();
   };
 
-  Arrange.prototype.defaultState = function (                       ) {
+  Arrange.prototype.defaultState = function (this: ArrangeController) {
     this.bpm = 120;
     this.loop = { on: false, start: 0, end: 16 };
     this.tracks = [this.makeTrack(1)];
     this.syncTransportUI();
   };
 
-  Arrange.prototype.makeTrack = function (                         index     ) {
+  Arrange.prototype.makeTrack = function (this: ArrangeController, index: any) {
     return {
       id: uid("tr"),
       name: "Track " + index,
@@ -328,7 +328,7 @@
   };
 
   /** 干净的持久化结构：剥离运行时字段（_rev/_peaks 等），供保存与撤销快照共用 */
-  Arrange.prototype.cleanState = function (                       ) {
+  Arrange.prototype.cleanState = function (this: ArrangeController) {
     return {
       version: 1,
       bpm: this.bpm,
@@ -345,7 +345,7 @@
           volume: t.volume,
           source: t.source,
           clips: (t.clips || []).map(function (c) {
-            var clip      = {
+            var clip: any = {
               id: c.id,
               type: c.type,
               name: c.name,
@@ -370,11 +370,11 @@
     };
   };
 
-  Arrange.prototype.serialize = function (                       ) {
+  Arrange.prototype.serialize = function (this: ArrangeController) {
     return this.cleanState();
   };
 
-  Arrange.prototype.deserialize = function (                         data     ) {
+  Arrange.prototype.deserialize = function (this: ArrangeController, data: any) {
     this.bpm = clamp(Number(data.bpm) || 120, 30, 300);
     this.snap = Number(data.snap) >= 0 ? Number(data.snap) : 0.25;
     this.ppb = clamp(Number(data.ppb) || 26, 8, 80);
@@ -384,7 +384,7 @@
       end: Number(data.loop && data.loop.end) || 16
     };
     var self = this;
-    this.tracks = (Array.isArray(data.tracks) ? data.tracks : []).map(function (t     , i     ) {
+    this.tracks = (Array.isArray(data.tracks) ? data.tracks : []).map(function (t: any, i: any) {
       var track = self.makeTrack(i + 1);
       if (t.id) track.id = String(t.id);
       if (t.name) track.name = t.name;
@@ -393,8 +393,8 @@
       track.solo = !!t.solo;
       track.volume = clamp(t.volume !== undefined ? Number(t.volume) : 0.8, 0, 1);
       if (t.source && typeof t.source === "object") track.source = t.source;
-      track.clips = (Array.isArray(t.clips) ? t.clips : []).map(function (c     ) {
-        var clip      = {
+      track.clips = (Array.isArray(t.clips) ? t.clips : []).map(function (c: any) {
+        var clip: any = {
           id: c.id || uid("clip"),
           type: c.type === "audio" ? "audio" : "midi",
           name: c.name || "Clip",
@@ -436,9 +436,9 @@
   /** 项目文件清单更新后同步清理：被删除（用户删除或 AI 调 delete_midi）
       的 MIDI 文件，编曲轨道上对应的 midi clip 一并移除，避免悬垂引用
       （clip.notes 还在内存里，播放/导出会继续用它，但源文件已不存在） */
-  Arrange.prototype.syncFiles = function (                         files     ) {
-    var valid                         = {};
-    (files || []).forEach(function (f     ) {
+  Arrange.prototype.syncFiles = function (this: ArrangeController, files: any) {
+    var valid: { [key: string]: any } = {};
+    (files || []).forEach(function (f: any) {
       if (f && f.name) valid[f.name] = true;
     });
     var changed = false;
@@ -446,7 +446,7 @@
       if (!t.clips || !t.clips.length) return;
       var kept = t.clips.filter(function (c) {
         if (!c || c.type !== "midi") return true;
-        if (valid[c.fullName ] || valid[c.name]) return true;
+        if (valid[c.fullName!] || valid[c.name]) return true;
         changed = true;
         return false;
       });
@@ -459,7 +459,7 @@
     }
   };
 
-  Arrange.prototype.scheduleSave = function (                       ) {
+  Arrange.prototype.scheduleSave = function (this: ArrangeController) {
     if (!this.projectId) return;
     this.dirty = true;
     this.setSaveStamp("EDIT…", true);
@@ -468,7 +468,7 @@
     this.saveTimer = setTimeout(function () { self.doSave(); }, 800);
   };
 
-  Arrange.prototype.doSave = function (                       ) {
+  Arrange.prototype.doSave = function (this: ArrangeController) {
     var self = this;
     if (!this.projectId || !this.dirty) return;
     // 先"认领" dirty 再发请求：在途期间的编辑会重新置 dirty 并触发下一轮
@@ -487,11 +487,11 @@
         self.saveInFlight = false;
         self.dirty = true; // 保存失败：恢复 dirty，防抖重试与关窗兜底仍有效
         self.setSaveStamp("SAVE ERR", true);
-        if (UI.toast) UI.toast ("✗ 编排保存失败: " + e.message, "err");
+        if (UI.toast) UI.toast!("✗ 编排保存失败: " + e.message, "err");
       });
   };
 
-  Arrange.prototype.setSaveStamp = function (                         text     , warn     ) {
+  Arrange.prototype.setSaveStamp = function (this: ArrangeController, text: any, warn: any) {
     var el = this.el.arrSaveStamp;
     if (!el) return;
     el.textContent = text;
@@ -500,13 +500,13 @@
 
   /* ═══════════ 撤销 / 重做 ═══════════ */
 
-  Arrange.prototype.snapshot = function (                       ) {
+  Arrange.prototype.snapshot = function (this: ArrangeController) {
     return JSON.stringify(this.cleanState());
   };
 
   /** 清理已不存在轨道的发声链（整体替换 tracks 的路径：载入/撤销/重做） */
-  Arrange.prototype._pruneTrackNodes = function (                       ) {
-    var live                         = {};
+  Arrange.prototype._pruneTrackNodes = function (this: ArrangeController) {
+    var live: { [key: string]: any } = {};
     this.tracks.forEach(function (t) { live[t.id] = true; });
     for (var id in this.engine.trackNodes) {
       if (!live[id]) {
@@ -514,13 +514,13 @@
         var nodes = this.engine.trackNodes[id];
         if (nodes.synth) nodes.synth.stopAll();
         if (nodes.soundfont) nodes.soundfont.stopAll();
-        try { nodes.gain .disconnect(); nodes.analyser .disconnect(); } catch (e) {}
+        try { nodes.gain!.disconnect(); nodes.analyser!.disconnect(); } catch (e) {}
         delete this.engine.trackNodes[id];
       }
     }
   };
 
-  Arrange.prototype.restoreSnapshot = function (                         json     ) {
+  Arrange.prototype.restoreSnapshot = function (this: ArrangeController, json: any) {
     var s = JSON.parse(json);
     this.bpm = s.bpm || 120;
     this.loop = s.loop || { on: false, start: 0, end: 16 };
@@ -544,13 +544,13 @@
     this.rescheduleSamplesDebounced();   // 撤销/重做同样要把音频调度表拉回当前快照
   };
 
-  Arrange.prototype.pushHistory = function (                       ) {
+  Arrange.prototype.pushHistory = function (this: ArrangeController) {
     this.undoStack.push(this.snapshot());
     if (this.undoStack.length > 50) this.undoStack.shift();
     this.redoStack = [];
   };
 
-  Arrange.prototype.undo = function (                       ) {
+  Arrange.prototype.undo = function (this: ArrangeController) {
     if (!this.undoStack.length) { this.showHUD("没有更多可撤销的操作"); return; }
     this.redoStack.push(this.snapshot());
     this.restoreSnapshot(this.undoStack.pop());
@@ -558,7 +558,7 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.redo = function (                       ) {
+  Arrange.prototype.redo = function (this: ArrangeController) {
     if (!this.redoStack.length) { this.showHUD("没有更多可重做的操作"); return; }
     this.undoStack.push(this.snapshot());
     this.restoreSnapshot(this.redoStack.pop());
@@ -568,13 +568,13 @@
 
   /* ═══════════ 走带控制 ═══════════ */
 
-  Arrange.prototype.secondsPerBeat = function (                       ) {
+  Arrange.prototype.secondsPerBeat = function (this: ArrangeController) {
     return 60 / (this.bpm || 120);
   };
 
-  Arrange.prototype.bindTransport = function (                       ) {
+  Arrange.prototype.bindTransport = function (this: ArrangeController) {
     var self = this;
-    var on = function (           id     , fn     ) {
+    var on = function (this: any, id: any, fn: any) {
       var b = this.$(id);
       if (b) b.addEventListener("click", function () { fn(); b.blur(); });
     }.bind(this);
@@ -592,19 +592,19 @@
     on("arrZoomOutBtn", function () { self.zoomStep(-1); });
 
     if (this.el.arrBpmInput) {
-      this.el.arrBpmInput.addEventListener("change", function (         ) {
+      this.el.arrBpmInput.addEventListener("change", function (this: any) {
         self.setBpm(Number(this.value) || 120);
       });
     }
     if (this.el.arrZoomRange) {
-      this.el.arrZoomRange.addEventListener("input", function (         ) {
+      this.el.arrZoomRange.addEventListener("input", function (this: any) {
         self.setPpb(Number(this.value));
       });
     }
 
     // Ctrl+滚轮缩放 / Shift+滚轮或触摸板横滚：横向滚动时挂起播放头跟随 2s
     if (this.el.arrTracksScroll) {
-      this.el.arrTracksScroll.addEventListener("wheel", function (e     ) {
+      this.el.arrTracksScroll.addEventListener("wheel", function (e: any) {
         if (e.ctrlKey) {
           e.preventDefault();
           self.setPpb(self.ppb + (e.deltaY < 0 ? 3 : -3));
@@ -615,7 +615,7 @@
     }
   };
 
-  Arrange.prototype.syncTransportUI = function (                       ) {
+  Arrange.prototype.syncTransportUI = function (this: ArrangeController) {
     if (this.el.arrBpmInput) this.el.arrBpmInput.value = String(this.bpm);
     if (this.el.arrZoomRange) this.el.arrZoomRange.value = String(this.ppb);
     if (this.el.arrLoopBtn) this.el.arrLoopBtn.classList.toggle("active", !!this.loop.on);
@@ -629,21 +629,21 @@
     this.updatePosDisplay();
   };
 
-  Arrange.prototype.togglePlay = function (                       ) {
+  Arrange.prototype.togglePlay = function (this: ArrangeController) {
     if (this.isPlaying) this.pausePlayback();
     else this.startPlayback();
   };
 
-  Arrange.prototype.startPlayback = function (                       ) {
+  Arrange.prototype.startPlayback = function (this: ArrangeController) {
     /* 引擎模式播放门控（严格路由）：引擎未就绪不播放、不静默回退 */
     if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
         && !window.AudioBackend.isEngineReady()) {
       /* 门控提示双通道：toast（显眼、不被 HUD 顶掉）+ HUD 状态条 */
-      if (window.UI && window.UI.toast) UI.toast ("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+      if (window.UI && window.UI.toast) UI.toast!("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）", "err");
       this.showHUD("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）");
       return;
     }
-    this.engine.resume().catch(function (e     ) {
+    this.engine.resume().catch(function (e: any) {
       console.warn("[Arrange] AudioContext 恢复失败:", e);
     });
     this.engine.metronome = this.metronome;
@@ -674,7 +674,7 @@
   };
 
   /** tempSuspend=true：为拖拽走带等操作临时停摆，不执行「回退到起点」 */
-  Arrange.prototype.pausePlayback = function (                         tempSuspend     ) {
+  Arrange.prototype.pausePlayback = function (this: ArrangeController, tempSuspend: any) {
     var at = Math.max(0, this.engine.currentBeat());
     this.stopEngineClock();
     /* 「暂停后恢复光标位置」开启时回退到本次播放起点；
@@ -690,7 +690,7 @@
     this.updatePlayButton();
   };
 
-  Arrange.prototype.stopPlayback = function (                         resetHead     ) {
+  Arrange.prototype.stopPlayback = function (this: ArrangeController, resetHead: any) {
     var wasPlayingAt = this.isPlaying ? Math.max(0, this.engine.currentBeat()) : this.playheadBeat;
     this.stopEngineClock();
     if (resetHead) {
@@ -703,7 +703,7 @@
     this.updatePlayButton();
   };
 
-  Arrange.prototype.stopEngineClock = function (                       ) {
+  Arrange.prototype.stopEngineClock = function (this: ArrangeController) {
     this.engine.stopSchedule();
     this.isPlaying = false;
     if (this._reschedTimer) { clearTimeout(this._reschedTimer); this._reschedTimer = null; }
@@ -716,7 +716,7 @@
     this.updatePlayButton();
   };
 
-  Arrange.prototype.updatePlayButton = function (                       ) {
+  Arrange.prototype.updatePlayButton = function (this: ArrangeController) {
     if (!this.el.arrPlayLabel) return;
     this.el.arrPlayLabel.textContent = this.isPlaying ? "暂停" : "播放";
     if (this.el.arrPlayIconPath) {
@@ -726,7 +726,7 @@
     }
   };
 
-  Arrange.prototype.toggleLoop = function (                       ) {
+  Arrange.prototype.toggleLoop = function (this: ArrangeController) {
     this.loop.on = !this.loop.on;
     if (this.loop.on && this.loop.end <= this.loop.start) {
       this.loop.start = 0;
@@ -747,7 +747,7 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.toggleMetro = function (                       ) {
+  Arrange.prototype.toggleMetro = function (this: ArrangeController) {
     this.metronome = !this.metronome;
     this.engine.metronome = this.metronome;
     this.syncTransportUI();
@@ -756,29 +756,29 @@
 
   /** 走带条上的「暂停后光标回起点」开关：就地切换并持久化。
       钢琴窗共用同一份 UI.transportPrefs 缓存，两窗口行为即时一致 */
-  Arrange.prototype.toggleResumeOnPause = function (                       ) {
+  Arrange.prototype.toggleResumeOnPause = function (this: ArrangeController) {
     var prefs = UI.transportPrefs ? UI.transportPrefs() : { resumeOnPause: false };
     var next = !prefs.resumeOnPause;
     UI.setTransportPref("resumeOnPause", next);
     this.showHUD(next ? "⏪ 已开启：暂停后光标回到本次播放起点"
                       : "已关闭：暂停后光标停在当前位置");
     var self = this;
-    UI.postJSON("/api/transport/prefs", { resume_on_pause: next }).then(function (r     ) {
+    UI.postJSON("/api/transport/prefs", { resume_on_pause: next }).then(function (r: any) {
       if (!r || !r.ok) throw new Error((r && r.message) || "保存失败");
     }).catch(function (err) {
-      if (UI.toast) UI.toast ("⚠ 走带偏好保存失败：" + err.message, "warn");
+      if (UI.toast) UI.toast!("⚠ 走带偏好保存失败：" + err.message, "warn");
       self._resumeSaveFailed = true;   /* 重开应用时会重新读取旧值 */
     });
   };
 
   /** 按钮高亮与设置值同步（init 订阅初值/后续变化，切换时也会调用） */
-  Arrange.prototype.syncResumeUI = function (                         prefs     ) {
+  Arrange.prototype.syncResumeUI = function (this: ArrangeController, prefs: any) {
     if (!this.el.arrResumeBtn) return;
     this.el.arrResumeBtn.classList.toggle("active",
       !!(prefs && prefs.resumeOnPause));
   };
 
-  Arrange.prototype.setBpm = function (                         val     ) {
+  Arrange.prototype.setBpm = function (this: ArrangeController, val: any) {
     val = clamp(Math.round(val), 30, 300);
     if (val === this.bpm) return;
     if (this.isPlaying) {
@@ -806,12 +806,12 @@
     if (this.projectId && window.UI && UI.postJSON) {
       UI.postJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/bpm", { bpm: val })
         .catch(function (e) {
-          if (UI.toast) UI.toast ("⚠ 全局 BPM 保存失败: " + ((e && e.message) || ""), "warn");
+          if (UI.toast) UI.toast!("⚠ 全局 BPM 保存失败: " + ((e && e.message) || ""), "warn");
         });
     }
   };
 
-  Arrange.prototype.seekTo = function (                         beat     , restartIfPlaying     ) {
+  Arrange.prototype.seekTo = function (this: ArrangeController, beat: any, restartIfPlaying: any) {
     this.playheadBeat = Math.max(0, beat);
     this.updatePlayline();
     this.updatePosDisplay();
@@ -821,11 +821,11 @@
     }
   };
 
-  Arrange.prototype.exportWav = function (                       ) {
+  Arrange.prototype.exportWav = function (this: ArrangeController) {
     var self = this;
     // 渲染期间防重复点击（离线渲染耗时数秒，连点会排队多个渲染任务）
     if (this._exporting) {
-      if (window.UI && window.UI.toast) window.UI.toast ("⏳ 正在导出中，请等待完成", "warn");
+      if (window.UI && window.UI.toast) window.UI.toast!("⏳ 正在导出中，请等待完成", "warn");
       return;
     }
     // 仅 AUTO+JUCE就绪时可离线导出（保证按全局采样率+尾音不截断）
@@ -838,15 +838,15 @@
       var isEng = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
       if (window.UI && window.UI.toast) {
         if (isEng) {
-          UI.toast ("✗ 音频引擎未就绪，导出需要引擎离线渲染（可在设置页切换 WEBAUDIO 模式后重试）", "err");
+          UI.toast!("✗ 音频引擎未就绪，导出需要引擎离线渲染（可在设置页切换 WEBAUDIO 模式后重试）", "err");
         } else {
-          UI.toast ("⚠ 当前为 WEBAUDIO 模式，导出走浏览器（无离线尾音保障）", "warn");
+          UI.toast!("⚠ 当前为 WEBAUDIO 模式，导出走浏览器（无离线尾音保障）", "warn");
         }
       }
       return;
     }
     if (!this.tracks || !this.tracks.length) {
-      if (window.UI && window.UI.toast) window.UI.toast ("⚠ 无轨道可导出", "warn");
+      if (window.UI && window.UI.toast) window.UI.toast!("⚠ 无轨道可导出", "warn");
       return;
     }
     this._exporting = true;
@@ -885,18 +885,18 @@
       setTimeout(function(){ try{ a.remove(); }catch(e){} }, 1000);
     }).catch(function(err){
       self.showHUD("✗ 导出失败（可重试；持续失败请检查磁盘空间或引擎状态）");
-      if (window.UI && window.UI.toast) window.UI.toast ("✗ 导出失败: " + (err && err.message || err), "err");
+      if (window.UI && window.UI.toast) window.UI.toast!("✗ 导出失败: " + (err && err.message || err), "err");
     }).finally(finish);
   };
 
   /* ═══════════ 缩放 ═══════════ */
 
-  Arrange.prototype.zoomStep = function (                         dir     ) {
+  Arrange.prototype.zoomStep = function (this: ArrangeController, dir: any) {
     this.setPpb(this.ppb + dir * 4);
   };
 
   /** 横向缩放：以视口 40% 处的拍位为锚点，缩放后回滚到原锚点 */
-  Arrange.prototype.setPpb = function (                         val     ) {
+  Arrange.prototype.setPpb = function (this: ArrangeController, val: any) {
     val = clamp(Math.round(val), 8, 80);
     if (val === this.ppb) return;
     var scroller = this.el.arrTracksScroll;
@@ -916,7 +916,7 @@
 
   /* ═══════════ 吸附下拉 ═══════════ */
 
-  Arrange.prototype.bindSnapDropdown = function (                       ) {
+  Arrange.prototype.bindSnapDropdown = function (this: ArrangeController) {
     var self = this;
     var wrap = this.el.arrSnapDropdown;
     var btn = this.el.arrSnapBtn;
@@ -924,48 +924,48 @@
     if (!wrap || !btn || !menu) return;
 
     function renderMenu() {
-      menu .innerHTML = "";
+      menu!.innerHTML = "";
       SNAPS.forEach(function (s) {
         var opt = document.createElement("div");
         opt.className = "select-option" + (self.snap === s.v ? " selected" : "");
         opt.textContent = s.label;
         opt.addEventListener("click", function () {
           self.snap = s.v;
-          menu .hidden = true;
-          wrap .classList.remove("open");
+          menu!.hidden = true;
+          wrap!.classList.remove("open");
           self.syncTransportUI();
           self.showHUD("吸附: " + s.label);
           self.scheduleSave();
         });
-        menu .appendChild(opt);
+        menu!.appendChild(opt);
       });
     }
 
-    btn.addEventListener("click", function (e     ) {
+    btn.addEventListener("click", function (e: any) {
       e.stopPropagation();
-      var show = menu .hidden;
+      var show = menu!.hidden;
       if (show) {
         renderMenu();
-        menu .classList.add("menu-in");
-        menu .hidden = false;
-        wrap .classList.add("open");
+        menu!.classList.add("menu-in");
+        menu!.hidden = false;
+        wrap!.classList.add("open");
       } else {
-        menu .hidden = true;
-        wrap .classList.remove("open");
+        menu!.hidden = true;
+        wrap!.classList.remove("open");
       }
-      btn .blur();
+      btn!.blur();
     });
     document.addEventListener("mousedown", function (e) {
-      if (!menu .hidden && !wrap .contains(e.target        )) {
-        menu .hidden = true;
-        wrap .classList.remove("open");
+      if (!menu!.hidden && !wrap!.contains(e.target as Node)) {
+        menu!.hidden = true;
+        wrap!.classList.remove("open");
       }
     });
   };
 
   /* ═══════════ 轨道区事件绑定（委托） ═══════════ */
 
-  Arrange.prototype.bindTracksArea = function (                       ) {
+  Arrange.prototype.bindTracksArea = function (this: ArrangeController) {
     var self = this;
     var inner = this.el.arrInner;
 
@@ -979,16 +979,16 @@
     if (!inner) return;
 
     // 左键：轨道头选中 / Clip 手势起点 / 空白处取消选择
-    inner.addEventListener("mousedown", function (e     ) {
+    inner.addEventListener("mousedown", function (e: any) {
       if (e.button !== 0) return;
-      var headEl = e.target.closest (".arr-track-head");
+      var headEl = e.target.closest!(".arr-track-head");
       if (headEl) {
         self.selectTrack(Number(headEl.dataset.trackIdx));
         return;
       }
-      var handleEl = e.target.closest (".arr-clip-handle");
-      var edgeEl = e.target.closest (".arr-clip-edge");
-      var clipEl = e.target.closest (".arr-clip");
+      var handleEl = e.target.closest!(".arr-clip-handle");
+      var edgeEl = e.target.closest!(".arr-clip-edge");
+      var clipEl = e.target.closest!(".arr-clip");
       if (clipEl && (handleEl || edgeEl)) {
         var mode = handleEl
           ? (handleEl.classList.contains("left") ? "fadeL" : "fadeR")
@@ -1006,37 +1006,37 @@
     });
 
     // 双击：MIDI 片段在钢琴卷帘打开源文件；音频片段试听
-    inner.addEventListener("dblclick", function (e     ) {
-      var clipEl = e.target.closest (".arr-clip");
+    inner.addEventListener("dblclick", function (e: any) {
+      var clipEl = e.target.closest!(".arr-clip");
       /* 兜底：target 因任何原因落在轨道容器上时，按坐标重新命中 */
       if (!clipEl && typeof document.elementFromPoint === "function") {
         var hit = document.elementFromPoint(e.clientX, e.clientY);
-        if (hit && hit.closest) clipEl = hit.closest (".arr-clip");
+        if (hit && hit.closest) clipEl = hit.closest!(".arr-clip");
       }
       if (!clipEl) return;
       var found = self.locateClip(clipEl);
       if (!found) return;
       if (found.clip.type === "midi" && found.clip.fullName && window.PianoRoll) {
-        window.PianoRoll.openFile(self.projectId       , found.clip.fullName, "");
+        window.PianoRoll.openFile(self.projectId as any, found.clip.fullName, "");
       } else if (found.clip.type === "audio" && found.clip.src) {
         self.engine.resume();
         self.engine.previewSample(found.clip.src.p).catch(function () {
-          if (UI.toast) UI.toast ("✗ 音频试听失败（文件不存在或格式不支持）", "err");
+          if (UI.toast) UI.toast!("✗ 音频试听失败（文件不存在或格式不支持）", "err");
         });
       }
     });
 
     // 右键菜单：轨道头 / Clip / 空白处（含表头空白列）
-    inner.addEventListener("contextmenu", function (e     ) {
+    inner.addEventListener("contextmenu", function (e: any) {
       e.preventDefault();
-      var headEl = e.target.closest (".arr-track-head");
+      var headEl = e.target.closest!(".arr-track-head");
       if (headEl) {
         var idx = Number(headEl.dataset.trackIdx);
         self.selectTrack(idx);
         self.openTrackMenu(e, idx);
         return;
       }
-      var clipEl = e.target.closest (".arr-clip");
+      var clipEl = e.target.closest!(".arr-clip");
       if (clipEl) {
         var found = self.locateClip(clipEl);
         if (found && self.selectedClips.indexOf(found.clip.id) === -1) {
@@ -1051,7 +1051,7 @@
     // 拖放入轨：dragover 高亮 + drop 放置
     var scroller = this.el.arrTracksScroll;
     if (scroller) {
-      scroller.addEventListener("dragover", function (e     ) {
+      scroller.addEventListener("dragover", function (e: any) {
         if (!self.isArrangeDrag(e)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
@@ -1067,11 +1067,11 @@
            拖动所见位置 = 松手放置位置 */
         self.updateDropGhost(self.resolveDropTarget(e));
       });
-      scroller.addEventListener("dragleave", function (e     ) {
+      scroller.addEventListener("dragleave", function (e: any) {
         self.clearDropHighlight();
         self.clearSourceHighlight();
       });
-      scroller.addEventListener("drop", function (e     ) {
+      scroller.addEventListener("drop", function (e: any) {
         if (!self.isArrangeDrag(e)) return;
         e.preventDefault();
         self.clearDropHighlight();
@@ -1094,24 +1094,24 @@
   /* ═══════════ 坐标换算 ═══════════ */
 
   /** 客户端 X → 时间线拍（基于滚动容器，含滚动偏移与轨道头宽度补偿） */
-  Arrange.prototype.clientXToBeat = function (                         clientX     ) {
+  Arrange.prototype.clientXToBeat = function (this: ArrangeController, clientX: any) {
     var scroller = this.el.arrTracksScroll;
     if (!scroller) return 0;
     var r = scroller.getBoundingClientRect();
     return (clientX - r.left + scroller.scrollLeft - HEADER_W) / this.ppb;
   };
 
-  Arrange.prototype.snapBeat = function (                         beat     ) {
+  Arrange.prototype.snapBeat = function (this: ArrangeController, beat: any) {
     if (!this.snap) return Math.round(beat * 1000) / 1000;
     return Math.round(beat / this.snap) * this.snap;
   };
 
   /** 循环区间端点按小节吸附 */
-  Arrange.prototype.barSnap = function (                         beat     ) {
+  Arrange.prototype.barSnap = function (this: ArrangeController, beat: any) {
     return Math.round(beat / BAR_BEATS) * BAR_BEATS;
   };
 
-  Arrange.prototype.contentEndBeat = function (                       ) {
+  Arrange.prototype.contentEndBeat = function (this: ArrangeController) {
     var end = BAR_BEATS;
     this.tracks.forEach(function (t) {
       t.clips.forEach(function (c) { end = Math.max(end, c.start + c.length); });
@@ -1121,28 +1121,28 @@
 
   /* ═══════════ 标尺交互（下半播放头 / 上半循环区间） ═══════════ */
 
-  Arrange.prototype.bindRulerEvents = function (                       ) {
+  Arrange.prototype.bindRulerEvents = function (this: ArrangeController) {
     // 已并入 bindTracksArea 的窗口级 mousemove/up；标尺自身事件在 initRulerPointer 绑定
   };
 
-  Arrange.prototype.initRulerPointer = function (                       ) {
+  Arrange.prototype.initRulerPointer = function (this: ArrangeController) {
     if (this._rulerPointerBound) return; // 只绑定一次
     var self = this;
     var canvas = this.el.arrRulerCanvas;
     if (!canvas) return;
     this._rulerPointerBound = true;
 
-    canvas.addEventListener("mousedown", function (e     ) {
+    canvas.addEventListener("mousedown", function (e: any) {
       if (e.button !== 0) return;
       e.preventDefault();
-      var rect = canvas .getBoundingClientRect();
+      var rect = canvas!.getBoundingClientRect();
       var upper = (e.clientY - rect.top) < RULER_H / 2;
       var beat = clamp(self.clientXToBeat(e.clientX), 0, 1e6);
       if (upper) {
         self.rulerDrag = { mode: "loop", anchor: self.barSnap(beat) };
         self.loop.on = true;
-        self.loop.start = self.loop.anchor = self.rulerDrag.anchor ;
-        self.loop.end = self.rulerDrag.anchor  + BAR_BEATS;
+        self.loop.start = self.loop.anchor = self.rulerDrag.anchor!;
+        self.loop.end = self.rulerDrag.anchor! + BAR_BEATS;
         self.engine.loop = self.loop;
         self.syncTransportUI();
         self.renderRuler();
@@ -1154,8 +1154,8 @@
       }
     });
 
-    canvas.addEventListener("dblclick", function (e     ) {
-      var rect = canvas .getBoundingClientRect();
+    canvas.addEventListener("dblclick", function (e: any) {
+      var rect = canvas!.getBoundingClientRect();
       if ((e.clientY - rect.top) < RULER_H / 2 && self.loop.on) {
         self.loop.on = false;
         self.engine.loop = self.loop;
@@ -1167,20 +1167,20 @@
     });
   };
 
-  Arrange.prototype.updateRulerDrag = function (                         e     ) {
+  Arrange.prototype.updateRulerDrag = function (this: ArrangeController, e: any) {
     if (!this.rulerDrag) return;
     var beat = clamp(this.clientXToBeat(e.clientX), 0, 1e6);
     if (this.rulerDrag.mode === "seek") {
       this.seekTo(Math.max(0, this.snapBeat(beat)), false);
     } else {
       var cur = this.barSnap(beat);
-      this.loop.start = Math.min(this.rulerDrag.anchor , cur);
-      this.loop.end = Math.max(this.rulerDrag.anchor  + BAR_BEATS, cur === this.rulerDrag.anchor ? cur + BAR_BEATS : cur);
+      this.loop.start = Math.min(this.rulerDrag.anchor!, cur);
+      this.loop.end = Math.max(this.rulerDrag.anchor! + BAR_BEATS, cur === this.rulerDrag.anchor ? cur + BAR_BEATS : cur);
       this.renderRuler();
     }
   };
 
-  Arrange.prototype.finishRulerDrag = function (                       ) {
+  Arrange.prototype.finishRulerDrag = function (this: ArrangeController) {
     if (!this.rulerDrag) return;
     var d = this.rulerDrag;
     this.rulerDrag = null;
@@ -1197,8 +1197,8 @@
 
   /* ═══════════ Clip 手势（移动 / 裁剪 / 渐变） ═══════════ */
 
-  Arrange.prototype.locateClip = function (                         clipEl     ) {
-    var row = clipEl.closest (".arr-lane-row");
+  Arrange.prototype.locateClip = function (this: ArrangeController, clipEl: any) {
+    var row = clipEl.closest!(".arr-lane-row");
     if (!row) return null;
     var trackIdx = Number(row.dataset.trackIdx);
     var track = this.tracks[trackIdx];
@@ -1210,7 +1210,7 @@
     return null;
   };
 
-  Arrange.prototype.beginClipGesture = function (                         e     , clipEl     , mode     ) {
+  Arrange.prototype.beginClipGesture = function (this: ArrangeController, e: any, clipEl: any, mode: any) {
     var found = this.locateClip(clipEl);
     if (!found) return;
 
@@ -1262,13 +1262,13 @@
   };
 
   /** 手势期间吸附：Alt 按下时跳过吸附（与钢琴窗 freeSnap 同语义） */
-  Arrange.prototype.gestureSnap = function (                         beat     , e     ) {
+  Arrange.prototype.gestureSnap = function (this: ArrangeController, beat: any, e: any) {
     if (e && e.altKey) return Math.max(0, Math.round(beat * 1000) / 1000);
     return this.snapBeat(beat);
   };
 
   /** 遍历当前选中的 clip（含所在轨道） */
-  Arrange.prototype.forEachSelectedClip = function (                         fn     ) {
+  Arrange.prototype.forEachSelectedClip = function (this: ArrangeController, fn: any) {
     var self = this;
     this.tracks.forEach(function (track) {
       track.clips.forEach(function (clip) {
@@ -1277,7 +1277,7 @@
     });
   };
 
-  Arrange.prototype.updateClipGesture = function (                         e     ) {
+  Arrange.prototype.updateClipGesture = function (this: ArrangeController, e: any) {
     var d = this.dragState;
     if (!d || !d.found) return;
     var clip = d.found.clip;
@@ -1286,7 +1286,7 @@
 
     /* 位移超过阈值才算真的在拖：此时才隐藏 clip 的指针命中，
        elementFromPoint（跨轨判定）才能看到下方的轨道 */
-    if (!d.peOff && (Math.abs(e.clientX - d.startX ) > 3 || Math.abs(e.clientY - d.startY ) > 3)) {
+    if (!d.peOff && (Math.abs(e.clientX - d.startX!) > 3 || Math.abs(e.clientY - d.startY!) > 3)) {
       d.peOff = true;
       if (el) el.style.pointerEvents = "none";
     }
@@ -1295,9 +1295,9 @@
       /* 延迟克隆：Ctrl 按下后位移超过阈值（4px）才克隆选中 Clip 并
          改拖副本——Ctrl+点击（不拖动）不产生副本（FL Playlist 惯例） */
       if (d.clonePending) {
-        if (Math.abs(e.clientX - d.startX ) + Math.abs(e.clientY - d.startY ) <= 4) return;
-        var clones        = [];
-        this.forEachSelectedClip(function (track     , clip     ) {
+        if (Math.abs(e.clientX - d.startX!) + Math.abs(e.clientY - d.startY!) <= 4) return;
+        var clones: any[] = [];
+        this.forEachSelectedClip(function (track: any, clip: any) {
           var copy = JSON.parse(JSON.stringify(clip));
           copy.id = uid("clip");
           track.clips.push(copy);
@@ -1306,7 +1306,7 @@
         if (clones.length) {
           this.selectedClips = clones;
           this.renderTracks();
-          var newEl = this.el.arrLanes .querySelector('.arr-clip[data-clip-id="' + clones[0] + '"]');
+          var newEl = this.el.arrLanes!.querySelector('.arr-clip[data-clip-id="' + clones[0] + '"]');
           if (newEl) {
             if (el) el.style.pointerEvents = "";
             var rel = this.locateClip(newEl);
@@ -1325,7 +1325,7 @@
       }
 
       // 横向：吸附移动（Alt 临时禁用吸附）；纵向：跨轨
-      var newStart = this.gestureSnap(Math.max(0, this.clientXToBeat(e.clientX) - d.grabOffsetPx  / this.ppb), e);
+      var newStart = this.gestureSnap(Math.max(0, this.clientXToBeat(e.clientX) - d.grabOffsetPx! / this.ppb), e);
       if (Math.abs(newStart - clip.start) > 1e-6) {
         var delta = newStart - clip.start;
         clip.start = newStart;
@@ -1334,7 +1334,7 @@
         if (this.selectedClips.indexOf(clip.id) !== -1 && this.selectedClips.length > 1) {
           var selfM = this;
           var anchorId = clip.id;
-          this.forEachSelectedClip(function (t2     , c2     ) {
+          this.forEachSelectedClip(function (t2: any, c2: any) {
             if (c2.id === anchorId) return;
             c2.start = Math.max(0, c2.start + delta);
             var el2 = selfM.el.arrLanes
@@ -1345,10 +1345,10 @@
         }
       }
       var laneEl = document.elementFromPoint(e.clientX, e.clientY);
-      var contentEl = laneEl && laneEl.closest ? laneEl.closest (".arr-lane-content") : null;
+      var contentEl = laneEl && laneEl.closest ? laneEl.closest!(".arr-lane-content") : null;
       if (contentEl) {
-        var rowEl = contentEl.closest (".arr-lane-row");
-        var targetIdx = Number(rowEl .dataset.trackIdx);
+        var rowEl = contentEl.closest!(".arr-lane-row");
+        var targetIdx = Number(rowEl!.dataset.trackIdx);
         if (!isNaN(targetIdx) && targetIdx !== d.movedToTrackIdx && this.tracks[targetIdx]) {
           // 从原轨摘除挂到新轨（DOM 同步搬移，数据在收尾时统一落）
           var oldRow = d.found.trackIdx;
@@ -1356,7 +1356,7 @@
           var ci = oldTrack.clips.indexOf(clip);
           if (ci !== -1) oldTrack.clips.splice(ci, 1);
           this.tracks[targetIdx].clips.push(clip);
-          contentEl.appendChild(el );
+          contentEl.appendChild(el!);
           d.found.trackIdx = targetIdx;
           d.found.track = this.tracks[targetIdx];
           d.movedToTrackIdx = targetIdx;
@@ -1365,19 +1365,19 @@
       }
       this.positionClipEl(el, clip);
     } else if (d.mode === "trimL") {
-      var endFixed = d.origStart  + d.origLength ;
+      var endFixed = d.origStart! + d.origLength!;
       /* 音频素材不能裁到文件头之前：可向左恢复的量 = 当前 offset（秒）
          换算成拍；越界会造成"画面帧界与实际发声内容错位" */
       var minStart = d.origStart;
       if (clip.type === "audio") {
-        minStart = d.origStart  - Math.max(0, clip.offset || 0) / d.spb ;
+        minStart = d.origStart! - Math.max(0, clip.offset || 0) / d.spb!;
       }
-      var newStart = clamp(this.gestureSnap(this.clientXToBeat(e.clientX), e), Math.max(0, minStart ), endFixed - MIN_CLIP_LEN);
-      var delta = newStart - d.origStart ;
+      var newStart = clamp(this.gestureSnap(this.clientXToBeat(e.clientX), e), Math.max(0, minStart!), endFixed - MIN_CLIP_LEN);
+      var delta = newStart - d.origStart!;
       if (Math.abs(delta) > 1e-6) {
         clip.start = newStart;
         clip.length = endFixed - newStart;
-        if (clip.type === "audio") clip.offset = Math.max(0, (clip.offset || 0) + delta * d.spb );
+        if (clip.type === "audio") clip.offset = Math.max(0, (clip.offset || 0) + delta * d.spb!);
         d.changed = true;
       }
       this.positionClipEl(el, clip);
@@ -1389,26 +1389,26 @@
       }
       this.positionClipEl(el, clip);
     } else if (d.mode === "fadeL") {
-      var sec = Math.max(0, (this.clientXToBeat(e.clientX) - clip.start) * d.spb );
-      clip.fadeIn = Math.round(Math.min(sec, clip.length * d.spb  * 0.9) * 100) / 100;
+      var sec = Math.max(0, (this.clientXToBeat(e.clientX) - clip.start) * d.spb!);
+      clip.fadeIn = Math.round(Math.min(sec, clip.length * d.spb! * 0.9) * 100) / 100;
       clip._rev = (clip._rev || 0) + 1; // 缩略图 key 含 rev，渐变变化需强制重绘
       d.changed = true;
     } else if (d.mode === "fadeR") {
-      var endSec = (clip.start + clip.length) * d.spb ;
-      var sec2 = Math.max(0, endSec - this.clientXToBeat(e.clientX) * d.spb );
-      clip.fadeOut = Math.round(Math.min(sec2, clip.length * d.spb  * 0.9) * 100) / 100;
+      var endSec = (clip.start + clip.length) * d.spb!;
+      var sec2 = Math.max(0, endSec - this.clientXToBeat(e.clientX) * d.spb!);
+      clip.fadeOut = Math.round(Math.min(sec2, clip.length * d.spb! * 0.9) * 100) / 100;
       clip._rev = (clip._rev || 0) + 1;
       d.changed = true;
     }
 
     // 渐变手柄实时重绘缩略（~12fps 节流）
-    if ((d.mode === "fadeL" || d.mode === "fadeR" || d.mode === "trimL" || d.mode === "trimR") && now - d.lastThumbDraw  > 80) {
+    if ((d.mode === "fadeL" || d.mode === "fadeR" || d.mode === "trimL" || d.mode === "trimR") && now - d.lastThumbDraw! > 80) {
       d.lastThumbDraw = now;
       this.drawThumbFor(el);
     }
   };
 
-  Arrange.prototype.finishClipGesture = function (                       ) {
+  Arrange.prototype.finishClipGesture = function (this: ArrangeController) {
     var d = this.dragState;
     this.dragState = null;
     if (!d) return;
@@ -1423,15 +1423,15 @@
     }
     this.drawThumbFor(d.clipEl);
     this.applyMixSafe();
-    this.showHUD(d.mode === "move" ? ("位置: " + (d.found .clip.start / BAR_BEATS + 1).toFixed(2) + " 小节")
-      : d.mode === "fadeL" ? ("渐入: " + d.found .clip.fadeIn.toFixed(2) + "s")
-      : d.mode === "fadeR" ? ("渐出: " + d.found .clip.fadeOut.toFixed(2) + "s")
-      : "长度: " + d.found .clip.length.toFixed(2) + " 拍");
+    this.showHUD(d.mode === "move" ? ("位置: " + (d.found!.clip.start / BAR_BEATS + 1).toFixed(2) + " 小节")
+      : d.mode === "fadeL" ? ("渐入: " + d.found!.clip.fadeIn.toFixed(2) + "s")
+      : d.mode === "fadeR" ? ("渐出: " + d.found!.clip.fadeOut.toFixed(2) + "s")
+      : "长度: " + d.found!.clip.length.toFixed(2) + " 拍");
     this.updateContentWidth();
     this.scheduleSave();
   };
 
-  Arrange.prototype.applyMixSafe = function (                       ) {
+  Arrange.prototype.applyMixSafe = function (this: ArrangeController) {
     // Web Audio 侧立即生效（本地节点操作，廉价）
     this.engine.applyMix(this.tracks);
     // 同步原生引擎混音图（M3）：轨序号即引擎轨号；浏览器模式/引擎未就绪时
@@ -1463,7 +1463,7 @@
       失败时 toast 具体原因（素材目录未挂载等此前只写日志，用户侧表现为
       "没声音"）。严格路由：引擎模式下失败即静音该素材，不回退 Web 渲染
       （_nativeSamplesFailed 仅作状态标记，不再驱动降级） */
-  Arrange.prototype.sendSampleSchedule = function (                       ) {
+  Arrange.prototype.sendSampleSchedule = function (this: ArrangeController) {
     if (!window.EngineBridge) return null;
     var clips = [];
     for (var ti = 0; ti < this.tracks.length; ti++) {
@@ -1482,7 +1482,7 @@
           self.engine._nativeSamplesFailed = false;
         }).catch(function (err) {
           self.engine._nativeSamplesFailed = true;
-          if (UI.toast) UI.toast ("⚠ 音频素材调度失败，相关剪辑静音（ENGINE 模式不降级）：" + (err && err.message || err), "warn");
+          if (UI.toast) UI.toast!("⚠ 音频素材调度失败，相关剪辑静音（ENGINE 模式不降级）：" + (err && err.message || err), "warn");
         });
       }
       return p;
@@ -1494,7 +1494,7 @@
 
   /** 调度签名：坐标/长度/offset/mute/fade 任一变化都算——用于跳过
       音量拖动等不影响素材表的 applyMixSafe 调用 */
-  Arrange.prototype.sampleScheduleSig = function (                       ) {
+  Arrange.prototype.sampleScheduleSig = function (this: ArrangeController) {
     var parts = [];
     for (var ti = 0; ti < this.tracks.length; ti++) {
       var tr = this.tracks[ti];
@@ -1512,7 +1512,7 @@
   /** 播放中的结构编辑必须重发调度表：原生引擎的音频只在按下播放那一刻
       的快照上发声，此后移动/裁剪/删增 clip 若不重发，轨道要么在旧坐标
       出声、要么整段静音（MIDI 不受影响——音符是心跳实时注入的） */
-  Arrange.prototype.rescheduleSamplesDebounced = function (                       ) {
+  Arrange.prototype.rescheduleSamplesDebounced = function (this: ArrangeController) {
     if (!this.isPlaying) return;
     if (!(window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred())) return;
     var self = this;
@@ -1529,7 +1529,7 @@
 
   /* ═══════════ 渲染管线 ═══════════ */
 
-  Arrange.prototype.renderAll = function (                       ) {
+  Arrange.prototype.renderAll = function (this: ArrangeController) {
     this.updateContentWidth();
     this.renderTracks();
     this.resizeRulerCanvas();
@@ -1539,7 +1539,7 @@
   };
 
   /** 内容宽度：最后片段末端 + 余量，最小 64 小节 */
-  Arrange.prototype.updateContentWidth = function (                       ) {
+  Arrange.prototype.updateContentWidth = function (this: ArrangeController) {
     if (!this.el.arrInner) return;
     var endBeat = Math.max(MIN_BARS * BAR_BEATS, this.contentEndBeat() + BAR_BEATS * 8);
     var width = HEADER_W + endBeat * this.ppb;
@@ -1552,7 +1552,7 @@
     }
   };
 
-  Arrange.prototype.renderTracks = function (                       ) {
+  Arrange.prototype.renderTracks = function (this: ArrangeController) {
     var lanesEl = this.el.arrLanes;
     if (!lanesEl) return;
     var self = this;
@@ -1567,14 +1567,14 @@
     this.tracks.forEach(function (track, idx) {
       var row = document.createElement("div");
       row.className = "arr-lane-row" + (idx === self.selectedTrackIdx ? " selected-track" : "");
-      row.dataset.trackIdx = idx       ;
+      row.dataset.trackIdx = idx as any;
       // 行高由 CSS .arr-lane-row 统一控制（72px），此处不再设置
 
       row.appendChild(self.buildTrackHead(track, idx));
 
       var content = document.createElement("div");
       content.className = "arr-lane-content";
-      content.dataset.trackIdx = idx       ;
+      content.dataset.trackIdx = idx as any;
       content.style.setProperty("--bar-px", (self.ppb * BAR_BEATS) + "px");
 
       track.clips.forEach(function (clip) {
@@ -1582,11 +1582,11 @@
       });
 
       row.appendChild(content);
-      lanesEl .appendChild(row);
+      lanesEl!.appendChild(row);
     });
   };
 
-  Arrange.prototype.buildTrackHead = function (                         track     , idx     ) {
+  Arrange.prototype.buildTrackHead = function (this: ArrangeController, track: any, idx: any) {
     var self = this;
     var head = document.createElement("div");
     head.className = "arr-track-head";
@@ -1636,7 +1636,7 @@
     vol.title = "轨道音量";
     /* 快照在首次 input 前抓取（值尚未写入 track）——此前在 change（松手
        后）才 pushHistory，快照已是改后状态，音量撤销是空操作 */
-    var volSnapshot      = null;
+    var volSnapshot: any = null;
     vol.addEventListener("input", function () {
       if (volSnapshot === null) volSnapshot = self.snapshot();
       track.volume = Number(vol.value);
@@ -1688,18 +1688,18 @@
     return head;
   };
 
-  Arrange.prototype.sourceBadgeText = function (                         track     ) {
+  Arrange.prototype.sourceBadgeText = function (this: ArrangeController, track: any) {
     var s = track.source || {};
     if (s.label) return "♪ " + s.label;
     if (s.type === "sf2") return "♪ SF2 音源";
     if (s.type === "builtin") return s.tone === "strings" ? "♪ 内置 · 弦乐群" : "♪ 内置 · 温暖钢琴";
-    var waves                         = { sawtooth: "锯齿波", square: "方波", triangle: "三角波", sine: "正弦波" };
+    var waves: { [key: string]: any } = { sawtooth: "锯齿波", square: "方波", triangle: "三角波", sine: "正弦波" };
     return "♪ 合成器 · " + (waves[s.wave] || s.wave || "锯齿波");
   };
 
   /* ═══════════ Clip 元素 ═══════════ */
 
-  Arrange.prototype.buildClipEl = function (                         track     , clip     ) {
+  Arrange.prototype.buildClipEl = function (this: ArrangeController, track: any, clip: any) {
     var el = document.createElement("div");
     el.className = "arr-clip type-" + clip.type + (clip.mute ? " muted" : "")
       + (this.selectedClips.indexOf(clip.id) !== -1 ? " selected" : "");
@@ -1750,13 +1750,13 @@
     return el;
   };
 
-  Arrange.prototype.positionClipEl = function (                         el     , clip     ) {
+  Arrange.prototype.positionClipEl = function (this: ArrangeController, el: any, clip: any) {
     el.style.width = Math.max(6, clip.length * this.ppb) + "px";
     el.style.transform = "translateX(" + (clip.start * this.ppb) + "px)";
   };
 
   /** 刷新单个片段元素的外观状态与几何 */
-  Arrange.prototype.refreshClipEl = function (                         clipEl     , clip     ) {
+  Arrange.prototype.refreshClipEl = function (this: ArrangeController, clipEl: any, clip: any) {
     if (!clipEl) return;
     clipEl.classList.toggle("muted", !!clip.mute);
     clipEl.classList.toggle("selected", this.selectedClips.indexOf(clip.id) !== -1);
@@ -1765,7 +1765,7 @@
   };
 
   /** 缩略图绘制（IntersectionObserver 驱动；key 变化才重绘） */
-  Arrange.prototype.drawThumbFor = function (                         el     ) {
+  Arrange.prototype.drawThumbFor = function (this: ArrangeController, el: any) {
     if (!el || !el.classList || !el.classList.contains("arr-clip")) return;
     var found = this.locateClip(el);
     if (!found) return;
@@ -1797,7 +1797,7 @@
     }
   };
 
-  Arrange.prototype.drawMidiThumb = function (                         ctx     , track     , clip     , w     , h     ) {
+  Arrange.prototype.drawMidiThumb = function (this: ArrangeController, ctx: any, track: any, clip: any, w: any, h: any) {
     var notes = clip.notes || [];
     if (!notes.length) return;
     var lo = 127, hi = 0;
@@ -1822,14 +1822,14 @@
     ctx.fillStyle = fill; // 保持引用避免优化告警
   };
 
-  Arrange.prototype.drawAudioThumb = function (                         ctx     , track     , clip     , w     , h     , spb     ) {
+  Arrange.prototype.drawAudioThumb = function (this: ArrangeController, ctx: any, track: any, clip: any, w: any, h: any, spb: any) {
     var peaks = clip._peaks;
     if (!peaks && clip.src && clip.src.p) {
       // 未解码过：异步取峰值后重绘一次
       var self = this;
       var rev = clip._rev || 0;
       this.engine.resume();
-      this.engine.getSampleEntry(clip.src.p).then(function (entry     ) {
+      this.engine.getSampleEntry(clip.src.p).then(function (entry: any) {
         clip._peaks = entry.peaks;
         if ((clip._rev || 0) === rev) self.invalidateThumbByClipId(clip.id);
       }).catch(function () {});
@@ -1866,7 +1866,7 @@
     ctx.stroke();
   };
 
-  Arrange.prototype.invalidateThumbByClipId = function (                         clipId     ) {
+  Arrange.prototype.invalidateThumbByClipId = function (this: ArrangeController, clipId: any) {
     var el = this.el.arrLanes
       ? this.el.arrLanes.querySelector('.arr-clip[data-clip-id="' + clipId + '"]')
       : null;
@@ -1878,7 +1878,7 @@
     this.drawThumbFor(el);
   };
 
-  Arrange.prototype.renderAllThumbsSoon = function (                       ) {
+  Arrange.prototype.renderAllThumbsSoon = function (this: ArrangeController) {
     var self = this;
     clearTimeout(this._thumbTimer);
     this._thumbTimer = setTimeout(function () {
@@ -1890,7 +1890,7 @@
 
   /* ═══════════ 标尺渲染（仅可视区，避免超大画布） ═══════════ */
 
-  Arrange.prototype.resizeRulerCanvas = function (                       ) {
+  Arrange.prototype.resizeRulerCanvas = function (this: ArrangeController) {
     var canvas = this.el.arrRulerCanvas;
     var sticky = this.el.rulerSticky;
     if (!canvas || !sticky || !this.rulerCtx) return;
@@ -1902,7 +1902,7 @@
     canvas.style.height = RULER_H + "px";
   };
 
-  Arrange.prototype.renderRuler = function (                       ) {
+  Arrange.prototype.renderRuler = function (this: ArrangeController) {
     var canvas = this.el.arrRulerCanvas;
     if (!canvas || !this.rulerCtx) return;
     var ctx = this.rulerCtx;
@@ -1980,26 +1980,26 @@
 
   /* ═══════════ 播放线 / 位置显示 / UI 心跳 ═══════════ */
 
-  Arrange.prototype.updatePlayline = function (                       ) {
+  Arrange.prototype.updatePlayline = function (this: ArrangeController) {
     if (this.el.arrPlayline) {
       this.el.arrPlayline.hidden = false;
       this.el.arrPlayline.style.transform = "translateX(" + (this.playheadBeat * this.ppb) + "px)";
     }
   };
 
-  Arrange.prototype.fmtPos = function (                         beat     ) {
+  Arrange.prototype.fmtPos = function (this: ArrangeController, beat: any) {
     var bar = Math.floor(beat / BAR_BEATS) + 1;
     var bt = Math.floor(beat % BAR_BEATS) + 1;
     return bar + "." + bt;
   };
 
-  Arrange.prototype.updatePosDisplay = function (                       ) {
+  Arrange.prototype.updatePosDisplay = function (this: ArrangeController) {
     if (this.el.arrPosDisplay) {
       this.el.arrPosDisplay.textContent = this.fmtPos(this.playheadBeat);
     }
   };
 
-  Arrange.prototype.startUILoop = function (                       ) {
+  Arrange.prototype.startUILoop = function (this: ArrangeController) {
     if (this.rafId) return;
     var self = this;
     var step = function () {
@@ -2022,7 +2022,7 @@
 
   /** 播放头自动跟随：指针越过视口右侧 90% 时把视窗推到其前方 15% 处。
       用户主动横滚（滚轮 Shift/deltaX）后挂起 2 秒不抢滚动条 */
-  Arrange.prototype.followPlayhead = function (                         beat     ) {
+  Arrange.prototype.followPlayhead = function (this: ArrangeController, beat: any) {
     var sc = this.el.arrTracksScroll;
     if (!sc) return;
     var now = performance.now();
@@ -2034,12 +2034,12 @@
     }
   };
 
-  Arrange.prototype.stopUILoop = function (                       ) {
+  Arrange.prototype.stopUILoop = function (this: ArrangeController) {
     if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = null; }
     this.decayMeters();
   };
 
-  Arrange.prototype.updateMeters = function (                       ) {
+  Arrange.prototype.updateMeters = function (this: ArrangeController) {
     for (var i = 0; i < this.tracks.length; i++) {
       var t = this.tracks[i];
       var barEl = this.meterEls[t.id];
@@ -2049,15 +2049,15 @@
     }
   };
 
-  Arrange.prototype.decayMeters = function (                       ) {
+  Arrange.prototype.decayMeters = function (this: ArrangeController) {
     for (var id in this.meterEls) {
-      this.meterEls[id] .style.transform = "scaleX(0)";
+      this.meterEls[id]!.style.transform = "scaleX(0)";
     }
   };
 
   /* ═══════════ HUD 提示徽章 ═══════════ */
 
-  Arrange.prototype.showHUD = function (                         text     ) {
+  Arrange.prototype.showHUD = function (this: ArrangeController, text: any) {
     var el = this.el.arrHudBadge;
     if (!el) return;
     el.textContent = text;
@@ -2067,34 +2067,34 @@
     var self = this;
     clearTimeout(this.hudTimer);
     this.hudTimer = setTimeout(function () {
-      el .classList.remove("visible", "hud-pop");
+      el!.classList.remove("visible", "hud-pop");
     }, 1300);
   };
 
   /* ═══════════ 选择状态 ═══════════ */
 
-  Arrange.prototype.selectOnly = function (                         clipId     ) {
+  Arrange.prototype.selectOnly = function (this: ArrangeController, clipId: any) {
     this.selectedClips = [clipId];
     this.refreshSelectionClasses();
   };
 
-  Arrange.prototype.toggleClipSelect = function (                         clipId     ) {
+  Arrange.prototype.toggleClipSelect = function (this: ArrangeController, clipId: any) {
     var i = this.selectedClips.indexOf(clipId);
     if (i === -1) this.selectedClips.push(clipId);
     else this.selectedClips.splice(i, 1);
     this.refreshSelectionClasses();
   };
 
-  Arrange.prototype.clearSelection = function (                       ) {
+  Arrange.prototype.clearSelection = function (this: ArrangeController) {
     if (!this.selectedClips.length) return;
     this.selectedClips = [];
     this.refreshSelectionClasses();
   };
 
-  Arrange.prototype.selectAllClips = function (                       ) {
+  Arrange.prototype.selectAllClips = function (this: ArrangeController) {
     this.selectedClips = [];
-    this.tracks.forEach(function (           t) {
-      t.clips.forEach(function (           c) {
+    this.tracks.forEach(function (this: any, t) {
+      t.clips.forEach(function (this: any, c) {
         this.selectedClips.push(c.id);
       }, this);
     }, this);
@@ -2102,23 +2102,23 @@
     this.showHUD("全选 (" + this.selectedClips.length + ")");
   };
 
-  Arrange.prototype.refreshSelectionClasses = function (                       ) {
+  Arrange.prototype.refreshSelectionClasses = function (this: ArrangeController) {
     if (!this.el.arrLanes) return;
     var els = this.el.arrLanes.querySelectorAll(".arr-clip");
     for (var i = 0; i < els.length; i++) {
-      els[i].classList.toggle("selected", this.selectedClips.indexOf(els[i].dataset.clipId ) !== -1);
+      els[i].classList.toggle("selected", this.selectedClips.indexOf(els[i].dataset.clipId!) !== -1);
     }
   };
 
   /** ↑↓ 键切换选中轨道 */
-  Arrange.prototype.moveTrackSelection = function (                         dir     ) {
+  Arrange.prototype.moveTrackSelection = function (this: ArrangeController, dir: any) {
     var idx = clamp(this.selectedTrackIdx + dir, 0, this.tracks.length - 1);
     if (idx === this.selectedTrackIdx) return;
     this.selectTrack(idx);
     this.showHUD(this.tracks[idx].name);
   };
 
-  Arrange.prototype.selectTrack = function (                         idx     ) {
+  Arrange.prototype.selectTrack = function (this: ArrangeController, idx: any) {
     if (isNaN(idx) || !this.tracks[idx]) return;
     this.selectedTrackIdx = idx;
     if (!this.el.arrLanes) return;
@@ -2130,7 +2130,7 @@
 
   /* ═══════════ Clip 编辑操作 ═══════════ */
 
-  Arrange.prototype.deleteSelected = function (                       ) {
+  Arrange.prototype.deleteSelected = function (this: ArrangeController) {
     if (!this.selectedClips.length) return;
     /* 多选删除确认：连选多个片段时 Del 一下全删（此前无确认，习惯性
        按 Del 本意删 1 个却全没了）；单片段保持直接删 */
@@ -2156,15 +2156,15 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.copySelection = function (                         cut     ) {
+  Arrange.prototype.copySelection = function (this: ArrangeController, cut: any) {
     if (!this.selectedClips.length) return;
     if (cut) this.pushHistory();
     var ids = this.selectedClips.slice();
     var minStart = Infinity;
-    var entries        = [];
+    var entries: any[] = [];
     var self = this;
     /* 记录每个片段的源轨道：粘贴时按相对轨距落轨，跨轨信息不再丢失 */
-    this.forEachSelectedClip(function (track     , clip     ) {
+    this.forEachSelectedClip(function (track: any, clip: any) {
       var ti = self.tracks.indexOf(track);
       minStart = Math.min(minStart, clip.start);
       entries.push({ clip: JSON.parse(JSON.stringify(clip)), srcTrack: ti });
@@ -2185,9 +2185,9 @@
     }
   };
 
-  Arrange.prototype.cutSelection = function (                       ) { this.copySelection(true); };
+  Arrange.prototype.cutSelection = function (this: ArrangeController) { this.copySelection(true); };
 
-  Arrange.prototype.deleteSelectedSilent = function (                         ids     ) {
+  Arrange.prototype.deleteSelectedSilent = function (this: ArrangeController, ids: any) {
     this.tracks.forEach(function (t) {
       t.clips = t.clips.filter(function (c) { return ids.indexOf(c.id) === -1; });
     });
@@ -2197,7 +2197,7 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.pasteClipboard = function (                       ) {
+  Arrange.prototype.pasteClipboard = function (this: ArrangeController) {
     var cb = this.clipboard;
     if (!cb || !cb.entries || !cb.entries.length) {
       this.showHUD("剪贴板为空");
@@ -2207,10 +2207,10 @@
     var base = this.snapBeat(this.playheadBeat);
     var targetIdx = clamp(this.selectedTrackIdx, 0, this.tracks.length - 1);
     var self = this;
-    cb.entries.forEach(function (en     ) {
+    cb.entries.forEach(function (en: any) {
       /* 按相对源轨距落轨（FL Playlist 惯例）：跨轨复制的片段回到对应轨；
          轨道不足时收敛到底部可用轨 */
-      var ti = clamp(targetIdx + (en.srcTrack - cb .baseSrc), 0, self.tracks.length - 1);
+      var ti = clamp(targetIdx + (en.srcTrack - cb!.baseSrc), 0, self.tracks.length - 1);
       var copy = JSON.parse(JSON.stringify(en.clip));
       copy.id = uid("clip");
       copy.start = Math.max(0, base + copy.start);
@@ -2224,11 +2224,11 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.duplicateSelection = function (                       ) {
+  Arrange.prototype.duplicateSelection = function (this: ArrangeController) {
     if (!this.selectedClips.length) return;
     this.pushHistory();
-    var newIds        = [];
-    this.forEachSelectedClip(function (track     , clip     ) {
+    var newIds: any[] = [];
+    this.forEachSelectedClip(function (track: any, clip: any) {
       var copy = JSON.parse(JSON.stringify(clip));
       copy.id = uid("clip");
       delete copy._peaks;
@@ -2243,11 +2243,11 @@
   };
 
   /** Ctrl+B：向右顺延复制（每个片段克隆到其原位置右侧一个长度处） */
-  Arrange.prototype.repeatRight = function (                       ) {
+  Arrange.prototype.repeatRight = function (this: ArrangeController) {
     if (!this.selectedClips.length) return;
     this.pushHistory();
-    var newIds        = [];
-    this.forEachSelectedClip(function (track     , clip     ) {
+    var newIds: any[] = [];
+    this.forEachSelectedClip(function (track: any, clip: any) {
       var copy = JSON.parse(JSON.stringify(clip));
       copy.id = uid("clip");
       copy.start = clip.start + clip.length;
@@ -2263,14 +2263,14 @@
   };
 
   /** 片段内相对拍 rel 是否可分割（两侧至少留 MIN_CLIP_LEN） */
-  Arrange.prototype.canSplitRel = function (                         clip     , rel     ) {
+  Arrange.prototype.canSplitRel = function (this: ArrangeController, clip: any, rel: any) {
     return rel > MIN_CLIP_LEN && rel < clip.length - MIN_CLIP_LEN;
   };
 
   /** 在绝对拍 atBeat 处把 track 上第 i 个 clip 切成两段。
       audio：右半 offset 前移；midi：跨界音符左右各截一段。
       成功返回 true（含 pushHistory 与视图/引擎同步） */
-  Arrange.prototype.splitClipAtBeat = function (                         track     , clip     , atBeat     ) {
+  Arrange.prototype.splitClipAtBeat = function (this: ArrangeController, track: any, clip: any, atBeat: any) {
     var rel = atBeat - clip.start;
     if (!this.canSplitRel(clip, rel)) return false;
 
@@ -2284,8 +2284,8 @@
     clip.length = rel;
 
     if (clip.type === "midi") {
-      var leftNotes        = [], rightNotes        = [];
-      (clip.notes || []).forEach(function (n     ) {
+      var leftNotes: any[] = [], rightNotes: any[] = [];
+      (clip.notes || []).forEach(function (n: any) {
         if (n.end <= rel) { leftNotes.push(n); return; }
         if (n.start >= rel) { rightNotes.push({ note: n.note, start: n.start - rel, end: n.end - rel, velocity: n.velocity }); return; }
         /* 跨界音符：左侧截尾，右侧截头 */
@@ -2307,7 +2307,7 @@
   };
 
   /** 右键菜单入口：在点击拍点拆分单个片段 */
-  Arrange.prototype.splitClipAtCursor = function (                         track     , clip     , beatAtCursor     ) {
+  Arrange.prototype.splitClipAtCursor = function (this: ArrangeController, track: any, clip: any, beatAtCursor: any) {
     if (!track || !clip) return false;
     /* 落点吸附到网格再尝试；太贴边时退回未吸附值 */
     var snapped = this.snapBeat(Math.max(0, beatAtCursor));
@@ -2318,12 +2318,12 @@
   };
 
   /** S 键入口：在播放头处拆分所有被选中的片段 */
-  Arrange.prototype.splitSelectedAtPlayhead = function (                       ) {
+  Arrange.prototype.splitSelectedAtPlayhead = function (this: ArrangeController) {
     if (!this.selectedClips.length) { this.showHUD("先选中要拆分的片段"); return; }
     var playhead = this.playheadBeat;
     var hits = 0, misses = 0;
     var self = this;
-    this.forEachSelectedClip(function (track     , clip     ) {
+    this.forEachSelectedClip(function (track: any, clip: any) {
       var rel = playhead - clip.start;
       if (self.canSplitRel(clip, rel)) {
         if (self.splitClipAtBeat(track, clip, playhead)) hits++;
@@ -2337,7 +2337,7 @@
 
   /* ═══════════ 轨道操作 ═══════════ */
 
-  Arrange.prototype.addTrack = function (                       ) {
+  Arrange.prototype.addTrack = function (this: ArrangeController) {
     // 引擎模式：32 轨上限且 29-31 为试听/钢琴窗专用轨（见 engine_bridge.js
     // 轨位表），编曲轨上限 0..28；webaudio 模式无轨位预留约束（32 轨上限）
     var engMode = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
@@ -2357,7 +2357,7 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.removeTrack = function (                         idx     ) {
+  Arrange.prototype.removeTrack = function (this: ArrangeController, idx: any) {
     if (!this.tracks[idx] || this.tracks.length <= 1) {
       this.showHUD("至少保留一条轨道");
       return;
@@ -2372,7 +2372,7 @@
       if (nodes) {
         if (nodes.synth) nodes.synth.stopAll();
         if (nodes.soundfont) nodes.soundfont.stopAll();
-        try { nodes.gain .disconnect(); nodes.analyser .disconnect(); } catch (e) {}
+        try { nodes.gain!.disconnect(); nodes.analyser!.disconnect(); } catch (e) {}
         delete self.engine.trackNodes[removed.id];
       }
       self.selectedTrackIdx = clamp(self.selectedTrackIdx, 0, self.tracks.length - 1);
@@ -2384,14 +2384,14 @@
     });
   };
 
-  Arrange.prototype.duplicateTrack = function (                         idx     ) {
+  Arrange.prototype.duplicateTrack = function (this: ArrangeController, idx: any) {
     var src = this.tracks[idx];
     if (!src) return;
     this.pushHistory();
     var copy = JSON.parse(JSON.stringify(src));
     copy.id = uid("tr");
     copy.name = src.name + " 副本";
-    copy.clips.forEach(function (c     ) { c.id = uid("clip"); delete c._peaks; });
+    copy.clips.forEach(function (c: any) { c.id = uid("clip"); delete c._peaks; });
     this.tracks.splice(idx + 1, 0, copy);
     this.applyMixSafe();
     this.renderAll();
@@ -2399,7 +2399,7 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.moveTrack = function (                         idx     , dir     ) {
+  Arrange.prototype.moveTrack = function (this: ArrangeController, idx: any, dir: any) {
     var to = idx + dir;
     if (!this.tracks[idx] || !this.tracks[to]) return;
     this.pushHistory();
@@ -2412,7 +2412,7 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.clearTrackClips = function (                         idx     ) {
+  Arrange.prototype.clearTrackClips = function (this: ArrangeController, idx: any) {
     var track = this.tracks[idx];
     if (!track || !track.clips.length) return;
     var self = this;
@@ -2426,7 +2426,7 @@
   };
 
   /** 定点刷新轨道头按钮态（mute/solo 切换不再全量重建轨道区 DOM） */
-  Arrange.prototype.refreshTrackHeadStates = function (                       ) {
+  Arrange.prototype.refreshTrackHeadStates = function (this: ArrangeController) {
     if (!this.el.arrLanes) return;
     var rows = this.el.arrLanes.querySelectorAll(".arr-lane-row");
     for (var i = 0; i < rows.length && i < this.tracks.length; i++) {
@@ -2439,7 +2439,7 @@
     }
   };
 
-  Arrange.prototype.toggleMute = function (                         idx     ) {
+  Arrange.prototype.toggleMute = function (this: ArrangeController, idx: any) {
     var track = this.tracks[idx];
     if (!track) return;
     track.mute = !track.mute;
@@ -2449,7 +2449,7 @@
     this.scheduleSave();
   };
 
-  Arrange.prototype.toggleSolo = function (                         idx     ) {
+  Arrange.prototype.toggleSolo = function (this: ArrangeController, idx: any) {
     var track = this.tracks[idx];
     if (!track) return;
     track.solo = !track.solo;
@@ -2461,7 +2461,7 @@
 
   /* ═══════════ 右键菜单体系 ═══════════ */
 
-  Arrange.prototype.closeMenu = function (                       ) {
+  Arrange.prototype.closeMenu = function (this: ArrangeController) {
     if (this.menuEl) {
       this.menuEl.remove();
       this.menuEl = null;
@@ -2473,13 +2473,13 @@
   };
 
   /** 在 (x,y) 打开右键菜单；items: "-" 分隔 | {heading} | {label, danger, disabled, iconHtml, action} */
-  Arrange.prototype.showMenu = function (                         items     , x     , y     ) {
+  Arrange.prototype.showMenu = function (this: ArrangeController, items: any, x: any, y: any) {
     this.closeMenu();
     var self = this;
     var menu = document.createElement("div");
     menu.className = "ctx-menu menu-in";
 
-    items.forEach(function (a     ) {
+    items.forEach(function (a: any) {
       if (a === "-") {
         var sep = document.createElement("div");
         sep.className = "ctx-sep";
@@ -2520,20 +2520,20 @@
     menu.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px";
     menu.style.top = Math.max(8, Math.min(y, window.innerHeight - h2 - 8)) + "px";
 
-    this.menuOutsideHandler = function (ev     ) {
-      if (menu && !menu.contains(ev.target        )) self.closeMenu();
+    this.menuOutsideHandler = function (ev: any) {
+      if (menu && !menu.contains(ev.target as Node)) self.closeMenu();
     };
     setTimeout(function () {
-      document.addEventListener("mousedown", self.menuOutsideHandler , true);
+      document.addEventListener("mousedown", self.menuOutsideHandler!, true);
     }, 0);
   };
 
   /** 轨道头右键菜单 */
-  Arrange.prototype.openTrackMenu = function (                         e     , idx     ) {
+  Arrange.prototype.openTrackMenu = function (this: ArrangeController, e: any, idx: any) {
     var self = this;
     var track = this.tracks[idx];
     if (!track) return;
-    var items        = [
+    var items: any[] = [
       { label: "✎ 重命名 (F2)", action: function () { self.openRenameModal(idx); } },
       { label: "🎨 更换颜色 ▸", action: function () { self.openColorMenu(e.clientX, e.clientY, idx); } },
       { label: "🎹 加载音源 ▸", action: function () { self.openSourceMenu(track, e.clientX, e.clientY); } },
@@ -2549,9 +2549,9 @@
   };
 
   /** 轨道头空白处右键：新建轨道 */
-  Arrange.prototype.openBlankMenu = function (                         e     ) {
+  Arrange.prototype.openBlankMenu = function (this: ArrangeController, e: any) {
     var self = this;
-    var items        = [
+    var items: any[] = [
       { label: "＋ 新建轨道", action: function () { self.addTrack(); } }
     ];
     if (this.clipboard) {
@@ -2562,7 +2562,7 @@
   };
 
   /** Clip 右键菜单 */
-  Arrange.prototype.openClipMenu = function (                         e     , clipEl     ) {
+  Arrange.prototype.openClipMenu = function (this: ArrangeController, e: any, clipEl: any) {
     var self = this;
     var found = this.locateClip(clipEl);
     if (!found) return;
@@ -2571,7 +2571,7 @@
     var relAtCursor = beatAtCursor - clip.start;
     this.showMenu([
       { label: "✂ 在此拆分 (S)", disabled: !this.canSplitRel(clip, Math.max(0, relAtCursor)), action: function () {
-        self.splitClipAtCursor(found .track, clip, beatAtCursor);
+        self.splitClipAtCursor(found!.track, clip, beatAtCursor);
       } },
       "-",
       { label: clip.mute ? "🔇 取消片段静音" : "🔇 片段静音", action: function () {
@@ -2598,7 +2598,7 @@
   };
 
   /** 轨道音源菜单：内置合成器 + 内置音色 + SF2 音源库（优先使用同步缓存，消除闪烁） */
-  Arrange.prototype.openSourceMenu = function (                         track     , x     , y     ) {
+  Arrange.prototype.openSourceMenu = function (this: ArrangeController, track: any, x: any, y: any) {
     var self = this;
     var baseItems = [
       { heading: "🎹 音源 · " + track.name },
@@ -2611,11 +2611,11 @@
       { label: "内置音色 · 弦乐群", action: function () { self.setTrackSource(track, { type: "builtin", tone: "strings", label: "内置 · 弦乐群" }); } }
     ];
 
-    function buildExtraItems(fonts     ) {
+    function buildExtraItems(fonts: any) {
       if (!fonts || !fonts.length) return [];
-      var extra        = [{ heading: "SF2 音源库（在钢琴卷帘音源库中管理）" }];
-      fonts.forEach(function (f     ) {
-        (f.presets || []).slice(0, 24).forEach(function (p     ) {
+      var extra: any[] = [{ heading: "SF2 音源库（在钢琴卷帘音源库中管理）" }];
+      fonts.forEach(function (f: any) {
+        (f.presets || []).slice(0, 24).forEach(function (p: any) {
           extra.push({
             label: (f.name + " › " + (p.name || "Preset")).slice(0, 46),
             action: function () {
@@ -2645,11 +2645,11 @@
     }
   };
 
-  Arrange.prototype._srcDot = function (                         color     ) {
+  Arrange.prototype._srcDot = function (this: ArrangeController, color: any) {
     return '<span class="arr-ctx-swatch" style="background:' + color + '"></span>';
   };
 
-  Arrange.prototype.setTrackSource = function (                         track     , source     ) {
+  Arrange.prototype.setTrackSource = function (this: ArrangeController, track: any, source: any) {
     this.pushHistory();
     track.source = source;
     // 触发引擎重建该轨发声链
@@ -2663,11 +2663,11 @@
   };
 
   /** 轨道颜色菜单 */
-  Arrange.prototype.openColorMenu = function (                         x     , y     , idx     ) {
+  Arrange.prototype.openColorMenu = function (this: ArrangeController, x: any, y: any, idx: any) {
     var self = this;
     var track = this.tracks[idx];
     if (!track) return;
-    var items        = [{ heading: "🎨 轨道颜色 · " + track.name }];
+    var items: any[] = [{ heading: "🎨 轨道颜色 · " + track.name }];
     TRACK_COLORS.forEach(function (c) {
       items.push({
         label: c.toUpperCase(),
@@ -2685,7 +2685,7 @@
 
   /* ═══════════ 拖放：来源高亮与落点处理 ═══════════ */
 
-  Arrange.prototype.isArrangeDrag = function (                         e     ) {
+  Arrange.prototype.isArrangeDrag = function (this: ArrangeController, e: any) {
     var types = e.dataTransfer && e.dataTransfer.types;
     if (!types) return false;
     for (var i = 0; i < types.length; i++) {
@@ -2695,7 +2695,7 @@
   };
 
   /** 本次拖拽是否为机架音源（替换轨道音源），而非 MIDI/音频素材入库 */
-  Arrange.prototype.isSourceDrag = function (                         e     ) {
+  Arrange.prototype.isSourceDrag = function (this: ArrangeController, e: any) {
     var types = e.dataTransfer && e.dataTransfer.types;
     if (!types) return false;
     for (var i = 0; i < types.length; i++) {
@@ -2705,13 +2705,13 @@
   };
 
   /** 音源拖拽反馈：高亮悬停轨道整行（行 = 头 + 轨道内容），示意「替换该轨音源」 */
-  Arrange.prototype.updateSourceHighlight = function (                         e     ) {
+  Arrange.prototype.updateSourceHighlight = function (this: ArrangeController, e: any) {
     var row = null;
     if (e.target && e.target.closest) {
-      var headEl = e.target.closest (".arr-track-head");
-      var contentEl = headEl ? null : e.target.closest (".arr-lane-content");
-      if (headEl) row = headEl.closest (".arr-lane-row");
-      else if (contentEl) row = contentEl.closest (".arr-lane-row");
+      var headEl = e.target.closest!(".arr-track-head");
+      var contentEl = headEl ? null : e.target.closest!(".arr-lane-content");
+      if (headEl) row = headEl.closest!(".arr-lane-row");
+      else if (contentEl) row = contentEl.closest!(".arr-lane-row");
     }
     if (this.hoverSourceEl && this.hoverSourceEl !== row) {
       this.hoverSourceEl.classList.remove("drag-over-source");
@@ -2723,16 +2723,16 @@
     }
   };
 
-  Arrange.prototype.clearSourceHighlight = function (                       ) {
+  Arrange.prototype.clearSourceHighlight = function (this: ArrangeController) {
     if (this.hoverSourceEl) {
       this.hoverSourceEl.classList.remove("drag-over-source");
       this.hoverSourceEl = null;
     }
   };
 
-  Arrange.prototype.updateDropHighlight = function (                         e     ) {
+  Arrange.prototype.updateDropHighlight = function (this: ArrangeController, e: any) {
     var target = e.target.closest
-      ? (e.target.closest (".arr-track-head") || e.target.closest (".arr-lane-content"))
+      ? (e.target.closest!(".arr-track-head") || e.target.closest!(".arr-lane-content"))
       : null;
     if (this.hoverDropEl && this.hoverDropEl !== target) {
       this.hoverDropEl.classList.remove("drop-target");
@@ -2744,7 +2744,7 @@
     }
   };
 
-  Arrange.prototype.clearDropHighlight = function (                       ) {
+  Arrange.prototype.clearDropHighlight = function (this: ArrangeController) {
     if (this.hoverDropEl) {
       this.hoverDropEl.classList.remove("drop-target");
       this.hoverDropEl = null;
@@ -2759,9 +2759,9 @@
    * - 内容区 → 鼠标 x 的吸附位置
    * - 其他区域 → 选中轨道 + 播放头位置
    */
-  Arrange.prototype.resolveDropTarget = function (                         e     ) {
-    var headEl = e.target && e.target.closest ? e.target.closest (".arr-track-head") : null;
-    var contentEl = e.target && e.target.closest ? e.target.closest (".arr-lane-content") : null;
+  Arrange.prototype.resolveDropTarget = function (this: ArrangeController, e: any) {
+    var headEl = e.target && e.target.closest ? e.target.closest!(".arr-track-head") : null;
+    var contentEl = e.target && e.target.closest ? e.target.closest!(".arr-lane-content") : null;
     var trackIdx;
     var startBeat;
     var zone;
@@ -2783,7 +2783,7 @@
   };
 
   /** 拖放剪影：半透明块指示 clip 即将出现的位置与轨道 */
-  Arrange.prototype.updateDropGhost = function (                         target     ) {
+  Arrange.prototype.updateDropGhost = function (this: ArrangeController, target: any) {
     var content = this.el.arrLanes
       ? this.el.arrLanes.querySelector('.arr-lane-content[data-track-idx="' + target.trackIdx + '"]')
       : null;
@@ -2808,14 +2808,14 @@
     ghost.hidden = false;
   };
 
-  Arrange.prototype.hideDropGhost = function (                       ) {
+  Arrange.prototype.hideDropGhost = function (this: ArrangeController) {
     if (this.dropGhostEl) {
       this.dropGhostEl.remove();
       this.dropGhostEl = null;
     }
   };
 
-  Arrange.prototype.handleDrop = function (                         e     ) {
+  Arrange.prototype.handleDrop = function (this: ArrangeController, e: any) {
     var raw = e.dataTransfer.getData("application/x-arrange") || e.dataTransfer.getData("text/plain");
     if (!raw) return;
     var data;
@@ -2835,7 +2835,7 @@
   };
 
   /** 拖拽音源 → 替换指定轨道音源 */
-  Arrange.prototype.replaceTrackSourceFromDrop = function (                         trackIdx     , source     ) {
+  Arrange.prototype.replaceTrackSourceFromDrop = function (this: ArrangeController, trackIdx: any, source: any) {
     if (!source) return;
     var track = this.tracks[trackIdx];
     if (!track) {
@@ -2865,11 +2865,11 @@
   };
 
   /** 拖入 MIDI 文件 → 下载字节 → 前端解析 → 创建 MIDI Clip */
-  Arrange.prototype.addMidiClipFromDrop = function (                         trackIdx     , fileName     , startBeat     ) {
+  Arrange.prototype.addMidiClipFromDrop = function (this: ArrangeController, trackIdx: any, fileName: any, startBeat: any) {
     var self = this;
     var track = this.tracks[trackIdx];
     if (!track || !fileName) return;
-    fetch("/api/projects/" + encodeURIComponent(this.projectId       ) + "/download?names=" + encodeURIComponent(fileName))
+    fetch("/api/projects/" + encodeURIComponent(this.projectId as any) + "/download?names=" + encodeURIComponent(fileName))
       .then(function (res) {
         if (!res.ok) throw new Error("获取 MIDI 文件失败");
         return res.arrayBuffer();
@@ -2877,7 +2877,7 @@
       .then(function (buf) {
         var notes = MidiParse.parseBytes(buf).filter(function (n) { return n.end > n.start; });
         if (!notes.length) {
-          UI.toast ("⚠ 该文件未解析出音符", "warn");
+          UI.toast!("⚠ 该文件未解析出音符", "warn");
           return;
         }
         var maxEnd = 0;
@@ -2887,7 +2887,7 @@
         track.clips.push({
           id: uid("clip"),
           type: "midi",
-          name: baseName(fileName)       ,
+          name: baseName(fileName) as any,
           fullName: fileName,
           start: startBeat,
           length: length,
@@ -2904,17 +2904,17 @@
         self.scheduleSave();
       })
       .catch(function (err) {
-        UI.toast ("✗ 拖入 MIDI 失败: " + err.message, "err");
+        UI.toast!("✗ 拖入 MIDI 失败: " + err.message, "err");
       });
   };
 
   /** 拖入音频素材 → 解码取时长 → 创建音频 Clip（含波形峰值缓存） */
-  Arrange.prototype.addAudioClipFromDrop = function (                         trackIdx     , absPath     , name     , startBeat     ) {
+  Arrange.prototype.addAudioClipFromDrop = function (this: ArrangeController, trackIdx: any, absPath: any, name: any, startBeat: any) {
     var self = this;
     var track = this.tracks[trackIdx];
     if (!track || !absPath) return;
     this.engine.resume();
-    this.engine.getSampleEntry(absPath).then(function (entry     ) {
+    this.engine.getSampleEntry(absPath).then(function (entry: any) {
       if (!entry || !entry.buffer) throw new Error("素材解码失败");
       var durBeats = Math.max(MIN_CLIP_LEN, Math.round((entry.buffer.duration / self.secondsPerBeat()) * 100) / 100);
       self.pushHistory();
@@ -2937,14 +2937,14 @@
       self.applyMixSafe();
       self.showHUD("♫ " + (name || baseName(absPath)) + " → " + track.name + " @ " + self.fmtPos(startBeat));
       self.scheduleSave();
-    }).catch(function (err     ) {
-      UI.toast ("✗ 拖入素材失败: " + err.message, "err");
+    }).catch(function (err: any) {
+      UI.toast!("✗ 拖入素材失败: " + err.message, "err");
     });
   };
 
   /* ═══════════ 左栏：项目 MIDI 文件列表 ═══════════ */
 
-  Arrange.prototype.renderMidiList = function (                       ) {
+  Arrange.prototype.renderMidiList = function (this: ArrangeController) {
     var wrap = this.el.arrMidiList;
     if (!wrap) return;
     var self = this;
@@ -2959,10 +2959,10 @@
       wrap.appendChild(tip);
       return;
     }
-    var sorted = this.midiFiles.slice().sort(function (a     , b     ) {
+    var sorted = this.midiFiles.slice().sort(function (a: any, b: any) {
       return String(a.name).localeCompare(String(b.name), "zh-CN");
     });
-    sorted.forEach(function (f     ) {
+    sorted.forEach(function (f: any) {
       var item = document.createElement("div");
       item.className = "arr-midi-item";
       item.draggable = true;
@@ -2973,7 +2973,7 @@
       glyph.textContent = "♪";
       var nameSpan = document.createElement("span");
       nameSpan.className = "mi-name";
-      nameSpan.textContent = baseName(f.name)       ;
+      nameSpan.textContent = baseName(f.name) as any;
       var dirSpan = document.createElement("span");
       dirSpan.className = "mi-dir";
       var dirPart = String(f.name).indexOf("/") !== -1 ? String(f.name).slice(0, String(f.name).lastIndexOf("/")) : "";
@@ -2985,9 +2985,9 @@
 
       item.addEventListener("dragstart", function (e) {
         var payload = JSON.stringify({ kind: "arr-midi", name: f.name });
-        e.dataTransfer .setData("application/x-arrange", payload);
-        e.dataTransfer .setData("text/plain", payload);
-        e.dataTransfer .effectAllowed = "copy";
+        e.dataTransfer!.setData("application/x-arrange", payload);
+        e.dataTransfer!.setData("text/plain", payload);
+        e.dataTransfer!.effectAllowed = "copy";
         item.classList.add("dragging");
         var clear = function () {
           item.classList.remove("dragging");
@@ -3001,7 +3001,7 @@
         }
       });
 
-      wrap .appendChild(item);
+      wrap!.appendChild(item);
     });
   };
 
@@ -3009,25 +3009,25 @@
 
   Arrange.prototype.TREE_EXPANDED_KEY = "arr-tree-expanded";
 
-  Arrange.prototype.nodeKey = function (                         dir     , sub     ) {
+  Arrange.prototype.nodeKey = function (this: ArrangeController, dir: any, sub: any) {
     return sub ? dir + "/" + sub : dir;
   };
 
-  Arrange.prototype.loadExpandedMap = function (                       ) {
+  Arrange.prototype.loadExpandedMap = function (this: ArrangeController) {
     try { return JSON.parse(localStorage.getItem(this.TREE_EXPANDED_KEY) || "{}") || {}; }
     catch (e) { return {}; }
   };
 
-  Arrange.prototype.saveExpandedMap = function (                       ) {
+  Arrange.prototype.saveExpandedMap = function (this: ArrangeController) {
     try { localStorage.setItem(this.TREE_EXPANDED_KEY, JSON.stringify(this.expandedMap || {})); } catch (e) {}
   };
 
   /** 单层目录内容拉取（Go API 即单层语义），成功后写入节点缓存 */
-  Arrange.prototype.fetchTreeNode = function (                         dir     , sub     , cb     ) {
+  Arrange.prototype.fetchTreeNode = function (this: ArrangeController, dir: any, sub: any, cb: any) {
     var self = this;
     var url = "/api/arrangement/files?dir=" + encodeURIComponent(dir);
     if (sub) url += "&sub=" + encodeURIComponent(sub);
-    UI.getJSON(url).then(function (r     ) {
+    UI.getJSON(url).then(function (r: any) {
       self._treeCache[self.nodeKey(dir, sub)] = { dirs: r.dirs || [], files: r.files || [] };
       cb(null);
     }).catch(function (err) {
@@ -3035,9 +3035,9 @@
     });
   };
 
-  Arrange.prototype.loadMaterialDirs = function (                       ) {
+  Arrange.prototype.loadMaterialDirs = function (this: ArrangeController) {
     var self = this;
-    UI.getJSON("/api/arrangement/dirs").then(function (r     ) {
+    UI.getJSON("/api/arrangement/dirs").then(function (r: any) {
       self.dirs = r.dirs || [];
       self.renderMaterialTree();
       self.refreshOpenTreeNodes();
@@ -3045,7 +3045,7 @@
   };
 
   /** 上次会话记住了「已展开」但缺缓存的根目录 → 静默补拉并重绘 */
-  Arrange.prototype.refreshOpenTreeNodes = function (                       ) {
+  Arrange.prototype.refreshOpenTreeNodes = function (this: ArrangeController) {
     var self = this;
     var touched = false;
     for (var i = 0; i < this.dirs.length; i++) {
@@ -3062,23 +3062,23 @@
     if (touched) this.renderMaterialTree();
   };
 
-  Arrange.prototype.removeMaterialDir = function (                         d     ) {
+  Arrange.prototype.removeMaterialDir = function (this: ArrangeController, d: any) {
     var self = this;
-    UI.delJSON("/api/arrangement/dirs", { path: d }).then(function (r     ) {
+    UI.delJSON("/api/arrangement/dirs", { path: d }).then(function (r: any) {
       self.dirs = r.dirs || [];
       [self._treeCache, self.expandedMap].forEach(function (m) {
         Object.keys(m || {}).forEach(function (k) {
-          if (k === d || k.indexOf(d + "/") === 0) delete m [k];
+          if (k === d || k.indexOf(d + "/") === 0) delete m![k];
         });
       });
       self.saveExpandedMap();
       self.renderMaterialTree();
     }).catch(function (err) {
-      UI.toast ("✗ 移除失败: " + err.message, "err");
+      UI.toast!("✗ 移除失败: " + err.message, "err");
     });
   };
 
-  Arrange.prototype.toggleTreeNode = function (                         dir     , sub     ) {
+  Arrange.prototype.toggleTreeNode = function (this: ArrangeController, dir: any, sub: any) {
     var self = this;
     if (!this.expandedMap) this.expandedMap = this.loadExpandedMap();
     var key = this.nodeKey(dir, sub);
@@ -3097,18 +3097,18 @@
     /* 占位缓存让箭头先转为"加载中"，取回后统一重绘 */
     this._treeCache[key] = { dirs: [], files: [], _loading: true };
     this.renderMaterialTree();
-    this.fetchTreeNode(dir, sub, function (err     ) {
+    this.fetchTreeNode(dir, sub, function (err: any) {
       if (err) {
         delete self._treeCache[key];
-        delete self.expandedMap [key];
+        delete self.expandedMap![key];
         self.saveExpandedMap();
-        UI.toast ("✗ 读取目录失败", "err");
+        UI.toast!("✗ 读取目录失败", "err");
       }
       self.renderMaterialTree();
     });
   };
 
-  Arrange.prototype.renderMaterialTree = function (                       ) {
+  Arrange.prototype.renderMaterialTree = function (this: ArrangeController) {
     var tree = this.el.arrFileTree;
     if (!tree) return;
     tree.innerHTML = "";
@@ -3128,10 +3128,10 @@
   };
 
   /** 一个目录节点行；展开且缓存就绪时在下方递归挂载子节点 */
-  Arrange.prototype.appendTreeNode = function (                         container     , dir     , sub     , depth     ) {
+  Arrange.prototype.appendTreeNode = function (this: ArrangeController, container: any, dir: any, sub: any, depth: any) {
     var self = this;
     var key = this.nodeKey(dir, sub);
-    var expanded = !!this.expandedMap [key];
+    var expanded = !!this.expandedMap![key];
     var cached = this._treeCache[key];
 
     var row = document.createElement("div");
@@ -3188,7 +3188,7 @@
   };
 
   /** 音频叶子行：拖拽入轨 payload 与旧行为完全一致 */
-  Arrange.prototype.buildSampleRow = function (                         dir     , sub     , f     , depth     ) {
+  Arrange.prototype.buildSampleRow = function (this: ArrangeController, dir: any, sub: any, f: any, depth: any) {
     var self = this;
     var absPath = this.joinAbs(dir, sub, f.name);
     var item = document.createElement("div");
@@ -3213,9 +3213,9 @@
 
     item.addEventListener("dragstart", function (e) {
       var payload = JSON.stringify({ kind: "arr-audio", p: absPath, name: f.name });
-      e.dataTransfer .setData("application/x-arrange", payload);
-      e.dataTransfer .setData("text/plain", payload);
-      e.dataTransfer .effectAllowed = "copy";
+      e.dataTransfer!.setData("application/x-arrange", payload);
+      e.dataTransfer!.setData("text/plain", payload);
+      e.dataTransfer!.effectAllowed = "copy";
       item.classList.add("dragging");
       var clear = function () {
         item.classList.remove("dragging");
@@ -3226,30 +3226,30 @@
     item.addEventListener("dblclick", function () {
       self.engine.resume();
       self.engine.previewSample(absPath).catch(function () {
-        if (UI.toast) UI.toast ("✗ 音频试听失败（文件不存在或格式不支持）", "err");
+        if (UI.toast) UI.toast!("✗ 音频试听失败（文件不存在或格式不支持）", "err");
       });
     });
     return item;
   };
 
-  Arrange.prototype.bindPanels = function (                       ) {
+  Arrange.prototype.bindPanels = function (this: ArrangeController) {
     var self = this;
     if (this.el.arrAddDirBtn) {
       this.el.arrAddDirBtn.addEventListener("click", function () {
-        UI.postJSON("/api/arrangement/pick-folder", {}).then(function (r     ) {
+        UI.postJSON("/api/arrangement/pick-folder", {}).then(function (r: any) {
           if (!r.path) return; // 用户取消
-          UI.postJSON("/api/arrangement/dirs", { path: r.path }).then(function (r2     ) {
+          UI.postJSON("/api/arrangement/dirs", { path: r.path }).then(function (r2: any) {
             self.dirs = r2.dirs || [];
             if (!self.expandedMap) self.expandedMap = self.loadExpandedMap();
             self.expandedMap[r.path] = true;
             self.saveExpandedMap();
             self.renderMaterialTree();
-            UI.toast ("✓ 已添加素材目录", "ok");
+            UI.toast!("✓ 已添加素材目录", "ok");
           }).catch(function (err) {
-            UI.toast ("✗ 添加目录失败: " + err.message, "err");
+            UI.toast!("✗ 添加目录失败: " + err.message, "err");
           });
         }).catch(function (err) {
-          UI.toast ("✗ 打开文件夹选择器失败: " + err.message, "err");
+          UI.toast!("✗ 打开文件夹选择器失败: " + err.message, "err");
         });
       });
     }
@@ -3257,7 +3257,7 @@
     this.initRulerPointer();
   };
 
-  Arrange.prototype.joinAbs = function (                         dir     , sub     , name     ) {
+  Arrange.prototype.joinAbs = function (this: ArrangeController, dir: any, sub: any, name: any) {
     var parts = [dir];
     if (sub) parts.push(sub);
     parts.push(name);
@@ -3266,7 +3266,7 @@
 
   /* ═══════════ 弹窗（重命名 / 确认 / 快捷键） ═══════════ */
 
-  Arrange.prototype.showOverlay = function (                         overlay     ) {
+  Arrange.prototype.showOverlay = function (this: ArrangeController, overlay: any) {
     overlay.hidden = false;
     overlay.classList.remove("modal-in", "modal-out");
     void overlay.offsetWidth;
@@ -3278,7 +3278,7 @@
     }, 600);
   };
 
-  Arrange.prototype.hideOverlay = function (                         overlay     ) {
+  Arrange.prototype.hideOverlay = function (this: ArrangeController, overlay: any) {
     overlay.classList.remove("modal-in");
     overlay.classList.add("modal-out");
     var overlayRef = overlay;
@@ -3288,7 +3288,7 @@
     }, 220);
   };
 
-  Arrange.prototype.bindModals = function (                       ) {
+  Arrange.prototype.bindModals = function (this: ArrangeController) {
     var self = this;
     this._modalToken = 0;
 
@@ -3307,8 +3307,8 @@
     if (renameOverlay) {
       var doRename = function () {
         var idx = self._renameIdx;
-        var track = self.tracks[idx ];
-        var val = renameInput .value .trim();
+        var track = self.tracks[idx!];
+        var val = renameInput!.value!.trim();
         if (track && val && val !== track.name) {
           self.pushHistory();
           track.name = val;
@@ -3317,11 +3317,11 @@
         }
         self.hideOverlay(renameOverlay);
       };
-      document.getElementById("arrRenameOk") .addEventListener("click", doRename);
-      document.getElementById("arrRenameCancel") .addEventListener("click", function () {
+      document.getElementById("arrRenameOk")!.addEventListener("click", doRename);
+      document.getElementById("arrRenameCancel")!.addEventListener("click", function () {
         self.hideOverlay(renameOverlay);
       });
-      renameInput .addEventListener("keydown", function (e) {
+      renameInput!.addEventListener("keydown", function (e) {
         if (e.key === "Enter") { e.preventDefault(); doRename(); }
         if (e.key === "Escape") { e.preventDefault(); self.hideOverlay(renameOverlay); }
         e.stopPropagation();
@@ -3334,13 +3334,13 @@
         self.hideOverlay(confirmOverlay);
         self._confirmFn = null;
       };
-      document.getElementById("arrConfirmOk") .addEventListener("click", function () {
+      document.getElementById("arrConfirmOk")!.addEventListener("click", function () {
         var fn = self._confirmFn;
         self.hideOverlay(confirmOverlay);
         self._confirmFn = null;
         if (fn) fn();
       });
-      document.getElementById("arrConfirmCancel") .addEventListener("click", cancelConfirm);
+      document.getElementById("arrConfirmCancel")!.addEventListener("click", cancelConfirm);
       /* 点遮罩 = 取消（与快捷键弹窗/聊天确认框一致） */
       confirmOverlay.addEventListener("mousedown", function (e) {
         if (e.target === confirmOverlay) cancelConfirm();
@@ -3349,7 +3349,7 @@
 
   };
 
-  Arrange.prototype.openRenameModal = function (                         idx     ) {
+  Arrange.prototype.openRenameModal = function (this: ArrangeController, idx: any) {
     var track = this.tracks[idx];
     var overlay = document.getElementById("arrRenameModal");
     var input = document.getElementById("arrRenameInput");
@@ -3357,11 +3357,11 @@
     this._renameIdx = idx;
     input.value = track.name;
     this.showOverlay(overlay);
-    setTimeout(function () { input .focus(); input .select (); }, 60);
+    setTimeout(function () { input!.focus(); input!.select!(); }, 60);
   };
 
   /** 当前可见的最上层编排弹窗（无则 null） */
-  Arrange.prototype._topOverlay = function (                       ) {
+  Arrange.prototype._topOverlay = function (this: ArrangeController) {
     var ids = ["arrConfirmModal", "arrRenameModal", "arrBetaModal"];
     for (var i = ids.length - 1; i >= 0; i--) {
       var m = document.getElementById(ids[i]);
@@ -3370,11 +3370,11 @@
     return null;
   };
 
-  Arrange.prototype.openConfirm = function (                         title     , text     , fn     ) {
+  Arrange.prototype.openConfirm = function (this: ArrangeController, title: any, text: any, fn: any) {
     var overlay = document.getElementById("arrConfirmModal");
-    if (!overlay) { if ((window       ).confirm) fn(); return; }
-    document.getElementById("arrConfirmTitle") .textContent = title;
-    document.getElementById("arrConfirmText") .textContent = text;
+    if (!overlay) { if ((window as any).confirm) fn(); return; }
+    document.getElementById("arrConfirmTitle")!.textContent = title;
+    document.getElementById("arrConfirmText")!.textContent = text;
     this._confirmFn = fn;
     this.showOverlay(overlay);
   };
@@ -3382,27 +3382,27 @@
   /* ═══════════ 快捷键（FL Studio 风格 · 三域焦点仲裁） ═══════════ */
 
   /** 输入控件聚焦时不劫持按键 */
-  Arrange.prototype.isEditableTarget = function (                         t     ) {
+  Arrange.prototype.isEditableTarget = function (this: ArrangeController, t: any) {
     if (!t) return false;
     var tag = t.tagName;
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
   };
 
   /** 焦点位于可激活控件（按钮/链接）上：空格让位给浏览器默认点击语义 */
-  Arrange.prototype.isActivatableTarget = function (                         t     ) {
+  Arrange.prototype.isActivatableTarget = function (this: ArrangeController, t: any) {
     if (!t || !t.closest) return false;
     var tag = t.tagName;
     if (tag === "BUTTON" || tag === "A") return true;
-    return !!t.closest ('button, a, [role="button"]');
+    return !!t.closest!('button, a, [role="button"]');
   };
 
   /** 钢琴卷帘抽屉持有焦点时让位（三域仲裁：最后点击区域优先） */
-  Arrange.prototype.pianoRollOwnsKeys = function (                       ) {
+  Arrange.prototype.pianoRollOwnsKeys = function (this: ArrangeController) {
     var pr = window.PianoRoll;
     return !!(pr && pr.isOpen && pr.isFocused);
   };
 
-  Arrange.prototype.bindKeyboard = function (                       ) {
+  Arrange.prototype.bindKeyboard = function (this: ArrangeController) {
     var self = this;
     document.addEventListener("keydown", function (e) {
       if (!self.isOpen) return;
@@ -3504,14 +3504,14 @@
 
   /* ═══════════ 焦点管理（与钢琴卷帘同模式） ═══════════ */
 
-  Arrange.prototype.bindFocusManager = function (                       ) {
+  Arrange.prototype.bindFocusManager = function (this: ArrangeController) {
     var self = this;
     var ws = document.getElementById("arrangeWorkspace");
 
     document.addEventListener("mousedown", function (e) {
-      var inWs = !!(ws && ws.contains(e.target       ));
+      var inWs = !!(ws && ws.contains(e.target as any));
       var drawer = document.getElementById("pianoDrawer");
-      var inDrawer = !!(drawer && drawer.contains(e.target       ));
+      var inDrawer = !!(drawer && drawer.contains(e.target as any));
       if (inWs) self.setFocus(true);
       else if (!inDrawer) self.setFocus(false);
     }, true);
@@ -3522,13 +3522,13 @@
     }
   };
 
-  Arrange.prototype.setFocus = function (                         focused     ) {
+  Arrange.prototype.setFocus = function (this: ArrangeController, focused: any) {
     this.isFocused = !!(focused && this.isOpen);
   };
 
   /* ═══════════ 输出机架 (FL Studio 风格 Channel / Output Rack 悬浮窗口) ═══════════ */
 
-  Arrange.prototype.bindOutputRack = function (                       ) {
+  Arrange.prototype.bindOutputRack = function (this: ArrangeController) {
     var self = this;
     var win = document.getElementById("arrRackWindow");
     var titlebar = document.getElementById("arrRackTitlebar");
@@ -3537,7 +3537,7 @@
     var collapseBtn = document.getElementById("arrRackCollapseBtn");
     var addSf2Btn = document.getElementById("arrRackAddSf2Btn");
 
-    var toggleFn = function (e     ) {
+    var toggleFn = function (e: any) {
       if (e) e.stopPropagation();
       self.toggleOutputRack();
     };
@@ -3548,7 +3548,7 @@
 
     if (closeBtn && win) {
       closeBtn.addEventListener("click", function () {
-        win .hidden = true;
+        win!.hidden = true;
       });
     }
 
@@ -3568,11 +3568,11 @@
       var initLeft = 0, initTop = 0;
 
       titlebar.addEventListener("mousedown", function (e) {
-        if (e.target .closest (".rack-win-btn")) return;
+        if (e.target!.closest!(".rack-win-btn")) return;
         isDragging = true;
         startX = e.clientX;
         startY = e.clientY;
-        var rect = win .getBoundingClientRect();
+        var rect = win!.getBoundingClientRect();
         initLeft = rect.left;
         initTop = rect.top;
         document.body.style.userSelect = "none";
@@ -3582,10 +3582,10 @@
         if (!isDragging) return;
         var dx = e.clientX - startX;
         var dy = e.clientY - startY;
-        var newLeft = Math.max(10, Math.min(window.innerWidth - win .offsetWidth - 10, initLeft + dx));
-        var newTop = Math.max(10, Math.min(window.innerHeight - win .offsetHeight - 10, initTop + dy));
-        win .style.left = newLeft + "px";
-        win .style.top = newTop + "px";
+        var newLeft = Math.max(10, Math.min(window.innerWidth - win!.offsetWidth - 10, initLeft + dx));
+        var newTop = Math.max(10, Math.min(window.innerHeight - win!.offsetHeight - 10, initTop + dy));
+        win!.style.left = newLeft + "px";
+        win!.style.top = newTop + "px";
       });
 
       window.addEventListener("mouseup", function () {
@@ -3613,9 +3613,9 @@
           self.showHUD("✅ 已导入音色库，可在 SF2 分类中查看");
           self.renderOutputRack(self._currentRackFilter || "all");
         };
-        var fail = function (err     ) {
+        var fail = function (err: any) {
           self.showHUD("✗ 导入音色库失败: " + (err && err.message ? err.message : "存储空间不足或文件损坏"));
-          if (window.UI && UI.toast) UI.toast ("✗ 导入音色库失败: " + (err && err.message ? err.message : "未知错误"), "err");
+          if (window.UI && UI.toast) UI.toast!("✗ 导入音色库失败: " + (err && err.message ? err.message : "未知错误"), "err");
         };
         if (window.SoundLibrary && window.SoundLibrary.showImportDialog) {
           window.SoundLibrary.showImportDialog(refreshRack);
@@ -3624,17 +3624,17 @@
           input.type = "file";
           input.accept = ".sf2";
           input.onchange = function (e) {
-            var file = e.target .files && e.target .files[0];
+            var file = e.target!.files && e.target!.files[0];
             if (!file) return;
             if (!window.SoundLibrary) return;
             var reader = new FileReader();
             reader.onload = function () {
               var buf = reader.result;
-              var presets        = [];
+              var presets: any[] = [];
               try {
                 // 解析 presets（与聊天页音源库上传一致），失败不阻断保存
                 if (window.PianoRoll && window.PianoRoll.soundfont && window.PianoRoll.soundfont.parseSF2) {
-                  presets = window.PianoRoll.soundfont.parseSF2(buf       ).presets || [];
+                  presets = window.PianoRoll.soundfont.parseSF2(buf as any).presets || [];
                 }
               } catch (err) {
                 // 解析失败仍按无预设保存，保证基础导入可用
@@ -3642,15 +3642,15 @@
               }
               // 大文件写入 IndexedDB 可能触发配额错误：禁用按钮 + 补 catch，
               // 失败必须给出可见反馈（此前静默吞掉，HUD 却显示成功）
-              var origLabel = addSf2Btn .textContent;
-              addSf2Btn .disabled = true;
-              addSf2Btn .textContent = "导入中…";
-              window.SoundLibrary.saveSoundFont(file .name, buf       , presets)
+              var origLabel = addSf2Btn!.textContent;
+              addSf2Btn!.disabled = true;
+              addSf2Btn!.textContent = "导入中…";
+              window.SoundLibrary.saveSoundFont(file!.name, buf as any, presets)
                 .then(refreshRack)
                 .catch(fail)
                 .finally(function () {
-                  addSf2Btn .disabled = false;
-                  addSf2Btn .textContent = origLabel;
+                  addSf2Btn!.disabled = false;
+                  addSf2Btn!.textContent = origLabel;
                 });
             };
             reader.readAsArrayBuffer(file);
@@ -3661,7 +3661,7 @@
     }
   };
 
-  Arrange.prototype.toggleOutputRack = function (                       ) {
+  Arrange.prototype.toggleOutputRack = function (this: ArrangeController) {
     var win = document.getElementById("arrRackWindow");
     if (!win) return;
     if (win.hidden) {
@@ -3671,7 +3671,7 @@
     }
   };
 
-  Arrange.prototype.openOutputRack = function (                       ) {
+  Arrange.prototype.openOutputRack = function (this: ArrangeController) {
     var win = document.getElementById("arrRackWindow");
     if (!win) return;
     win.hidden = false;
@@ -3684,7 +3684,7 @@
     this.renderOutputRack("all");
   };
 
-  Arrange.prototype.renderOutputRack = function (                         filter     ) {
+  Arrange.prototype.renderOutputRack = function (this: ArrangeController, filter: any) {
     var self = this;
     this._currentRackFilter = filter || "all";
     var listEl = document.getElementById("arrRackList");
@@ -3692,7 +3692,7 @@
     if (!listEl) return;
     listEl.innerHTML = "";
 
-    var items        = [];
+    var items: any[] = [];
 
     // 1. 虚拟合成器
     if (filter === "all" || filter === "synth") {
@@ -3741,7 +3741,7 @@
           badge: "SF2 扩展",
           badgeClass: "arr-rack-badge-sf2",
           title: sf.name || "自定义音色库",
-          desc: firstPreset ? "预设: " + ((sf.presets [0].name || "Preset")) : "已挂载自定义 SoundFont 音色",
+          desc: firstPreset ? "预设: " + ((sf.presets![0].name || "Preset")) : "已挂载自定义 SoundFont 音色",
           source: { type: "sf2", libId: sf.id, presetId: firstPreset, label: (sf.name || "自定义音色").slice(0, 24) }
         });
       });
@@ -3749,7 +3749,7 @@
 
     // 3. 采样素材
     if (filter === "all" || filter === "samples") {
-      var sampleMap                         = {};
+      var sampleMap: { [key: string]: any } = {};
       for (var t = 0; t < self.tracks.length; t++) {
         var trk = self.tracks[t];
         for (var c = 0; c < trk.clips.length; c++) {
@@ -3866,28 +3866,28 @@
         } else {
           dragData = { kind: "arr-audio", p: item.path, name: item.name };
         }
-        e.dataTransfer .setData("application/x-arrange", JSON.stringify(dragData));
-        e.dataTransfer .setData("text/plain", JSON.stringify(dragData));
+        e.dataTransfer!.setData("application/x-arrange", JSON.stringify(dragData));
+        e.dataTransfer!.setData("text/plain", JSON.stringify(dragData));
         // 独立标记类型：dragover 阶段读不到 data 内容（浏览器安全限制），
         // 只能凭 types 区分「替换音源」与「放入素材」，给出各自的视觉反馈
         if (item.type === "source") {
-          e.dataTransfer .setData("application/x-arrange-source", "1");
+          e.dataTransfer!.setData("application/x-arrange-source", "1");
         }
-        e.dataTransfer .effectAllowed = "copyMove";
+        e.dataTransfer!.effectAllowed = "copyMove";
       });
 
       card.addEventListener("dragend", function () {
         card.classList.remove("dragging");
       });
 
-      listEl .appendChild(card);
+      listEl!.appendChild(card);
     });
   };
 
   /** 预览机架音源 (播放一个 C4 音符)。
       引擎模式：发到专用试听轨（PREVIEW_TRACK=29，见 engine_bridge.js 轨位表）；
       webaudio 模式：在共享 AudioContext 上播放（原行为） */
-  Arrange.prototype.previewRackSource = function (                         source     ) {
+  Arrange.prototype.previewRackSource = function (this: ArrangeController, source: any) {
     var self = this;
     if (!source) return;
     try {
@@ -3895,7 +3895,7 @@
       if (engineMode) {
         // 引擎模式试听：严格原生。未就绪时明确提示，不落 WebAudio
         if (!(window.AudioBackend && window.AudioBackend.isEngineReady())) {
-          if (window.UI && window.UI.toast) UI.toast ("✗ 音频引擎未就绪，试听不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+          if (window.UI && window.UI.toast) UI.toast!("✗ 音频引擎未就绪，试听不可用（可在设置页切换 WEBAUDIO 模式）", "err");
           this.showHUD("✗ 音频引擎未就绪，试听不可用（可在设置页切换 WEBAUDIO 模式）");
           return;
         }
@@ -3916,7 +3916,7 @@
             self.showHUD("✗ 试听失败: " + (e && e.message ? e.message : "引擎不可用"));
           });
         } else if (source.type === "sf2" && source.libId && window.SoundLibrary) {
-          window.SoundLibrary.getSoundFont(source.libId).then(function (rec     ) {
+          window.SoundLibrary.getSoundFont(source.libId).then(function (rec: any) {
             if (!rec || !rec.data) throw new Error("音源数据不存在");
             var diskPath = rec.diskPath;
             if (!diskPath) {
@@ -3963,7 +3963,7 @@
           try { gain.disconnect(); } catch (e) {}
         }, 600);
       };
-      var playNote = function (player     ) {
+      var playNote = function (player: any) {
         player.noteOn(60, 100);
         setTimeout(function () {
           try { player.noteOff(60); } catch (e) {}
@@ -3976,7 +3976,7 @@
         synth.setWaveform(source.wave || "sawtooth");
         playNote(synth);
       } else if (source.type === "sf2" && source.libId && window.SoundLibrary) {
-        window.SoundLibrary.getSoundFont(source.libId).then(function (rec     ) {
+        window.SoundLibrary.getSoundFont(source.libId).then(function (rec: any) {
           if (!rec || !rec.data) throw new Error("音源数据不存在");
           var player = new window.SoundFontPlayer(ctx, gain);
           player.init();
@@ -3994,14 +3994,14 @@
         player.setPreset(source.tone || "piano");
         playNote(player);
       }
-    } catch (err     ) {
+    } catch (err: any) {
       console.warn("试听音源失败:", err);
       this.showHUD("✗ 试听失败: " + (err.message || err));
     }
   };
 
   /** 预览机架采样音频（与文件树双击试听同一链路 /api/arrangement/audio） */
-  Arrange.prototype.previewRackSample = function (                         path     ) {
+  Arrange.prototype.previewRackSample = function (this: ArrangeController, path: any) {
     if (!path) return;
     this.engine.resume();
     this.engine.previewSample(path).catch(function () {
@@ -4013,7 +4013,7 @@
 
   /* ═══════════ 启动 ═══════════ */
 
-  window.Arrange = new (Arrange       )();
+  window.Arrange = new (Arrange as any)();
   document.addEventListener("DOMContentLoaded", function () {
     window.Arrange.init();
   });

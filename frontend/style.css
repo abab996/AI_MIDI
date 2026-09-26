@@ -478,6 +478,26 @@ input[type="checkbox"] {
   margin-top: 18px;
 }
 
+/* 应用音频设置：盖住标题栏与导航，没有关闭路径 */
+.audio-apply-lock {
+  z-index: 2000;
+}
+
+.audio-apply-lock-text {
+  margin: 0;
+  line-height: 1.7;
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+.audio-apply-lock-wait {
+  margin: 12px 0 0;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-dim);
+}
+
 .confirm-text {
   font-size: 13px;
   line-height: 1.8;

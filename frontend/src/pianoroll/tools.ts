@@ -2,7 +2,7 @@
 (function (window) {
   "use strict";
 
-  var SCALES                              = {
+  var SCALES: { [key: string]: ScaleDef } = {
     "none": { name: "无 (None)", intervals: [] },
     "major": { name: "自然大调 (Major)", intervals: [0, 2, 4, 5, 7, 9, 11] },
     "minor": { name: "自然小调 (Natural Minor)", intervals: [0, 2, 3, 5, 7, 8, 10] },
@@ -19,7 +19,7 @@
     "whole_tone": { name: "全音阶 (Whole Tone)", intervals: [0, 2, 4, 6, 8, 10] }
   };
 
-  var CHORDS                              = {
+  var CHORDS: { [key: string]: ScaleDef } = {
     "maj": { name: "大三和弦 (Major)", intervals: [0, 4, 7] },
     "min": { name: "小三和弦 (Minor)", intervals: [0, 3, 7] },
     "dim": { name: "减三和弦 (Diminished)", intervals: [0, 3, 6] },
@@ -39,25 +39,25 @@
 
   var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
-  function noteNameToNumber(name        ) {
+  function noteNameToNumber(name: string) {
     if (!name) return 60;
     var m = /^([A-Ga-g][#b]?)(-?\d+)$/.exec(name.trim());
     if (!m) return 60;
     var p = m[1].toUpperCase();
     var oct = parseInt(m[2], 10);
-    var map                             = { "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11 };
+    var map: { [name: string]: number } = { "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11 };
     var pitch = map[p] !== undefined ? map[p] : 0;
     return (oct + 1) * 12 + pitch;
   }
 
-  function numberToNoteName(num        ) {
+  function numberToNoteName(num: number) {
     num = Math.max(0, Math.min(127, Math.round(num)));
     var oct = Math.floor(num / 12) - 1;
     var pitch = NOTE_NAMES[num % 12];
     return pitch + oct;
   }
 
-  var PianoRollTools                    = {
+  var PianoRollTools: PianoRollToolsApi = {
     SCALES: SCALES,
     CHORDS: CHORDS,
     NOTE_NAMES: NOTE_NAMES,
@@ -74,7 +74,7 @@
 
     stampChord: function (rootMidiNote, chordTypeKey, startBeat, durationBeat, velocity) {
       var chord = CHORDS[chordTypeKey] || CHORDS["maj"];
-      var notes             = [];
+      var notes: MidiNote[] = [];
       var dur = durationBeat || 1.0;
       var vel = velocity || 100;
       chord.intervals.forEach(function (iv) {
@@ -111,7 +111,7 @@
       }
       if (curGroup.length) groups.push(curGroup);
 
-      var result             = [];
+      var result: MidiNote[] = [];
       groups.forEach(function (grp, gIdx) {
         var up = alternateDir ? (gIdx % 2 === 0) : true;
         grp.sort(function (a, b) {
@@ -157,7 +157,7 @@
         for (var r = 0; r < totalSteps; r++) seq.push(pitches[Math.floor(Math.random() * pitches.length)]);
       }
 
-      var result             = [];
+      var result: MidiNote[] = [];
       seq.forEach(function (item, idx) {
         var st = minStart + idx * step;
         result.push({

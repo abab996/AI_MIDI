@@ -2,16 +2,16 @@
 (function () {
   "use strict";
   var UI = window.UI;
-  var $ = UI.qs                                                     ;
-  var noteTable            = [];
+  var $ = UI.qs as ((sel: string, root?: ParentNode) => WorkbenchEl);
+  var noteTable: unknown[] = [];
   var busy = false;
   var currentFunc = "配和弦";
   var funcToken = 0;
   var reducedMotion = typeof window.matchMedia === "function"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  function funcFields(func        ) {
-    var map                             = {
+  function funcFields(func: string) {
+    var map: { [name: string]: string } = {
       "配和弦": "fReq",
       "翻译歌词": "fLyrics fLang",
       "设计转音": "fLyrics fReq",
@@ -20,7 +20,7 @@
     return (map[func] || "fReq").split(/\s+/);
   }
 
-  function clearDynField(f             ) {
+  function clearDynField(f: HTMLElement) {
     f.classList.remove("dyn-in", "dyn-out");
     f.style.removeProperty("--dyn-delay");
     f.style.removeProperty("--out-dx");
@@ -29,8 +29,8 @@
     f.style.removeProperty("--fly-dy");
   }
 
-  function applyFunc(btn             ) {
-    var name = btn.textContent .trim();
+  function applyFunc(btn: HTMLElement) {
+    var name = btn.textContent!.trim();
     if (name === currentFunc) return;
     funcToken++;
     var token = funcToken;
@@ -96,8 +96,8 @@
     /* 进场：全部控件从下往上（开始按钮 → BPM/拍号行 → 保留字段自下而上）
        从面板底边中点起飞（级联间隔 90ms），惯性过冲后落定；
        先完成最终布局再测量，确保起飞点与最终位置一致 */
-    function startShow(tok        ) {
-      var station = btn.closest (".station")               ;
+    function startShow(tok: number) {
+      var station = btn.closest!(".station") as HTMLElement;
       var sr = station.getBoundingClientRect();
       var lx = sr.left + sr.width / 2;
       var ly = sr.bottom;
@@ -121,7 +121,7 @@
     }
   }
 
-  function consoleLine(text        , cls         ) {
+  function consoleLine(text: string, cls?: string) {
     var body = $("#consoleBody");
     var div = document.createElement("div");
     div.className = "c-line " + (cls || "");
@@ -131,7 +131,7 @@
     return div;
   }
 
-  function setStatus(text        , cls         ) {
+  function setStatus(text: string, cls?: string) {
     var el = $("#runStatus");
     el.textContent = text;
     el.className = cls || "";
@@ -145,7 +145,7 @@
     });
 
     /* 解析状态与 API 印章 */
-    UI.getJSON               ("/api/settings").then(function (s) {
+    UI.getJSON<SettingsStamp>("/api/settings").then(function (s) {
       var stamp = $("#stampApi");
       if (s.api_key) {
         stamp.textContent = "API: READY";
@@ -162,34 +162,34 @@
     var parseBtn = $("#parseBtn");
     var parseBusy = false;
 
-    function setParseBusy(b         ) {
+    function setParseBusy(b: boolean) {
       parseBusy = b;
       if (parseBtn) parseBtn.disabled = b;
       if (dz) dz.classList.toggle("busy", b);
     }
 
-    function handleFile(file                  ) {
+    function handleFile(file: File | undefined) {
       if (!file || parseBusy) return;
       setParseBusy(true);
       var form = new FormData();
       form.append("file", file);
-      UI.toast ("正在解析 " + file.name + " …", "");
+      UI.toast!("正在解析 " + file.name + " …", "");
       fetch("/api/parse", { method: "POST", body: form })
         .then(function (r) {
           if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || "解析失败"); });
           return r.json();
         })
-        .then(function (data             ) {
+        .then(function (data: ParseResult) {
           noteTable = data.note_table;
           $("#parseStatus").textContent = data.status;
           $("#parseStatus").className = "ok";
           $("#dzSub").textContent = file.name;
-          UI.toast (data.status, "ok");
+          UI.toast!(data.status, "ok");
         })
-        .catch(function (e     ) {
+        .catch(function (e: any) {
           $("#parseStatus").textContent = "✗ " + e.message;
           $("#parseStatus").className = "err";
-          UI.toast ("✗ " + e.message, "err");
+          UI.toast!("✗ " + e.message, "err");
         })
         .finally(function () { setParseBusy(false); });
     }
@@ -217,7 +217,7 @@
         dz.classList.remove("dragover");
       }
     });
-    dz.addEventListener("drop", function (e           ) {
+    dz.addEventListener("drop", function (e: DragEvent) {
       e.preventDefault();
       dragCounter = 0;
       dz.classList.remove("dragover");
@@ -235,7 +235,7 @@
 
     var requiresMidi = currentFunc !== "其他要求";
     if (requiresMidi && !noteTable.length) {
-      UI.toast ("⚠ 请先解析 MIDI 文件", "warn");
+      UI.toast!("⚠ 请先解析 MIDI 文件", "warn");
       return;
     }
 
@@ -258,7 +258,7 @@
     $("#consoleBody").innerHTML = "";
     consoleLine("> 任务启动: " + currentFunc, "dim");
 
-    UI.ssePost          ("/api/run", body, function (ev) {
+    UI.ssePost<RunEvent>("/api/run", body, function (ev) {
       if (ev.type === "progress") {
         consoleLine("> " + ev.desc, "dim");
       } else if (ev.type === "warn") {
@@ -289,7 +289,7 @@
         consoleLine("> _", "dim");
         finish();
       }
-    }).catch(function (e     ) {
+    }).catch(function (e: any) {
       consoleLine("✗ " + e.message, "err");
       setStatus("FAILED", "err");
       finish();

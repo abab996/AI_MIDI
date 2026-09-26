@@ -5,12 +5,12 @@
   var UI = window.UI;
   var Tools = window.PianoRollTools;
 
-  function PianoRoll(                         ) {
+  function PianoRoll(this: PianoRollController) {
     this.drawerEl = null;
     this.isOpen = false;
     this.isMaximized = false;
     this.isFocused = false; // 焦点状态
-    this.drawerHeight = parseInt(localStorage.getItem("prDrawerHeight")       , 10) || 440;
+    this.drawerHeight = parseInt(localStorage.getItem("prDrawerHeight") as any, 10) || 440;
     this.minHeight = 160;
     this.closeThreshold = 110;
 
@@ -95,7 +95,7 @@
 
   /* ═══════════ 音符删除渐隐特效驱动 ═══════════ */
 
-  PianoRoll.prototype.addDeleteEffect = function (                           note     ) {
+  PianoRoll.prototype.addDeleteEffect = function (this: PianoRollController, note: any) {
     if (!note) return;
     if (!this.deleteEffects) this.deleteEffects = [];
     var p = typeof note.note === "number" ? note.note : Tools.noteNameToNumber(note.note);
@@ -109,7 +109,7 @@
     this.requestEffectFrame();
   };
 
-  PianoRoll.prototype.requestEffectFrame = function (                         ) {
+  PianoRoll.prototype.requestEffectFrame = function (this: PianoRollController) {
     if (this.effectRafId) return;
     var self = this;
     this.effectRafId = requestAnimationFrame(function () {
@@ -120,13 +120,13 @@
 
   /* ═══════════ 初始化与 DOM 挂载 ═══════════ */
 
-  PianoRoll.prototype.init = function (                         ) {
+  PianoRoll.prototype.init = function (this: PianoRollController) {
     this.drawerEl = document.getElementById("pianoDrawer");
     if (!this.drawerEl) return;
 
-    this.keysCanvas = document.getElementById("prKeysCanvas")                            ;
-    this.gridCanvas = document.getElementById("prGridCanvas")                            ;
-    this.velocityCanvas = document.getElementById("prVelocityCanvas")                            ;
+    this.keysCanvas = document.getElementById("prKeysCanvas") as HTMLCanvasElement | null;
+    this.gridCanvas = document.getElementById("prGridCanvas") as HTMLCanvasElement | null;
+    this.velocityCanvas = document.getElementById("prVelocityCanvas") as HTMLCanvasElement | null;
     this.hudBadge = document.getElementById("prHudBadge");
 
     if (this.keysCanvas) this.keysCtx = this.keysCanvas.getContext("2d");
@@ -159,18 +159,18 @@
 
   /* ═══════════ 焦点管理系统 (Focus Manager) ═══════════ */
 
-  PianoRoll.prototype.bindFocusManager = function (                         ) {
+  PianoRoll.prototype.bindFocusManager = function (this: PianoRollController) {
     var self = this;
     if (!this.drawerEl) return;
 
     // 点击卷帘内部任意区域激活焦点
-    this.drawerEl.addEventListener("mousedown", function (e     ) {
+    this.drawerEl.addEventListener("mousedown", function (e: any) {
       self.setFocus(true);
     });
 
     // 点击外部区域或输入框释放焦点
     document.addEventListener("mousedown", function (e) {
-      if (!self.drawerEl .contains(e.target        ) && !e.target .closest (".modal")) {
+      if (!self.drawerEl!.contains(e.target as Node) && !e.target!.closest!(".modal")) {
         self.setFocus(false);
       }
     });
@@ -182,26 +182,26 @@
     }
   };
 
-  PianoRoll.prototype.setFocus = function (                           focused     ) {
+  PianoRoll.prototype.setFocus = function (this: PianoRollController, focused: any) {
     this.isFocused = focused && this.isOpen;
     if (this.drawerEl) {
       this.drawerEl.classList.toggle("pr-focused", this.isFocused);
     }
   };
 
-  PianoRoll.prototype.showHUD = function (                           text     ) {
+  PianoRoll.prototype.showHUD = function (this: PianoRollController, text: any) {
     if (!this.hudBadge) return;
     this.hudBadge.textContent = text;
     this.hudBadge.classList.remove("hud-pop");
     void this.hudBadge.offsetWidth;
     this.hudBadge.classList.add("visible", "hud-pop");
     clearTimeout(this.hudTimer);
-    this.hudTimer = setTimeout(function (         ) {
+    this.hudTimer = setTimeout(function (this: any) {
       if (this.hudBadge) this.hudBadge.classList.remove("visible", "hud-pop");
     }.bind(this), 1200);
   };
 
-  PianoRoll.prototype.resizeCanvases = function (                         ) {
+  PianoRoll.prototype.resizeCanvases = function (this: PianoRollController) {
     if (!this.isOpen || !this.gridCanvas) return;
     var container = document.getElementById("prWorkspaceWrap");
     if (!container) return;
@@ -222,32 +222,32 @@
     var dpr = window.devicePixelRatio || 1;
 
     // 琴键画布
-    this.keysCanvas .width = this.keysWidth * dpr;
-    this.keysCanvas .height = mainH * dpr;
-    this.keysCanvas .style.width = this.keysWidth + "px";
-    this.keysCanvas .style.height = mainH + "px";
-    this.keysCtx .setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.keysCanvas!.width = this.keysWidth * dpr;
+    this.keysCanvas!.height = mainH * dpr;
+    this.keysCanvas!.style.width = this.keysWidth + "px";
+    this.keysCanvas!.style.height = mainH + "px";
+    this.keysCtx!.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // 主网格画布
     this.gridCanvas.width = Math.max(10, w) * dpr;
     this.gridCanvas.height = Math.max(10, mainH) * dpr;
     this.gridCanvas.style.width = Math.max(10, w) + "px";
     this.gridCanvas.style.height = Math.max(10, mainH) + "px";
-    this.gridCtx .setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.gridCtx!.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // 力度画布
-    this.velocityCanvas .width = Math.max(10, w) * dpr;
-    this.velocityCanvas .height = this.velocityHeight * dpr;
-    this.velocityCanvas .style.width = Math.max(10, w) + "px";
-    this.velocityCanvas .style.height = this.velocityHeight + "px";
-    this.velocityCtx .setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.velocityCanvas!.width = Math.max(10, w) * dpr;
+    this.velocityCanvas!.height = this.velocityHeight * dpr;
+    this.velocityCanvas!.style.width = Math.max(10, w) + "px";
+    this.velocityCanvas!.style.height = this.velocityHeight + "px";
+    this.velocityCtx!.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     this.render();
   };
 
   /* ═══════════ 抽屉展开、折叠与缩放 (Studio One 风格) ═══════════ */
 
-  PianoRoll.prototype.open = function (                         ) {
+  PianoRoll.prototype.open = function (this: PianoRollController) {
     if (!this.drawerEl) return;
     this.isOpen = true;
     this.drawerEl.classList.remove("closed");
@@ -259,13 +259,13 @@
     setTimeout(this.resizeCanvases.bind(this), 50);
   };
 
-  PianoRoll.prototype.close = function (                         ) {
+  PianoRoll.prototype.close = function (this: PianoRollController) {
     if (!this.drawerEl) return;
     /* 关闭前先停录制：此前只 stopPlayback，录制中关抽屉会把按键/音符
        继续写进 activeRecordNotes——重新打开后出现"隐形录制"的幽灵音符 */
     if (this.isRecording) {
       this.stopRecording();
-      if (window.UI && UI.toast) UI.toast ("⏹ 录制已停止（卷帘已关闭）", "warn");
+      if (window.UI && UI.toast) UI.toast!("⏹ 录制已停止（卷帘已关闭）", "warn");
     }
     this.stopPlayback();
     this.isOpen = false;
@@ -275,7 +275,7 @@
     this.isMaximized = false;
   };
 
-  PianoRoll.prototype.toggleMaximize = function (                         ) {
+  PianoRoll.prototype.toggleMaximize = function (this: PianoRollController) {
     if (!this.drawerEl) return;
     this.isMaximized = !this.isMaximized;
     this.drawerEl.classList.toggle("maximized", this.isMaximized);
@@ -285,7 +285,7 @@
     setTimeout(this.resizeCanvases.bind(this), 50);
   };
 
-  PianoRoll.prototype.bindDrawerResizer = function (                         ) {
+  PianoRoll.prototype.bindDrawerResizer = function (this: PianoRollController) {
     var self = this;
     var resizer = document.getElementById("prDrawerResizer");
     if (!resizer) return;
@@ -296,7 +296,7 @@
       if (self.isMaximized) return;
       isDragging = true;
       startY = e.clientY;
-      startH = self.drawerEl .offsetHeight;
+      startH = self.drawerEl!.offsetHeight;
       document.body.classList.add("resizing-drawer");
       self.setFocus(true);
       e.preventDefault();
@@ -320,7 +320,7 @@
       }
 
       self.drawerHeight = Math.max(self.minHeight, Math.min(maxH, newH));
-      self.drawerEl .style.height = self.drawerHeight + "px";
+      self.drawerEl!.style.height = self.drawerHeight + "px";
       /* 画布重分配按帧合流：一帧内多次 mousemove 只 resize 一次 */
       if (!self._resizeRaf) {
         self._resizeRaf = requestAnimationFrame(function () {
@@ -342,10 +342,10 @@
 
   /* ═══════════ 标签页与文件载入 ═══════════ */
 
-  PianoRoll.prototype.openFile = function (                           projectId     , fileName     , filePath     ) {
+  PianoRoll.prototype.openFile = function (this: PianoRollController, projectId: any, fileName: any, filePath: any) {
     var self = this;
     var tabId = projectId + "::" + fileName;
-    var existing = this.tabs.find(function (t     ) { return t.id === tabId; });
+    var existing = this.tabs.find(function (t: any) { return t.id === tabId; });
 
     if (existing) {
       this.switchTab(tabId);
@@ -355,7 +355,7 @@
 
     var url = "/api/projects/" + projectId + "/download?names=" + encodeURIComponent(fileName);
     /* 打开即给反馈（fetch 期间此前完全无响应，慢网络像双击失灵） */
-    if (window.UI && window.UI.toast) window.UI.toast ("⏳ 正在打开 " + fileName.split("/").pop() + "…", "");
+    if (window.UI && window.UI.toast) window.UI.toast!("⏳ 正在打开 " + fileName.split("/").pop() + "…", "");
     fetch(url).then(function (res) {
       if (!res.ok) throw new Error("获取 MIDI 文件失败");
       return res.arrayBuffer();
@@ -378,11 +378,11 @@
       self.switchTab(tabId);
       self.open();
     }).catch(function (err) {
-      if (window.UI && window.UI.toast) window.UI.toast ("✗ 打开 MIDI 失败: " + err.message, "err");
+      if (window.UI && window.UI.toast) window.UI.toast!("✗ 打开 MIDI 失败: " + err.message, "err");
     });
   };
 
-  PianoRoll.prototype.switchTab = function (                           tabId     ) {
+  PianoRoll.prototype.switchTab = function (this: PianoRollController, tabId: any) {
     this.activeTabId = tabId;
     var tab = this.getActiveTab();
     if (tab) {
@@ -394,10 +394,10 @@
     this.render();
   };
 
-  PianoRoll.prototype.closeTab = function (                           tabId     , e     ) {
+  PianoRoll.prototype.closeTab = function (this: PianoRollController, tabId: any, e: any) {
     if (e) e.stopPropagation();
     var self = this;
-    var idx = this.tabs.findIndex(function (t     ) { return t.id === tabId; });
+    var idx = this.tabs.findIndex(function (t: any) { return t.id === tabId; });
     if (idx === -1) return;
     var tab = this.tabs[idx];
     /* 有未落盘的编辑（保存失败/防抖未触发）：先保存再关闭；
@@ -420,12 +420,12 @@
     this.renderTabs();
   };
 
-  PianoRoll.prototype.getActiveTab = function (                         ) {
+  PianoRoll.prototype.getActiveTab = function (this: PianoRollController) {
     var self = this;
-    return this.tabs.find(function (t     ) { return t.id === self.activeTabId; }) || null;
+    return this.tabs.find(function (t: any) { return t.id === self.activeTabId; }) || null;
   };
 
-  PianoRoll.prototype.renderTabs = function (                         ) {
+  PianoRoll.prototype.renderTabs = function (this: PianoRollController) {
     var container = document.getElementById("prTabBar");
     if (!container) return;
     var self = this;
@@ -438,7 +438,7 @@
         if (existingTabs[i].dataset.tabId !== this.tabs[i].id) { match = false; break; }
       }
       if (match) {
-        this.tabs.forEach(function (tab     , i     ) {
+        this.tabs.forEach(function (tab: any, i: any) {
           var tabBtn = existingTabs[i];
           tabBtn.classList.toggle("active", tab.id === self.activeTabId);
           var nameSpan = tabBtn.querySelector(".pr-tab-name");
@@ -454,7 +454,7 @@
 
     // 标签数量或结构增减时才全量重建
     container.innerHTML = "";
-    this.tabs.forEach(function (tab     ) {
+    this.tabs.forEach(function (tab: any) {
       var tabBtn = document.createElement("div");
       tabBtn.className = "pr-tab" + (tab.id === self.activeTabId ? " active" : "");
       tabBtn.dataset.tabId = tab.id;
@@ -463,19 +463,19 @@
         '<button type="button" class="pr-tab-close" title="关闭标签">✕</button>';
 
       tabBtn.addEventListener("click", function () { self.switchTab(tab.id); });
-      tabBtn.querySelector(".pr-tab-close") .addEventListener("click", function (e) {
+      tabBtn.querySelector(".pr-tab-close")!.addEventListener("click", function (e) {
         self.closeTab(tab.id, e);
       });
-      container .appendChild(tabBtn);
+      container!.appendChild(tabBtn);
     });
 
     this.updateGhostTrackSelect();
   };
 
-  PianoRoll.prototype.updateGhostTrackSelect = function (                         ) {
+  PianoRoll.prototype.updateGhostTrackSelect = function (this: PianoRollController) {
     var self = this;
     var opts = [{ value: "", label: "幽灵参考轨: 无" }];
-    this.tabs.forEach(function (t     ) {
+    this.tabs.forEach(function (t: any) {
       if (t.id !== self.activeTabId) {
         opts.push({ value: t.id, label: "参考: " + t.name });
       }
@@ -485,24 +485,24 @@
     }
   };
 
-  PianoRoll.prototype.updateLoopBoundsFromNotes = function (                           notes     ) {
+  PianoRoll.prototype.updateLoopBoundsFromNotes = function (this: PianoRollController, notes: any) {
     if (!notes || !notes.length) {
       this.loopEnd = 16;
       return;
     }
     var maxEnd = 0;
-    notes.forEach(function (n     ) { if (n.end > maxEnd) maxEnd = n.end; });
+    notes.forEach(function (n: any) { if (n.end > maxEnd) maxEnd = n.end; });
     this.loopEnd = Math.max(4, Math.ceil(maxEnd / 4) * 4);
   };
 
-  PianoRoll.prototype.autoCenterView = function (                         ) {
+  PianoRoll.prototype.autoCenterView = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab || !tab.notes || !tab.notes.length) {
       this.scrollY = (127 - 60) * this.noteRowHeight - 150;
       return;
     }
     var sumPitch = 0;
-    tab.notes.forEach(function (n     ) {
+    tab.notes.forEach(function (n: any) {
       sumPitch += Tools.noteNameToNumber(n.note);
     });
     var avgPitch = Math.round(sumPitch / tab.notes.length);
@@ -513,11 +513,11 @@
 
   /* ═══════════ 音符数据解析与保存同步 ═══════════ */
 
-  PianoRoll.prototype.parseMidiBytes = function (                           arrayBuffer     ) {
+  PianoRoll.prototype.parseMidiBytes = function (this: PianoRollController, arrayBuffer: any) {
     return window.MidiParse ? window.MidiParse.parseBytes(arrayBuffer) : [];
   };
 
-  PianoRoll.prototype.pushHistory = function (                         ) {
+  PianoRoll.prototype.pushHistory = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab) return;
     tab.undoStack.push(JSON.stringify(tab.notes));
@@ -528,7 +528,7 @@
     this.scheduleAutoSave();
   };
 
-  PianoRoll.prototype.undo = function (                         ) {
+  PianoRoll.prototype.undo = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab || !tab.undoStack || !tab.undoStack.length) {
       this.showHUD("没有更多可撤销的操作 (Undo)");
@@ -536,14 +536,14 @@
     }
     if (!tab.redoStack) tab.redoStack = [];
     tab.redoStack.push(JSON.stringify(tab.notes));
-    tab.notes = JSON.parse(tab.undoStack.pop() );
+    tab.notes = JSON.parse(tab.undoStack.pop()!);
     this.selectedNotes = [];
     this.render();
     this.showHUD("↩ 撤销 (Undo / Ctrl+Z)");
     this.scheduleAutoSave();
   };
 
-  PianoRoll.prototype.redo = function (                         ) {
+  PianoRoll.prototype.redo = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab || !tab.redoStack || !tab.redoStack.length) {
       this.showHUD("没有更多可重做的操作 (Redo)");
@@ -551,14 +551,14 @@
     }
     if (!tab.undoStack) tab.undoStack = [];
     tab.undoStack.push(JSON.stringify(tab.notes));
-    tab.notes = JSON.parse(tab.redoStack.pop() );
+    tab.notes = JSON.parse(tab.redoStack.pop()!);
     this.selectedNotes = [];
     this.render();
     this.showHUD("↪ 重做 (Redo / Ctrl+Alt+Z)");
     this.scheduleAutoSave();
   };
 
-  PianoRoll.prototype.scheduleAutoSave = function (                         ) {
+  PianoRoll.prototype.scheduleAutoSave = function (this: PianoRollController) {
     var self = this;
     this.setSaveState("EDIT…");
     clearTimeout(this.saveDebounceTimer);
@@ -569,7 +569,7 @@
 
   /* 保存状态章：EDIT… / SAVING / SAVED / SAVE ERR（对齐编排窗的状态机，
      此前自动保存完全静默、失败被吞，用户无从得知编辑是否落盘） */
-  PianoRoll.prototype.setSaveState = function (                           state     ) {
+  PianoRoll.prototype.setSaveState = function (this: PianoRollController, state: any) {
     var el = document.getElementById("prSaveStamp");
     if (!el) return;
     el.hidden = false;
@@ -580,11 +580,11 @@
     else el.classList.add("warn");
     clearTimeout(this._saveStampTimer);
     if (state === "SAVED") {
-      this._saveStampTimer = setTimeout(function () { el .hidden = true; }, 1600);
+      this._saveStampTimer = setTimeout(function () { el!.hidden = true; }, 1600);
     }
   };
 
-  PianoRoll.prototype.saveTab = function (                           tab     ) {
+  PianoRoll.prototype.saveTab = function (this: PianoRollController, tab: any) {
     var self = this;
     if (!tab || !tab.dirty) return Promise.resolve();
     // 先"认领" dirty 再发请求（同 arrange.doSave）：响应回来再清 flag 会
@@ -592,7 +592,7 @@
     tab.dirty = false;
     this.setSaveState("SAVING");
 
-    var noteLines = tab.notes.map(function (n     ) {
+    var noteLines = tab.notes.map(function (n: any) {
       return '[note: "' + n.note + '", velocity: "' + n.velocity + '", start: "' + n.start + '", end: "' + n.end + '"]';
     }).join("\n");
 
@@ -608,21 +608,21 @@
       tab.dirty = true; // 保存失败：恢复 dirty，编辑仍保留，关窗兜底仍会带上
       self.setSaveState("SAVE ERR");
       if (window.UI && window.UI.toast) {
-        window.UI.toast ("✗ 自动保存失败: " + ((e && e.message) || "网络错误") + "（编辑仍保留）", "err");
+        window.UI.toast!("✗ 自动保存失败: " + ((e && e.message) || "网络错误") + "（编辑仍保留）", "err");
       }
       throw e;
     });
   };
 
-  PianoRoll.prototype.saveCurrentTab = function (                         ) {
+  PianoRoll.prototype.saveCurrentTab = function (this: PianoRollController) {
     return this.saveTab(this.getActiveTab());
   };
 
   /* 应用退出兜底：800ms 防抖窗口内的编辑用 sendBeacon 落盘 */
-  PianoRoll.prototype.flushAllOnUnload = function (                         ) {
-    this.tabs.forEach(function (tab     ) {
+  PianoRoll.prototype.flushAllOnUnload = function (this: PianoRollController) {
+    this.tabs.forEach(function (tab: any) {
       if (!tab.dirty) return;
-      var noteLines = tab.notes.map(function (n     ) {
+      var noteLines = tab.notes.map(function (n: any) {
         return '[note: "' + n.note + '", velocity: "' + n.velocity + '", start: "' + n.start + '", end: "' + n.end + '"]';
       }).join("\n");
       if (navigator.sendBeacon) {
@@ -637,7 +637,7 @@
 
   /* ═══════════ 音频发声中枢 ═══════════ */
 
-  PianoRoll.prototype.playNoteSound = function (                           midiNote     , velocity     , when     ) {
+  PianoRoll.prototype.playNoteSound = function (this: PianoRollController, midiNote: any, velocity: any, when: any) {
     this.synth.resume();
     this.soundfont.resume();
     if (this.soundSource.indexOf("synth_") === 0) {
@@ -665,7 +665,7 @@
     }
   };
 
-  PianoRoll.prototype.stopNoteSound = function (                           midiNote     , when     ) {
+  PianoRoll.prototype.stopNoteSound = function (this: PianoRollController, midiNote: any, when: any) {
     this.synth.noteOff(midiNote, when);
     this.soundfont.noteOff(midiNote, when);
     // 引擎模式：SF2 轨 30 收音（synth 轨 31 由 synth.noteOff 处理）
@@ -678,7 +678,7 @@
      首次/切换音源时异步 loadSoundFontTrack(30) + setTrackPreset(30)；
      pending 期间直发（首音瞬态可接受），failed 后 3s 冷却重试。
      严格路由：失败绝不回退 WebAudio——该音源标记不可用 + toast 提示 */
-  PianoRoll.prototype._engineSf2Prepare = function (                         ) {
+  PianoRoll.prototype._engineSf2Prepare = function (this: PianoRollController) {
     var key = this.soundSource;
     if (this._sf2EngineKey === key) {
       if (this._sf2EngineReady) return "ready";
@@ -698,16 +698,16 @@
     /* 加载中提示（仅首次；切换音源后复位，冷却重试不重复） */
     if (!this._sf2EngineLoadNotified) {
       this._sf2EngineLoadNotified = true;
-      if (window.UI && UI.toast) UI.toast ("⏳ 音色加载中…", "ok");
+      if (window.UI && UI.toast) UI.toast!("⏳ 音色加载中…", "ok");
     }
     return "pending";
   };
 
-  PianoRoll.prototype._sf2EnginePrepareAsync = function (                           key     ) {
+  PianoRoll.prototype._sf2EnginePrepareAsync = function (this: PianoRollController, key: any) {
     var self = this;
     var trk = (window.EngineBridge && window.EngineBridge.SF2_TRACK) || 30;
     var bank = 0, program = 0;
-    var finish = function (ok     , msg     ) {
+    var finish = function (ok: any, msg: any) {
       self._sf2EnginePending = false;
       self._sf2EngineReady = ok;
       self._sf2EngineFailed = !ok;
@@ -716,7 +716,7 @@
         /* 失败提示节流：同一音源只弹一次，冷却重试期间不刷屏 */
         if (!self._sf2EngineFailNotified && window.UI && UI.toast) {
           self._sf2EngineFailNotified = true;
-          UI.toast (msg || "✗ 引擎加载音色失败", "err");
+          UI.toast!(msg || "✗ 引擎加载音色失败", "err");
         }
       } else {
         self._sf2EngineFailNotified = false;
@@ -749,13 +749,13 @@
     this._engineSf2Load(trk, this._sf2DiskPath, bank, program, finish);
   };
 
-  PianoRoll.prototype._engineSf2Load = function (                           trk     , path     , bank     , program     , finish     ) {
+  PianoRoll.prototype._engineSf2Load = function (this: PianoRollController, trk: any, path: any, bank: any, program: any, finish: any) {
     window.EngineBridge.loadSoundFont(path, trk)
       .then(function () {
         return window.EngineBridge.setTrackPreset(trk, bank, program).catch(function () {
           // 预设不存在：回退该文件预设 0 并提示
           return window.EngineBridge.setTrackPreset(trk, 0, 0).then(function () {
-            if (window.UI && UI.toast) UI.toast ("⚠ 预设不存在，已用该音色库首个预设", "warn");
+            if (window.UI && UI.toast) UI.toast!("⚠ 预设不存在，已用该音色库首个预设", "warn");
           });
         });
       })
@@ -768,10 +768,10 @@
   /** 原生音符精确调度（JUCE 演奏轨直通）。timer 集中登记，停止时统一
       撤销：未发出的 noteOn 取消、已响未收的 noteOff 立即补发——
       此前裸 setTimeout 不登记，停止后仍冒幽灵音/挂音。 */
-  PianoRoll.prototype._schedNativeNote = function (                           p     , v     , when     , durSec     , trk     ) {
+  PianoRoll.prototype._schedNativeNote = function (this: PianoRollController, p: any, v: any, when: any, durSec: any, trk: any) {
     if (!this._nativeTimers) this._nativeTimers = [];
     var self = this;
-    var rec      = { trk: trk, p: p, noteOnFired: false, noteOffFired: false };
+    var rec: any = { trk: trk, p: p, noteOnFired: false, noteOffFired: false };
     rec.noteOnTimer = setTimeout(function () {
       if (!self.isPlaying) return; // 停止后不再触发（与编曲窗 _schedNative 同语义）
       rec.noteOnFired = true;
@@ -784,7 +784,7 @@
     this._nativeTimers.push(rec);
   };
 
-  PianoRoll.prototype._clearNativeTimers = function (                         ) {
+  PianoRoll.prototype._clearNativeTimers = function (this: PianoRollController) {
     if (!this._nativeTimers) return;
     for (var i = 0; i < this._nativeTimers.length; i++) {
       var rec = this._nativeTimers[i];
@@ -799,7 +799,7 @@
     this._nativeTimers = [];
   };
 
-  PianoRoll.prototype.stopAllSounds = function (                         ) {
+  PianoRoll.prototype.stopAllSounds = function (this: PianoRollController) {
     this._clearNativeTimers(); // 撤掉调度中的原生音符 timer（含已响未收的补发 noteOff）
     this.synth.stopAll();
     this.soundfont.stopAll();
@@ -807,7 +807,7 @@
 
   /* ═══════════ 播放与时间轴回放 & 实时录制 ═══════════ */
 
-  PianoRoll.prototype.togglePlay = function (                         ) {
+  PianoRoll.prototype.togglePlay = function (this: PianoRollController) {
     if (this.isPlaying) {
       if (this.isRecording) {
         this.stopRecording();
@@ -819,7 +819,7 @@
     }
   };
 
-  PianoRoll.prototype.toggleLoop = function (                         ) {
+  PianoRoll.prototype.toggleLoop = function (this: PianoRollController) {
     this.isLooping = !this.isLooping;
     var btn = document.getElementById("prLoopToggleBtn");
     if (btn) btn.classList.toggle("active", this.isLooping);
@@ -829,7 +829,7 @@
 
   /* ═══════════ MIDI 实时录制系统 ═══════════ */
 
-  PianoRoll.prototype.toggleRecord = function (                         ) {
+  PianoRoll.prototype.toggleRecord = function (this: PianoRollController) {
     if (this.isRecording) {
       this.stopRecording();
     } else {
@@ -837,7 +837,7 @@
     }
   };
 
-  PianoRoll.prototype.startRecording = function (                         ) {
+  PianoRoll.prototype.startRecording = function (this: PianoRollController) {
     var self = this;
     var tab = this.getActiveTab();
     if (!tab) {
@@ -852,18 +852,18 @@
        音符照录、全程无声且状态卡死（假录音） */
     if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
         && !window.AudioBackend.isEngineReady()) {
-      if (window.UI && UI.toast) UI.toast ("✗ 音频引擎未就绪，录制不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+      if (window.UI && UI.toast) UI.toast!("✗ 音频引擎未就绪，录制不可用（可在设置页切换 WEBAUDIO 模式）", "err");
       return;
     }
 
     // 如果开启了覆盖模式 (Replace Mode)
     if (this.recordConfig.replaceMode) {
       if (this.isLooping) {
-        tab.notes = tab.notes.filter(function (n     ) {
+        tab.notes = tab.notes.filter(function (n: any) {
           return n.end <= self.loopStart || n.start >= self.loopEnd;
         });
       } else {
-        tab.notes = tab.notes.filter(function (n     ) {
+        tab.notes = tab.notes.filter(function (n: any) {
           return n.end <= self.playheadBeat;
         });
       }
@@ -913,7 +913,7 @@
     }
   };
 
-  PianoRoll.prototype.stopRecording = function (                         ) {
+  PianoRoll.prototype.stopRecording = function (this: PianoRollController) {
     this.isRecording = false;
     this.isCountIn = false;
 
@@ -935,7 +935,7 @@
     this.render();
   };
 
-  PianoRoll.prototype.handleLiveNoteOn = function (                           note     , velocity     ) {
+  PianoRoll.prototype.handleLiveNoteOn = function (this: PianoRollController, note: any, velocity: any) {
     if (!this.isRecording || this.isCountIn) return;
     var tab = this.getActiveTab();
     if (!tab) return;
@@ -965,7 +965,7 @@
     this.render();
   };
 
-  PianoRoll.prototype.handleLiveNoteOff = function (                           note     ) {
+  PianoRoll.prototype.handleLiveNoteOff = function (this: PianoRollController, note: any) {
     if (!this.isRecording) return;
     var active = this.activeRecordNotes[note];
     if (!active) return;
@@ -987,15 +987,15 @@
      现改为 25ms 调度心跳 / 150ms lookahead 按音频时钟精确排入
      noteOn/noteOff（与编曲窗 audio_engine 同一模式），rAF 只画播放头。 */
 
-  PianoRoll.prototype._audioNow = function (                         ) {
-    return window.SharedAudio ? window.SharedAudio.now() : this.synth.ctx .currentTime;
+  PianoRoll.prototype._audioNow = function (this: PianoRollController) {
+    return window.SharedAudio ? window.SharedAudio.now() : this.synth.ctx!.currentTime;
   };
 
   /** 播放中重锚调度到指定拍（标尺点击/拖拽结束、BPM 变更共用）。
       重锚即停旧调度链并重启：旧前瞻窗已排音符的 timer 由 _clearNativeTimers
       撤销、WebAudio 已触发音符由 stopAllSounds 停掉——否则音符仍按旧锚点
       展开，与新的播放头位置脱同步。非播放中只移播放头。 */
-  PianoRoll.prototype._resyncPlaybackTo = function (                           beat     ) {
+  PianoRoll.prototype._resyncPlaybackTo = function (this: PianoRollController, beat: any) {
     beat = Math.max(0, beat);
     this.playheadBeat = beat;
     if (this.isPlaying) {
@@ -1008,7 +1008,7 @@
     this.render();
   };
 
-  PianoRoll.prototype.startPlayback = function (                         ) {
+  PianoRoll.prototype.startPlayback = function (this: PianoRollController) {
     var self = this;
     // 幂等：已在播放时先停旧调度链再重启（播放中录音、录制 countIn=0
     // 直通都会重复进入）。此前旧 setInterval 句柄被覆盖后永久 25ms 空转，
@@ -1024,7 +1024,7 @@
        明确提示并跳转设置页由用户决策 */
     if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
         && !window.AudioBackend.isEngineReady()) {
-      if (window.UI && UI.toast) UI.toast ("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）", "err");
+      if (window.UI && UI.toast) UI.toast!("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）", "err");
       return;
     }
     this.synth.resume();
@@ -1090,7 +1090,7 @@
      此前「AUTO 时优先跟随引擎 timecode」的分支是冻结源：钢琴窗从不
      启动引擎走带（EngineBridge.play 仅编曲窗调用），tc.playing 恒为
      false，播放头被钉死在 tc.beat。本地时钟与上方调度器同源，天然同步 */
-  PianoRoll.prototype._currentPlayBeat = function (                         ) {
+  PianoRoll.prototype._currentPlayBeat = function (this: PianoRollController) {
     var pos = (this._audioNow() - this._schedCtxTime) * (this.bpm / 60);
     if (pos < 0) pos = 0;
     if (!this.isLooping || this._schedSegLen === Infinity) {
@@ -1103,7 +1103,7 @@
 
   /* 把调度窗口 [from, to) 拆成线性段（循环回绕处分段），每段给出
      pos→beat 的线性映射；段数上限防极端循环长度撑爆 */
-  PianoRoll.prototype._expandPosWindow = function (                           from     , to     ) {
+  PianoRoll.prototype._expandPosWindow = function (this: PianoRollController, from: any, to: any) {
     var segs = [];
     if (!this.isLooping || this._schedSegLen === Infinity) {
       segs.push({ posFrom: from, beatFrom: this._schedStartBeat + from, span: to - from });
@@ -1127,7 +1127,7 @@
     return segs;
   };
 
-  PianoRoll.prototype._scheduleTick = function (                         ) {
+  PianoRoll.prototype._scheduleTick = function (this: PianoRollController) {
     if (!this.isPlaying) return;
     /* 引擎模式播放中引擎掉线（崩溃/重启）：自动停止并提示（严格路由，
        不无声空转——徽章轮询 5s 才翻转，这里每 25ms 即检） */
@@ -1135,7 +1135,7 @@
         && window.__engineState && window.__engineState !== "ready") {
       this.stopPlayback();
       if (window.EngineBridge && window.EngineBridge.panic) { try { window.EngineBridge.panic().catch(function(){}); } catch (e) {} }
-      if (window.UI && UI.toast) UI.toast ("⚠ 音频引擎已中断，播放已停止（引擎恢复后可重新播放）", "warn");
+      if (window.UI && UI.toast) UI.toast!("⚠ 音频引擎已中断，播放已停止（引擎恢复后可重新播放）", "warn");
       return;
     }
     var horizonPos = (this._audioNow() + 0.15 - this._schedCtxTime) * (this.bpm / 60);
@@ -1212,7 +1212,7 @@
     this._schedPos = horizonPos;
   };
 
-  PianoRoll.prototype.stopPlayback = function (                         ) {
+  PianoRoll.prototype.stopPlayback = function (this: PianoRollController) {
     this.isPlaying = false;
     if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
     if (this._schedTimer) { clearInterval(this._schedTimer); this._schedTimer = null; }
@@ -1240,14 +1240,14 @@
 
   /* ═══════════ Canvas 2D 渲染管线 ═══════════ */
 
-  PianoRoll.prototype.render = function (                         ) {
+  PianoRoll.prototype.render = function (this: PianoRollController) {
     this.renderKeys();
     this.renderGrid();
     this.renderVelocity();
   };
 
   /* 拖拽/力度画笔等高频路径的合帧渲染：一帧内多次 mousemove 只重绘一次 */
-  PianoRoll.prototype.scheduleRender = function (                         ) {
+  PianoRoll.prototype.scheduleRender = function (this: PianoRollController) {
     if (this._renderQueued) return;
     this._renderQueued = true;
     var self = this;
@@ -1259,7 +1259,7 @@
 
   /* 音名→音高号记忆化：128 种结果全量缓存，渲染/调度热路径不再逐音符正则解析 */
   PianoRoll.prototype._pitchCache = {};
-  PianoRoll.prototype.pitchOf = function (                           name     ) {
+  PianoRoll.prototype.pitchOf = function (this: PianoRollController, name: any) {
     var v = this._pitchCache[name];
     if (v === undefined) {
       v = Tools.noteNameToNumber(name);
@@ -1268,7 +1268,7 @@
     return v;
   };
 
-  PianoRoll.prototype.renderKeys = function (                         ) {
+  PianoRoll.prototype.renderKeys = function (this: PianoRollController) {
     if (!this.keysCtx || !this.keysCanvas) return;
     var ctx = this.keysCtx;
     var w = this.keysWidth;
@@ -1315,7 +1315,7 @@
     ctx.restore();
   };
 
-  PianoRoll.prototype.renderGrid = function (                         ) {
+  PianoRoll.prototype.renderGrid = function (this: PianoRollController) {
     if (!this.gridCtx || !this.gridCanvas) return;
     var ctx = this.gridCtx;
     var w = this.gridCanvas.width / (window.devicePixelRatio || 1);
@@ -1389,12 +1389,12 @@
 
     // 3. 幽灵参考轨
     if (this.ghostTrackId) {
-      var ghostTab = this.tabs.find(function (           t     ) { return t.id === this.ghostTrackId; }.bind(this));
+      var ghostTab = this.tabs.find(function (this: any, t: any) { return t.id === this.ghostTrackId; }.bind(this));
       if (ghostTab && ghostTab.notes) {
         ctx.fillStyle = isDark ? "rgba(255, 255, 255, 0.18)" : "rgba(0, 0, 0, 0.15)";
         var gLeft = this.scrollX * this.pixelsPerBeat;
         var gRight = gLeft + w;
-        ghostTab.notes.forEach(function (           n     ) {
+        ghostTab.notes.forEach(function (this: any, n: any) {
           var gp = this.pitchOf(n.note);
           var gx = n.start * this.pixelsPerBeat;
           var gy = (127 - gp) * this.noteRowHeight - this.scrollY;
@@ -1412,7 +1412,7 @@
       var selSet = this.selectedNotes.length > 8 ? new Set(this.selectedNotes) : null;
       var worldLeft = this.scrollX * this.pixelsPerBeat;
       var worldRight = worldLeft + w;
-      tab.notes.forEach(function (           n     ) {
+      tab.notes.forEach(function (this: any, n: any) {
         var p = this.pitchOf(n.note);
         var nx = n.start * this.pixelsPerBeat;
         var ny = (127 - p) * this.noteRowHeight - this.scrollY;
@@ -1485,10 +1485,10 @@
       ctx.fillStyle = "rgba(72, 219, 251, 0.2)";
       ctx.strokeStyle = "#48dbfb";
       ctx.lineWidth = 1;
-      var bx1 = Math.min(sBox.startX , sBox.curX );
-      var by1 = Math.min(sBox.startY , sBox.curY ) - this.scrollY;
-      var bw = Math.abs(sBox.curX  - sBox.startX );
-      var bh = Math.abs(sBox.curY  - sBox.startY );
+      var bx1 = Math.min(sBox.startX!, sBox.curX!);
+      var by1 = Math.min(sBox.startY!, sBox.curY!) - this.scrollY;
+      var bw = Math.abs(sBox.curX! - sBox.startX!);
+      var bh = Math.abs(sBox.curY! - sBox.startY!);
       ctx.fillRect(bx1, by1, bw, bh);
       ctx.strokeRect(bx1, by1, bw, bh);
     }
@@ -1496,10 +1496,10 @@
     // 6. 切片预览线：未跨行=跟随鼠标的竖直切线；跨行=起点→终点的斜线
     if (this.dragState && this.dragState.type === "slice_line") {
       var sl = this.dragState;
-      var ax = sl.startBeat  * this.pixelsPerBeat;
-      var bx = sl.curBeat  * this.pixelsPerBeat;
-      var ay = (127 - sl.startPitch ) * this.noteRowHeight - this.scrollY + this.noteRowHeight / 2;
-      var by = (127 - sl.curPitch ) * this.noteRowHeight - this.scrollY + this.noteRowHeight / 2;
+      var ax = sl.startBeat! * this.pixelsPerBeat;
+      var bx = sl.curBeat! * this.pixelsPerBeat;
+      var ay = (127 - sl.startPitch!) * this.noteRowHeight - this.scrollY + this.noteRowHeight / 2;
+      var by = (127 - sl.curPitch!) * this.noteRowHeight - this.scrollY + this.noteRowHeight / 2;
       ctx.strokeStyle = "#ff4757";
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 4]);
@@ -1530,7 +1530,7 @@
     this.renderRuler(ctx, w, isDark);
   };
 
-  PianoRoll.prototype.renderRuler = function (                           ctx     , w     , isDark     ) {
+  PianoRoll.prototype.renderRuler = function (this: PianoRollController, ctx: any, w: any, isDark: any) {
     ctx.save();
     ctx.fillStyle = isDark ? "#101724" : "#e4e7eb";
     ctx.fillRect(0, 0, w, this.rulerHeight);
@@ -1629,7 +1629,7 @@
     ctx.restore();
   };
 
-  PianoRoll.prototype.renderVelocity = function (                         ) {
+  PianoRoll.prototype.renderVelocity = function (this: PianoRollController) {
     if (!this.velocityCtx || !this.velocityCanvas) return;
     var ctx = this.velocityCtx;
     var w = this.velocityCanvas.width / (window.devicePixelRatio || 1);
@@ -1659,7 +1659,7 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
-    tab.notes.forEach(function (           n     ) {
+    tab.notes.forEach(function (this: any, n: any) {
       // FL Studio 风格：力度柱与球位于音符起始节拍位置
       var cx = Math.round(n.start * this.pixelsPerBeat) + 0.5;
       var curVel = parseInt(n.velocity, 10);
@@ -1690,8 +1690,8 @@
       ctx.lineWidth = 1.5;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
-      ctx.moveTo(this.dragState.startBeat  * this.pixelsPerBeat, this.dragState.startY );
-      ctx.lineTo(this.dragState.curBeat  * this.pixelsPerBeat, this.dragState.curY );
+      ctx.moveTo(this.dragState.startBeat! * this.pixelsPerBeat, this.dragState.startY!);
+      ctx.lineTo(this.dragState.curBeat! * this.pixelsPerBeat, this.dragState.curY!);
       ctx.stroke();
       ctx.setLineDash([]);
     }
@@ -1699,7 +1699,7 @@
     ctx.restore();
   };
 
-  PianoRoll.prototype.roundRect = function (                           ctx     , x     , y     , w     , h     , r     , fill     , stroke     ) {
+  PianoRoll.prototype.roundRect = function (this: PianoRollController, ctx: any, x: any, y: any, w: any, h: any, r: any, fill: any, stroke: any) {
     if (w < 2 * r) r = w / 2;
     if (h < 2 * r) r = h / 2;
     ctx.beginPath();
@@ -1715,24 +1715,24 @@
 
   /* ═══════════ FL Studio 经典交互事件系统 ═══════════ */
 
-  PianoRoll.prototype.bindCanvasEvents = function (                         ) {
+  PianoRoll.prototype.bindCanvasEvents = function (this: PianoRollController) {
     var self = this;
     var canvas = this.gridCanvas;
     if (!canvas) return;
 
     // 禁用右键与中键默认菜单/行为
-    canvas.addEventListener("contextmenu", function (e     ) { e.preventDefault(); });
-    canvas.addEventListener("auxclick", function (e     ) { e.preventDefault(); });
+    canvas.addEventListener("contextmenu", function (e: any) { e.preventDefault(); });
+    canvas.addEventListener("auxclick", function (e: any) { e.preventDefault(); });
     if (this.velocityCanvas) {
-      this.velocityCanvas.addEventListener("auxclick", function (e     ) { e.preventDefault(); });
+      this.velocityCanvas.addEventListener("auxclick", function (e: any) { e.preventDefault(); });
     }
 
-    canvas.addEventListener("mousedown", function (e     ) {
+    canvas.addEventListener("mousedown", function (e: any) {
       self.setFocus(true);
       self.handleGridMouseDown(e);
     });
 
-    canvas.addEventListener("dblclick", function (e     ) {
+    canvas.addEventListener("dblclick", function (e: any) {
       self.handleGridDblClick(e);
     });
 
@@ -1745,7 +1745,7 @@
     });
 
     // 鼠标滚轮（缩放、Alt+力度、Shift+微移）
-    canvas.addEventListener("wheel", function (e     ) {
+    canvas.addEventListener("wheel", function (e: any) {
       e.preventDefault();
       var pos = self.getGridCoords(e);
       var hitNote = self.findNoteAt(pos.beat, pos.pitch);
@@ -1756,7 +1756,7 @@
         var tab = self.getActiveTab();
         if (!tab) return;
 
-        var targetNotes             = [];
+        var targetNotes: MidiNote[] = [];
         if (hitNote) {
           if (self.selectedNotes.length > 1 && self.selectedNotes.indexOf(hitNote) !== -1) {
             targetNotes = self.selectedNotes;
@@ -1770,7 +1770,7 @@
 
         if (targetNotes.length) {
           self.pushHistory();
-          targetNotes.forEach(function (n     ) {
+          targetNotes.forEach(function (n: any) {
             var curV = parseInt(n.velocity, 10);
             if (isNaN(curV)) curV = 100;
             n.velocity = Math.max(1, Math.min(127, curV + dVel));
@@ -1785,7 +1785,7 @@
         var targets = self.selectedNotes.length ? self.selectedNotes : (hitNote ? [hitNote] : []);
         if (targets.length) {
           self.pushHistory();
-          targets.forEach(function (n     ) {
+          targets.forEach(function (n: any) {
             var dur = n.end - n.start;
             n.start = Math.max(0, Math.round((n.start + dBeat) * 1000) / 1000);
             n.end = Math.round((n.start + dur) * 1000) / 1000;
@@ -1811,11 +1811,11 @@
 
     // 力度窗交互 (单点调整 + 连续画线调力度)
     if (this.velocityCanvas) {
-      this.velocityCanvas.addEventListener("contextmenu", function (e     ) {
+      this.velocityCanvas.addEventListener("contextmenu", function (e: any) {
         e.preventDefault();
         self.handleVelocityRightClick(e);
       });
-      this.velocityCanvas.addEventListener("mousedown", function (e     ) {
+      this.velocityCanvas.addEventListener("mousedown", function (e: any) {
         self.setFocus(true);
         self.handleVelocityMouseDown(e);
       });
@@ -1826,8 +1826,8 @@
 
     // 琴键侧边栏点击试听
     if (this.keysCanvas) {
-      this.keysCanvas.addEventListener("mousedown", function (e     ) {
-        var rect = self.keysCanvas .getBoundingClientRect();
+      this.keysCanvas.addEventListener("mousedown", function (e: any) {
+        var rect = self.keysCanvas!.getBoundingClientRect();
         var my = e.clientY - rect.top - self.rulerHeight + self.scrollY;
         var p = 127 - Math.floor(my / self.noteRowHeight);
         if (p >= 0 && p <= 127) {
@@ -1838,8 +1838,8 @@
     }
   };
 
-  PianoRoll.prototype.getGridCoords = function (                           e     ) {
-    var rect = this.gridCanvas .getBoundingClientRect();
+  PianoRoll.prototype.getGridCoords = function (this: PianoRollController, e: any) {
+    var rect = this.gridCanvas!.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
 
@@ -1855,16 +1855,16 @@
     };
   };
 
-  PianoRoll.prototype.findNoteAt = function (                           beat     , pitch     ) {
+  PianoRoll.prototype.findNoteAt = function (this: PianoRollController, beat: any, pitch: any) {
     var tab = this.getActiveTab();
     if (!tab || !tab.notes) return null;
-    return tab.notes.find(function (n     ) {
+    return tab.notes.find(function (n: any) {
       var p = Tools.noteNameToNumber(n.note);
       return p === pitch && beat >= n.start && beat <= n.end;
     }) || null;
   };
 
-  PianoRoll.prototype.handleGridMouseDown = function (                           e     ) {
+  PianoRoll.prototype.handleGridMouseDown = function (this: PianoRollController, e: any) {
     // 0. 视图平移拖拽模式 (FL Studio 经典：按住鼠标中键 或 Shift + 按住鼠标右键)
     if (e.button === 1 || (e.shiftKey && e.button === 2)) {
       e.preventDefault();
@@ -2036,7 +2036,7 @@
           clonePending: true,
           snapshot: gestureSnapshot,
           changed: false,
-          origNotes: this.selectedNotes.map(function (n     ) {
+          origNotes: this.selectedNotes.map(function (n: any) {
             return { note: n, start: n.start, end: n.end, pitch: Tools.noteNameToNumber(n.note) };
           })
         };
@@ -2061,7 +2061,7 @@
           freeSnap: e.altKey,
           snapshot: gestureSnapshot,
           changed: false,
-          origNotes: this.selectedNotes.map(function (n     ) {
+          origNotes: this.selectedNotes.map(function (n: any) {
             return { note: n, start: n.start, end: n.end, pitch: Tools.noteNameToNumber(n.note) };
           })
         };
@@ -2078,7 +2078,7 @@
       var stamped = Tools.stampChord(pos.pitch, this.chordStamp, snappedBeat, 1.0, 100);
       tab.notes = tab.notes.concat(stamped);
       this.selectedNotes = stamped;
-      stamped.forEach(function (           n     ) {
+      stamped.forEach(function (this: any, n: any) {
         this.playNoteSound(Tools.noteNameToNumber(n.note), 100);
       }.bind(this));
     } else {
@@ -2102,7 +2102,7 @@
     this.render();
   };
 
-  PianoRoll.prototype.handleGridDblClick = function (                           e     ) {
+  PianoRoll.prototype.handleGridDblClick = function (this: PianoRollController, e: any) {
     var pos = this.getGridCoords(e);
     if (pos.inRuler) {
       this.toggleLoop();
@@ -2114,7 +2114,7 @@
     }
   };
 
-  PianoRoll.prototype.handleGridMouseMove = function (                           e     ) {
+  PianoRoll.prototype.handleGridMouseMove = function (this: PianoRollController, e: any) {
     // 鼠标悬停但未按下：动态更新光标样式
     if (!this.dragState) {
       var pos = this.getGridCoords(e);
@@ -2138,12 +2138,12 @@
     }
 
     if (this.dragState.type === "pan_view") {
-      var dx = e.clientX - this.dragState.startClientX ;
-      var dy = e.clientY - this.dragState.startClientY ;
+      var dx = e.clientX - this.dragState.startClientX!;
+      var dy = e.clientY - this.dragState.startClientY!;
 
       var deltaBeats = dx / this.pixelsPerBeat;
-      this.scrollX = Math.max(0, this.dragState.origScrollX  - deltaBeats);
-      this.scrollY = Math.max(0, Math.min(128 * this.noteRowHeight - 100, this.dragState.origScrollY  - dy));
+      this.scrollX = Math.max(0, this.dragState.origScrollX! - deltaBeats);
+      this.scrollY = Math.max(0, Math.min(128 * this.noteRowHeight - 100, this.dragState.origScrollY! - dy));
       this.scheduleRender();
       return;
     }
@@ -2164,15 +2164,15 @@
       this.loopEnd = snapped;
       this.scheduleRender();
     } else if (this.dragState.type === "ruler_loop_move") {
-      var delta = Math.round((pos.beat - this.dragState.startBeat ) / this.snapGrid) * this.snapGrid;
-      var dur = this.dragState.origEnd  - this.dragState.origStart ;
-      var newStart = Math.max(0, this.dragState.origStart  + delta);
+      var delta = Math.round((pos.beat - this.dragState.startBeat!) / this.snapGrid) * this.snapGrid;
+      var dur = this.dragState.origEnd! - this.dragState.origStart!;
+      var newStart = Math.max(0, this.dragState.origStart! + delta);
       this.loopStart = newStart;
       this.loopEnd = newStart + dur;
       this.scheduleRender();
     } else if (this.dragState.type === "ruler_loop_create") {
-      var b1 = Math.min(this.dragState.startBeat , pos.beat);
-      var b2 = Math.max(this.dragState.startBeat , pos.beat);
+      var b1 = Math.min(this.dragState.startBeat!, pos.beat);
+      var b2 = Math.max(this.dragState.startBeat!, pos.beat);
       this.loopStart = Math.max(0, Math.floor(b1 / this.snapGrid) * this.snapGrid);
       this.loopEnd = Math.max(this.loopStart + this.snapGrid, Math.ceil(b2 / this.snapGrid) * this.snapGrid);
       this.scheduleRender();
@@ -2187,9 +2187,9 @@
         if (pos.pitch !== sl.startPitch) sl.anchored = true;
       } else {
         var newCur = pos.beat;
-        var deltaB = newCur - sl.curBeat ;
+        var deltaB = newCur - sl.curBeat!;
         sl.curBeat = newCur;
-        sl.startBeat  += deltaB;
+        sl.startBeat! += deltaB;
       }
       this.scheduleRender();
     } else if (this.dragState.type === "erase_sweep") {
@@ -2205,10 +2205,10 @@
     } else if (this.dragState.type === "resize_note") {
       var note = this.dragState.note;
       var snap = this.dragState.freeSnap ? 0.02 : this.snapGrid;
-      var snappedEnd = Math.max(note .start + snap, Math.round(pos.beat / snap) * snap);
+      var snappedEnd = Math.max(note!.start + snap, Math.round(pos.beat / snap) * snap);
       var snappedRounded = Math.round(snappedEnd * 1000) / 1000;
-      if (Math.abs(snappedRounded - note .end) > 1e-9) this.dragState.changed = true;
-      note .end = snappedRounded;
+      if (Math.abs(snappedRounded - note!.end) > 1e-9) this.dragState.changed = true;
+      note!.end = snappedRounded;
       this.scheduleRender();
     } else if (this.dragState.type === "move_note") {
       var ds = this.dragState;
@@ -2216,16 +2216,16 @@
       /* 延迟克隆：Shift 按下后位移超过阈值（4px 等效）才克隆副本，
          单纯 Shift+点击不产生克隆——FL Piano Roll 的复制是"拖动"语义 */
       if (ds.clonePending) {
-        var dragPx = Math.abs(pos.beat - ds.startBeat ) * this.pixelsPerBeat +
-                     Math.abs(pos.pitch - ds.startPitch ) * this.noteRowHeight;
+        var dragPx = Math.abs(pos.beat - ds.startBeat!) * this.pixelsPerBeat +
+                     Math.abs(pos.pitch - ds.startPitch!) * this.noteRowHeight;
         if (dragPx <= 4) return;
         this.pushHistory();   // 快照=克隆前（undo 一次回滚整个克隆+拖动）
-        var cloned = this.selectedNotes.map(function (n     ) {
+        var cloned = this.selectedNotes.map(function (n: any) {
           return { note: n.note, velocity: n.velocity, start: n.start, end: n.end, muted: n.muted };
         });
         tab.notes = tab.notes.concat(cloned);
         this.selectedNotes = cloned;
-        ds.origNotes = cloned.map(function (n     ) {
+        ds.origNotes = cloned.map(function (n: any) {
           return { note: n, start: n.start, end: n.end, pitch: Tools.noteNameToNumber(n.note) };
         });
         ds.clonePending = false;
@@ -2235,11 +2235,11 @@
       }
 
       var snapM = ds.freeSnap ? 0.02 : this.snapGrid;
-      var deltaBeat = Math.round((pos.beat - ds.startBeat ) / snapM) * snapM;
-      var deltaPitch = pos.pitch - ds.startPitch ;
+      var deltaBeat = Math.round((pos.beat - ds.startBeat!) / snapM) * snapM;
+      var deltaPitch = pos.pitch - ds.startPitch!;
       if (deltaBeat !== 0 || deltaPitch !== 0) ds.changed = true;
 
-      ds.origNotes .forEach(function (item     ) {
+      ds.origNotes!.forEach(function (item: any) {
         var newStart = Math.max(0, Math.round((item.start + deltaBeat) * 1000) / 1000);
         var dur = item.end - item.start;
         item.note.start = newStart;
@@ -2252,13 +2252,13 @@
       this.dragState.curX = pos.beat * this.pixelsPerBeat;
       this.dragState.curY = (127 - pos.pitch) * this.noteRowHeight;
 
-      var minB = Math.min(this.dragState.startX , this.dragState.curX) / this.pixelsPerBeat;
-      var maxB = Math.max(this.dragState.startX , this.dragState.curX) / this.pixelsPerBeat;
-      var minP = 127 - Math.max(this.dragState.startY , this.dragState.curY) / this.noteRowHeight;
-      var maxP = 127 - Math.min(this.dragState.startY , this.dragState.curY) / this.noteRowHeight;
+      var minB = Math.min(this.dragState.startX!, this.dragState.curX) / this.pixelsPerBeat;
+      var maxB = Math.max(this.dragState.startX!, this.dragState.curX) / this.pixelsPerBeat;
+      var minP = 127 - Math.max(this.dragState.startY!, this.dragState.curY) / this.noteRowHeight;
+      var maxP = 127 - Math.min(this.dragState.startY!, this.dragState.curY) / this.noteRowHeight;
 
       var pitchOf = this.pitchOf.bind(this);
-      this.selectedNotes = tab.notes.filter(function (n     ) {
+      this.selectedNotes = tab.notes.filter(function (n: any) {
         var p = pitchOf(n.note);
         return n.start < maxB && n.end > minB && p >= minP && p <= maxP;
       });
@@ -2266,7 +2266,7 @@
     }
   };
 
-  PianoRoll.prototype.handleGridMouseUp = function (                           e     ) {
+  PianoRoll.prototype.handleGridMouseUp = function (this: PianoRollController, e: any) {
     document.body.classList.remove("is-panning", "is-right-erasing");
     if (this.drawerEl) this.drawerEl.classList.remove("is-panning", "is-right-erasing");
     if (this.gridCanvas) this.gridCanvas.classList.remove("is-panning", "is-right-erasing");
@@ -2294,25 +2294,25 @@
          - 竖直切线（未跨行）：所有跨过切线拍的音符在该拍切开（保持旧点击行为）
          - 斜线（跨行）：线段经过的每个音高行按行中心交点换算切割拍 */
       var isDiagonal = sl.startPitch !== sl.curPitch;
-      var lo = Math.min(sl.startPitch , sl.curPitch );
-      var hi = Math.max(sl.startPitch , sl.curPitch );
+      var lo = Math.min(sl.startPitch!, sl.curPitch!);
+      var hi = Math.max(sl.startPitch!, sl.curPitch!);
       var cutCount = 0;
 
       this.pushHistory();   // 快照必须在变异前（原实现先切后快照，撤销无效）
-      var newNotes        = [];
-      tab.notes.forEach(function (n     ) {
+      var newNotes: any[] = [];
+      tab.notes.forEach(function (n: any) {
         var cut = null;
         if (isDiagonal) {
           var r = pitchOf(n.note);
           if (r >= lo && r <= hi) {
-            var t = (r - sl.startPitch ) / (sl.curPitch  - sl.startPitch );
-            cut = sl.startBeat  + t * (sl.curBeat  - sl.startBeat );
+            var t = (r - sl.startPitch!) / (sl.curPitch! - sl.startPitch!);
+            cut = sl.startBeat! + t * (sl.curBeat! - sl.startBeat!);
           }
         } else {
           cut = sl.curBeat;
         }
-        if (cut !== null && n.start < cut  - 1e-6 && n.end > cut  + 1e-6) {
-          cut = Math.round(cut  * 1000) / 1000;
+        if (cut !== null && n.start < cut! - 1e-6 && n.end > cut! + 1e-6) {
+          cut = Math.round(cut! * 1000) / 1000;
           var left = Object.assign({}, n, { end: cut });
           var right = Object.assign({}, n, { start: cut });
           newNotes.push(left, right);
@@ -2344,14 +2344,14 @@
   /* ═══════════ 力度窗区域计算与连续画笔调节 (FL Studio 风格) ═══════════ */
 
   // 获取音符分组与其有效生效区域 (生效范围：从当前音符起始直到下一个音符起始)
-  PianoRoll.prototype.getVelocityNoteGroups = function (                           notesList     ) {
+  PianoRoll.prototype.getVelocityNoteGroups = function (this: PianoRollController, notesList: any) {
     if (!notesList || !notesList.length) return [];
-    var sorted = notesList.slice().sort(function (a     , b     ) { return a.start - b.start; });
+    var sorted = notesList.slice().sort(function (a: any, b: any) { return a.start - b.start; });
 
-    var groups        = [];
-    var currentGroup      = null;
+    var groups: any[] = [];
+    var currentGroup: any = null;
 
-    sorted.forEach(function (n     ) {
+    sorted.forEach(function (n: any) {
       // 确保 velocity 格式为安全数值
       var v = parseInt(n.velocity, 10);
       if (isNaN(v)) v = 100;
@@ -2386,7 +2386,7 @@
   };
 
   // 根据拍数定位生效的音符组 (包含球后方整片区域直至下一个球)
-  PianoRoll.prototype.findVelocityGroupAt = function (                           beat     , groups     ) {
+  PianoRoll.prototype.findVelocityGroupAt = function (this: PianoRollController, beat: any, groups: any) {
     if (!groups || !groups.length) return null;
 
     for (var i = 0; i < groups.length; i++) {
@@ -2402,13 +2402,13 @@
     return groups[groups.length - 1];
   };
 
-  PianoRoll.prototype.handleVelocityMouseDown = function (                           e     ) {
+  PianoRoll.prototype.handleVelocityMouseDown = function (this: PianoRollController, e: any) {
     if (e.button === 1 || (e.shiftKey && e.button === 2)) {
       this.handleGridMouseDown(e);
       return;
     }
 
-    var rect = this.velocityCanvas .getBoundingClientRect();
+    var rect = this.velocityCanvas!.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
     var beat = this.scrollX + (mx / this.pixelsPerBeat);
@@ -2425,7 +2425,7 @@
 
     // 判断是否在真正的多选集合中
     var hasMultiSelection = (this.selectedNotes.length > 1);
-    var isHitInSelection = hasMultiSelection && matchedGroup.notes.some(function (           n     ) {
+    var isHitInSelection = hasMultiSelection && matchedGroup.notes.some(function (this: any, n: any) {
       return this.selectedNotes.indexOf(n) !== -1;
     }.bind(this));
 
@@ -2441,11 +2441,11 @@
 
     if (isHitInSelection) {
       var deltaV = newVel - matchedGroup.notes[0].velocity;
-      this.selectedNotes.forEach(function (n     ) {
+      this.selectedNotes.forEach(function (n: any) {
         n.velocity = Math.max(1, Math.min(127, (parseInt(n.velocity, 10) || 100) + deltaV));
       });
     } else {
-      matchedGroup.notes.forEach(function (n     ) {
+      matchedGroup.notes.forEach(function (n: any) {
         n.velocity = newVel;
       });
     }
@@ -2471,13 +2471,13 @@
       lastVel: newVel,
       isRightClick: isRightClick,
       isSelectionMode: isHitInSelection,
-      initialVelocities: this.selectedNotes.map(function (n     ) {
+      initialVelocities: this.selectedNotes.map(function (n: any) {
         return { note: n, vel: parseInt(n.velocity, 10) || 100 };
       })
     };
 
     var self = this;
-    function onVelMove(me     ) {
+    function onVelMove(me: any) {
       if (!self.dragState) return;
       var curMx = me.clientX - rect.left;
       var curMy = me.clientY - rect.top;
@@ -2493,8 +2493,8 @@
 
       if (self.dragState.isSelectionMode) {
         // 多选模式：相对同步调整选区内所有音符
-        var delta = curV - self.dragState.startVel ;
-        self.dragState.initialVelocities .forEach(function (item     ) {
+        var delta = curV - self.dragState.startVel!;
+        self.dragState.initialVelocities!.forEach(function (item: any) {
           item.note.velocity = Math.max(1, Math.min(127, item.vel + delta));
         });
       } else {
@@ -2527,7 +2527,7 @@
   };
 
   // 自由画笔步进调节：覆盖当前鼠标移动轨迹所经过的所有音符区域
-  PianoRoll.prototype.applyVelocityBrush = function (                           b1     , v1     , b2     , v2     , groups     ) {
+  PianoRoll.prototype.applyVelocityBrush = function (this: PianoRollController, b1: any, v1: any, b2: any, v2: any, groups: any) {
     if (!groups || !groups.length) return;
 
     var minB = Math.min(b1, b2);
@@ -2536,12 +2536,12 @@
     if (Math.abs(b2 - b1) < 0.001) {
       var g = this.findVelocityGroupAt(b2, groups);
       if (g) {
-        g.notes.forEach(function (n     ) { n.velocity = v2; });
+        g.notes.forEach(function (n: any) { n.velocity = v2; });
       }
       return;
     }
 
-    groups.forEach(function (g     ) {
+    groups.forEach(function (g: any) {
       var isInPath = (g.start >= minB && g.start <= maxB);
       var isZoneCovered = (minB < g.zoneEnd && maxB >= g.zoneStart);
 
@@ -2550,7 +2550,7 @@
         t = Math.max(0, Math.min(1, t));
         var targetV = Math.round(v1 + (v2 - v1) * t);
         targetV = Math.max(1, Math.min(127, targetV));
-        g.notes.forEach(function (n     ) {
+        g.notes.forEach(function (n: any) {
           n.velocity = targetV;
         });
       }
@@ -2558,24 +2558,24 @@
   };
 
   // 直线插值调节 (Alt / Shift + 拖拽)
-  PianoRoll.prototype.applyVelocityStraightLine = function (                           b1     , v1     , b2     , v2     , groups     ) {
+  PianoRoll.prototype.applyVelocityStraightLine = function (this: PianoRollController, b1: any, v1: any, b2: any, v2: any, groups: any) {
     if (!groups || !groups.length) return;
     var minB = Math.min(b1, b2);
     var maxB = Math.max(b1, b2);
 
-    groups.forEach(function (g     ) {
+    groups.forEach(function (g: any) {
       if (g.start >= minB - 0.2 && g.start <= maxB + 0.2) {
         var t = (maxB === minB) ? 0.5 : (g.start - minB) / (maxB - minB);
         var targetV = (b1 <= b2) ? Math.round(v1 + (v2 - v1) * t) : Math.round(v2 + (v1 - v2) * t);
         targetV = Math.max(1, Math.min(127, targetV));
-        g.notes.forEach(function (n     ) {
+        g.notes.forEach(function (n: any) {
           n.velocity = targetV;
         });
       }
     });
   };
 
-  PianoRoll.prototype.handleVelocityRightClick = function (                           e     ) {
+  PianoRoll.prototype.handleVelocityRightClick = function (this: PianoRollController, e: any) {
     // 右键已在 handleVelocityMouseDown 统一按 FL Studio 规范处理为即刻重置与涂抹重置
   };
 
@@ -2583,7 +2583,7 @@
 
   /* ═══════════ 全套 FL Studio 快捷键矩阵 ═══════════ */
 
-  PianoRoll.prototype.bindGlobalShortcuts = function (                         ) {
+  PianoRoll.prototype.bindGlobalShortcuts = function (this: PianoRollController) {
     var self = this;
     window.addEventListener("keydown", function (e) {
       if (!self.isOpen) return;
@@ -2628,7 +2628,7 @@
           e.preventDefault();
           var tabInv = self.getActiveTab();
           if (tabInv) {
-            self.selectedNotes = tabInv.notes.filter(function (n     ) { return self.selectedNotes.indexOf(n) === -1; });
+            self.selectedNotes = tabInv.notes.filter(function (n: any) { return self.selectedNotes.indexOf(n) === -1; });
             self.render();
             self.showHUD("反选 (Invert Selection)");
           }
@@ -2684,7 +2684,7 @@
     });
   };
 
-  PianoRoll.prototype.setTool = function (                           tool     ) {
+  PianoRoll.prototype.setTool = function (this: PianoRollController, tool: any) {
     this.currentTool = tool;
     var toolBtns = document.querySelectorAll(".pr-tool-btn");
     toolBtns.forEach(function (b) {
@@ -2696,7 +2696,7 @@
     if (this.gridCanvas) {
       this.gridCanvas.setAttribute("data-tool", tool);
     }
-    var toolNames                         = {
+    var toolNames: { [key: string]: any } = {
       draw: "画笔 (DRAW)",
       paint: "笔刷 (PAINT)",
       erase: "擦除 (ERASE)",
@@ -2708,7 +2708,7 @@
     this.showHUD("工具: " + (toolNames[tool] || tool.toUpperCase()));
   };
 
-  PianoRoll.prototype.toggleTypingKeyboard = function (                           forcedVal     ) {
+  PianoRoll.prototype.toggleTypingKeyboard = function (this: PianoRollController, forcedVal: any) {
     if (forcedVal !== undefined) {
       this.isTypingKeyboard = !!forcedVal;
     } else {
@@ -2723,24 +2723,24 @@
     }
     if (this.isTypingKeyboard) {
       this.showHUD("🎹 键盘弹奏: 已开启 (单键快捷键已挂起)");
-      if (window.UI && window.UI.toast) window.UI.toast ("✓ 🎹 键盘弹奏已开启（电脑键盘即 MIDI 琴键，按 Ctrl+T 可切换）", "ok");
+      if (window.UI && window.UI.toast) window.UI.toast!("✓ 🎹 键盘弹奏已开启（电脑键盘即 MIDI 琴键，按 Ctrl+T 可切换）", "ok");
     } else {
       this.showHUD("🎹 键盘弹奏: 已关闭 (单键快捷键已恢复)");
-      if (window.UI && window.UI.toast) window.UI.toast ("🎹 键盘弹奏已关闭 (单键快捷键已恢复)", "ok");
+      if (window.UI && window.UI.toast) window.UI.toast!("🎹 键盘弹奏已关闭 (单键快捷键已恢复)", "ok");
     }
   };
 
-  PianoRoll.prototype.duplicateSelectionRight = function (                         ) {
+  PianoRoll.prototype.duplicateSelectionRight = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab || !tab.notes.length) return;
     this.pushHistory();
 
     var targets = this.selectedNotes.length ? this.selectedNotes : tab.notes;
-    var minStart = Math.min.apply(null, targets.map(function (n     ) { return n.start; }));
-    var maxEnd = Math.max.apply(null, targets.map(function (n     ) { return n.end; }));
+    var minStart = Math.min.apply(null, targets.map(function (n: any) { return n.start; }));
+    var maxEnd = Math.max.apply(null, targets.map(function (n: any) { return n.end; }));
     var spanBeats = Math.max(4, Math.ceil((maxEnd - minStart) / 4) * 4);
 
-    var duplicated = targets.map(function (n     ) {
+    var duplicated = targets.map(function (n: any) {
       return {
         note: n.note,
         velocity: n.velocity,
@@ -2755,14 +2755,14 @@
     this.showHUD("顺延复制 (Ctrl+B)");
   };
 
-  PianoRoll.prototype.quickQuantize = function (                         ) {
+  PianoRoll.prototype.quickQuantize = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab) return;
     this.pushHistory();
     var targets = this.selectedNotes.length ? this.selectedNotes : tab.notes;
     var res = Tools.quantize(targets, this.snapGrid, true);
     if (this.selectedNotes.length) {
-      targets.forEach(function (n     , idx     ) { Object.assign(n, res[idx]); });
+      targets.forEach(function (n: any, idx: any) { Object.assign(n, res[idx]); });
     } else {
       tab.notes = res;
     }
@@ -2770,7 +2770,7 @@
     this.showHUD("量化完成 (Ctrl+Q)");
   };
 
-  PianoRoll.prototype.quickLegato = function (                         ) {
+  PianoRoll.prototype.quickLegato = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab) return;
     this.pushHistory();
@@ -2780,7 +2780,7 @@
     this.showHUD("快速连奏 (Legato)");
   };
 
-  PianoRoll.prototype.transposeSelection = function (                           semitones     ) {
+  PianoRoll.prototype.transposeSelection = function (this: PianoRollController, semitones: any) {
     var tab = this.getActiveTab();
     if (!tab) return;
     this.pushHistory();
@@ -2790,13 +2790,13 @@
     this.showHUD("移调: " + (semitones > 0 ? "+" : "") + semitones + " 半音");
   };
 
-  PianoRoll.prototype.deleteSelection = function (                         ) {
+  PianoRoll.prototype.deleteSelection = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab || !this.selectedNotes.length) return;
     this.pushHistory();
     var self = this;
-    this.selectedNotes.forEach(function (n     ) { self.addDeleteEffect(n); });
-    tab.notes = tab.notes.filter(function (n     ) {
+    this.selectedNotes.forEach(function (n: any) { self.addDeleteEffect(n); });
+    tab.notes = tab.notes.filter(function (n: any) {
       return self.selectedNotes.indexOf(n) === -1;
     });
     this.selectedNotes = [];
@@ -2804,22 +2804,22 @@
     this.showHUD("已删除选中音符");
   };
 
-  PianoRoll.prototype.copySelection = function (                         ) {
+  PianoRoll.prototype.copySelection = function (this: PianoRollController) {
     var targets = this.selectedNotes.length ? this.selectedNotes : [];
     if (!targets.length) return;
     this.clipboard = JSON.parse(JSON.stringify(targets));
     this.showHUD("已复制 " + targets.length + " 个音符");
   };
 
-  PianoRoll.prototype.pasteSelection = function (                         ) {
+  PianoRoll.prototype.pasteSelection = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab || !this.clipboard.length) return;
     this.pushHistory();
 
-    var minStart = Math.min.apply(null, this.clipboard.map(function (n     ) { return n.start; }));
+    var minStart = Math.min.apply(null, this.clipboard.map(function (n: any) { return n.start; }));
     var pasteStart = this.playheadBeat;
 
-    var pasted = this.clipboard.map(function (n     ) {
+    var pasted = this.clipboard.map(function (n: any) {
       var dur = n.end - n.start;
       var st = Math.round((pasteStart + (n.start - minStart)) * 1000) / 1000;
       return {
@@ -2836,7 +2836,7 @@
     this.showHUD("已粘贴 " + pasted.length + " 个音符");
   };
 
-  PianoRoll.prototype.cutSelection = function (                         ) {
+  PianoRoll.prototype.cutSelection = function (this: PianoRollController) {
     this.copySelection();
     this.deleteSelection();
   };
@@ -2845,7 +2845,7 @@
 
   /* Esc 分层：有选中音符先取消选择，无选择才关闭抽屉——编辑中按 Esc
      的反射不再直接收起整个工作区（多层防误触：弹窗 > 选择 > 关闭） */
-  PianoRoll.prototype.escapeAction = function (                         ) {
+  PianoRoll.prototype.escapeAction = function (this: PianoRollController) {
     /* Esc 分层：弹窗（keydown 顶部 anyModalOpen 拦截）→ 下拉菜单 →
        清选区 → 关抽屉。下拉此前只能点外部关闭，与弹层 Esc 分层惯例不一致。
        录制菜单是裸 .select-menu（不在 .pr-dropdown 内），此前按 Esc 会
@@ -2872,9 +2872,9 @@
      读屏用户焦点停留在画布上，Tab 在弹窗内无头绪乱跳） */
   PianoRoll.prototype.modalFocusReturn = null;
 
-  PianoRoll.prototype.openModalAnimated = function (                           modalEl     ) {
+  PianoRoll.prototype.openModalAnimated = function (this: PianoRollController, modalEl: any) {
     if (!modalEl) return;
-    this.modalFocusReturn = document.activeElement                      ;
+    this.modalFocusReturn = document.activeElement as HTMLElement | null;
     modalEl.hidden = false;
     modalEl.classList.remove("modal-in", "modal-out");
     void modalEl.offsetWidth;
@@ -2888,7 +2888,7 @@
     }
   };
 
-  PianoRoll.prototype.closeModalAnimated = function (                           modalEl     ) {
+  PianoRoll.prototype.closeModalAnimated = function (this: PianoRollController, modalEl: any) {
     if (!modalEl) return;
     modalEl.classList.remove("modal-in");
     modalEl.classList.add("modal-out");
@@ -2909,7 +2909,7 @@
     "notePropModal", "levelScaleModal", "strumModal", "soundLibModalOverlay"
   ];
 
-  PianoRoll.prototype.closeTopModal = function (                         ) {
+  PianoRoll.prototype.closeTopModal = function (this: PianoRollController) {
     for (var i = this.prModalIds.length - 1; i >= 0; i--) {
       var m = document.getElementById(this.prModalIds[i]);
       if (m && !m.hidden) {
@@ -2920,7 +2920,7 @@
     return false;
   };
 
-  PianoRoll.prototype.anyModalOpen = function (                         ) {
+  PianoRoll.prototype.anyModalOpen = function (this: PianoRollController) {
     for (var i = 0; i < this.prModalIds.length; i++) {
       var m = document.getElementById(this.prModalIds[i]);
       if (m && !m.hidden) return true;
@@ -2928,7 +2928,7 @@
     return false;
   };
 
-  PianoRoll.prototype.bindToolModals = function (                         ) {
+  PianoRoll.prototype.bindToolModals = function (this: PianoRollController) {
     var self = this;
 
     // 音符属性弹窗
@@ -2939,10 +2939,10 @@
       npOk.addEventListener("click", function () {
         if (self.editingNote) {
           self.pushHistory();
-          var pName = document.getElementById("notePropPitch") .value;
-          var vel = parseInt(document.getElementById("notePropVel") .value       , 10) || 100;
-          var st = parseFloat(document.getElementById("notePropStart") .value       ) || 0;
-          var dur = parseFloat(document.getElementById("notePropDur") .value       ) || 1;
+          var pName = document.getElementById("notePropPitch")!.value;
+          var vel = parseInt(document.getElementById("notePropVel")!.value as any, 10) || 100;
+          var st = parseFloat(document.getElementById("notePropStart")!.value as any) || 0;
+          var dur = parseFloat(document.getElementById("notePropDur")!.value as any) || 1;
 
           self.editingNote.note = pName;
           self.editingNote.velocity = Math.max(1, Math.min(127, vel));
@@ -2954,7 +2954,7 @@
       });
     }
     if (npCancel && npModal) {
-      npCancel.addEventListener("click", function () { self.closeModalAnimated(npModal       ); });
+      npCancel.addEventListener("click", function () { self.closeModalAnimated(npModal as any); });
     }
 
     // 力度缩放弹窗 (Alt+X)
@@ -2963,10 +2963,10 @@
     var lsModal = document.getElementById("levelScaleModal");
     if (lsOk) {
       lsOk.addEventListener("click", function () {
-        var mult = parseFloat(document.getElementById("lsMultiply") .value       ) || 1.0;
-        var off = parseInt(document.getElementById("lsOffset") .value       , 10) || 0;
-        var rStart = parseInt(document.getElementById("lsRampStart") .value       , 10) || 0;
-        var rEnd = parseInt(document.getElementById("lsRampEnd") .value       , 10) || 0;
+        var mult = parseFloat(document.getElementById("lsMultiply")!.value as any) || 1.0;
+        var off = parseInt(document.getElementById("lsOffset")!.value as any, 10) || 0;
+        var rStart = parseInt(document.getElementById("lsRampStart")!.value as any, 10) || 0;
+        var rEnd = parseInt(document.getElementById("lsRampEnd")!.value as any, 10) || 0;
 
         var tab = self.getActiveTab();
         if (tab) {
@@ -2974,7 +2974,7 @@
           var targets = self.selectedNotes.length ? self.selectedNotes : tab.notes;
           var res = Tools.levelScale(targets, mult, off, rStart, rEnd);
           if (self.selectedNotes.length) {
-            targets.forEach(function (n     , idx     ) { Object.assign(n, res[idx]); });
+            targets.forEach(function (n: any, idx: any) { Object.assign(n, res[idx]); });
           } else {
             tab.notes = res;
           }
@@ -2984,7 +2984,7 @@
       });
     }
     if (lsCancel && lsModal) {
-      lsCancel.addEventListener("click", function () { self.closeModalAnimated(lsModal       ); });
+      lsCancel.addEventListener("click", function () { self.closeModalAnimated(lsModal as any); });
     }
 
     // 扫弦弹窗 (Alt+S)
@@ -2993,15 +2993,15 @@
     var stModal = document.getElementById("strumModal");
     if (stOk) {
       stOk.addEventListener("click", function () {
-        var timeOffset = (parseInt(document.getElementById("strumTime") .value       , 10) || 20) / 480;
-        var velRamp = parseInt(document.getElementById("strumVelRamp") .value       , 10) || -8;
-        var altDir = document.getElementById("strumAltDir") .checked;
+        var timeOffset = (parseInt(document.getElementById("strumTime")!.value as any, 10) || 20) / 480;
+        var velRamp = parseInt(document.getElementById("strumVelRamp")!.value as any, 10) || -8;
+        var altDir = document.getElementById("strumAltDir")!.checked;
 
         var tab = self.getActiveTab();
         if (tab) {
           self.pushHistory();
           var targets = self.selectedNotes.length ? self.selectedNotes : tab.notes;
-          var res = Tools.strum(targets, timeOffset, velRamp, altDir       );
+          var res = Tools.strum(targets, timeOffset, velRamp, altDir as any);
           if (!self.selectedNotes.length && res) tab.notes = res;
           self.render();
         }
@@ -3009,17 +3009,17 @@
       });
     }
     if (stCancel && stModal) {
-      stCancel.addEventListener("click", function () { self.closeModalAnimated(stModal       ); });
+      stCancel.addEventListener("click", function () { self.closeModalAnimated(stModal as any); });
     }
 
     var soundLibClose = document.getElementById("soundLibCloseBtn");
     var soundLibModal = document.getElementById("soundLibModalOverlay");
     if (soundLibClose && soundLibModal) {
-      soundLibClose.addEventListener("click", function () { self.closeModalAnimated(soundLibModal       ); });
+      soundLibClose.addEventListener("click", function () { self.closeModalAnimated(soundLibModal as any); });
     }
   };
 
-  PianoRoll.prototype.openNotePropertiesModal = function (                           note     ) {
+  PianoRoll.prototype.openNotePropertiesModal = function (this: PianoRollController, note: any) {
     this.editingNote = note;
     var modal = document.getElementById("notePropModal");
     if (!modal) return;
@@ -3032,22 +3032,22 @@
     if (pitchInput) pitchInput.value = note.note;
     if (velInput) velInput.value = note.velocity;
     if (startInput) startInput.value = note.start;
-    if (durInput) durInput.value = Math.round((note.end - note.start) * 1000) / 1000       ;
+    if (durInput) durInput.value = Math.round((note.end - note.start) * 1000) / 1000 as any;
 
     this.openModalAnimated(modal);
   };
 
-  PianoRoll.prototype.openLevelScaleModal = function (                         ) {
+  PianoRoll.prototype.openLevelScaleModal = function (this: PianoRollController) {
     var modal = document.getElementById("levelScaleModal");
     if (modal) this.openModalAnimated(modal);
   };
 
-  PianoRoll.prototype.openStrumModal = function (                         ) {
+  PianoRoll.prototype.openStrumModal = function (this: PianoRollController) {
     var modal = document.getElementById("strumModal");
     if (modal) this.openModalAnimated(modal);
   };
 
-  PianoRoll.prototype.openArpModal = function (                         ) {
+  PianoRoll.prototype.openArpModal = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab) return;
     this.pushHistory();
@@ -3058,7 +3058,7 @@
     this.showHUD("琶音已生成 (Alt+A)");
   };
 
-  PianoRoll.prototype.openRandomModal = function (                         ) {
+  PianoRoll.prototype.openRandomModal = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab) return;
     this.pushHistory();
@@ -3068,14 +3068,14 @@
     this.showHUD("力度已随机化 (Alt+R)");
   };
 
-  PianoRoll.prototype.openFlipModal = function (                         ) {
+  PianoRoll.prototype.openFlipModal = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab) return;
     this.pushHistory();
     var targets = this.selectedNotes.length ? this.selectedNotes : tab.notes;
     var res = Tools.flip(targets, "vertical");
     if (this.selectedNotes.length) {
-      targets.forEach(function (n     , idx     ) { Object.assign(n, res[idx]); });
+      targets.forEach(function (n: any, idx: any) { Object.assign(n, res[idx]); });
     } else {
       tab.notes = res;
     }
@@ -3085,7 +3085,7 @@
 
   /* ═══════════ 高保真自定义下拉组件管理 (对齐设置页模型下拉框与 Q 弹动画) ═══════════ */
 
-  PianoRoll.prototype.setupCustomDropdown = function (                           wrapId     , btnId     , menuId     , options     , initialValue     , onSelect     ) {
+  PianoRoll.prototype.setupCustomDropdown = function (this: PianoRollController, wrapId: any, btnId: any, menuId: any, options: any, initialValue: any, onSelect: any) {
     var wrap = document.getElementById(wrapId);
     var btn = document.getElementById(btnId);
     var menu = document.getElementById(menuId);
@@ -3094,9 +3094,9 @@
     var self = this;
     var currentValue = initialValue;
 
-    function renderOptions(opts     , currentVal     ) {
-      menu .innerHTML = "";
-      opts.forEach(function (opt     ) {
+    function renderOptions(opts: any, currentVal: any) {
+      menu!.innerHTML = "";
+      opts.forEach(function (opt: any) {
         var optDiv = document.createElement("div");
         optDiv.className = "select-option" + (opt.value === currentVal ? " selected" : "");
         optDiv.textContent = opt.label;
@@ -3104,33 +3104,33 @@
         optDiv.addEventListener("click", function (e) {
           e.stopPropagation();
           currentValue = opt.value;
-          var labelSpan = btn .querySelector(".pr-dropdown-label");
+          var labelSpan = btn!.querySelector(".pr-dropdown-label");
           if (labelSpan) labelSpan.textContent = opt.label;
           closeMenu();
           if (onSelect) onSelect(opt.value, opt.label);
         });
-        menu .appendChild(optDiv);
+        menu!.appendChild(optDiv);
       });
     }
 
     function openMenu() {
       self.closeAllDropdowns();
-      wrap .classList.add("open");
-      menu .hidden = false;
-      menu .classList.remove("menu-in");
-      void menu .offsetWidth;
-      menu .classList.add("menu-in");
+      wrap!.classList.add("open");
+      menu!.hidden = false;
+      menu!.classList.remove("menu-in");
+      void menu!.offsetWidth;
+      menu!.classList.add("menu-in");
     }
 
     function closeMenu() {
-      wrap .classList.remove("open");
-      menu .hidden = true;
-      menu .classList.remove("menu-in");
+      wrap!.classList.remove("open");
+      menu!.hidden = true;
+      menu!.classList.remove("menu-in");
     }
 
     btn.addEventListener("click", function (e) {
       e.stopPropagation();
-      if (wrap .classList.contains("open")) {
+      if (wrap!.classList.contains("open")) {
         closeMenu();
       } else {
         openMenu();
@@ -3140,28 +3140,28 @@
     renderOptions(options, initialValue);
 
     return {
-      setValue: function (val     , label     ) {
+      setValue: function (val: any, label: any) {
         currentValue = val;
-        var labelSpan = btn .querySelector(".pr-dropdown-label");
+        var labelSpan = btn!.querySelector(".pr-dropdown-label");
         if (labelSpan && label) labelSpan.textContent = label;
         renderOptions(options, val);
       },
-      updateOptions: function (newOpts     , val     ) {
+      updateOptions: function (newOpts: any, val: any) {
         options = newOpts;
         if (val !== undefined) currentValue = val;
         renderOptions(newOpts, currentValue);
-        var cur = newOpts.find(function (o     ) { return o.value === currentValue; });
-        var labelSpan = btn .querySelector(".pr-dropdown-label");
+        var cur = newOpts.find(function (o: any) { return o.value === currentValue; });
+        var labelSpan = btn!.querySelector(".pr-dropdown-label");
         if (labelSpan && cur) labelSpan.textContent = cur.label;
       },
       close: closeMenu
     };
   };
 
-  PianoRoll.prototype.closeAllDropdowns = function (                         ) {
+  PianoRoll.prototype.closeAllDropdowns = function (this: PianoRollController) {
     document.querySelectorAll(".pr-dropdown.open").forEach(function (wrap) {
       wrap.classList.remove("open");
-      var m      = wrap.querySelector(".select-menu");
+      var m: any = wrap.querySelector(".select-menu");
       if (m) { m.hidden = true; m.classList.remove("menu-in"); }
     });
     /* 录制菜单不在 .pr-dropdown 内，随其他下拉一并收起 */
@@ -3174,7 +3174,7 @@
 
   /* ═══════════ 顶部控制栏绑定 ═══════════ */
 
-  PianoRoll.prototype.bindHeaderControls = function (                         ) {
+  PianoRoll.prototype.bindHeaderControls = function (this: PianoRollController) {
     var self = this;
 
     // 全局点击自动收起下拉菜单与录制右键菜单
@@ -3213,9 +3213,9 @@
       recMenu.querySelectorAll("[data-countin]").forEach(function (opt) {
         opt.addEventListener("click", function (e) {
           e.stopPropagation();
-          var c = parseInt(opt.getAttribute("data-countin")       , 10) || 0;
+          var c = parseInt(opt.getAttribute("data-countin") as any, 10) || 0;
           self.recordConfig.countIn = c;
-          recMenu .querySelectorAll("[data-countin]").forEach(function (o) { o.classList.remove("active"); });
+          recMenu!.querySelectorAll("[data-countin]").forEach(function (o) { o.classList.remove("active"); });
           opt.classList.add("active");
           self.showHUD("预备拍: " + (c ? c + " 拍" : "关闭"));
         });
@@ -3226,7 +3226,7 @@
           e.stopPropagation();
           var m = opt.getAttribute("data-recmode");
           self.recordConfig.replaceMode = (m === "replace");
-          recMenu .querySelectorAll("[data-recmode]").forEach(function (o) { o.classList.remove("active"); });
+          recMenu!.querySelectorAll("[data-recmode]").forEach(function (o) { o.classList.remove("active"); });
           opt.classList.add("active");
           self.showHUD("录制模式: " + (m === "replace" ? "覆盖已有音符 (Replace)" : "叠加混录 (Overdub)"));
         });
@@ -3235,16 +3235,16 @@
       var recQToggle = document.getElementById("recQuantizeToggle");
       if (recQToggle) {
         recQToggle.addEventListener("change", function (e) {
-          self.recordConfig.quantizeOnRecord = e.target .checked;
-          self.showHUD("实时吸附量化: " + (e.target .checked ? "开启" : "关闭"));
+          self.recordConfig.quantizeOnRecord = e.target!.checked;
+          self.showHUD("实时吸附量化: " + (e.target!.checked ? "开启" : "关闭"));
         });
       }
 
       var recMToggle = document.getElementById("recMetroToggle");
       if (recMToggle) {
         recMToggle.addEventListener("change", function (e) {
-          self.recordConfig.metronomeOnRecord = e.target .checked;
-          self.showHUD("录制自动节拍器: " + (e.target .checked ? "开启" : "关闭"));
+          self.recordConfig.metronomeOnRecord = e.target!.checked;
+          self.showHUD("录制自动节拍器: " + (e.target!.checked ? "开启" : "关闭"));
         });
       }
     }
@@ -3269,12 +3269,12 @@
     var metroBtn = document.getElementById("prMetroBtn");
     if (metroBtn) metroBtn.addEventListener("click", function () {
       self.isMetronome = !self.isMetronome;
-      metroBtn .classList.toggle("active", self.isMetronome);
+      metroBtn!.classList.toggle("active", self.isMetronome);
     });
 
     var bpmInput = document.getElementById("prBpmInput");
     if (bpmInput) bpmInput.addEventListener("change", function () {
-      self.bpm = Math.max(20, Math.min(400, parseInt(this.value       , 10) || 120));
+      self.bpm = Math.max(20, Math.min(400, parseInt(this.value as any, 10) || 120));
       var tab = self.getActiveTab();
       if (tab) tab.bpm = self.bpm;
       // 播放中改 BPM：重锚调度（已排音符按旧 BPM 时间轴展开，直接换速
@@ -3295,7 +3295,7 @@
         { value: "0.166666", label: "1/6 拍 (六连音)" }
       ],
       "0.25",
-      function (val     , label     ) {
+      function (val: any, label: any) {
         self.snapGrid = parseFloat(val) || 0.25;
         self.render();
         self.showHUD("吸附: " + label);
@@ -3317,7 +3317,7 @@
         { value: "blues", label: "布鲁斯 (Blues)" }
       ],
       "none",
-      function (val     , label     ) {
+      function (val: any, label: any) {
         self.selectedScale = val;
         self.render();
         self.showHUD("高亮: " + label);
@@ -3338,7 +3338,7 @@
         { value: "add9", label: "加九和弦 (Add9)" }
       ],
       "none",
-      function (val     , label     ) {
+      function (val: any, label: any) {
         self.chordStamp = val;
         self.showHUD("和弦: " + label);
       }
@@ -3349,7 +3349,7 @@
       "prGhostDropdown", "prGhostBtn", "prGhostMenu",
       [{ value: "", label: "幽灵参考轨: 无" }],
       "",
-      function (val     , label     ) {
+      function (val: any, label: any) {
         self.ghostTrackId = val || null;
         self.render();
         self.showHUD("参考轨: " + label);
@@ -3368,7 +3368,7 @@
         { value: "sf2_strings", label: "SF2: 弦乐群 (Strings)" }
       ],
       "synth_sawtooth",
-      function (val     , label     ) {
+      function (val: any, label: any) {
         self.soundSource = val;
         // 同步合成器波形：切 synth 音色后立即更新 synth.waveform——
         // 原生回放路径不经 playNoteSound，只改 soundSource 会让引擎轨
@@ -3419,7 +3419,7 @@
     if (closeBtn) closeBtn.addEventListener("click", function () { self.close(); });
   };
 
-  PianoRoll.prototype.bindMidiRouter = function (                         ) {
+  PianoRoll.prototype.bindMidiRouter = function (this: PianoRollController) {
     var self = this;
     if (!window.MidiInputRouter) return;
     window.MidiInputRouter.addListener(function (type, note, velocity) {
@@ -3434,15 +3434,15 @@
     });
   };
 
-  PianoRoll.prototype.sendToChat = function (                         ) {
+  PianoRoll.prototype.sendToChat = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab) return;
     var targetNotes = this.selectedNotes.length ? this.selectedNotes : tab.notes;
     if (!targetNotes.length) {
-      if (window.UI && window.UI.toast) window.UI.toast ("卷帘中没有音符可发送", "warn");
+      if (window.UI && window.UI.toast) window.UI.toast!("卷帘中没有音符可发送", "warn");
       return;
     }
-    var noteLines = targetNotes.map(function (n     ) {
+    var noteLines = targetNotes.map(function (n: any) {
       return '[note: "' + n.note + '", velocity: "' + n.velocity + '", start: "' + n.start + '", end: "' + n.end + '"]';
     }).join("\n");
 
@@ -3451,48 +3451,48 @@
       var prompt = "请针对以下音符（来自 " + tab.name + "）进行配和弦与对位编排：\n" + noteLines;
       input.value = prompt;
       input.focus();
-      if (window.UI && window.UI.toast) window.UI.toast ("✓ 已将音符注入对话输入框", "ok");
+      if (window.UI && window.UI.toast) window.UI.toast!("✓ 已将音符注入对话输入框", "ok");
     }
   };
 
-  PianoRoll.prototype.openSoundLibraryModal = function (                         ) {
+  PianoRoll.prototype.openSoundLibraryModal = function (this: PianoRollController) {
     var modal = document.getElementById("soundLibModalOverlay");
     if (!modal) return;
     this.openModalAnimated(modal);
     this.refreshSoundLibraryList();
   };
 
-  PianoRoll.prototype.refreshSoundLibraryList = function (                         ) {
+  PianoRoll.prototype.refreshSoundLibraryList = function (this: PianoRollController) {
     var listEl = document.getElementById("soundLibList");
     if (!listEl || !window.SoundLibrary) return;
     listEl.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-ink-faint);text-align:center">正在加载音源列表…</div>';
 
     var self = this;
     window.SoundLibrary.listSoundFonts().then(function (fonts) {
-      listEl .innerHTML = "";
+      listEl!.innerHTML = "";
       if (!fonts.length) {
-        listEl .innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-ink-faint);text-align:center">暂无自定义音色库，可点击下方上传 .sf2 文件</div>';
+        listEl!.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-ink-faint);text-align:center">暂无自定义音色库，可点击下方上传 .sf2 文件</div>';
         return;
       }
       fonts.forEach(function (f) {
         var row = document.createElement("div");
         row.className = "sound-lib-row";
         row.innerHTML =
-          '<div style="flex:1"><strong>' + UI.esc(f.name) + '</strong> <span class="dim">(' + UI.fmtSize(f.size       ) + ')</span></div>' +
+          '<div style="flex:1"><strong>' + UI.esc(f.name) + '</strong> <span class="dim">(' + UI.fmtSize(f.size as any) + ')</span></div>' +
           '<button class="btn btn-secondary btn-sm action-load">加载使用</button>' +
           '<button class="btn btn-danger btn-sm action-del">删除</button>';
 
-        row.querySelector(".action-load") .addEventListener("click", function () {
-          window.SoundLibrary.getSoundFont(f.id).then(function (rec     ) {
+        row.querySelector(".action-load")!.addEventListener("click", function () {
+          window.SoundLibrary.getSoundFont(f.id).then(function (rec: any) {
             if (rec && rec.data) {
               var parsed = self.soundfont.parseSF2(rec.data);
               self.updateSoundSelectOptions(parsed);
               if (!parsed.presets || !parsed.presets.length) {
                 /* P2-1：空预设误导——updateSoundSelectOptions 已保持当前音源，
                    提示文案必须如实说明未切换 */
-                if (window.UI && window.UI.toast) window.UI.toast ("✗ 该文件没有可用预设，音源未切换", "err");
+                if (window.UI && window.UI.toast) window.UI.toast!("✗ 该文件没有可用预设，音源未切换", "err");
               } else {
-                if (window.UI && window.UI.toast) window.UI.toast ("✓ 已加载音色库: " + f.name, "ok");
+                if (window.UI && window.UI.toast) window.UI.toast!("✓ 已加载音色库: " + f.name, "ok");
                 /* 引擎模式 SF2 轨加载所需：磁盘路径 + 预设元数据（parseSF2
                    结果已进 soundfont.loadedPresets，无需重复持有） */
                 self._sf2DiskPath = rec.diskPath || null;
@@ -3501,33 +3501,33 @@
               var modal = document.getElementById("soundLibModalOverlay");
               if (modal) self.closeModalAnimated(modal);
             } else {
-              if (window.UI && window.UI.toast) window.UI.toast ("✗ 音色数据读取失败，请重新上传", "err");
+              if (window.UI && window.UI.toast) window.UI.toast!("✗ 音色数据读取失败，请重新上传", "err");
             }
           }).catch(function (err) {
             /* 此前无 catch：加载失败时弹窗永远停在加载态且无提示 */
-            if (window.UI && window.UI.toast) window.UI.toast ("✗ 加载音色失败: " + (err && err.message ? err.message : "未知错误"), "err");
+            if (window.UI && window.UI.toast) window.UI.toast!("✗ 加载音色失败: " + (err && err.message ? err.message : "未知错误"), "err");
           });
         });
 
-        row.querySelector(".action-del") .addEventListener("click", function () {
+        row.querySelector(".action-del")!.addEventListener("click", function () {
           if (!window.confirm("确定删除音色库「" + f.name + "」？此操作不可恢复。")) return;
           window.SoundLibrary.deleteSoundFont(f.id, f.name).then(function () {
             self.refreshSoundLibraryList();
-            if (window.UI && window.UI.toast) window.UI.toast ("✓ 已删除音色库: " + f.name, "ok");
+            if (window.UI && window.UI.toast) window.UI.toast!("✓ 已删除音色库: " + f.name, "ok");
           }).catch(function (err) {
-            if (window.UI && window.UI.toast) window.UI.toast ("✗ 删除失败: " + (err && err.message ? err.message : "未知错误"), "err");
+            if (window.UI && window.UI.toast) window.UI.toast!("✗ 删除失败: " + (err && err.message ? err.message : "未知错误"), "err");
           });
         });
 
-        listEl .appendChild(row);
+        listEl!.appendChild(row);
       });
     }).catch(function (err) {
       /* IndexedDB 打不开等场景：此前列表永远停在"正在加载…"且无报错 */
-      listEl .innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-danger);text-align:center">音源列表加载失败: ' + UI.esc(err && err.message ? err.message : String(err)) + '</div>';
+      listEl!.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-danger);text-align:center">音源列表加载失败: ' + UI.esc(err && err.message ? err.message : String(err)) + '</div>';
     });
   };
 
-  PianoRoll.prototype.updateSoundSelectOptions = function (                           parsed     ) {
+  PianoRoll.prototype.updateSoundSelectOptions = function (this: PianoRollController, parsed: any) {
     if (!parsed || !parsed.presets) return;
     var self = this;
     var baseOpts = [
@@ -3538,7 +3538,7 @@
       { value: "sf2_piano", label: "SF2: 温暖钢琴 (Piano)" },
       { value: "sf2_strings", label: "SF2: 弦乐群 (Strings)" }
     ];
-    parsed.presets.forEach(function (p     ) {
+    parsed.presets.forEach(function (p: any) {
       baseOpts.push({ value: p.id, label: "SF2: " + (p.name || parsed.name) });
     });
     if (!parsed.presets.length) return;   /* 空预设列表：保持当前音源，避免取 [0] 崩溃 */
@@ -3548,7 +3548,7 @@
     this.soundSource = parsed.presets[0].id;
   };
 
-  window.PianoRoll = new (PianoRoll       )();
+  window.PianoRoll = new (PianoRoll as any)();
   document.addEventListener("DOMContentLoaded", function () {
     window.PianoRoll.init();
   });

@@ -4,7 +4,7 @@
 
   var AudioContext = window.AudioContext || window.webkitAudioContext;
 
-  function SoundFontPlayer(                               sharedCtx                      , outNode                   ) {
+  function SoundFontPlayer(this: SoundFontPlayerInstance, sharedCtx?: AudioContext | null, outNode?: AudioNode | null) {
     this.ctx = null;
     this._sharedCtx = sharedCtx || null; // 多引擎共享同一 AudioContext（编排窗口多轨场景）
     this._outNode = outNode || null;     // 输出目标节点，缺省接 ctx.destination
@@ -20,7 +20,7 @@
     this.builtinInstrument = "piano"; // "piano", "strings", "epiano", "bass"
   }
 
-  SoundFontPlayer.prototype.init = function (                             ) {
+  SoundFontPlayer.prototype.init = function (this: SoundFontPlayerInstance) {
     if (this.ctx) return;
     /* 引擎模式不创建 WebAudio 发声节点；parseSF2 元数据解析职责与
        发声职责分离——解析在引擎模式仍可用（预设列表/元数据） */
@@ -36,7 +36,7 @@
     }
   };
 
-  SoundFontPlayer.prototype.resume = function (                             ) {
+  SoundFontPlayer.prototype.resume = function (this: SoundFontPlayerInstance) {
     if (!this.ctx) this.init();
     if (this.ctx && this.ctx.state === "suspended") {
       return this.ctx.resume();
@@ -44,7 +44,7 @@
     return Promise.resolve();
   };
 
-  SoundFontPlayer.prototype.setVolume = function (                               vol        ) {
+  SoundFontPlayer.prototype.setVolume = function (this: SoundFontPlayerInstance, vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(this.isMuted ? 0 : this.volume, this.ctx.currentTime, 0.01);
@@ -53,13 +53,13 @@
 
   /* ═══════════ SF2 二进制解析器 ═══════════ */
 
-  function BinaryReader(                 arrayBuffer             ) {
+  function BinaryReader(this: Sf2Reader, arrayBuffer: ArrayBuffer) {
     this.view = new DataView(arrayBuffer);
     this.pos = 0;
     this.length = arrayBuffer.byteLength;
   }
 
-  BinaryReader.prototype.readFourCC = function (               ) {
+  BinaryReader.prototype.readFourCC = function (this: Sf2Reader) {
     if (this.pos + 4 > this.length) return "";
     var s = "";
     for (var i = 0; i < 4; i++) {
@@ -68,29 +68,29 @@
     return s;
   };
 
-  BinaryReader.prototype.readUint32 = function (               ) {
+  BinaryReader.prototype.readUint32 = function (this: Sf2Reader) {
     var v = this.view.getUint32(this.pos, true);
     this.pos += 4;
     return v;
   };
 
-  BinaryReader.prototype.readUint16 = function (               ) {
+  BinaryReader.prototype.readUint16 = function (this: Sf2Reader) {
     var v = this.view.getUint16(this.pos, true);
     this.pos += 2;
     return v;
   };
 
-  BinaryReader.prototype.readInt16 = function (               ) {
+  BinaryReader.prototype.readInt16 = function (this: Sf2Reader) {
     var v = this.view.getInt16(this.pos, true);
     this.pos += 2;
     return v;
   };
 
-  BinaryReader.prototype.readUint8 = function (               ) {
+  BinaryReader.prototype.readUint8 = function (this: Sf2Reader) {
     return this.view.getUint8(this.pos++);
   };
 
-  BinaryReader.prototype.readFixedString = function (                 len        ) {
+  BinaryReader.prototype.readFixedString = function (this: Sf2Reader, len: number) {
     var s = "";
     var end = Math.min(this.pos + len, this.length);
     for (var i = this.pos; i < end; i++) {
@@ -105,14 +105,14 @@
   /* 最小 zone 链解析：pbag/pgen（preset→instrument）+ inst/ibag/igen
      （instrument→采样与键区间）。任何一块缺失返回 null——调用方回退到
      旧的"全库最近根音"匹配。键区间匹配修复：旋律预设误选鼓组采样。 */
-  function parseSF2Zones(chunks                       , reader           , rawPresets       ) {
+  function parseSF2Zones(chunks: { [id: string]: any }, reader: Sf2Reader, rawPresets: any[]) {
     if (!chunks["pbag"] || !chunks["pgen"] || !chunks["inst"] ||
         !chunks["ibag"] || !chunks["igen"] || !rawPresets.length) {
       return null;
     }
 
-    function readNdx(chunkId        , recordSize        , ndxOffset        ) {
-      var arr           = [];
+    function readNdx(chunkId: string, recordSize: number, ndxOffset: number) {
+      var arr: number[] = [];
       var end = chunks[chunkId].pos + chunks[chunkId].size;
       reader.pos = chunks[chunkId].pos;
       while (reader.pos + recordSize <= end) {
@@ -131,8 +131,8 @@
     // 到最低音采样）
     var instBagNdx = readNdx("inst", 22, 20);
 
-    function readGens(chunkId        , lo        , hi        ) {
-      var out        = [];
+    function readGens(chunkId: string, lo: number, hi: number) {
+      var out: any[] = [];
       var base = chunks[chunkId].pos;
       var end = base + chunks[chunkId].size;
       var count = hi - lo;
@@ -178,7 +178,7 @@
     for (var pi = 0; pi < rawPresets.length; pi++) {
       var pLo = rawPresets[pi].bagIndex;
       var pHi = rawPresets[pi + 1] !== undefined ? rawPresets[pi + 1].bagIndex : pLo + 1;
-      var zs        = [];
+      var zs: any[] = [];
       for (var pb = pLo; pb < pHi && pb < pbagGenNdx.length; pb++) {
         var pgLo = pbagGenNdx[pb];
         var pgHi = pbagGenNdx[pb + 1] !== undefined ? pbagGenNdx[pb + 1] : pgLo;
@@ -197,18 +197,18 @@
     return presetZones;
   }
 
-  SoundFontPlayer.prototype.parseSF2 = function (                               arrayBuffer             ) {
-    var reader = new (BinaryReader       )(arrayBuffer)             ;
+  SoundFontPlayer.prototype.parseSF2 = function (this: SoundFontPlayerInstance, arrayBuffer: ArrayBuffer) {
+    var reader = new (BinaryReader as any)(arrayBuffer) as Sf2Reader;
     if (reader.readFourCC() !== "RIFF") throw new Error("无效的 RIFF 文件头");
     reader.readUint32(); // riff size
     if (reader.readFourCC() !== "sfbk") throw new Error("不是有效的 SoundFont 2 (sfbk) 格式");
 
     var sampleData = null;
-    var rawSamples        = [];
+    var rawSamples: any[] = [];
     var rawInsts = [];
     var rawPresets = [];
     var fontName = "Custom SoundFont";
-    var pdtaChunksRef                               = null;   // zone 解析需要（提升出 pdta 分支作用域）
+    var pdtaChunksRef: { [id: string]: any } | null = null;   // zone 解析需要（提升出 pdta 分支作用域）
 
     while (reader.pos + 8 <= reader.length) {
       var chunkId = reader.readFourCC();
@@ -244,7 +244,7 @@
             reader.pos += sSize;
           }
         } else if (listType === "pdta") {
-          var pdtaChunks                        = {};
+          var pdtaChunks: { [id: string]: any } = {};
           while (reader.pos + 8 <= listEnd) {
             var pId = reader.readFourCC();
             var pSize = reader.readUint32();
@@ -316,14 +316,14 @@
     this._rawSamples = rawSamples;
 
     // zone 链解析失败（文件缺块）时保持 null → noteOn 回退全库匹配
-    var zoneList      = null;
+    var zoneList: any = null;
     try {
-      zoneList = parseSF2Zones(pdtaChunksRef , reader, rawPresets);
+      zoneList = parseSF2Zones(pdtaChunksRef!, reader, rawPresets);
     } catch (e) {
       zoneList = null;
     }
 
-    var resultPresets              = rawPresets.map(function (p, idx) {
+    var resultPresets: Sf2Preset[] = rawPresets.map(function (p, idx) {
       return {
         id: "sf2_" + p.bank + "_" + p.program + "_" + idx,
         name: p.name || ("Preset " + p.program),
@@ -354,7 +354,7 @@
   };
 
   /* 取指定索引的采样 AudioBuffer，首次访问时从 Int16 原始数据转换并缓存 */
-  SoundFontPlayer.prototype.getSampleBuffer = function (                               idx        ) {
+  SoundFontPlayer.prototype.getSampleBuffer = function (this: SoundFontPlayerInstance, idx: number) {
     var cached = this.sampleBuffers[idx];
     if (cached) return cached;
     var sm = this._rawSamples ? this._rawSamples[idx] : null;
@@ -385,7 +385,7 @@
 
   /* 内置采样按需合成（约 120 万次 sin 调用）：此前在 init（页面加载）
      同步执行，阻塞整个聊天页首帧；改为首次选用/触发内置音色时才生成 */
-  SoundFontPlayer.prototype.ensureBuiltinPresets = function (                             ) {
+  SoundFontPlayer.prototype.ensureBuiltinPresets = function (this: SoundFontPlayerInstance) {
     if (this.builtinBuffers) return;
     try {
       this.generateBuiltinPresets();
@@ -398,7 +398,7 @@
     }
   };
 
-  SoundFontPlayer.prototype.generateBuiltinPresets = function (                             ) {
+  SoundFontPlayer.prototype.generateBuiltinPresets = function (this: SoundFontPlayerInstance) {
     if (!this.ctx) return;
     this.builtinBuffers = {};
 
@@ -437,7 +437,7 @@
     this.builtinBuffers["strings"] = { buffer: sBuf, basePitch: 60 };
   };
 
-  SoundFontPlayer.prototype.setPreset = function (                               presetOrBuiltinId        ) {
+  SoundFontPlayer.prototype.setPreset = function (this: SoundFontPlayerInstance, presetOrBuiltinId: string) {
     var pid = String(presetOrBuiltinId || "");
     // 兼容带 "sf2_" 前缀的完整 id（钢琴窗 soundSource 直传）：
     // 内置名 "sf2_piano"/"sf2_strings" 剥前缀匹配 builtinBuffers；
@@ -451,14 +451,14 @@
       this.currentPreset = null;
       return;
     }
-    var found = this.loadedPresets .find(function (p) { return p.id === pid || p.id === builtinId; });
+    var found = this.loadedPresets!.find(function (p) { return p.id === pid || p.id === builtinId; });
     if (found) {
       this.currentPreset = found;
       this.builtinInstrument = null;
     }
   };
 
-  SoundFontPlayer.prototype.noteOn = function (                               midiNote        , velocity        , when         ) {
+  SoundFontPlayer.prototype.noteOn = function (this: SoundFontPlayerInstance, midiNote: number, velocity: number, when?: number) {
     this.resume();
     if (!this.ctx || this.isMuted) return;
 
@@ -540,7 +540,7 @@
     gain.gain.setValueAtTime(vel * 0.7, startTime);
 
     src.connect(gain);
-    gain.connect(this.masterGain );
+    gain.connect(this.masterGain!);
 
     src.start(startTime);
 
@@ -558,7 +558,7 @@
     });
   };
 
-  SoundFontPlayer.prototype.noteOff = function (                               midiNote        , when         ) {
+  SoundFontPlayer.prototype.noteOff = function (this: SoundFontPlayerInstance, midiNote: number, when?: number) {
     var voices = this.activeVoices[midiNote];
     if (!voices || !voices.length || !this.ctx) return;
 
@@ -575,7 +575,7 @@
          （WebView2 内核对远期 hold 不正确，会提前切断音符——断续/粒子感）。
          本播放器包络为恒定电平：cancel 全部事件后重放
          setValueAtTime(startGain, startTime) 即可精确还原。 */
-      var g = voice .gain.gain;
+      var g = voice!.gain.gain;
       var now = this.ctx.currentTime;
       g.cancelScheduledValues(0);
       if (stopTime <= now + 0.005) {
@@ -583,39 +583,39 @@
         stopTime = Math.max(stopTime, now);
         g.setValueAtTime(Math.max(0.0001, g.value), stopTime);
       } else {
-        g.setValueAtTime(Math.max(0.0001, voice .startGain || 0.5), voice .startTime);
+        g.setValueAtTime(Math.max(0.0001, voice!.startGain || 0.5), voice!.startTime);
       }
       g.exponentialRampToValueAtTime(0.00001, stopTime + release);
-      voice .source.stop(stopTime + release + 0.05);
+      voice!.source.stop(stopTime + release + 0.05);
 
       var nowRef = now;
       setTimeout(function () {
         try {
-          voice .source.disconnect();
-          voice .gain.disconnect();
+          voice!.source.disconnect();
+          voice!.gain.disconnect();
         } catch (e) {}
       }, Math.max(0, (stopTime + release - nowRef)) * 1000 + 150);
     } catch (e) {
-      try { voice .source.stop(stopTime); } catch (err) {}
+      try { voice!.source.stop(stopTime); } catch (err) {}
     }
   };
 
-  SoundFontPlayer.prototype.stopAll = function (                             ) {
+  SoundFontPlayer.prototype.stopAll = function (this: SoundFontPlayerInstance) {
     var self = this;
     Object.keys(this.activeVoices).forEach(function (note) {
       var voices = self.activeVoices[note];
       for (var i = 0; i < voices.length; i++) {
         (function (voice) {
           try {
-            voice.gain.gain.cancelScheduledValues(self.ctx .currentTime);
-            voice.gain.gain.setValueAtTime(Math.max(0.0001, voice.gain.gain.value), self.ctx .currentTime);
-            voice.gain.gain.exponentialRampToValueAtTime(0.00001, self.ctx .currentTime + 0.05);
-            voice.source.stop(self.ctx .currentTime + 0.1);
+            voice.gain.gain.cancelScheduledValues(self.ctx!.currentTime);
+            voice.gain.gain.setValueAtTime(Math.max(0.0001, voice.gain.gain.value), self.ctx!.currentTime);
+            voice.gain.gain.exponentialRampToValueAtTime(0.00001, self.ctx!.currentTime + 0.05);
+            voice.source.stop(self.ctx!.currentTime + 0.1);
             setTimeout(function () {
               try { voice.source.disconnect(); voice.gain.disconnect(); } catch (e) {}
             }, 150);
           } catch (e) {
-            try { voice.source.stop(self.ctx .currentTime); } catch (err) {}
+            try { voice.source.stop(self.ctx!.currentTime); } catch (err) {}
           }
         })(voices[i]);
       }
@@ -624,5 +624,5 @@
     this.activeVoices = {};
   };
 
-  window.SoundFontPlayer = SoundFontPlayer                                         ;
+  window.SoundFontPlayer = SoundFontPlayer as unknown as SoundFontPlayerConstructor;
 })(window);

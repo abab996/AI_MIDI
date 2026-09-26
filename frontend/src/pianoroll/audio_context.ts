@@ -6,9 +6,9 @@
    惰性创建；必须在与 SharedAudio 同源的时间轴上取 currentTime。
    引擎模式（ENGINE 严格路由）不创建 AudioContext：发声全部走原生引擎，
    时钟由 now() 以 performance.now 兜底（与 WebAudio 时钟同为毫秒级）。 */
-(function (window        ) {
+(function (window: Window) {
   "use strict";
-  var ctx                      = null;
+  var ctx: AudioContext | null = null;
 
   window.SharedAudio = {
     get: function () {

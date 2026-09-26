@@ -10,17 +10,17 @@
   var UI = window.UI;
   if (!UI) return;
 
-  var info                    = null;       /* /api/update/check 响应 */
-  var pollTimer                                        = null;  /* 进度轮询句柄 */
-  var els                                                                                             = {};          /* 动态元素引用 */
+  var info: UpdateInfo | null = null;       /* /api/update/check 响应 */
+  var pollTimer: ReturnType<typeof setInterval> | null = null;  /* 进度轮询句柄 */
+  var els: { built?: boolean; notice?: HTMLDivElement; force?: HTMLDivElement; log?: HTMLDivElement } = {};          /* 动态元素引用 */
 
-  function esc(s         ) {
+  function esc(s: unknown) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] ;
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!;
     });
   }
 
-  function fmtMB(n                    ) {
+  function fmtMB(n: number | undefined) {
     return (Number(n || 0) / 1048576).toFixed(1);
   }
 
@@ -80,50 +80,50 @@
     document.body.appendChild(els.log);
 
     /* 填充版本信息 */
-    fillAll(els.notice );
-    fillAll(els.force );
-    fillAll(els.log );
-    els.log .querySelector("[data-f=logbody]") .innerHTML = UI.md(info .notes || "");
+    fillAll(els.notice!);
+    fillAll(els.force!);
+    fillAll(els.log!);
+    els.log!.querySelector("[data-f=logbody]")!.innerHTML = UI.md(info!.notes || "");
 
     /* 事件绑定 */
-    var apply = qs(els.notice , ".act-apply");
+    var apply = qs(els.notice!, ".act-apply");
     apply.onclick = applyUpdate;
-    qs(els.force , ".act-apply").onclick = applyUpdate;
-    qs(els.notice , ".act-log").onclick = showLog;
-    qs(els.force , ".act-log").onclick = showLog;
-    qs(els.notice , ".act-close").onclick = function () { els.notice .hidden = true; };
-    qs(els.log , ".act-log-close").onclick = hideLog;
-    els.log .addEventListener("click", function (e) { if (e.target === els.log) hideLog(); });
+    qs(els.force!, ".act-apply").onclick = applyUpdate;
+    qs(els.notice!, ".act-log").onclick = showLog;
+    qs(els.force!, ".act-log").onclick = showLog;
+    qs(els.notice!, ".act-close").onclick = function () { els.notice!.hidden = true; };
+    qs(els.log!, ".act-log-close").onclick = hideLog;
+    els.log!.addEventListener("click", function (e) { if (e.target === els.log) hideLog(); });
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && !els.log .hidden) hideLog();
+      if (e.key === "Escape" && !els.log!.hidden) hideLog();
     });
 
     els.built = true;
   }
 
-  function fillAll(root            ) {
+  function fillAll(root: ParentNode) {
     var verEls = root.querySelectorAll("[data-f=ver]");
-    for (var i = 0; i < verEls.length; i++) verEls[i].textContent = info .latest;
+    for (var i = 0; i < verEls.length; i++) verEls[i].textContent = info!.latest;
     var curEls = root.querySelectorAll("[data-f=cur]");
-    for (var j = 0; j < curEls.length; j++) curEls[j].textContent = info .current;
+    for (var j = 0; j < curEls.length; j++) curEls[j].textContent = info!.current;
     var dateEls = root.querySelectorAll("[data-f=date]");
-    for (var k = 0; k < dateEls.length; k++) dateEls[k].textContent = info .date || "";
+    for (var k = 0; k < dateEls.length; k++) dateEls[k].textContent = info!.date || "";
   }
 
-  function qs(root            , sel        ) { return root.querySelector(sel)               ; }
+  function qs(root: ParentNode, sel: string) { return root.querySelector(sel) as HTMLElement; }
 
   /* ───────────────── 显示逻辑 ───────────────── */
 
-  function showNotice() { els.notice .hidden = false; }
-  function showForce() { els.force .hidden = false; }
-  function showLog() { els.log .hidden = false; }
-  function hideLog() { els.log .hidden = true; }
+  function showNotice() { els.notice!.hidden = false; }
+  function showForce() { els.force!.hidden = false; }
+  function showLog() { els.log!.hidden = false; }
+  function hideLog() { els.log!.hidden = true; }
 
   /* 下载进度展示区（notice 与 force 共用同一结构，各自独立渲染） */
-  function renderProgress(root             , p                ) {
+  function renderProgress(root: HTMLElement, p: UpdateProgress) {
     var body = qs(root, "[data-f=body]");
     var actions = qs(root, "[data-f=actions]");
-    var pct = p.total  > 0 ? Math.floor((p.downloaded  / p.total ) * 100) : 0;
+    var pct = p.total! > 0 ? Math.floor((p.downloaded! / p.total!) * 100) : 0;
 
     if (p.state === "downloading" || (p.state === "completed" && !p.launched && !p.error)) {
       body.innerHTML =
@@ -137,7 +137,7 @@
     if (p.state === "launched" || (p.state === "completed" && p.launched)) {
       body.innerHTML =
         '<div class="update-done">✅ 安装包已启动，请完成安装。<br>安装完成后<b>重新打开本软件</b>即可升级到 v' +
-        esc(info .latest) + "。</div>";
+        esc(info!.latest) + "。</div>";
       if (actions) actions.hidden = true;
       stopPolling();
       return "done";
@@ -163,26 +163,26 @@
 
   function applyUpdate() {
     buildOnce();
-    UI.postJSON                   ("/api/update/apply").then(function (res) {
+    UI.postJSON<UpdateApplyResult>("/api/update/apply").then(function (res) {
       if (res.mode === "browser") {
-        UI.toast ("已在浏览器中打开下载链接", "ok");
+        UI.toast!("已在浏览器中打开下载链接", "ok");
         return;
       }
       /* 应用内下载：开始轮询进度 */
       if (pollTimer) clearInterval(pollTimer);
-      renderProgress(els.notice , { state: "downloading", downloaded: 0, total: 0 });
-      renderProgress(els.force , { state: "downloading", downloaded: 0, total: 0 });
+      renderProgress(els.notice!, { state: "downloading", downloaded: 0, total: 0 });
+      renderProgress(els.force!, { state: "downloading", downloaded: 0, total: 0 });
       pollTimer = setInterval(pollProgress, 600);
       pollProgress();
-    }).catch(function (e     ) {
-      UI.toast ("✗ " + e.message, "err");
+    }).catch(function (e: any) {
+      UI.toast!("✗ " + e.message, "err");
     });
   }
 
   function pollProgress() {
-    UI.getJSON                ("/api/update/progress").then(function (p) {
-      var s1 = renderProgress(els.notice , p);
-      var s2 = renderProgress(els.force , p);
+    UI.getJSON<UpdateProgress>("/api/update/progress").then(function (p) {
+      var s1 = renderProgress(els.notice!, p);
+      var s2 = renderProgress(els.force!, p);
       if (s1 !== "downloading" && s2 !== "downloading") stopPolling();
     }).catch(function () { /* 瞬时网络抖动：下次轮询继续 */ });
   }
@@ -193,16 +193,16 @@
 
   function openBrowserDownload() {
     UI.postJSON("/api/update/open-browser", {}).then(function () {
-      UI.toast ("已在浏览器中打开下载链接", "ok");
-    }).catch(function (e     ) {
-      UI.toast ("✗ " + e.message, "err");
+      UI.toast!("已在浏览器中打开下载链接", "ok");
+    }).catch(function (e: any) {
+      UI.toast!("✗ " + e.message, "err");
     });
   }
 
   /* ───────────────── 启动检查 ───────────────── */
 
   document.addEventListener("DOMContentLoaded", function () {
-    UI.getJSON                   ("/api/update/check").then(function (r) {
+    UI.getJSON<UpdateInfo | null>("/api/update/check").then(function (r) {
       if (!r || !r.available) return;
       info = r;
       buildOnce();

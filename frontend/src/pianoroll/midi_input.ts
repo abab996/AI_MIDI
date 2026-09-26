@@ -4,7 +4,7 @@
 
   var MIDI_STORAGE_KEY = "ai-midi-hardware-settings";
 
-  function MidiInputRouter(                        ) {
+  function MidiInputRouter(this: MidiInputRouterApi) {
     this.midiAccess = null;
     this.activeInput = null;
     this.baseOctave = 4; // C4 (MIDI 60)
@@ -17,7 +17,7 @@
     this.initWebMIDI();
   }
 
-  MidiInputRouter.prototype.loadSettings = function (                        ) {
+  MidiInputRouter.prototype.loadSettings = function (this: MidiInputRouterApi) {
     try {
       var raw = localStorage.getItem(MIDI_STORAGE_KEY);
       return raw ? JSON.parse(raw) : {
@@ -32,7 +32,7 @@
     }
   };
 
-  MidiInputRouter.prototype.updateSettings = function (                          newSettings                            ) {
+  MidiInputRouter.prototype.updateSettings = function (this: MidiInputRouterApi, newSettings: Partial<MidiInputSettings>) {
     this.settings = Object.assign({}, this.settings, newSettings);
     try {
       localStorage.setItem(MIDI_STORAGE_KEY, JSON.stringify(this.settings));
@@ -42,18 +42,18 @@
     }
   };
 
-  MidiInputRouter.prototype.addListener = function (                          fn                                                        ) {
+  MidiInputRouter.prototype.addListener = function (this: MidiInputRouterApi, fn: (type: string, note: number, velocity: number) => void) {
     if (this.listeners.indexOf(fn) === -1) {
       this.listeners.push(fn);
     }
   };
 
-  MidiInputRouter.prototype.removeListener = function (                          fn                                                        ) {
+  MidiInputRouter.prototype.removeListener = function (this: MidiInputRouterApi, fn: (type: string, note: number, velocity: number) => void) {
     var idx = this.listeners.indexOf(fn);
     if (idx !== -1) this.listeners.splice(idx, 1);
   };
 
-  MidiInputRouter.prototype.emit = function (                          type        , note        , velocity        ) {
+  MidiInputRouter.prototype.emit = function (this: MidiInputRouterApi, type: string, note: number, velocity: number) {
     for (var i = 0; i < this.listeners.length; i++) {
       try {
         this.listeners[i](type, note, velocity);
@@ -63,7 +63,7 @@
     }
   };
 
-  MidiInputRouter.prototype.applyVelocityCurve = function (                          rawVel        ) {
+  MidiInputRouter.prototype.applyVelocityCurve = function (this: MidiInputRouterApi, rawVel: number) {
     var curve = this.settings.velocityCurve || "linear";
     if (curve === "fixed_100") return 100;
     if (curve === "fixed_127") return 127;
@@ -77,7 +77,7 @@
     return rawVel;
   };
 
-  MidiInputRouter.prototype.initWebMIDI = function (                        ) {
+  MidiInputRouter.prototype.initWebMIDI = function (this: MidiInputRouterApi) {
     var self = this;
     if (!navigator.requestMIDIAccess) return;
     navigator.requestMIDIAccess({ sysex: false }).then(function (access) {
@@ -91,12 +91,12 @@
     });
   };
 
-  MidiInputRouter.prototype.bindDevice = function (                          deviceId        ) {
+  MidiInputRouter.prototype.bindDevice = function (this: MidiInputRouterApi, deviceId: string) {
     var self = this;
     if (!this.activeInputs) this.activeInputs = [];
 
     // 清除旧监听
-    this.activeInputs.forEach(function (inp           ) {
+    this.activeInputs.forEach(function (inp: MIDIInput) {
       try { inp.onmidimessage = null; } catch (e) {}
     });
     this.activeInputs = [];
@@ -114,13 +114,13 @@
 
     if (!this.midiAccess || this.settings.enabled === false) return;
 
-    var inputs = Array.from(this.midiAccess.inputs.values())               ;
+    var inputs = Array.from(this.midiAccess.inputs.values()) as MIDIInput[];
     if (!inputs.length) return;
 
     if (deviceId === "auto" || !deviceId) {
       // auto 模式下挂载所有可用 MIDI 输入端口，确保无论接在哪个 USB/MIDI 口均能 100% 收到信号
-      inputs.forEach(function (inp           ) {
-        inp.onmidimessage = function (e                  ) {
+      inputs.forEach(function (inp: MIDIInput) {
+        inp.onmidimessage = function (e: MIDIMessageEvent) {
           self.handleMidiMessage(e);
         };
         self.activeInputs.push(inp);
@@ -128,14 +128,14 @@
     } else {
       var target = this.midiAccess.inputs.get(deviceId) || null;
       if (target) {
-        target.onmidimessage = function (e                  ) {
+        target.onmidimessage = function (e: MIDIMessageEvent) {
           self.handleMidiMessage(e);
         };
         self.activeInputs.push(target);
       } else {
         // 如果指定设备未找到，回退绑定所有可用输入
-        inputs.forEach(function (inp           ) {
-          inp.onmidimessage = function (e                  ) {
+        inputs.forEach(function (inp: MIDIInput) {
+          inp.onmidimessage = function (e: MIDIMessageEvent) {
             self.handleMidiMessage(e);
           };
           self.activeInputs.push(inp);
@@ -144,7 +144,7 @@
     }
   };
 
-  MidiInputRouter.prototype.handleMidiMessage = function (                          e                  ) {
+  MidiInputRouter.prototype.handleMidiMessage = function (this: MidiInputRouterApi, e: MIDIMessageEvent) {
     var data = e.data;
     if (!data || data.length < 2) return;
     var status = data[0] & 0xf0;
@@ -167,16 +167,16 @@
 
   /* ═══════════ 电脑键盘弹奏 (FL Studio 经典按键映射) ═══════════ */
 
-  MidiInputRouter.prototype.bindTypingKeyboard = function (                        ) {
+  MidiInputRouter.prototype.bindTypingKeyboard = function (this: MidiInputRouterApi) {
     var self = this;
     // 基础键位与半音偏移映射
-    var KEY_MAP_LOW                             = {
+    var KEY_MAP_LOW: { [code: string]: number } = {
       "KeyZ": 0,  "KeyS": 1,  "KeyX": 2,  "KeyD": 3,  "KeyC": 4,
       "KeyV": 5,  "KeyG": 6,  "KeyB": 7,  "KeyH": 8,  "KeyN": 9,
       "KeyJ": 10, "KeyM": 11, "Comma": 12, "KeyL": 13, "Period": 14,
       "Semicolon": 15, "Slash": 16
     };
-    var KEY_MAP_HIGH                             = {
+    var KEY_MAP_HIGH: { [code: string]: number } = {
       "KeyQ": 12, "Digit2": 13, "KeyW": 14, "Digit3": 15, "KeyE": 16,
       "KeyR": 17, "Digit5": 18, "KeyT": 19, "Digit6": 20, "KeyY": 21,
       "Digit7": 22, "KeyU": 23, "KeyI": 24, "Digit9": 25, "KeyO": 26,
@@ -198,12 +198,12 @@
       var KS = window.Shortcuts;
       if (KS && KS.matches(e, "global.octaveDown")) {
         self.baseOctave = Math.max(1, self.baseOctave - 1);
-        if (window.UI && window.UI.toast) window.UI.toast ("键盘八度: C" + self.baseOctave, "ok");
+        if (window.UI && window.UI.toast) window.UI.toast!("键盘八度: C" + self.baseOctave, "ok");
         return;
       }
       if (KS && KS.matches(e, "global.octaveUp")) {
         self.baseOctave = Math.min(7, self.baseOctave + 1);
-        if (window.UI && window.UI.toast) window.UI.toast ("键盘八度: C" + self.baseOctave, "ok");
+        if (window.UI && window.UI.toast) window.UI.toast!("键盘八度: C" + self.baseOctave, "ok");
         return;
       }
 
@@ -235,5 +235,5 @@
     });
   };
 
-  window.MidiInputRouter = new (MidiInputRouter       )();
+  window.MidiInputRouter = new (MidiInputRouter as any)();
 })(window);

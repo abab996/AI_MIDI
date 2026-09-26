@@ -4,7 +4,7 @@
 
   var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
-  function numberToNoteName(num        ) {
+  function numberToNoteName(num: number) {
     num = Math.max(0, Math.min(127, Math.round(num)));
     var oct = Math.floor(num / 12) - 1;
     return NOTE_NAMES[num % 12] + oct;
@@ -16,8 +16,8 @@
    * @returns {Array<{note:string, velocity:number, start:number, end:number}>}
    *          start/end 单位为拍（基于 MIDI 文件的 ticksPerBeat），保留 3 位小数
    */
-  function parseBytes(arrayBuffer             ) {
-    var notes             = [];
+  function parseBytes(arrayBuffer: ArrayBuffer) {
+    var notes: MidiNote[] = [];
     var view = new DataView(arrayBuffer);
     if (!arrayBuffer || view.byteLength < 14) return notes;
 
@@ -63,7 +63,7 @@
           var currentTick = 0;
           /* note-on/off 配对表必须每条轨道独立（此前跨轨共享：
              多轨 MIDI 同音高互相错配 → 音符长度错乱、大量重叠长音） */
-          var activeMap                                                    = {};
+          var activeMap: { [key: number]: { start: number; vel: number } } = {};
 
           while (pos < trackEnd) {
             var delta = 0;
@@ -184,7 +184,7 @@
       if (!m) return 60;
       var p = m[1].toUpperCase();
       var oct = parseInt(m[2], 10);
-      var map                             = { "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11 };
+      var map: { [name: string]: number } = { "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4, "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9, "A#": 10, "BB": 10, "B": 11 };
       var pitch = map[p] !== undefined ? map[p] : 0;
       return (oct + 1) * 12 + pitch;
     }

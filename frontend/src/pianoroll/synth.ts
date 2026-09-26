@@ -4,7 +4,7 @@
 
   var AudioContext = window.AudioContext || window.webkitAudioContext;
 
-  function SynthEngine(                           sharedCtx                      , outNode                   ) {
+  function SynthEngine(this: SynthEngineInstance, sharedCtx?: AudioContext | null, outNode?: AudioNode | null) {
     this.ctx = null;
     this._sharedCtx = sharedCtx || null; // 多引擎共享同一 AudioContext（编排窗口多轨场景）
     this._outNode = outNode || null;     // 输出目标节点，缺省接 ctx.destination
@@ -23,29 +23,29 @@
     this._nativeVoices = {}; // 原生后端下正在发声的 midiNote -> 声部计数
   }
 
-  SynthEngine.prototype.init = function (                         ) {
+  SynthEngine.prototype.init = function (this: SynthEngineInstance) {
     if (this.ctx) return;
     /* 引擎模式不创建 WebAudio 节点（杜绝"存在即可能被用"）；
        切到 WEBAUDIO 后首次使用时再惰性创建 */
     if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) return;
     try {
       this.ctx = this._sharedCtx || new AudioContext();
-      this.masterGain = this.ctx .createGain();
-      this.masterGain.gain.setValueAtTime(this.volume, this.ctx .currentTime);
+      this.masterGain = this.ctx!.createGain();
+      this.masterGain.gain.setValueAtTime(this.volume, this.ctx!.currentTime);
 
-      this.filterNode = this.ctx .createBiquadFilter();
+      this.filterNode = this.ctx!.createBiquadFilter();
       this.filterNode.type = "lowpass";
-      this.filterNode.frequency.setValueAtTime(this.cutoff, this.ctx .currentTime);
-      this.filterNode.Q.setValueAtTime(this.resonance, this.ctx .currentTime);
+      this.filterNode.frequency.setValueAtTime(this.cutoff, this.ctx!.currentTime);
+      this.filterNode.Q.setValueAtTime(this.resonance, this.ctx!.currentTime);
 
       this.filterNode.connect(this.masterGain);
-      this.masterGain.connect(this._outNode || this.ctx .destination);
+      this.masterGain.connect(this._outNode || this.ctx!.destination);
     } catch (e) {
       console.warn("AudioContext init error:", e);
     }
   };
 
-  SynthEngine.prototype.resume = function (                         ) {
+  SynthEngine.prototype.resume = function (this: SynthEngineInstance) {
     if (!this.ctx) this.init();
     if (this.ctx && this.ctx.state === "suspended") {
       return this.ctx.resume();
@@ -53,7 +53,7 @@
     return Promise.resolve();
   };
 
-  SynthEngine.prototype.midiToFreq = function (                           midiNote        ) {
+  SynthEngine.prototype.midiToFreq = function (this: SynthEngineInstance, midiNote: number) {
     return 440 * Math.pow(2, (midiNote - 69) / 12);
   };
 
@@ -123,7 +123,7 @@
     }
   };
 
-  SynthEngine.prototype._useNative = function (                         ) {
+  SynthEngine.prototype._useNative = function (this: SynthEngineInstance) {
     // 以全局 AudioBackend 为准（引擎模式 + state ready）；引擎模式下
     // 永不回退 WebAudio（严格路由），此方法仅供旧调用方兼容
     return window.AudioBackend && window.AudioBackend.isNativePreferred
@@ -136,7 +136,7 @@
      引擎崩溃重启后的声部恢复由 supervisor 重放兜底。
      引擎模式下本方法仅作"预热"（见 noteOn）：未确认期间也直发，首音
      瞬态可接受——绝不回退 WebAudio */
-  SynthEngine.prototype._ensureNativeVoice = function (                         ) {
+  SynthEngine.prototype._ensureNativeVoice = function (this: SynthEngineInstance) {
     if (this._voiceRetryAt && Date.now() < this._voiceRetryAt) return false;
     if (!window.EngineBridge || !window.EngineBridge.setTrackVoice || !window.EngineBridge.noteOnTrack) return false;
     var sig = [this.waveform, this.attack, this.decay, this.sustain, this.release,
@@ -168,7 +168,7 @@
   };
 
 
-  SynthEngine.prototype.setWaveform = function (                           type                ) {
+  SynthEngine.prototype.setWaveform = function (this: SynthEngineInstance, type: OscillatorType) {
     if (["sine", "triangle", "square", "sawtooth"].indexOf(type) !== -1) {
       this.waveform = type;
     }
@@ -177,7 +177,7 @@
   /* 引擎模式声部参数防抖同步：音量/滤波改动后 50ms 合并重发 setTrackVoice
      ——即时生效（首个音符即用新参数）；参数一致时引擎侧 no-op，不打断
      正响音符 */
-  SynthEngine.prototype._debouncedVoiceSync = function (                         ) {
+  SynthEngine.prototype._debouncedVoiceSync = function (this: SynthEngineInstance) {
     var self = this;
     if (this._voiceSyncTimer) clearTimeout(this._voiceSyncTimer);
     this._voiceSyncTimer = setTimeout(function () {
@@ -187,7 +187,7 @@
     }, 50);
   };
 
-  SynthEngine.prototype.setVolume = function (                           vol        ) {
+  SynthEngine.prototype.setVolume = function (this: SynthEngineInstance, vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
     /* 引擎模式：重发 setTrackVoice（声部签名含 gain） */
     if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
@@ -199,7 +199,7 @@
     }
   };
 
-  SynthEngine.prototype.setFilter = function (                           cutoff        , res         ) {
+  SynthEngine.prototype.setFilter = function (this: SynthEngineInstance, cutoff: number, res?: number) {
     this.cutoff = Math.max(100, Math.min(20000, cutoff));
     if (res !== undefined) this.resonance = Math.max(0.1, Math.min(20, res));
     /* 引擎模式：同 setVolume */
@@ -213,7 +213,7 @@
     }
   };
 
-  SynthEngine.prototype.noteOn = function (                           midiNote        , velocity        , when         ) {
+  SynthEngine.prototype.noteOn = function (this: SynthEngineInstance, midiNote: number, velocity: number, when?: number) {
     // 引擎模式：仅原生路径（严格，不降级）。原生路径仅限实时演奏
     // （when===undefined）：带 when 的预调度（编曲引擎）不经此路——
     // 原生桥不支持 when 且每音符 IPC 往返会阻塞主线程。
@@ -242,7 +242,7 @@
     var osc = this.ctx.createOscillator();
     var gain = this.ctx.createGain();
 
-    osc.type = this.waveform                  ;
+    osc.type = this.waveform as OscillatorType;
     osc.frequency.setValueAtTime(this.midiToFreq(midiNote), startTime);
 
     // ADSR 包络
@@ -254,7 +254,7 @@
     gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, sustainGain), startTime + Math.max(0.005, this.attack) + Math.max(0.01, this.decay));
 
     osc.connect(gain);
-    gain.connect((this.filterNode || this.masterGain) );
+    gain.connect((this.filterNode || this.masterGain)!);
 
     osc.start(startTime);
 
@@ -271,7 +271,7 @@
     });
   };
 
-  SynthEngine.prototype.noteOff = function (                           midiNote        , when         ) {
+  SynthEngine.prototype.noteOff = function (this: SynthEngineInstance, midiNote: number, when?: number) {
     // 引擎模式：与 noteOn 同轨（严格，不降级）
     if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
       if (!this._nativeVoices[midiNote]) return;
@@ -300,7 +300,7 @@
          正解：cancelScheduledValues(0) 清掉 noteOn 排的完整包络后，
          用 voice 记录的包络参数（startTime/peakGain）确定性重放
          attack/decay/sustain 到 stopTime，再接 release 衰减。 */
-      var g = voice .gain.gain;
+      var g = voice!.gain.gain;
       var now = this.ctx.currentTime;
       g.cancelScheduledValues(0);
       if (stopTime <= now + 0.005) {
@@ -308,10 +308,10 @@
         stopTime = Math.max(stopTime, now);
         g.setValueAtTime(Math.max(0.0001, g.value), stopTime);
       } else {
-        var X = voice .startTime;
+        var X = voice!.startTime;
         var a = Math.max(0.005, this.attack);
         var d = Math.max(0.01, this.decay);
-        var peak = Math.max(0.0001, voice .peakGain);
+        var peak = Math.max(0.0001, voice!.peakGain);
         var sus = Math.max(0.0001, peak * this.sustain);
         g.setValueAtTime(0.0001, X);
         if (stopTime >= X + a + d) {
@@ -331,21 +331,21 @@
         }
       }
       g.exponentialRampToValueAtTime(0.00001, stopTime + releaseTime);
-      voice .osc.stop(stopTime + releaseTime + 0.05);
+      voice!.osc.stop(stopTime + releaseTime + 0.05);
 
       var nowRef = now;
       setTimeout(function () {
         try {
-          voice .osc.disconnect();
-          voice .gain.disconnect();
+          voice!.osc.disconnect();
+          voice!.gain.disconnect();
         } catch (e) {}
       }, Math.max(0, (stopTime + releaseTime - nowRef)) * 1000 + 150);
     } catch (e) {
-      try { voice .osc.stop(stopTime); } catch (err) {}
+      try { voice!.osc.stop(stopTime); } catch (err) {}
     }
   };
 
-  SynthEngine.prototype.stopAll = function (                         ) {
+  SynthEngine.prototype.stopAll = function (this: SynthEngineInstance) {
     var self = this;
 
     // 撤销未触发的引擎 click 定时器（停止后不得再有幽灵 click）
@@ -367,15 +367,15 @@
       for (var i = 0; i < voices.length; i++) {
         (function (voice) {
           try {
-            voice.gain.gain.cancelScheduledValues(self.ctx .currentTime);
-            voice.gain.gain.setValueAtTime(Math.max(0.0001, voice.gain.gain.value), self.ctx .currentTime);
-            voice.gain.gain.exponentialRampToValueAtTime(0.00001, self.ctx .currentTime + 0.04);
-            voice.osc.stop(self.ctx .currentTime + 0.08);
+            voice.gain.gain.cancelScheduledValues(self.ctx!.currentTime);
+            voice.gain.gain.setValueAtTime(Math.max(0.0001, voice.gain.gain.value), self.ctx!.currentTime);
+            voice.gain.gain.exponentialRampToValueAtTime(0.00001, self.ctx!.currentTime + 0.04);
+            voice.osc.stop(self.ctx!.currentTime + 0.08);
             setTimeout(function () {
               try { voice.osc.disconnect(); voice.gain.disconnect(); } catch (e) {}
             }, 120);
           } catch (e) {
-            try { voice.osc.stop(self.ctx .currentTime); } catch (err) {}
+            try { voice.osc.stop(self.ctx!.currentTime); } catch (err) {}
           }
         })(voices[i]);
       }
@@ -385,7 +385,7 @@
   };
 
   // 节拍器木鱼/电子 Click 音效
-  SynthEngine.prototype.playClick = function (                           isHigh         , when         ) {
+  SynthEngine.prototype.playClick = function (this: SynthEngineInstance, isHigh: boolean, when?: number) {
     /* 引擎模式：引擎侧合成 click（极短包络木鱼音）。IPC 无排程参数，
        带 when（钢琴窗前瞻窗内调用）时按计划时刻延迟触发——此前立即
        触发使每拍提前 0~150ms 且不均匀（抢拍）。定时器登记到
@@ -418,11 +418,11 @@
     gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
 
     osc.connect(gain);
-    gain.connect(this.masterGain );
+    gain.connect(this.masterGain!);
 
     osc.start(t);
     osc.stop(t + 0.05);
   };
 
-  window.SynthEngine = SynthEngine                                     ;
+  window.SynthEngine = SynthEngine as unknown as SynthEngineConstructor;
 })(window);

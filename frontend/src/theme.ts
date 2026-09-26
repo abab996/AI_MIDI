@@ -4,15 +4,15 @@
 
   var root = document.documentElement;
   var THEME_KEY = "ai-midi-blueprint-theme";
-  var switchTimer                = null;
+  var switchTimer: number | null = null;
 
   function themeButtons() {
     return Array.prototype.slice.call(document.querySelectorAll(".theme-btn"));
   }
 
-  function updateIconsAndSplash(theme        ) {
+  function updateIconsAndSplash(theme: string) {
     // 1. 更新网页 Favicon (冷蓝 vs 暖纸)
-    var favicon = document.querySelector('link[rel="icon"]')                          ;
+    var favicon = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null;
     if (!favicon) {
       favicon = document.createElement("link");
       favicon.rel = "icon";
@@ -22,7 +22,7 @@
     favicon.href = theme === "dark" ? "/favicon_dark.ico" : "/favicon_warm.ico";
 
     // 2. 更新页面内所有应用徽标图片
-    var appLogos = document.querySelectorAll(".app-logo-img, .splash-logo-img")                                ;
+    var appLogos = document.querySelectorAll(".app-logo-img, .splash-logo-img") as NodeListOf<HTMLImageElement>;
     appLogos.forEach(function (img) {
       if (img.classList.contains("splash-logo-img")) {
         img.src = theme === "dark" ? "/splash_dark.png" : "/splash_warm.png";
@@ -42,7 +42,7 @@
     } catch (e) {}
   }
 
-  function applyTheme(t        ) {
+  function applyTheme(t: string) {
     var target = root.dataset.theme === t ? null : t;
     try { localStorage.setItem(THEME_KEY, t); } catch (e) {}
 
@@ -50,7 +50,7 @@
       if (document.startViewTransition) {
         try {
           var vt = document.startViewTransition(function () {
-            root.dataset.theme = target ;
+            root.dataset.theme = target!;
           });
           root.classList.add("theme-vt");
           if (vt && vt.finished) {
@@ -66,7 +66,7 @@
       } else {
         root.classList.add("theme-switching");
         root.dataset.theme = target;
-        clearTimeout(switchTimer          );
+        clearTimeout(switchTimer as number);
         switchTimer = setTimeout(function () {
           root.classList.remove("theme-switching");
         }, 380);

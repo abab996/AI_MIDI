@@ -2,7 +2,7 @@
 (function () {
   "use strict";
   var UI = window.UI;
-  var $ = UI.qs                                               ;
+  var $ = UI.qs as ((sel: string, root?: ParentNode) => DomEl);
 
   var DEFAULTS = {
     api_key: "",
@@ -18,7 +18,7 @@
   var current = null;
   var menuOpen = false;
 
-  function renderModelMenu(models     ) {
+  function renderModelMenu(models: any) {
     var menu = $("#modelMenu");
     menu.innerHTML = "";
     if (!models || !models.length) {
@@ -28,7 +28,7 @@
       menu.appendChild(empty);
       return;
     }
-    models.forEach(function (m     ) {
+    models.forEach(function (m: any) {
       var opt = document.createElement("div");
       opt.className = "select-option";
       opt.textContent = m;
@@ -59,7 +59,7 @@
     menuOpen = false;
   }
 
-  function fillForm(s     ) {
+  function fillForm(s: any) {
     current = s;
     $("#apiKey").value = s.api_key || "";
     $("#baseUrl").value = s.base_url || "";
@@ -78,11 +78,11 @@
   function collect() {
     var effort = "max";
     UI.qsa(".fn.active", $("#effortSelector")).forEach(function (b) {
-      effort = b.dataset.effort       ;
+      effort = b.dataset.effort as any;
     });
     /* 数值字段：空串或 0 都按"未设置"处理（0 在运行时被当作未设置，
        若存 0 设置页会显示 0 但实际不生效——误导用户） */
-    function numOrNull(input     ) {
+    function numOrNull(input: any) {
       var v = input.value;
       if (v === "") return null;
       var n = Number(v);
@@ -101,9 +101,9 @@
   }
 
   /* ═══════════ MIDI 硬件设备管理 ═══════════ */
-  var midiAccess      = null;
-  var activeMidiInput      = null;
-  var midiSignalTimer      = null;
+  var midiAccess: any = null;
+  var activeMidiInput: any = null;
+  var midiSignalTimer: any = null;
 
   var MIDI_STORAGE_KEY = "ai-midi-hardware-settings";
   var DEFAULT_MIDI_SETTINGS = {
@@ -123,13 +123,13 @@
     }
   }
 
-  function saveMidiSettings(s     ) {
+  function saveMidiSettings(s: any) {
     try {
       localStorage.setItem(MIDI_STORAGE_KEY, JSON.stringify(s));
     } catch (e) {}
   }
 
-  function flashMidiSignal(note     , vel     ) {
+  function flashMidiSignal(note: any, vel: any) {
     var stamp = $("#midiSignalStamp");
     if (!stamp) return;
     stamp.style.display = "inline-flex";
@@ -142,7 +142,7 @@
     }, 400);
   }
 
-  function onMidiMessage(e     ) {
+  function onMidiMessage(e: any) {
     var data = e.data;
     if (!data || data.length < 2) return;
     var status = data[0] & 0xf0;
@@ -159,8 +159,8 @@
 
   var lastMidiDeviceSig = "";
 
-  function scanMidiDevices(preferredId     , isBackgroundEvent      ) {
-    var sel      = $("#midiDeviceSelect");
+  function scanMidiDevices(preferredId: any, isBackgroundEvent?: any) {
+    var sel: any = $("#midiDeviceSelect");
     var status = $("#midiDeviceStatus");
     if (!sel || !status) return;
 
@@ -180,7 +180,7 @@
       midiAccess = access;
 
       var inputs = Array.from(access.inputs.values());
-      var currentSig = inputs.map(function (inp     ) { return inp.id + ":" + inp.state; }).join(",");
+      var currentSig = inputs.map(function (inp: any) { return inp.id + ":" + inp.state; }).join(",");
 
       // 仅在设备列表有真实物理变动时才重绘下拉列表与提示，彻底根治递归死循环抽搐
       if (currentSig !== lastMidiDeviceSig || !sel.options.length) {
@@ -200,7 +200,7 @@
           status.textContent = "未检测到外部 MIDI 输入设备";
           status.className = "dim";
         } else {
-          inputs.forEach(function (inp     ) {
+          inputs.forEach(function (inp: any) {
             var opt = document.createElement("option");
             opt.value = inp.id;
             opt.textContent = (inp.name || "MIDI 设备") + (inp.manufacturer ? " (" + inp.manufacturer + ")" : "");
@@ -211,7 +211,7 @@
         }
 
         var targetId = preferredId !== undefined ? preferredId : (sel.value || "auto");
-        if (targetId && Array.from(sel.options).some(function (o     ) { return o.value === targetId; })) {
+        if (targetId && Array.from(sel.options).some(function (o: any) { return o.value === targetId; })) {
           sel.value = targetId;
         }
 
@@ -231,7 +231,7 @@
     });
   }
 
-  function bindSelectedMidiInput(deviceId     ) {
+  function bindSelectedMidiInput(deviceId: any) {
     if (!midiAccess || !$("#midiInputEnabled") || !$("#midiInputEnabled").checked) {
       if (activeMidiInput) {
         try { activeMidiInput.onmidimessage = null; } catch (e) {}
@@ -297,12 +297,12 @@
   var activePane = "";
   var paneToken = 0;
 
-  function clearPaneAnim(p     ) {
+  function clearPaneAnim(p: any) {
     p.classList.remove("sc-out-up", "sc-out-down", "sc-in-up", "sc-in-down");
   }
 
   /* 标签序号：新标签在旧标签之后 = 向下滚动，反之向上 */
-  function tabOrderIndex(paneId     ) {
+  function tabOrderIndex(paneId: any) {
     var btns = UI.qsa(".settings-tab", $(".settings-tabs"));
     for (var i = 0; i < btns.length; i++) {
       if (btns[i].dataset.pane === paneId) return i;
@@ -311,7 +311,7 @@
   }
 
   /* 初始化/复位：无动画直接同步标签与面板显隐 */
-  function activatePane(paneId     ) {
+  function activatePane(paneId: any) {
     UI.qsa(".settings-tab", $(".settings-tabs")).forEach(function (t) {
       var on = t.dataset.pane === paneId;
       t.classList.toggle("active", on);
@@ -326,7 +326,7 @@
   /* 切换面板：纵向滚动 + 运动模糊——旧面板朝反方向带模糊滑出（0.34s），
      新面板从另一侧带模糊推入、落定时清晰（0.46s）；token 防快速连点竞态；
      reduced-motion 直接切换显隐 */
-  function switchPane(btn     , paneId     ) {
+  function switchPane(btn: any, paneId: any) {
     if (paneId === activePane) return;
     if (paneId === "paneShortcuts") renderShortcutsPane();
     if (paneId === "paneLibrary") loadLibraryFiles();
@@ -385,7 +385,7 @@
      「更改」（进入捕获态，按下新键位即绑定，Esc 取消）+「恢复默认」。
      绑定即时写入 localStorage（与音频设置"即时生效"一致，chat 页下次
      加载即生效）；冲突键位由 Shortcuts.set 拒绝并提示占用者。 */
-  var _capturingRow      = null;   // 当前捕获态的 DOM 行
+  var _capturingRow: any = null;   // 当前捕获态的 DOM 行
 
   function renderShortcutsPane() {
     var list = $("#shortcutsList");
@@ -427,7 +427,7 @@
         resetBtn.addEventListener("click", function () {
           window.Shortcuts.reset(item.action);
           renderShortcutsPane();
-          UI.toast ("✓ 已恢复默认: " + item.label, "ok");
+          UI.toast!("✓ 已恢复默认: " + item.label, "ok");
         });
 
         row.appendChild(name);
@@ -443,14 +443,14 @@
       resetAll.onclick = function () {
         window.Shortcuts.resetAll();
         renderShortcutsPane();
-        UI.toast ("✓ 已恢复全部默认键位", "ok");
+        UI.toast!("✓ 已恢复全部默认键位", "ok");
       };
     }
   }
 
   /* 捕获态：行高亮 + 提示"按下新键位…"；Esc/鼠标点击取消；
      修饰键组合按下时等待松开再判定（避免 Ctrl 按下瞬间误绑） */
-  function startCapture(row     ) {
+  function startCapture(row: any) {
     if (_capturingRow) cancelCapture();
     _capturingRow = row;
     row.classList.add("capturing");
@@ -470,7 +470,7 @@
       row.classList.remove("capturing");
       renderShortcutsPane();   // 恢复键位显示
     }
-    function onKey(e     ) {
+    function onKey(e: any) {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(); return; }
       if (e.key === "Control" || e.key === "Alt" || e.key === "Shift" || e.key === "Meta") return; // 等修饰键松开
       e.preventDefault();
@@ -480,13 +480,13 @@
       var action = row.dataset.action;
       var err = window.Shortcuts.set(action, spec);
       if (err) {
-        UI.toast ("✗ " + err, "err");
+        UI.toast!("✗ " + err, "err");
       } else {
-        UI.toast ("✓ 已绑定 " + window.Shortcuts.label(action) + ": " + window.Shortcuts.pretty(spec), "ok");
+        UI.toast!("✓ 已绑定 " + window.Shortcuts.label(action) + ": " + window.Shortcuts.pretty(spec), "ok");
       }
       finish();
     }
-    function onMouse(e     ) {
+    function onMouse(e: any) {
       if (!row.contains(e.target)) finish();
     }
     document.addEventListener("keydown", onKey, true);
@@ -506,21 +506,21 @@
      是否 read_library_file。列表/上传/删除/重命名/预览，操作即时生效
      （AI 每轮请求都会重建文件清单，无需保存配置）。 */
 
-  function libFmtSize(n     ) {
+  function libFmtSize(n: any) {
     if (!(n >= 0)) return "";
     if (n < 1024) return n + " B";
     if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
     return (n / 1024 / 1024).toFixed(2) + " MB";
   }
 
-  function libFmtTime(ms     ) {
+  function libFmtTime(ms: any) {
     try { return new Date(ms).toLocaleDateString(); } catch (e) { return ""; }
   }
 
   /* 当前用户文件名（小写，Windows 文件名不区分大小写），上传时判断同名覆盖 */
-  var libUserNames        = [];
+  var libUserNames: any[] = [];
 
-  function libFileRow(f     , builtin     ) {
+  function libFileRow(f: any, builtin: any) {
     var row = document.createElement("div");
     row.className = "lib-file-row";
     row.dataset.name = f.name;
@@ -570,14 +570,14 @@
     return row;
   }
 
-  function libEmptyHint(text     ) {
+  function libEmptyHint(text: any) {
     var empty = document.createElement("div");
     empty.className = "dim lib-file-empty";
     empty.textContent = text;
     return empty;
   }
 
-  function renderLibraryLists(data     ) {
+  function renderLibraryLists(data: any) {
     var list = $("#libFileList");
     var builtinList = $("#libBuiltinList");
     if (!list || !builtinList) return;
@@ -597,7 +597,7 @@
     if (!user.length) {
       list.appendChild(libEmptyHint("还没有自定义知识文件，点击「上传知识文件」添加（支持多选）。"));
     }
-    user.forEach(function (f     ) {
+    user.forEach(function (f: any) {
       libUserNames.push((f.name || "").toLowerCase());
       list.appendChild(libFileRow(f, false));
     });
@@ -605,19 +605,19 @@
     if (!builtin.length) {
       builtinList.appendChild(libEmptyHint("未检测到内置知识文件（Library 目录缺失或为空）。"));
     }
-    builtin.forEach(function (f     ) {
+    builtin.forEach(function (f: any) {
       builtinList.appendChild(libFileRow(f, true));
     });
   }
 
   function loadLibraryFiles() {
     return UI.getJSON("/api/library/files").then(renderLibraryLists).catch(function (e) {
-      UI.toast ("✗ 加载知识库文件列表失败: " + e.message, "err");
+      UI.toast!("✗ 加载知识库文件列表失败: " + e.message, "err");
     });
   }
 
   /* 预览：内嵌展开在行下方，再点收起（每次展开重新拉取，保证最新内容） */
-  function toggleLibPreview(row     ) {
+  function toggleLibPreview(row: any) {
     var scope = row.parentElement && row.parentElement.id === "libBuiltinList" ? "builtin" : "user";
     var next = row.nextElementSibling;
     if (next && next.classList.contains("lib-preview")) {
@@ -625,7 +625,7 @@
       return;
     }
     var url = "/api/library/files/content?scope=" + scope + "&name=" + encodeURIComponent(row.dataset.name);
-    UI.getJSON(url).then(function (j     ) {
+    UI.getJSON(url).then(function (j: any) {
       if (!row.isConnected) return;
       var nx = row.nextElementSibling;
       if (nx && nx.classList.contains("lib-preview")) nx.remove();
@@ -634,37 +634,37 @@
       pre.textContent = (j.content || "") + (j.truncated ? "\n\n…（内容过长，已截断显示）" : "");
       row.after(pre);
     }).catch(function (e) {
-      UI.toast ("✗ 预览失败: " + e.message, "err");
+      UI.toast!("✗ 预览失败: " + e.message, "err");
     });
   }
 
-  function deleteLibFile(row     ) {
+  function deleteLibFile(row: any) {
     var name = row.dataset.name;
     if (!window.confirm("确定删除知识文件「" + name + "」？此操作不可恢复。")) return;
     UI.delJSON("/api/library/files?name=" + encodeURIComponent(name)).then(function () {
-      UI.toast ("✓ 已删除 " + name, "ok");
+      UI.toast!("✓ 已删除 " + name, "ok");
       loadLibraryFiles();
     }).catch(function (e) {
-      UI.toast ("✗ 删除失败: " + e.message, "err");
+      UI.toast!("✗ 删除失败: " + e.message, "err");
     });
   }
 
-  function renameLibFile(row     ) {
+  function renameLibFile(row: any) {
     var name = row.dataset.name;
     var input = window.prompt("重命名知识文件（文件名即内容概括，供 AI 判断是否调用）：", name);
     if (input === null) return;
     var to = input.trim();
     if (!to || to === name) return;
     UI.postJSON("/api/library/files/rename", { from: name, to: to }).then(function () {
-      UI.toast ("✓ 已重命名为 " + to, "ok");
+      UI.toast!("✓ 已重命名为 " + to, "ok");
       loadLibraryFiles();
     }).catch(function (e) {
-      UI.toast ("✗ 重命名失败: " + e.message, "err");
+      UI.toast!("✗ 重命名失败: " + e.message, "err");
     });
   }
 
   /* 逐个串行上传（单文件失败不阻断后续），完成后统一刷新列表 */
-  function uploadLibFiles(files     ) {
+  function uploadLibFiles(files: any) {
     var pending = Array.prototype.slice.call(files || []);
     var next = function () {
       var f = pending.shift();
@@ -692,10 +692,10 @@
               throw new Error("HTTP " + r.status);
             });
           }
-          UI.toast ("✓ 已上传 " + f.name, "ok");
+          UI.toast!("✓ 已上传 " + f.name, "ok");
         });
       }).catch(function (e) {
-        UI.toast ("✗ 上传「" + f.name + "」失败: " + e.message, "err");
+        UI.toast!("✗ 上传「" + f.name + "」失败: " + e.message, "err");
       }).then(next);
     };
     next();
@@ -712,19 +712,19 @@
     });
     $("#libOpenDirBtn").addEventListener("click", function () {
       UI.postJSON("/api/library/open", {}).catch(function (e) {
-        UI.toast ("✗ 打开文件夹失败: " + e.message, "err");
+        UI.toast!("✗ 打开文件夹失败: " + e.message, "err");
       });
     });
     $("#libFileList").addEventListener("click", function (e) {
-      var row = e.target .closest (".lib-file-row");
+      var row = e.target!.closest!(".lib-file-row");
       if (!row) return;
-      if (e.target .classList .contains("action-preview")) toggleLibPreview(row);
-      else if (e.target .classList .contains("action-del")) deleteLibFile(row);
-      else if (e.target .classList .contains("action-rename")) renameLibFile(row);
+      if (e.target!.classList!.contains("action-preview")) toggleLibPreview(row);
+      else if (e.target!.classList!.contains("action-del")) deleteLibFile(row);
+      else if (e.target!.classList!.contains("action-rename")) renameLibFile(row);
     });
     $("#libBuiltinList").addEventListener("click", function (e) {
-      var row = e.target .closest (".lib-file-row");
-      if (row && e.target .classList .contains("action-preview")) toggleLibPreview(row);
+      var row = e.target!.closest!(".lib-file-row");
+      if (row && e.target!.classList!.contains("action-preview")) toggleLibPreview(row);
     });
   }
 
@@ -751,10 +751,10 @@
     ball.className = "about-ball";
     pane.appendChild(ball);
 
-    var logoWrap      = pane.querySelector(".about-logo-wrap");
-    var raf      = null;
+    var logoWrap: any = pane.querySelector(".about-logo-wrap");
+    var raf: any = null;
     var mx = 0, my = 0, size = 48;
-    var snapBtn      = null;
+    var snapBtn: any = null;
 
     function paint() {
       raf = null;
@@ -771,7 +771,7 @@
       ball.style.borderRadius = "50%";
     }
 
-    function snapTo(btn     ) {
+    function snapTo(btn: any) {
       if (snapBtn === btn) return;
       snapBtn = btn;
       /* 几何测量只在"进入新按钮"时做一次（光标停在按钮上移动期间
@@ -789,7 +789,7 @@
 
     var TILT_MAX = 18;   // 3D 倾斜最大角度（度）：触点一侧明显下沉
 
-    function moveLogoDent(x     , y     ) {
+    function moveLogoDent(x: any, y: any) {
       if (!logoWrap) return;
       var lr = logoWrap.getBoundingClientRect();
       /* 钳制到 [0,1]：光标贴边越界时（凸出条带上仍可能派发 move），
@@ -808,15 +808,15 @@
       if (!logoWrap) return;
       logoWrap.classList.remove("pressed");
       ["--dx", "--dy", "--rx", "--ry"].forEach(function (p) {
-        logoWrap .style.removeProperty(p);
+        logoWrap!.style.removeProperty(p);
       });
     }
 
     pane.addEventListener("pointermove", function (e) {
       mx = e.clientX; my = e.clientY;
       var t = e.target;
-      var btn = t .closest ? t .closest (".about-link, .btn") : null;
-      var onLogo = t .closest ? t .closest (".about-logo-wrap") : null;
+      var btn = t!.closest ? t!.closest!(".about-link, .btn") : null;
+      var onLogo = t!.closest ? t!.closest!(".about-logo-wrap") : null;
       if (btn) {
         /* 只在目标按钮变化时重测几何（snapTo 内 snapBtn===btn 直接
            return）：光标在按钮上连续移动时不再每帧 getBoundingClientRect
@@ -842,7 +842,7 @@
     });
 
     if (logoWrap) {
-      logoWrap.addEventListener("pointerenter", function () { logoWrap .classList.add("pressed"); });
+      logoWrap.addEventListener("pointerenter", function () { logoWrap!.classList.add("pressed"); });
       logoWrap.addEventListener("pointerleave", clearLogoDent);
     }
   }
@@ -872,7 +872,7 @@
     if ($("#issueBtn")) {
       $("#issueBtn").addEventListener("click", function () {
         if (window.UI && window.UI.openExternal) {
-          UI.openExternal ("https://github.com/abab996/AI_MIDI/issues/new");
+          UI.openExternal!("https://github.com/abab996/AI_MIDI/issues/new");
         }
       });
     }
@@ -882,7 +882,7 @@
     UI.qsa(".about-links a[data-ext]").forEach(function (a) {
       a.addEventListener("click", function (e) {
         e.preventDefault();
-        UI.openExternal (a.href);
+        UI.openExternal!(a.href);
       });
     });
 
@@ -891,13 +891,13 @@
       fillForm(s);
       fillMidiSettings();
     }).catch(function (e) {
-      UI.toast ("✗ 加载设置失败: " + e.message, "err");
+      UI.toast!("✗ 加载设置失败: " + e.message, "err");
       fillMidiSettings();
     });
 
     /* About 卡片：版本号（与 wails.json 同源，失败静默显示 --） */
     if ($("#aboutVersion")) {
-      UI.getJSON("/api/version").then(function (v     ) {
+      UI.getJSON("/api/version").then(function (v: any) {
         $("#aboutVersion").textContent = "v" + (v.version || "--");
       }).catch(function () {});
     }
@@ -906,7 +906,7 @@
     if ($("#refreshMidiBtn")) {
       $("#refreshMidiBtn").addEventListener("click", function () {
         scanMidiDevices($("#midiDeviceSelect") ? $("#midiDeviceSelect").value : "auto");
-        UI.toast ("✓ 已重新扫描 MIDI 端口", "ok");
+        UI.toast!("✓ 已重新扫描 MIDI 端口", "ok");
       });
     }
     if ($("#midiDeviceSelect")) {
@@ -921,7 +921,7 @@
     }
 
     /* 显示/隐藏 API Key */
-    var keyInput      = $("#apiKey");
+    var keyInput: any = $("#apiKey");
     $("#showKeyBtn").addEventListener("click", function () {
       var showing = keyInput.type === "text";
       keyInput.type = showing ? "password" : "text";
@@ -949,15 +949,15 @@
         api_key: s.api_key,
         base_url: s.base_url,
         api_path: s.api_path,
-      }).then(function (data     ) {
+      }).then(function (data: any) {
         status.textContent = data.message;
         status.className = data.models && data.models.length ? "ok" : "err";
         renderModelMenu(data.models || []);
         if (data.models && data.models.length) {
           if (!s.model) $("#model").value = data.models[0];
-          UI.toast ("✓ 已获取 " + data.models.length + " 个模型", "ok");
+          UI.toast!("✓ 已获取 " + data.models.length + " 个模型", "ok");
         } else {
-          UI.toast ("✗ " + data.message, "err");
+          UI.toast!("✗ " + data.message, "err");
         }
       }).catch(function (e) {
         status.textContent = "✗ 获取失败: " + e.message;
@@ -970,7 +970,7 @@
       if (menuOpen) closeModelMenu(); else openModelMenu();
     });
     document.addEventListener("click", function (e) {
-      if (!e.target .closest (".select-wrap")) closeModelMenu();
+      if (!e.target!.closest!(".select-wrap")) closeModelMenu();
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") closeModelMenu();
@@ -981,16 +981,16 @@
       var btn = this;
       btn.disabled = true;
       saveMidiSettings(collectMidiSettings());
-      UI.putJSON("/api/settings", collect()).then(function (data     ) {
+      UI.putJSON("/api/settings", collect()).then(function (data: any) {
         var st = $("#saveStatus");
         st.textContent = data.message;
         st.style.color = "var(--color-primary)";
-        UI.toast (data.message, "ok");
+        UI.toast!(data.message, "ok");
       }).catch(function (e) {
         var st = $("#saveStatus");
         st.textContent = "✗ 保存失败: " + e.message;
         st.style.color = "var(--color-danger)";
-        UI.toast ("✗ " + e.message, "err");
+        UI.toast!("✗ " + e.message, "err");
       }).finally(function () {
         btn.disabled = false;
       });
@@ -1005,9 +1005,9 @@
       /* LLM 设置也同步落盘：此前只填表单不保存，确认框却写着「立即保存」，
          用户以为已持久化，重启后旧值回来。api_key 为空时服务端保留已存密钥 */
       UI.putJSON("/api/settings", collect()).then(function () {
-        UI.toast ("✓ 已恢复默认设置", "ok");
+        UI.toast!("✓ 已恢复默认设置", "ok");
       }).catch(function (e) {
-        UI.toast ("✗ 恢复失败: " + e.message, "err");
+        UI.toast!("✗ 恢复失败: " + e.message, "err");
       });
     });
   }

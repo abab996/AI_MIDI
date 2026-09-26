@@ -1,5 +1,5 @@
 /* AI_MIDI 前端共享工具库 */
-(function (global        ) {
+(function (global: Window) {
   "use strict";
 
   /* ---- 全局脚本错误兜底 ----
@@ -31,8 +31,8 @@
   });
 
   /* ---- DOM 工具 ---- */
-  function qs(sel        , root             )                 { return (root || document).querySelector(sel); }
-  function qsa(sel        , root             )          { return Array.prototype.slice.call((root || document).querySelectorAll(sel))           ; }
+  function qs(sel: string, root?: ParentNode): Element | null { return (root || document).querySelector(sel); }
+  function qsa(sel: string, root?: ParentNode): DomEl[] { return Array.prototype.slice.call((root || document).querySelectorAll(sel)) as DomEl[]; }
 
   /* ---- 提示条 ---- */
   function ensureToastZone() {
@@ -49,7 +49,7 @@
     return zone;
   }
 
-  function toast(message         , kind         ) {
+  function toast(message: unknown, kind?: string) {
     var zone = ensureToastZone();
     var el = document.createElement("div");
     el.className = "toast " + (kind || "");
@@ -81,7 +81,7 @@
 
   /* 文本级错误文案收口：调用方直接拼接 e.message 的地方（约 40 处）
      也能把浏览器原文（Failed to fetch 等）换成可读中文 */
-  function friendlyText(text         ) {
+  function friendlyText(text: unknown) {
     var s = String(text == null ? "" : text);
     if (/Failed to fetch|NetworkError|Load failed/i.test(s)) {
       return s.replace(/Failed to fetch|NetworkError[^:]*:?|Load failed/i,
@@ -91,7 +91,7 @@
   }
 
   /* ---- 工具 ---- */
-  function esc(s         ) {
+  function esc(s: unknown) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -100,25 +100,25 @@
       .replace(/'/g, "&#39;");
   }
 
-  function fmtSize(bytes        ) {
+  function fmtSize(bytes: number) {
     if (!bytes) return "0 B";
     if (bytes < 1024) return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
     return (bytes / 1024 / 1024).toFixed(1) + " MB";
   }
 
-  function fmtDate(s                    ) {
+  function fmtDate(s: string | undefined) {
     if (!s) return "";
     var d = new Date(s);
     if (isNaN(d.getTime())) return String(s).slice(0, 10);
-    var p = function (n        ) { return String(n).padStart(2, "0"); };
+    var p = function (n: number) { return String(n).padStart(2, "0"); };
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
   }
 
   /* ---- 网络 ---- */
   /* 非 OK 响应：优先取 JSON detail；响应体非 JSON（502/504 网关页等）时
      回退状态码+文本摘要，避免 r.json() 抛 SyntaxError 显示解析乱码 */
-  function throwHttpError(r          ) {
+  function throwHttpError(r: Response) {
     return r.text().then(function (t) {
       var detail = "";
       try {
@@ -132,21 +132,21 @@
 
   /* 网络层错误（断网/DNS 失败）：fetch 拒绝时把浏览器原文
      "Failed to fetch" 换成可读文案 */
-  function friendlyError(e         ) {
+  function friendlyError(e: unknown) {
     if (e instanceof TypeError && /fetch/i.test(e.message || "")) {
       return new Error("网络连接失败，请检查网络后重试");
     }
     return e;
   }
 
-  function getJSON   (url        )             {
+  function getJSON<T>(url: string): Promise<T> {
     return fetch(url).then(function (r) {
       if (!r.ok) return throwHttpError(r);
       return r.json();
-    }).catch(friendlyError)              ;
+    }).catch(friendlyError) as Promise<T>;
   }
 
-  function postJSON   (url        , body          )             {
+  function postJSON<T>(url: string, body?: unknown): Promise<T> {
     return fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -154,10 +154,10 @@
     }).then(function (r) {
       if (!r.ok) return throwHttpError(r);
       return r.json();
-    }).catch(friendlyError)              ;
+    }).catch(friendlyError) as Promise<T>;
   }
 
-  function putJSON   (url        , body          )             {
+  function putJSON<T>(url: string, body?: unknown): Promise<T> {
     return fetch(url, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -165,10 +165,10 @@
     }).then(function (r) {
       if (!r.ok) return throwHttpError(r);
       return r.json();
-    }).catch(friendlyError)              ;
+    }).catch(friendlyError) as Promise<T>;
   }
 
-  function delJSON   (url        , body          )             {
+  function delJSON<T>(url: string, body?: unknown): Promise<T> {
     return fetch(url, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
@@ -176,13 +176,13 @@
     }).then(function (r) {
       if (!r.ok) return throwHttpError(r);
       return r.json();
-    }).catch(friendlyError)              ;
+    }).catch(friendlyError) as Promise<T>;
   }
 
   /* 打开外部链接（系统默认浏览器）：走后端 /api/open-url——该端点仅放行
      本应用自己的 GitHub 链接（防开放跳转）；后端不可达/拒绝时兜底新窗口，
      保证浏览器模式与桌面模式行为一致 */
-  function openExternal(url        )                   {
+  function openExternal(url: string): Promise<unknown> {
     return fetch("/api/open-url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -201,7 +201,7 @@
      报「连接超时」而非永久挂起——否则界面会一直卡在忙碌状态） */
   var SSE_TIMEOUT_MS = 300000;
 
-  function ssePost   (url        , body         , onEvent                 , opts          )                   {
+  function ssePost<T>(url: string, body: unknown, onEvent: (ev: T) => void, opts?: SseOpts): Promise<unknown> {
     opts = opts || {};
     var externalSignal = opts.signal || null;
     var timeoutMs = opts.timeoutMs || SSE_TIMEOUT_MS;
@@ -209,7 +209,7 @@
        超时中止也走这里；用 timedOut 区分「用户停止」与「断线」 */
     var internal = new AbortController();
     var timedOut = false;
-    var timer                = null;
+    var timer: number | null = null;
 
     function clearTimer() {
       if (timer) { clearTimeout(timer); timer = null; }
@@ -239,17 +239,17 @@
         clearTimer();
         return resp.json().then(function (j) { throw new Error(j.detail || ("HTTP " + resp.status)); });
       }
-      var reader = resp.body .getReader();
+      var reader = resp.body!.getReader();
       var decoder = new TextDecoder("utf-8");
       var buffer = "";
 
-      function pump()                {
-        return reader.read().then(function (result)                       {
+      function pump(): Promise<void> {
+        return reader.read().then(function (result): Promise<void> | void {
           if (result.done) { clearTimer(); return; }
           touchTimer();   /* 收到数据帧：重置挂起计时 */
           buffer += decoder.decode(result.value, { stream: true });
           var lines = buffer.split("\n");
-          buffer = lines.pop() ;
+          buffer = lines.pop()!;
           lines.forEach(function (line) {
             if (line.indexOf("data: ") === 0) {
               try {
@@ -277,7 +277,7 @@
      kind: "chat" | "answer"；onEvent(ev) 逐事件回调；onEnd() 流结束（含
      正常/异常/后端 done），保证只触发一次。 */
   var warnedBridgeFallback = false;   /* 桌面模式桥未生效：每页仅提示一次 */
-  function streamStart(kind        , body                 , onEvent                       , onEnd            , opts          )                   {
+  function streamStart(kind: string, body: StreamStartBody, onEvent: (ev: unknown) => void, onEnd: () => void, opts?: SseOpts): Promise<unknown> {
     var appBindings = (window.go && window.go.app && window.go.app.App) || null;
     var bridged = appBindings && window.runtime
       && typeof window.runtime.EventsOn === "function"
@@ -324,9 +324,9 @@
        时不能无限转圈——超时收尾复位 busy 态并抛出可见错误；任一事件帧
        到达即重置。此前桥路径无任何超时兜底 */
     var settled = false;
-    var settleResolve                        , settleReject                            ;
-    var settle = new Promise      (function (res, rej) { settleResolve = res; settleReject = rej; });
-    var timer                = null;
+    var settleResolve: (value?: void) => void, settleReject: (reason?: unknown) => void;
+    var settle = new Promise<void>(function (res, rej) { settleResolve = res; settleReject = rej; });
+    var timer: number | null = null;
     function clearTimer() {
       if (timer) { clearTimeout(timer); timer = null; }
     }
@@ -341,11 +341,11 @@
       if (ended) return;
       ended = true;
       clearTimer();
-      try { window.runtime .EventsOff(evtName); } catch (e) {}
-      try { window.runtime .EventsOff(endName); } catch (e) {}
+      try { window.runtime!.EventsOff(evtName); } catch (e) {}
+      try { window.runtime!.EventsOff(endName); } catch (e) {}
       onEnd();
     }
-    window.runtime .EventsOn(evtName, function (data) {
+    window.runtime!.EventsOn(evtName, function (data) {
       if (ended) return;
       touchTimer();   /* 有帧到达：重置挂起计时 */
       try {
@@ -353,16 +353,16 @@
         onEvent(ev);
       } catch (e) { /* 忽略坏帧 */ }
     });
-    window.runtime .EventsOn(endName, function () {
+    window.runtime!.EventsOn(endName, function () {
       finish();
       if (!settled) { settled = true; settleResolve(); }
     });
 
-    var p               ;
+    var p: Promise<void>;
     if (kind === "answer") {
-      p = appBindings .AnswerStreamStart(body.project_id          , body.question_id          , body.answers, sid);
+      p = appBindings!.AnswerStreamStart(body.project_id as string, body.question_id as string, body.answers, sid);
     } else {
-      p = appBindings .ChatStreamStart(body.project_id          , body.message          , !!body.edit, body.task_id || "", sid);
+      p = appBindings!.ChatStreamStart(body.project_id as string, body.message as string, !!body.edit, body.task_id || "", sid);
     }
     touchTimer();
     /* 绑定调用立即返回（Go 侧起 goroutine 后台执行）；settle 在流真正结束
@@ -378,7 +378,7 @@
   function initNavDirections() {
     UI.qsa("a[href][data-dir]").forEach(function (a) {
       a.addEventListener("click", function () {
-        var dir = a.getAttribute("data-dir")          ;
+        var dir = a.getAttribute("data-dir") as string;
         document.documentElement.dataset.nav = dir;
         try { sessionStorage.setItem("ai-midi-nav-dir", dir); } catch (e) {}
       });
@@ -390,7 +390,7 @@
   /* isSafeLinkHref 链接 scheme 白名单：http/https/mailto/页内锚点/相对路径。
      marked v12 已移除 sanitize，[x](javascript:...) 会原样产出可点击链接，
      必须在这里拦掉（LLM 输出可被间接提示词注入携带恶意链接）。 */
-  function isSafeLinkHref(href         ) {
+  function isSafeLinkHref(href: unknown) {
     var h = String(href == null ? "" : href).replace(/[\t\n\r]/g, "").trim();
     var lower = h.toLowerCase();
     if (lower === "" || lower.charAt(0) === "#") return true;
@@ -401,14 +401,14 @@
   if (window.marked && window.marked.use && window.marked.Renderer) {
     try {
       var _mdRenderer = new window.marked.Renderer();
-      _mdRenderer.html = function (token                        ) {
+      _mdRenderer.html = function (token: MarkedHtmlToken | null) {
         var raw = (token && token.text != null) ? token.text : String(token);
         return esc(raw);
       };
       var _defaultLink = window.marked.Renderer.prototype.link;
       /* 兼容两种 renderer 签名：旧版 link(href, title, text) 与新版 link(token)。
          本仓库自带的 marked.min.js 为旧版签名（实测）。 */
-      _mdRenderer.link = function (               a                                  , b          , c          ) {
+      _mdRenderer.link = function (this: unknown, a?: MarkedHtmlToken | string | null, b?: unknown, c?: unknown) {
         if (a && typeof a === "object") {
           /* 新版 token 签名 */
           if (!isSafeLinkHref(a.href)) {
@@ -426,7 +426,7 @@
     } catch (e) { /* marked 配置失败时按默认行为渲染 */ }
   }
 
-  function md(text         ) {
+  function md(text: unknown) {
     var s = String(text == null ? "" : text);
     if (window.marked && typeof window.marked.parse === "function") {
       try {
@@ -439,15 +439,15 @@
   }
 
   /* 行内渲染：剥掉段落包裹（用于 <summary> 等单行场景） */
-  function mdInline(text         ) {
+  function mdInline(text: unknown) {
     return md(text).trim().replace(/^<p>/, "").replace(/<\/p>$/, "");
   }
 
   /* 迷你 Markdown 渲染（输入先 esc，输出安全 HTML；无 marked 时的回退） */
-  function mdMini(text         ) {
+  function mdMini(text: unknown) {
     var s = esc(text);
     /* 代码块 */
-    s = s.split("```").map(function (part        , i        ) {
+    s = s.split("```").map(function (part: string, i: number) {
       if (i % 2 === 0) return part;
       var lines = part.split("\n");
       lines.shift(); /* 去掉语言标记行 */
@@ -469,7 +469,7 @@
     /* 列表 */
     s = s.replace(/^[-*] (.*)$/gm, "• $1");
     /* 段落 */
-    var blocks = s.split(/\n{2,}/).map(function (block        ) {
+    var blocks = s.split(/\n{2,}/).map(function (block: string) {
       var t = block.trim();
       if (!t) return "";
       if (/^<(h\d|pre|ul|ol)/.test(t)) return t;
@@ -479,7 +479,7 @@
   }
 
   /* ---- 档案卡片（对话页档案库渲染） ---- */
-  function projectCard(proj                ) {
+  function projectCard(proj: ProjectSummary) {
     var card = document.createElement("article");
     card.className = "card draft brackets proj-card";
     card.dataset.id = proj.id;
@@ -503,8 +503,8 @@
   /* ---- 走带偏好：暂停后光标是否回退到本次播放起点 ----
      编曲窗与钢琴窗共用；从 /api/settings 读一次并缓存。
      onTransportPrefs 供走带条开关订阅初始值与后续变化 */
-  var transportPrefs                 = { resumeOnPause: false, loaded: false };
-  var transportSubs                                         = [];
+  var transportPrefs: TransportPrefs = { resumeOnPause: false, loaded: false };
+  var transportSubs: Array<(prefs: TransportPrefs) => void> = [];
 
   function notifyTransportSubs() {
     for (var i = 0; i < transportSubs.length; i++) {
@@ -515,7 +515,7 @@
   function getTransportPrefs() {
     if (!transportPrefs.loaded) {
       transportPrefs.loaded = true;
-      getJSON                  ("/api/settings").then(function (s) {
+      getJSON<SettingsResponse>("/api/settings").then(function (s) {
         if (s && typeof s.transport_resume_on_pause === "boolean") {
           transportPrefs.resumeOnPause = s.transport_resume_on_pause;
           notifyTransportSubs();
@@ -527,12 +527,12 @@
 
   /* 走带条开关写入：先改本地缓存（编曲窗/钢琴窗即时一致），
      持久化由调用方经 /api/transport/prefs 完成 */
-  function setTransportPref(key        , val         ) {
+  function setTransportPref(key: string, val: boolean) {
     transportPrefs[key] = val;
     notifyTransportSubs();
   }
 
-  function onTransportPrefs(fn                                 ) {
+  function onTransportPrefs(fn: (prefs: TransportPrefs) => void) {
     transportSubs.push(fn);
     if (transportPrefs.loaded) fn(transportPrefs);
   }
@@ -553,7 +553,7 @@
      因此被意外重复激活）。冒泡阶段在按钮自身 handler 之后 blur——
      键盘 Tab 导航的焦点不受影响 */
   document.addEventListener("click", function (e) {
-    var t = e.target       ;
+    var t = e.target as any;
     while (t && t !== document) {
       if (t.tagName === "BUTTON") {
         t.blur();

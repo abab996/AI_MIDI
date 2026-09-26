@@ -13,7 +13,7 @@
 
   /* 动作 → 默认键位（现状盘点：pianoroll.js / arrange.js / midi_input.js
      改造前的硬编码；数组 = 任一命中即触发） */
-  var DEFAULTS                                          = {
+  var DEFAULTS: { [action: string]: string | string[] } = {
     /* ── 全局（键盘弹奏） ── */
     "global.octaveDown": ["BracketLeft", "Minus", "PageDown"],
     "global.octaveUp": ["BracketRight", "Equal", "PageUp"],
@@ -86,9 +86,9 @@
     { key: "arrange", label: "编曲窗" }
   ];
 
-  var _cache                                        = null;   // {action: [spec, ...]}
+  var _cache: { [action: string]: string[] } | null = null;   // {action: [spec, ...]}
 
-  function loadRaw()                                          {
+  function loadRaw(): { [action: string]: string | string[] } {
     try {
       var v = localStorage.getItem(STORAGE_KEY);
       if (v) return JSON.parse(v);
@@ -96,9 +96,9 @@
     return {};
   }
 
-  function getKeys(action        ) {
+  function getKeys(action: string) {
     if (!_cache) buildCache();
-    return _cache [action] || [];
+    return _cache![action] || [];
   }
 
   function buildCache() {
@@ -106,12 +106,12 @@
     var custom = loadRaw();
     Object.keys(DEFAULTS).forEach(function (action) {
       var spec = custom[action] !== undefined ? custom[action] : DEFAULTS[action];
-      _cache [action] = Array.isArray(spec) ? spec.slice() : [spec];
+      _cache![action] = Array.isArray(spec) ? spec.slice() : [spec];
     });
   }
 
   /* 事件 → 内部键位串（修饰键前缀 + e.code） */
-  function normalizeKey(e               ) {
+  function normalizeKey(e: KeyboardEvent) {
     var parts = [];
     if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
     if (e.altKey) parts.push("Alt");
@@ -121,7 +121,7 @@
   }
 
   /* 当前事件是否命中指定动作（任一绑定键位命中即 true） */
-  function matches(e               , action        ) {
+  function matches(e: KeyboardEvent, action: string) {
     var spec = normalizeKey(e);
     var keys = getKeys(action);
     for (var i = 0; i < keys.length; i++) {
@@ -131,8 +131,8 @@
   }
 
   /* 内部串 → 可读显示（设置页/提示用） */
-  function prettyKey(spec        ) {
-    var CODE_NAMES                             = {
+  function prettyKey(spec: string) {
+    var CODE_NAMES: { [code: string]: string } = {
       Space: "空格", Enter: "回车", Tab: "Tab", Backspace: "退格", Delete: "Delete",
       Escape: "Esc", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→",
       PageUp: "PageUp", PageDown: "PageDown", Home: "Home", End: "End",
@@ -152,18 +152,18 @@
     }).join("+");
   }
 
-  function pretty(specOrList                   ) {
+  function pretty(specOrList: string | string[]) {
     var list = Array.isArray(specOrList) ? specOrList : [specOrList];
     return list.map(prettyKey).join(" / ");
   }
 
   /* 绑定新键位（spec 为内部格式，可传数组）；返回错误文本或 null */
-  function set(action        , spec                   ) {
+  function set(action: string, spec: string | string[]) {
     if (!DEFAULTS[action]) return "未知动作: " + action;
     var norm = Array.isArray(spec) ? spec.slice() : [spec];
     // 冲突检测：同键位被其他动作占用 → 拒绝并告知占用者（首个冲突即停）
     var custom = loadRaw();
-    var conflict                = null;
+    var conflict: string | null = null;
     Object.keys(DEFAULTS).forEach(function (other) {
       if (other === action || conflict) return;
       var otherKeys = custom[other] !== undefined ? custom[other] : DEFAULTS[other];
@@ -185,7 +185,7 @@
     return null;
   }
 
-  function reset(action        ) {
+  function reset(action: string) {
     var custom = loadRaw();
     delete custom[action];
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); } catch (e) {}
@@ -199,15 +199,15 @@
 
   function all() {
     if (!_cache) buildCache();
-    var out                    = [];
+    var out: ShortcutBinding[] = [];
     Object.keys(DEFAULTS).forEach(function (action) {
-      out.push({ action: action, keys: _cache [action], group: action.split(".")[0], label: actionLabel(action) });
+      out.push({ action: action, keys: _cache![action], group: action.split(".")[0], label: actionLabel(action) });
     });
     return out;
   }
 
   function groups() {
-    var byGroup                                         = {};
+    var byGroup: { [group: string]: ShortcutBinding[] } = {};
     all().forEach(function (item) {
       (byGroup[item.group] = byGroup[item.group] || []).push(item);
     });
@@ -216,7 +216,7 @@
     });
   }
 
-  var LABELS                               = {
+  var LABELS: { [action: string]: string } = {
     "global.octaveDown": "键盘八度降低（弹奏）",
     "global.octaveUp": "键盘八度升高（弹奏）",
     "piano.undo": "撤销", "piano.redo": "重做",
@@ -244,7 +244,7 @@
     "arrange.zoomIn": "放大", "arrange.zoomOut": "缩小"
   };
 
-  function actionLabel(action        ) {
+  function actionLabel(action: string) {
     return LABELS[action] || action;
   }
 

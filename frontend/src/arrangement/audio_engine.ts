@@ -53,13 +53,13 @@
       return !!(window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine());
     } catch (e) { return false; }
   }
-  function trackIndexOf(trackId     , tracks     ) {
+  function trackIndexOf(trackId: any, tracks: any) {
     if (!tracks) return -1;
     for (var i = 0; i < tracks.length; i++) if (tracks[i].id === trackId) return i;
     return -1;
   }
 
-  function ArrangeEngine(                           ) {
+  function ArrangeEngine(this: ArrangeEngineInstance) {
     this.ctx = null;
     this.masterGain = null;
     this.trackNodes = {};       // trackId -> { gain, analyser, synth, soundfont, sourceKey }
@@ -109,7 +109,7 @@
       var w = new Worker(URL.createObjectURL(blob));
       return {
         worker: w,
-        start: function (cb     ) { w.onmessage = cb; },
+        start: function (cb: any) { w.onmessage = cb; },
         stop: function () { w.onmessage = null; },
         dispose: function () { w.terminate(); }
       };
@@ -118,7 +118,7 @@
     }
   }
 
-  ArrangeEngine.prototype._startHeartbeat = function (                           ) {
+  ArrangeEngine.prototype._startHeartbeat = function (this: ArrangeEngineInstance) {
     var self = this;
     this._stopHeartbeat();
     if (this._heartbeat) {
@@ -128,14 +128,14 @@
     }
   };
 
-  ArrangeEngine.prototype._stopHeartbeat = function (                           ) {
+  ArrangeEngine.prototype._stopHeartbeat = function (this: ArrangeEngineInstance) {
     if (this._heartbeat) this._heartbeat.stop();
     if (this._hbFallback) { clearInterval(this._hbFallback); this._hbFallback = null; }
   };
 
   /* ═══════════ 上下文与轨道链路（沿用 v1，已稳定） ═══════════ */
 
-  ArrangeEngine.prototype.init = function (                           ) {
+  ArrangeEngine.prototype.init = function (this: ArrangeEngineInstance) {
     if (this.ctx) return;
     /* 引擎模式不创建 AudioContext（严格路由，杜绝存在即可能被用）；
        时钟由 _now() 以 SharedAudio.now()（performance.now）兜底 */
@@ -157,22 +157,22 @@
 
   /* 统一时间基准：WebAudio 时钟（webaudio 模式）或 performance.now
      （引擎模式无 AudioContext；毫秒级精度对 IPC 触发路径足够） */
-  ArrangeEngine.prototype._now = function (                           ) {
+  ArrangeEngine.prototype._now = function (this: ArrangeEngineInstance) {
     if (this.ctx) return this.ctx.currentTime;
     return window.SharedAudio ? window.SharedAudio.now() : (performance.now() / 1000);
   };
 
-  ArrangeEngine.prototype.resume = function (                           ) {
+  ArrangeEngine.prototype.resume = function (this: ArrangeEngineInstance) {
     this.init();
     if (this.ctx && this.ctx.state === "suspended") return this.ctx.resume();
     return Promise.resolve();
   };
 
   /** 确保轨道发声链存在；sourceKey 变化时重建发声器 */
-  ArrangeEngine.prototype.ensureTrack = function (                             track     ) {
+  ArrangeEngine.prototype.ensureTrack = function (this: ArrangeEngineInstance, track: any) {
     this.init();
     var self = this;
-    var nodes      = this.trackNodes[track.id];
+    var nodes: any = this.trackNodes[track.id];
     var created = false;
     if (!nodes) {
       nodes = {
@@ -250,16 +250,16 @@
       缺失时该轨静音 + 明确提示（严格路由，不降级）。
       失败 3s 冷却重试（对齐 _ensureTrackWaveVoice）：成功才记录准备标记，
       失败清除——引擎冷启动/重启期间的临时失败不会让该轨永久静音 */
-  ArrangeEngine.prototype._ensureTrackBuiltinPreset = function (                             track     , src     ) {
+  ArrangeEngine.prototype._ensureTrackBuiltinPreset = function (this: ArrangeEngineInstance, track: any, src: any) {
     var self = this;
     var trackId = track.id;
     if (this._builtinRetryAt && Date.now() < this._builtinRetryAt) return;
     if (this._builtinPrepared && this._builtinPrepared.trackId === trackId
         && this._builtinPrepared.tone === (src.tone || "piano")) return;
-    var fail = function (msg     ) {
+    var fail = function (msg: any) {
       self._builtinPrepared = null;              // 失败：下次 ensureTrack 重试
       self._builtinRetryAt = Date.now() + 3000;  // 冷却：期间不重复 toast/请求
-      if (window.UI && UI.toast) UI.toast (msg, "err");
+      if (window.UI && UI.toast) UI.toast!(msg, "err");
     };
     this._builtinPrepared = { trackId: trackId, tone: src.tone || "piano" };
     var idx = trackIndexOf(trackId, this.getTracks ? this.getTracks() : null);
@@ -283,7 +283,7 @@
       原生渲染路径，不依赖 SF2）。按「idx+参数」签名去重（ensureTrack 每个调度窗
       都会调用）；失败按 3s 冷却重试（引擎冷启动未就绪属瞬态）。
       严格路由：失败/未确认期间该轨静音（_useNative=false），绝不回退 WebAudio */
-  ArrangeEngine.prototype._ensureTrackWaveVoice = function (                             track     , nodes     ) {
+  ArrangeEngine.prototype._ensureTrackWaveVoice = function (this: ArrangeEngineInstance, track: any, nodes: any) {
     if (!nodes || !nodes._isNativeSynth) return;
     if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.setTrackVoice) return;
     if (nodes._voiceRetryAt && Date.now() < nodes._voiceRetryAt) {
@@ -325,11 +325,11 @@
   /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立）。
       严格路由：引擎模式下加载失败 → onSoundFontError 上浮 UI 提示，
       该轨静音，绝不回退 WebAudio 解析 */
-  ArrangeEngine.prototype.loadTrackSoundFont = function (                             track     , nodes     , src     ) {
+  ArrangeEngine.prototype.loadTrackSoundFont = function (this: ArrangeEngineInstance, track: any, nodes: any, src: any) {
     var self = this;
     if (!window.SoundLibrary || !src.libId) return;
     nodes.sfLoading = true;
-    window.SoundLibrary.getSoundFont(src.libId).then(function (rec     ) {
+    window.SoundLibrary.getSoundFont(src.libId).then(function (rec: any) {
       if (!rec || !rec.data) throw new Error("音源数据不存在");
       if (isNativePreferred() && window.EngineBridge && window.EngineBridge.loadSoundFont) {
         var tracks = self.getTracks ? self.getTracks() : [];
@@ -365,7 +365,7 @@
             return window.EngineBridge.setTrackPreset(idx, bank, program).catch(function (e) {
               // 预设不存在：回退该文件预设 0 并提示
               return window.EngineBridge.setTrackPreset(idx, 0, 0).then(function () {
-                if (window.UI && UI.toast) UI.toast ("⚠ 预设不存在，已用该音色库首个预设", "warn");
+                if (window.UI && UI.toast) UI.toast!("⚠ 预设不存在，已用该音色库首个预设", "warn");
               }).catch(function () { throw e; });
             });
           }
@@ -391,21 +391,21 @@
   };
 
   /** 音量 / 静音 / 独奏求值（任一轨 solo 时其余轨静音） */
-  ArrangeEngine.prototype.applyMix = function (                             tracks     ) {
+  ArrangeEngine.prototype.applyMix = function (this: ArrangeEngineInstance, tracks: any) {
     if (!this.ctx) return;
-    var anySolo = tracks.some(function (t     ) { return t.solo && !t.mute; });
+    var anySolo = tracks.some(function (t: any) { return t.solo && !t.mute; });
     for (var i = 0; i < tracks.length; i++) {
       var t = tracks[i];
       var nodes = this.trackNodes[t.id];
       if (!nodes) continue;
       var audible = !t.mute && (!anySolo || t.solo);
       var vol = audible ? Math.max(0, Math.min(1, t.volume !== undefined ? t.volume : 0.8)) : 0;
-      nodes.gain .gain.setTargetAtTime(vol, this.ctx.currentTime, 0.015);
+      nodes.gain!.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.015);
     }
   };
 
   /** 轨道电平峰值（AUTO时读引擎推算，WEBAUDIO时用 AnalyserNode） */
-  ArrangeEngine.prototype.trackLevel = function (                             trackId     ) {
+  ArrangeEngine.prototype.trackLevel = function (this: ArrangeEngineInstance, trackId: any) {
     if (isNativePreferred() && window.__engineLevels) {
       var tracks = this.getTracks ? this.getTracks() : [];
       var idx = trackIndexOf(trackId, tracks);
@@ -413,7 +413,7 @@
         return Math.min(1, window.__engineLevels[idx]);
       }
     }
-    var nodes      = this.trackNodes[trackId];
+    var nodes: any = this.trackNodes[trackId];
     if (!nodes || !this.ctx) return 0;
     var arr = nodes._lvlBuf;
     if (!arr) { arr = nodes._lvlBuf = new Float32Array(nodes.analyser.fftSize); }
@@ -428,7 +428,7 @@
 
   /* ═══════════ 素材解码缓存（LRU）与波形峰值（沿用 v1） ═══════════ */
 
-  ArrangeEngine.prototype.getSampleEntry = function (                             absPath     ) {
+  ArrangeEngine.prototype.getSampleEntry = function (this: ArrangeEngineInstance, absPath: any) {
     var entry = this.bufferCache.get(absPath);
     if (entry) {
       entry.lastUse = Date.now();
@@ -441,11 +441,11 @@
         return res.arrayBuffer();
       })
       .then(function (ab) {
-        return self.ctx .decodeAudioData(ab);
+        return self.ctx!.decodeAudioData(ab);
       })
       .then(function (buffer) {
-        entry .buffer = buffer;
-        entry .peaks = self.computePeaks(buffer);
+        entry!.buffer = buffer;
+        entry!.peaks = self.computePeaks(buffer);
         return entry;
       })
       .catch(function (err) {
@@ -462,15 +462,15 @@
 
     if (this.bufferCache.size > this.maxCachedBuffers) {
       var keys = Array.from(this.bufferCache.keys());
-      keys.sort(function (a, b) { return self.bufferCache.get(a) .lastUse - self.bufferCache.get(b) .lastUse; });
+      keys.sort(function (a, b) { return self.bufferCache.get(a)!.lastUse - self.bufferCache.get(b)!.lastUse; });
       while (this.bufferCache.size > this.maxCachedBuffers) {
-        this.bufferCache.delete(keys.shift() );
+        this.bufferCache.delete(keys.shift()!);
       }
     }
     return promise;
   };
 
-  ArrangeEngine.prototype.computePeaks = function (                             buffer     , buckets     ) {
+  ArrangeEngine.prototype.computePeaks = function (this: ArrangeEngineInstance, buffer: any, buckets: any) {
     buckets = buckets || 600;
     var data = buffer.getChannelData(0);
     var per = Math.max(1, Math.floor(data.length / buckets));
@@ -490,14 +490,14 @@
 
   /* ═══════════ 位置 ↔ 拍 换算（含循环回绕；数学沿用已验证实现） ═══════════ */
 
-  ArrangeEngine.prototype.secondsPerBeat = function (                           ) {
+  ArrangeEngine.prototype.secondsPerBeat = function (this: ArrangeEngineInstance) {
     return 60 / (this.bpm || 120);
   };
 
   /** 当前播放头所在的时间线拍（AUTO时跟随引擎 timecode 插值，WEBAUDIO时用 AudioContext）。
       引擎未确认在走带（play 静默失败/尚未确认 playing）时回落本地时钟——
       此前冻结在 tc.beat，编曲播放头会因 EngineBridge.play 偶发失败而卡死 */
-  ArrangeEngine.prototype.currentBeat = function (                           ) {
+  ArrangeEngine.prototype.currentBeat = function (this: ArrangeEngineInstance) {
     if (!this.isPlaying) return this._playStartBeat;
     if (isNativePreferred() && window.__engineTimecode && window.__engineTimecode.t && window.__engineTimecode.playing) {
       var tc = window.__engineTimecode;
@@ -526,7 +526,7 @@
   };
 
   /** 展开位置 → 时间线拍 */
-  ArrangeEngine.prototype._posToBeat = function (                             pos     ) {
+  ArrangeEngine.prototype._posToBeat = function (this: ArrangeEngineInstance, pos: any) {
     var lp = this.loop;
     if (!lp.on || lp.end <= lp.start) return this._playStartBeat + pos;
     var segLen = lp.end - lp.start;
@@ -542,10 +542,10 @@
   };
 
   /** 展开位置区间 → 时间线拍区间列表（循环回绕分段；与 _posToBeat 完全一致） */
-  ArrangeEngine.prototype._posRangeToBeats = function (                             from     , to     ) {
+  ArrangeEngine.prototype._posRangeToBeats = function (this: ArrangeEngineInstance, from: any, to: any) {
     var lp = this.loop;
-    var out        = [];
-    var push = function (beatFrom     , chunk     , posFrom     ) {
+    var out: any[] = [];
+    var push = function (beatFrom: any, chunk: any, posFrom: any) {
       out.push({ beatFrom: beatFrom, beatTo: beatFrom + chunk, posFrom: posFrom });
     };
     if (!lp.on || lp.end <= lp.start) {
@@ -582,7 +582,7 @@
   /* ═══════════ 走带 ═══════════ */
 
   /** 从指定时间线拍开始播放 */
-  ArrangeEngine.prototype.play = function (                             startBeat     ) {
+  ArrangeEngine.prototype.play = function (this: ArrangeEngineInstance, startBeat: any) {
     var self = this;
     // 代际 token：resume() 是异步的，期间用户可能已暂停/停止/再次播放；
     // 旧回调不得在停止后重新拉起播放（此前快速连点播放→暂停会出现
@@ -597,11 +597,11 @@
          UI 已先置播放态——永久卡在"暂停"且无任何提示 */
       self.isPlaying = false;
       console.warn("[ArrangeEngine] 播放启动失败:", e);
-      if (window.UI && UI.toast) UI.toast ("✗ 音频设备启动失败: " + (e && e.message ? e.message : "请检查音频输出设备"), "err");
+      if (window.UI && UI.toast) UI.toast!("✗ 音频设备启动失败: " + (e && e.message ? e.message : "请检查音频输出设备"), "err");
     });
   };
 
-  ArrangeEngine.prototype._beginPlay = function (                             startBeat     ) {
+  ArrangeEngine.prototype._beginPlay = function (this: ArrangeEngineInstance, startBeat: any) {
     this.stopSchedule();
     this._playStartBeat = startBeat;
     this._anchorCtxTime = this._now() + 0.08;
@@ -618,12 +618,12 @@
 
   /** 定位播放接入：起播点落在音频剪辑中段的（起点在起播点之前，
       永远不会经窗口入队），直接生成从起播点切入的实例 */
-  ArrangeEngine.prototype._queueSeekClips = function (                             startBeat     ) {
+  ArrangeEngine.prototype._queueSeekClips = function (this: ArrangeEngineInstance, startBeat: any) {
     var tracks = this.getTracks ? this.getTracks() : [];
     for (var ti = 0; ti < tracks.length; ti++) {
       var track = tracks[ti];
       if (track.mute || (this._anySolo(tracks) && !track.solo)) continue;
-      var nodes      = this.ensureTrack(track);
+      var nodes: any = this.ensureTrack(track);
       if (!nodes || nodes.sfLoading) continue;
       for (var ci = 0; ci < track.clips.length; ci++) {
         var clip = track.clips[ci];
@@ -646,7 +646,7 @@
   };
 
   /** 停止调度并立即静音（原生轨经 EngineBridge 逐个 noteOff，避免挂音） */
-  ArrangeEngine.prototype.stopSchedule = function (                           ) {
+  ArrangeEngine.prototype.stopSchedule = function (this: ArrangeEngineInstance) {
     this._playGen++; // 作废挂起的 play() 回调（resume 未 resolve 前被暂停/停止）
     this._stopHeartbeat();
     this._clearNativeTimers(); // 先撤调度中的原生音符 timer（尚未发出的 noteOn/off 一并取消）
@@ -673,10 +673,10 @@
       IPC 路径此前触发即发（提前 0~TRIGGER_S≈150ms，且 note-off 窗口更
       宽），MIDI 轨与采样精确的音频轨节奏错位。这里到点才发。
       timer 集中登记，stopSchedule 全部撤销（消除停止后的幽灵音）。 */
-  ArrangeEngine.prototype._schedNative = function (                             delaySec     , fn     ) {
+  ArrangeEngine.prototype._schedNative = function (this: ArrangeEngineInstance, delaySec: any, fn: any) {
     if (!this._nativeTimers) this._nativeTimers = [];
     var self = this;
-    var rec      = { fired: false };
+    var rec: any = { fired: false };
     rec.timer = setTimeout(function () {
       rec.fired = true;
       if (!self.isPlaying) return; // 停止后不再触发
@@ -686,7 +686,7 @@
     return rec;
   };
 
-  ArrangeEngine.prototype._clearNativeTimers = function (                           ) {
+  ArrangeEngine.prototype._clearNativeTimers = function (this: ArrangeEngineInstance) {
     if (!this._nativeTimers) return;
     for (var i = 0; i < this._nativeTimers.length; i++) {
       if (!this._nativeTimers[i].fired) clearTimeout(this._nativeTimers[i].timer);
@@ -695,11 +695,11 @@
   };
 
   /** v1 兼容别名（arrange.js / 自测页可能引用） */
-  ArrangeEngine.prototype.tick = function (                           ) {
+  ArrangeEngine.prototype.tick = function (this: ArrangeEngineInstance) {
     this._onHeartbeat();
   };
 
-  ArrangeEngine.prototype.stopAllVoices = function (                           ) {
+  ArrangeEngine.prototype.stopAllVoices = function (this: ArrangeEngineInstance) {
     for (var id in this.trackNodes) {
       var nodes = this.trackNodes[id];
       if (nodes.synth) nodes.synth.stopAll();
@@ -713,7 +713,7 @@
   };
 
   /** 淡出并释放一个音频源（短包络 + 延迟断开，避免爆音与节点泄漏） */
-  ArrangeEngine.prototype._releaseSource = function (                             rec     , now     ) {
+  ArrangeEngine.prototype._releaseSource = function (this: ArrangeEngineInstance, rec: any, now: any) {
     try {
       rec.gain.gain.cancelScheduledValues(now);
       rec.gain.gain.setValueAtTime(rec.gain.gain.value || 0.0001, now);
@@ -727,7 +727,7 @@
   };
 
   /** 停止挂在指定轨道上的全部音频源（删除轨道时调用） */
-  ArrangeEngine.prototype.stopTrackSources = function (                             trackId     ) {
+  ArrangeEngine.prototype.stopTrackSources = function (this: ArrangeEngineInstance, trackId: any) {
     var kept = [];
     var now = this.ctx ? this.ctx.currentTime : 0;
     for (var i = 0; i < this.activeSources.length; i++) {
@@ -743,7 +743,7 @@
 
   /* ═══════════ v2 核心：心跳 → 入队 → 临近触发 ═══════════ */
 
-  ArrangeEngine.prototype._onHeartbeat = function (                           ) {
+  ArrangeEngine.prototype._onHeartbeat = function (this: ArrangeEngineInstance) {
     if (!this.isPlaying) return;
     /* 引擎模式播放中引擎掉线（崩溃/重启/失败）：自动停止走带并提示，
        避免无声空转——徽章轮询 5s 才翻转，这里每心跳即检（严格路由） */
@@ -767,7 +767,7 @@
   };
 
   /** 展开调度窗口：每轨每剪辑 → 待触发队列（不触碰音频节点） */
-  ArrangeEngine.prototype._scanWindow = function (                             from     , to     , spb     ) {
+  ArrangeEngine.prototype._scanWindow = function (this: ArrangeEngineInstance, from: any, to: any, spb: any) {
     var tracks = this.getTracks ? this.getTracks() : [];
     var segs = this._posRangeToBeats(from, to);
 
@@ -788,7 +788,7 @@
       for (var ti = 0; ti < tracks.length; ti++) {
         var track = tracks[ti];
         if (track.mute || (this._anySolo(tracks) && !track.solo)) continue;
-        var nodes      = this.ensureTrack(track);
+        var nodes: any = this.ensureTrack(track);
         if (!nodes) continue;
         if (nodes.sfLoading) continue;
 
@@ -812,13 +812,13 @@
     }
   };
 
-  ArrangeEngine.prototype._anySolo = function (                             tracks     ) {
+  ArrangeEngine.prototype._anySolo = function (this: ArrangeEngineInstance, tracks: any) {
     for (var i = 0; i < tracks.length; i++) if (tracks[i].solo && !tracks[i].mute) return true;
     return false;
   };
 
   /** MIDI 剪辑 → 待触发音符事件（noteOn 仅当音符物理起点落在窗口内） */
-  ArrangeEngine.prototype._queueMidiClip = function (                             clip     , track     , nodes     , evFrom     , evTo     , seg     , spb     ) {
+  ArrangeEngine.prototype._queueMidiClip = function (this: ArrangeEngineInstance, clip: any, track: any, nodes: any, evFrom: any, evTo: any, seg: any, spb: any) {
     var pitchCache = this._pitchCache || (this._pitchCache = {});
     for (var ni = 0; ni < clip.notes.length; ni++) {
       var n = clip.notes[ni];
@@ -849,7 +849,7 @@
       v1 对每个相交窗口都排一个实例，同一素材叠加播放 N 次
       （颗粒/合唱感的重要来源之一）。起点错过窗口的（起播点在剪辑
       中段的定位播放）由 _startAudioClip 的迟到接入逻辑兜底。 */
-  ArrangeEngine.prototype._queueAudioClip = function (                             clip     , track     , nodes     , evFrom     , evTo     , seg     , spb     ) {
+  ArrangeEngine.prototype._queueAudioClip = function (this: ArrangeEngineInstance, clip: any, track: any, nodes: any, evFrom: any, evTo: any, seg: any, spb: any) {
     // 原生路径（引擎模式）样本走 JUCE SamplePool（arrange.js 批量调度），
     // Web 队列跳过以免双重播放；SamplePool 失败时该素材静音（严格路由，
     // 不静默回退 Web 队列——此前 _nativeSamplesFailed 会回退，属降级路径）
@@ -875,7 +875,7 @@
   };
 
   /** 触发到期事件：创建音频节点 + 近端（≤TRIGGER_S）包络 */
-  ArrangeEngine.prototype._triggerDue = function (                             now     ) {
+  ArrangeEngine.prototype._triggerDue = function (this: ArrangeEngineInstance, now: any) {
     var i, ev;
 
     // 音符 on：过期补触发（主线程卡顿恢复后仍出声，不静默丢音——
@@ -992,14 +992,14 @@
   };
 
   /** 触发一个音频素材剪辑实例（解码已预热；迟到则从当前时间线位置接入） */
-  ArrangeEngine.prototype._startAudioClip = function (                             ev     , when     ) {
+  ArrangeEngine.prototype._startAudioClip = function (this: ArrangeEngineInstance, ev: any, when: any) {
     var self = this;
     var clip = ev.clip;
     if (this.activeSources.length > 96) return; // 安全阀：洪峰时拒绝新增
 
     this.getSampleEntry(clip.src.p).then(function (entry) {
       if (!entry || !entry.buffer || !self.isPlaying) return;
-      var now = self.ctx .currentTime;
+      var now = self.ctx!.currentTime;
       var spb = self.secondsPerBeat();
       // 触发延迟/解码迟到：以当前实际时间线拍为锚接入素材（循环内亦正确）
       var when2 = when;
@@ -1019,9 +1019,9 @@
       var durSec = Math.min(ev.clipRemain * spb, Math.max(0, entry.buffer.duration - srcOffset));
       if (durSec <= 0.01) return;
 
-      var src = self.ctx .createBufferSource();
+      var src = self.ctx!.createBufferSource();
       src.buffer = entry.buffer;
-      var gain = self.ctx .createGain();
+      var gain = self.ctx!.createGain();
       src.connect(gain);
       gain.connect(ev.nodes.gain);
 
@@ -1058,7 +1058,7 @@
 
   /** 节拍器 click（触发时调用，when 临近 → 包络近端）。
       引擎模式：引擎侧合成（试听轨 29，事件环即时触发，无 when 语义） */
-  ArrangeEngine.prototype.click = function (                             when     , isDownbeat     ) {
+  ArrangeEngine.prototype.click = function (this: ArrangeEngineInstance, when: any, isDownbeat: any) {
     if (isEngineMode()) {
       if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.click) return;
       try {
@@ -1066,33 +1066,33 @@
       } catch (e) {}
       return;
     }
-    var osc = this.ctx .createOscillator();
-    var gain = this.ctx .createGain();
+    var osc = this.ctx!.createOscillator();
+    var gain = this.ctx!.createGain();
     osc.type = "sine";
     osc.frequency.setValueAtTime(isDownbeat ? 1600 : 900, when);
     osc.frequency.exponentialRampToValueAtTime(100, when + 0.04);
     gain.gain.setValueAtTime(isDownbeat ? 0.32 : 0.2, when);
     gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.045);
     osc.connect(gain);
-    gain.connect(this.masterGain );
+    gain.connect(this.masterGain!);
     osc.start(when);
     osc.stop(when + 0.06);
   };
 
   /** 更新音轨混音属性并同步原生引擎（M3 混音图） */
-  ArrangeEngine.prototype.updateTrackMix = function (                             trackIndex     , gainVal     , panVal     , isMute     , isSolo     , isActive     ) {
+  ArrangeEngine.prototype.updateTrackMix = function (this: ArrangeEngineInstance, trackIndex: any, gainVal: any, panVal: any, isMute: any, isSolo: any, isActive: any) {
     if (window.EngineBridge && window.EngineBridge.setTrackMix) {
       window.EngineBridge.setTrackMix(trackIndex, gainVal, panVal, isMute, isSolo, isActive);
     }
   };
 
   /** 单次试听素材（素材库双击）——即时触发，包络天然近端 */
-  ArrangeEngine.prototype.previewSample = function (                             absPath     ) {
+  ArrangeEngine.prototype.previewSample = function (this: ArrangeEngineInstance, absPath: any) {
     var self = this;
     /* 引擎模式：无素材试听 IPC（严格路由，不引入 WebAudio 发声），
        明确提示并给出替代路径而非静默 */
     if (isEngineMode()) {
-      if (window.UI && UI.toast) UI.toast ("✗ 引擎模式下素材试听暂不支持（可在设置页切换 WEBAUDIO 模式试听）", "err");
+      if (window.UI && UI.toast) UI.toast!("✗ 引擎模式下素材试听暂不支持（可在设置页切换 WEBAUDIO 模式试听）", "err");
       return Promise.resolve();
     }
     this.resume().catch(function (e) {
@@ -1104,12 +1104,12 @@
         try { self._previewSrc.stop(); } catch (e) {}
         self._previewSrc = null;
       }
-      var src = self.ctx .createBufferSource();
+      var src = self.ctx!.createBufferSource();
       src.buffer = entry.buffer;
-      var gain = self.ctx .createGain();
-      gain.gain.setValueAtTime(0.9, self.ctx .currentTime);
+      var gain = self.ctx!.createGain();
+      gain.gain.setValueAtTime(0.9, self.ctx!.currentTime);
       src.connect(gain);
-      gain.connect(self.masterGain );
+      gain.connect(self.masterGain!);
       src.start();
       self._previewSrc = src;
       src.onended = function () {
@@ -1119,5 +1119,5 @@
     });
   };
 
-  window.ArrangeEngine = ArrangeEngine                                       ;
+  window.ArrangeEngine = ArrangeEngine as unknown as ArrangeEngineConstructor;
 })(window);

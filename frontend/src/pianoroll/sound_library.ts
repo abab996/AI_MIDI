@@ -6,20 +6,20 @@
   var DB_VERSION = 1;
   var STORE_NAME = "soundfonts";
 
-  function SoundLibrary(                     ) {
+  function SoundLibrary(this: SoundLibraryApi) {
     this.db = null;
     this._cachedFonts = [];
     this._initPromise = null;
   }
 
-  SoundLibrary.prototype.init = function (                     ) {
+  SoundLibrary.prototype.init = function (this: SoundLibraryApi) {
     var self = this;
     if (this._initPromise) return this._initPromise;
     this._initPromise = new Promise(function (resolve, reject) {
       if (self.db) { resolve(self.db); return; }
       var req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = function (e) {
-        var db = e.target .result;
+        var db = e.target!.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           var store = db.createObjectStore(STORE_NAME, { keyPath: "id" });
           store.createIndex("name", "name", { unique: false });
@@ -27,27 +27,27 @@
         }
       };
       req.onsuccess = function (e) {
-        self.db = e.target .result;
-        resolve(self.db );
+        self.db = e.target!.result;
+        resolve(self.db!);
       };
       req.onerror = function (e) {
-        reject(e.target .error);
+        reject(e.target!.error);
       };
     });
     return this._initPromise;
   };
 
-  SoundLibrary.prototype.getCachedSoundFonts = function (                     ) {
+  SoundLibrary.prototype.getCachedSoundFonts = function (this: SoundLibraryApi) {
     return this._cachedFonts || [];
   };
 
-  SoundLibrary.prototype.listSoundFonts = function (                     ) {
+  SoundLibrary.prototype.listSoundFonts = function (this: SoundLibraryApi) {
     var self = this;
-    return this.init().then(function (db             ) {
+    return this.init().then(function (db: IDBDatabase) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(STORE_NAME, "readonly");
         var store = tx.objectStore(STORE_NAME);
-        var list                    = [];
+        var list: SoundFontRecord[] = [];
         // 游标逐条读取并剥离 data 字段：getAll 会一次性把所有记录的
         // 完整 ArrayBuffer（每个可能数十 MB）物化进内存，仅为列目录
         var cursorReq = store.openCursor();
@@ -75,7 +75,7 @@
     });
   };
 
-  SoundLibrary.prototype.saveSoundFont = function (                       name        , arrayBuffer             , presets             ) {
+  SoundLibrary.prototype.saveSoundFont = function (this: SoundLibraryApi, name: string, arrayBuffer: ArrayBuffer, presets: Sf2Preset[]) {
     var self = this;
     // 镜像到原生引擎音色库（Library/soundfonts/）：失败仅告警，不影响浏览器音源。
     // 响应里的 saved 为服务器落盘绝对路径——存入记录供原生引擎直通加载，
@@ -98,7 +98,7 @@
     } catch (e) { /* 非阻塞 */ diskPathPromise = Promise.resolve(null); }
     var id = "sf2_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
     return diskPathPromise.then(function (diskPath) {
-      return self.init().then(function (db             ) {
+      return self.init().then(function (db: IDBDatabase) {
         return new Promise(function (resolve, reject) {
           var tx = db.transaction(STORE_NAME, "readwrite");
           var store = tx.objectStore(STORE_NAME);
@@ -128,9 +128,9 @@
     });
   };
 
-  SoundLibrary.prototype.getSoundFont = function (                       id        ) {
+  SoundLibrary.prototype.getSoundFont = function (this: SoundLibraryApi, id: string) {
     var self = this;
-    return this.init().then(function (db             ) {
+    return this.init().then(function (db: IDBDatabase) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(STORE_NAME, "readonly");
         var store = tx.objectStore(STORE_NAME);
@@ -141,7 +141,7 @@
     });
   };
 
-  SoundLibrary.prototype.deleteSoundFont = function (                       id        , name         ) {
+  SoundLibrary.prototype.deleteSoundFont = function (this: SoundLibraryApi, id: string, name?: string) {
     var self = this;
     // 同步删除磁盘镜像（Library/soundfonts/）：此前只删 IndexedDB 记录，
     // 镜像文件永久残留并被引擎当作默认音色加载。失败不影响本地删除
@@ -149,7 +149,7 @@
       UI.delJSON("/api/audio/soundfonts?name=" + encodeURIComponent(name))
         .catch(function (err) { console.warn("[SoundLibrary] 磁盘镜像删除失败（本地记录已删除）", err); });
     }
-    return this.init().then(function (db             ) {
+    return this.init().then(function (db: IDBDatabase) {
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(STORE_NAME, "readwrite");
         var store = tx.objectStore(STORE_NAME);
@@ -167,7 +167,7 @@
     });
   };
 
-  window.SoundLibrary = new (SoundLibrary       )();
+  window.SoundLibrary = new (SoundLibrary as any)();
   // 页面加载时自动预热音源库缓存
   try {
     window.SoundLibrary.listSoundFonts().catch(function () {});

@@ -5,7 +5,7 @@
 (function () {
   "use strict";
   var UI = window.UI;
-  var $ = UI.qs                                               ;
+  var $ = UI.qs as ((sel: string, root?: ParentNode) => DomEl);
 
   var POLL_ACTIVE_MS = 2000;   /* 有进行中/待确认任务：保持 2s 跟踪 */
   var POLL_IDLE_MS = 10000;    /* 全部空闲：降频轮询（后端已内存缓存，进一步省） */
@@ -20,7 +20,7 @@
   /* 面板显隐：auto = 有未完成任务自动弹出/自动收起；
      open = 用户手动展开（保持）；closed = 用户手动收起（保持） */
   var panelOverride = "auto";
-  var lastSeen                         = {};      /* task_id -> status（状态变化检测，驱动对话刷新） */
+  var lastSeen: { [key: string]: any } = {};      /* task_id -> status（状态变化检测，驱动对话刷新） */
 
   /* 排序偏好本地记忆 */
   try {
@@ -28,19 +28,19 @@
     if (saved === "time" || saved === "default") state.sortMode = saved;
   } catch (e) {}
 
-  function countUnfinished(list     ) {
+  function countUnfinished(list: any) {
     var n = 0;
-    list.forEach(function (t     ) {
+    list.forEach(function (t: any) {
       if (t.status === "running" || t.status === "needs_confirmation") n++;
     });
     return n;
   }
 
   /* ---------- 状态变化检测：当前项目任务发生状态转移时回调 ---------- */
-  function detectChanges(next     ) {
-    var changed        = [];
+  function detectChanges(next: any) {
+    var changed: any[] = [];
     if (state.currentProjectId) {
-      next.forEach(function (t     ) {
+      next.forEach(function (t: any) {
         var prev = lastSeen[t.id];
         if (prev && prev !== t.status && t.project_id === state.currentProjectId) {
           changed.push(t);
@@ -48,12 +48,12 @@
       });
     }
     lastSeen = {};
-    next.forEach(function (t     ) { lastSeen[t.id] = t.status; });
+    next.forEach(function (t: any) { lastSeen[t.id] = t.status; });
     return changed;
   }
 
   function refresh() {
-    return UI.getJSON("/api/tasks").then(function (data     ) {
+    return UI.getJSON("/api/tasks").then(function (data: any) {
       if (state.offline) {
         state.offline = false;
         renderOfflineIndicator();
@@ -105,7 +105,7 @@
     UI.qsa(".proj-card").forEach(function (card) {
       var pid = card.dataset.id;
       var n = 0;
-      state.tasks.forEach(function (t     ) {
+      state.tasks.forEach(function (t: any) {
         if (t.project_id === pid && (t.status === "running" || t.status === "needs_confirmation")) n++;
       });
       var meta = card.querySelector(".proj-meta");
@@ -125,21 +125,21 @@
   }
 
   /* ---------- 任务列表面板 ---------- */
-  function statusLabel(s     ) {
+  function statusLabel(s: any) {
     if (s === "running") return "进行中";
     if (s === "needs_confirmation") return "需要确认";
     return "已完成";
   }
 
-  function truncate(s     , n     ) {
+  function truncate(s: any, n: any) {
     return s.length > n ? s.slice(0, n) + "…" : s;
   }
 
-  function fmtTime(sec     ) {
+  function fmtTime(sec: any) {
     if (!sec) return "";
     var d = new Date(sec * 1000);
     if (isNaN(d.getTime())) return "";
-    var p = function (n     ) { return String(n).padStart(2, "0"); };
+    var p = function (n: any) { return String(n).padStart(2, "0"); };
     var hhmm = p(d.getHours()) + ":" + p(d.getMinutes());
     var now = new Date();
     var sameDay = d.getFullYear() === now.getFullYear()
@@ -149,7 +149,7 @@
     return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + hhmm;
   }
 
-  function rowHtml(t     ) {
+  function rowHtml(t: any) {
     var cls = t.status === "running" ? "running"
       : (t.status === "needs_confirmation" ? "confirm" : "done");
     var unread = (t.status === "completed" && !t.read)
@@ -169,19 +169,19 @@
 
   function sortedGroups() {
     var list = state.tasks.slice();
-    var byTime = function (a     , b     ) { return (a.created_at || 0) - (b.created_at || 0); };
+    var byTime = function (a: any, b: any) { return (a.created_at || 0) - (b.created_at || 0); };
     if (state.sortMode === "time") {
       /* 时间顺序：完全按时间先后 */
       return { groups: null, list: list.sort(byTime) };
     }
     /* 默认：需要确认 → 已完成未读 → 进行中 → 已完成已读；每个大块内按时间顺序 */
-    var groups                                    = [
+    var groups: { label: string; tasks: any[] }[] = [
       { label: "需要确认", tasks: [] },
       { label: "已完成 · 未读", tasks: [] },
       { label: "进行中", tasks: [] },
       { label: "已完成 · 已读", tasks: [] },
     ];
-    list.forEach(function (t     ) {
+    list.forEach(function (t: any) {
       var g;
       if (t.status === "needs_confirmation") g = groups[0];
       else if (t.status === "completed") g = (t.read ? groups[3] : groups[1]);
@@ -198,7 +198,7 @@
   function renderPanel() {
     var listEl = $("#taskPanelList");
     if (!listEl) return;
-    var sig = state.sortMode + "|" + state.tasks.map(function (t     ) {
+    var sig = state.sortMode + "|" + state.tasks.map(function (t: any) {
       return t.id + ":" + t.status + ":" + (t.read ? 1 : 0);
     }).join(",");
     if (sig === lastPanelSig) return;
@@ -229,7 +229,7 @@
     if (countEl) {
       var n = countUnfinished(state.tasks);
       countEl.hidden = n === 0;
-      countEl.textContent = n       ;
+      countEl.textContent = n as any;
     }
   }
 
@@ -246,7 +246,7 @@
     if (!bar) return;
     var pid = state.currentProjectId;
     var r = 0, n = 0, c = 0;
-    state.tasks.forEach(function (t     ) {
+    state.tasks.forEach(function (t: any) {
       if (t.project_id !== pid) return;
       if (t.status === "running") r++;
       else if (t.status === "needs_confirmation") n++;
@@ -261,14 +261,14 @@
   }
 
   /* ---------- 对外接口（chat.js 使用） ---------- */
-  function setCurrentProject(pid     ) {
+  function setCurrentProject(pid: any) {
     state.currentProjectId = pid || null;
     renderStatusBar();
   }
 
-  function markProjectRead(pid     ) {
+  function markProjectRead(pid: any) {
     var any = false;
-    state.tasks.forEach(function (t     ) {
+    state.tasks.forEach(function (t: any) {
       if (t.project_id === pid && t.status === "completed" && !t.read) {
         any = true;
         t.read = true;  /* 本地先行，避免等下一轮询 */
@@ -281,15 +281,15 @@
     }
   }
 
-  function hasActiveTasks(pid     ) {
-    return state.tasks.some(function (t     ) {
+  function hasActiveTasks(pid: any) {
+    return state.tasks.some(function (t: any) {
       return t.project_id === pid && t.status !== "completed";
     });
   }
 
-  function findRunningTask(pid     ) {
+  function findRunningTask(pid: any) {
     var found = null;
-    state.tasks.some(function (t     ) {
+    state.tasks.some(function (t: any) {
       if (t.project_id === pid && t.status === "running") { found = t; return true; }
       return false;
     });
@@ -298,7 +298,7 @@
 
   /* 自适应轮询：活跃 2s / 空闲 10s——空闲时 0.5Hz 的全量任务请求
      纯属浪费（此前固定 2s 永不降频） */
-  var pollTimer      = null;
+  var pollTimer: any = null;
   function schedulePoll() {
     clearTimeout(pollTimer);
     var delay = countUnfinished(state.tasks) > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS;
@@ -334,11 +334,11 @@
     if (listEl) {
       /* 点击任务行 → 打开该项目并切换到该任务（打开即已读，由 chat.js 处理） */
       listEl.addEventListener("click", function (e) {
-        var row = e.target .closest (".task-row");
+        var row = e.target!.closest!(".task-row");
         if (!row) return;
-        var task      = null;
-        state.tasks.some(function (t     ) {
-          if (t.id === row .dataset.id) { task = t; return true; }
+        var task: any = null;
+        state.tasks.some(function (t: any) {
+          if (t.id === row!.dataset.id) { task = t; return true; }
           return false;
         });
         if (task && window.__openProject) window.__openProject(task.project_id, task.id);
@@ -357,4 +357,4 @@
   };
 
   document.addEventListener("DOMContentLoaded", init);
-}       )(window);
+} as any)(window);

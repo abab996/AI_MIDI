@@ -1,0 +1,16 @@
+{
+  "private": true,
+  "name": "ai-midi",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p frontend/tsconfig.json --noEmit && node tools/dev/emit-frontend.mjs",
+    "typecheck": "tsc -p frontend/tsconfig.json --noEmit --pretty false",
+    "watch": "node tools/dev/watch-frontend.mjs"
+  },
+  "devDependencies": {
+    "ts-blank-space": "^0.6.0",
+    "typescript": "^5.8.2"
+  }
+}

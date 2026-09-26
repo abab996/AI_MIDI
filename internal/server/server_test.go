@@ -451,3 +451,43 @@ func TestUndoEditAndRestoreEndpoints(t *testing.T) {
 		t.Fatalf("原文件应当已被恢复: %v", err)
 	}
 }
+
+// 空工程没有 MIDI、也没有子目录时，Go 的 nil 切片会编码成 JSON null。
+// 字段必须仍在响应里：前端把 null 当成空清单，不再另发一次文件请求。
+func TestRecallEmptyProjectKeepsFileKeys(t *testing.T) {
+	ts, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	createBody, _ := json.Marshal(map[string]string{"name": "空工程"})
+	resp, err := http.Post(ts.URL+"/api/projects", "application/json", bytes.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("POST /api/projects failed: %v", err)
+	}
+	var created map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&created)
+	resp.Body.Close()
+	meta, _ := created["meta"].(map[string]any)
+	id, _ := meta["id"].(string)
+	if id == "" {
+		t.Fatalf("create project meta invalid: %+v", created)
+	}
+
+	recallReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/projects/"+id+"/messages/recall", nil)
+	recallResp, err := http.DefaultClient.Do(recallReq)
+	if err != nil {
+		t.Fatalf("POST messages/recall failed: %v", err)
+	}
+	defer recallResp.Body.Close()
+	if recallResp.StatusCode != http.StatusOK {
+		t.Fatalf("POST messages/recall status = %d, want 200", recallResp.StatusCode)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(recallResp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode recall: %v", err)
+	}
+	for _, key := range []string{"messages", "files", "dirs"} {
+		if _, ok := raw[key]; !ok {
+			t.Fatalf("recall response missing %q", key)
+		}
+	}
+}

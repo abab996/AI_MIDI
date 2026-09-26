@@ -23,29 +23,29 @@
     /* 切换轨道到内置波形声部（合成波音色的原生渲染路径，不依赖 SF2）。
        voice: {wave, attack, decay, sustain, release, cutoff, resonance, gain}。
        引擎崩溃重启后由 supervisor 重放，无需前端感知 */
-    setTrackVoice: function (track        , voice                               ) {
+    setTrackVoice: function (track: number, voice: TrackVoice | null | undefined) {
       if (app && app.EngineSetTrackVoice) { return app.EngineSetTrackVoice(track, voice || {}); }
       return Promise.reject(new Error("engine unavailable"));
     },
     /* 选择轨道 SF2 的预设（多预设音色库）：bank/program 为 General MIDI
        编号；预设不存在由引擎侧拒绝（Promise reject） */
-    setTrackPreset: function (track        , bank        , program        ) {
+    setTrackPreset: function (track: number, bank: number, program: number) {
       if (app && app.EngineSetTrackPreset) { return app.EngineSetTrackPreset(track, bank, program); }
       return Promise.reject(new Error("engine unavailable"));
     },
     /* 节拍器木鱼音（引擎侧合成，极短包络）：high=true 重拍 1600Hz /
        false 弱拍 900Hz。经事件环即时触发，无 when 参数 */
-    click: function (track        , high         ) {
+    click: function (track: number, high: boolean) {
       if (app && app.EngineClick) { return app.EngineClick(track, !!high); }
       return Promise.reject(new Error("engine unavailable"));
     },
-    noteOn: function (channel        , key        , velocity        ) {
+    noteOn: function (channel: number, key: number, velocity: number) {
       if (app) { return app.EngineNoteOn(channel, key, velocity); }
     },
-    noteOff: function (channel        , key        ) {
+    noteOff: function (channel: number, key: number) {
       if (app) { return app.EngineNoteOff(channel, key); }
     },
-    loadSoundFont: function (path        , track         ) {
+    loadSoundFont: function (path: string, track?: number) {
       if (app) {
         if (track !== undefined && app.EngineLoadSoundFontTrack) {
           return app.EngineLoadSoundFontTrack(track, path);
@@ -54,15 +54,15 @@
       }
       return Promise.reject(new Error("engine unavailable"));
     },
-    noteOnTrack: function (track        , key        , velocity        ) {
+    noteOnTrack: function (track: number, key: number, velocity: number) {
       if (app && app.EngineNoteOnTrack) { return app.EngineNoteOnTrack(track, key, velocity); }
       if (app) { return app.EngineNoteOn(0, key, velocity); }
     },
-    noteOffTrack: function (track        , key        ) {
+    noteOffTrack: function (track: number, key: number) {
       if (app && app.EngineNoteOffTrack) { return app.EngineNoteOffTrack(track, key); }
       if (app) { return app.EngineNoteOff(0, key); }
     },
-    setTrackMix: function (track        , gain                    , pan                    , mute         , solo         , active                     ) {
+    setTrackMix: function (track: number, gain: number | undefined, pan: number | undefined, mute: boolean, solo: boolean, active: boolean | undefined) {
       if (app) {
         return app.EngineSetTrackMix(
           track,
@@ -84,11 +84,11 @@
       if (app) { return app.EngineStop(); }
       return Promise.reject(new Error("engine unavailable"));
     },
-    locate: function (beat        ) {
+    locate: function (beat: number) {
       if (app) { return app.EngineLocate(beat); }
       return Promise.reject(new Error("engine unavailable"));
     },
-    setTempo: function (bpm        ) {
+    setTempo: function (bpm: number) {
       if (app) { return app.EngineSetTempo(bpm); }
       return Promise.reject(new Error("engine unavailable"));
     },
@@ -96,7 +96,7 @@
       if (app) { return app.EngineGetTimecode(); }
       return Promise.reject(new Error("engine unavailable"));
     },
-    scheduleSamples: function (clips                                , bpm        ) {
+    scheduleSamples: function (clips: Array<Record<string, unknown>>, bpm: number) {
       if (app && app.EngineScheduleSamples) { return app.EngineScheduleSamples(clips, bpm); }
       return Promise.reject(new Error("engine unavailable"));
     },
@@ -104,15 +104,15 @@
       if (app && app.EngineClearSamples) { return app.EngineClearSamples(); }
       return Promise.reject(new Error("engine unavailable"));
     },
-    scheduleNotes: function (notes                                , bpm        ) {
+    scheduleNotes: function (notes: Array<Record<string, unknown>>, bpm: number) {
       if (app && app.EngineScheduleNotes) { return app.EngineScheduleNotes(notes, bpm); }
       return Promise.reject(new Error("engine unavailable"));
     },
-    bounce: function (params                         ) {
+    bounce: function (params: Record<string, unknown>) {
       if (app && app.EngineBounce) { return app.EngineBounce(params); }
       return Promise.reject(new Error("engine unavailable"));
     },
-    setLoop: function (on         , start        , end        ) {
+    setLoop: function (on: boolean, start: number, end: number) {
       if (app && app.EngineSetLoop) { return app.EngineSetLoop(on, start, end); }
       return Promise.reject(new Error("engine unavailable"));
     },
@@ -127,7 +127,7 @@
         if (!resp.ok) throw new Error("panic failed: " + resp.status);
       });
     }
-  }                   ;
+  } as EngineBridgeApi;
 
   // 后端模式辅助：统一以 Go settings.audio.backend 为准，localStorage 仅作离线缓存
   // 引擎未就绪时自动回退 Web（避免有绑定无声的假阳性）

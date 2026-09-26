@@ -38,6 +38,14 @@
 </head>
 <body>
 
+<div class="modal-overlay audio-apply-lock" id="audioApplyLock" hidden role="alertdialog" aria-modal="true" aria-labelledby="audioApplyLockTitle" aria-busy="true">
+  <div class="modal card brackets">
+    <div class="modal-title" id="audioApplyLockTitle">正在应用音频设置</div>
+    <p class="audio-apply-lock-text">请稍候，此窗口会在设置完成后自动关闭。慢速驱动（如 ASIO Link Pro）首次打开可能需要十几秒。</p>
+    <p class="audio-apply-lock-wait" id="audioApplyLockWait">已等待 0 秒</p>
+  </div>
+</div>
+
 <div class="page">
   <div class="top-nav">
     <span class="nav-title">设置</span>
@@ -160,10 +168,10 @@
           <span id="latencyHint" style="opacity:.7;font-size:12px;margin-left:8px"></span>
         </div>
 
-        <label class="field-label">驱动类型（含 ASIO）</label>
+        <label class="field-label">接口类型（ASIO / Windows Audio / DirectSound）</label>
         <select id="drvSel" style="width:100%;margin-bottom:8px"><option value="">检测中…</option></select>
 
-        <label class="field-label">输出设备</label>
+        <label class="field-label">输出设备（ASIO 驱动在这里选，例如 ASIO Link Pro）</label>
         <select id="devSel" style="width:100%;margin-bottom:8px"></select>
 
         <div class="field-grid">
@@ -432,13 +440,46 @@
     fillDevs();
   });
 
+  var audioApplyLockTimer = null;
+  function setAudioApplyLock(on) {
+    var el = $("audioApplyLock");
+    var wait = $("audioApplyLockWait");
+    if (!el) return;
+    if (audioApplyLockTimer) {
+      clearInterval(audioApplyLockTimer);
+      audioApplyLockTimer = null;
+    }
+    if (on) {
+      var started = Date.now();
+      if (wait) wait.textContent = "已等待 0 秒";
+      el.hidden = false;
+      el.classList.remove("modal-out");
+      el.classList.add("modal-in");
+      audioApplyLockTimer = setInterval(function () {
+        if (wait) wait.textContent = "已等待 " + Math.floor((Date.now() - started) / 1000) + " 秒";
+      }, 500);
+      return;
+    }
+    el.classList.remove("modal-in");
+    el.classList.add("modal-out");
+    setTimeout(function () {
+      if (!el.classList.contains("modal-out")) return;
+      el.hidden = true;
+      el.classList.remove("modal-out");
+    }, 200);
+  }
+
   $("applyAudioBtn").addEventListener("click", function () {
+    var btn = $("applyAudioBtn");
+    if (btn.disabled) return;
     var body = {
       driver: $("drvSel").value,
       device: $("devSel").value,
       sample_rate: parseInt($("rateSel").value, 10) || 0,
       buffer_size: parseInt($("bufSel").value, 10) || 0
     };
+    btn.disabled = true;
+    setAudioApplyLock(true);
     fetch("/api/audio/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -449,11 +490,21 @@
       if (res.j.saved) {
         $("applyHint").textContent = "✅ 已应用";
       } else {
-        $("applyHint").textContent = "❌ " + (res.j.detail || "失败");
-        if (res.j.detail) UI.toast("✗ " + res.j.detail, "err");
+        var detail = res.j.detail || "失败";
+        var low = detail.toLowerCase();
+        if (low.indexOf("no server running") >= 0 || low.indexOf("server not running") >= 0 || detail.indexOf("未响应") >= 0)
+          detail += "。ASIO Link Pro 需要一台已在运行的服务器；若还没有，重新应用一次，引擎会改由本程序作为服务器打开";
+        $("applyHint").textContent = "❌ " + detail;
+        if (window.UI && UI.toast) UI.toast("✗ " + detail, "err");
       }
       setTimeout(function () { $("applyHint").textContent = ""; refreshStatus(); }, 2500);
-    }).catch(function () { $("applyHint").textContent = "❌ 网络错误"; });
+    }).catch(function () {
+      $("applyHint").textContent = "❌ 网络错误";
+      if (window.UI && UI.toast) UI.toast("✗ 应用音频设置失败：网络错误", "err");
+    }).then(function () {
+      btn.disabled = false;
+      setAudioApplyLock(false);
+    });
   });
 
   $("openPanelBtn").addEventListener("click", function () {

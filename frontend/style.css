@@ -1083,6 +1083,46 @@ a.btn {
 
 .api-banner-text { flex: 1; }
 
+/* 三步接入引导清单（api-banner 升级版） */
+.api-banner-main { flex: 1; min-width: 0; }
+
+.api-banner-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.api-banner-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.6;
+}
+
+.api-banner-steps a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.api-banner-demo-btn {
+  background: none;
+  border: 1px solid currentColor;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  padding: 0 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.api-banner-demo-btn:hover {
+  background: var(--color-danger-soft);
+}
+
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

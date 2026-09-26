@@ -232,6 +232,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("/api/projects", r.handleProjects)
 	r.mux.HandleFunc("/api/projects/search", r.handleProjectsSearch)
 	r.mux.HandleFunc("/api/projects/", r.handleProjectsSub)
+	r.mux.HandleFunc("/api/demo/project", r.handleDemoProject)
 
 	// Arrangement 编排窗口（素材目录注册表 + 项目编排数据）
 	r.mux.HandleFunc("/api/arrangement/", r.handleArrangementSub)

@@ -1826,6 +1826,29 @@
       renderProviderList();
     });
 
+    /* 连接页输入字段（名称/Key/URL/路径）失焦自动保存：与开关/档位的
+       即时落库语义对齐，消除"哪些字段要手动保存"的困惑。值未变化
+       （Tab 路过）不发请求；输入一半的 Key 也不会再被误触开关隐式写盘
+       ——blur 即触发保存，开关读到的始终是已保存值 */
+    var detailSaveTimer      = null;
+    ["provName", "baseUrl", "apiPath", "apiKey"].forEach(function (id) {
+      var found = document.getElementById(id);
+      if (!found) return;
+      var input = found                    ;
+      input.addEventListener("focus", function () {
+        (input       )._savedValue = input.value;
+      });
+      input.addEventListener("blur", function () {
+        if ((input       )._savedValue === input.value) return;
+        (input       )._savedValue = input.value;
+        if (detailSaveTimer) clearTimeout(detailSaveTimer);
+        detailSaveTimer = setTimeout(function () {
+          detailSaveTimer = null;
+          persistProviders().catch(function () {});
+        }, 500);
+      });
+    });
+
     $("#addPresetBtn").addEventListener("click", function (e) {
       e.stopPropagation();
       if (presetOpen) closePresetMenu();
@@ -1866,6 +1889,45 @@
           UI.toast ("✓ 已删除供应商「" + p .name + "」", "ok");
         }).catch(function () {});
       });
+    });
+
+    /* 测试连接：与刷新列表同走 POST /api/models，但语义显式化——
+       此前填完 Key 只能靠"⟳ 刷新列表"隐式验证，密钥是否有效要到
+       对话发送失败才暴露 */
+    $("#testConnBtn").addEventListener("click", function () {
+      var btn = this                     ;
+      readDetail();
+      var p = findProvider(selectedProviderId);
+      var status = $("#testConnStatus");
+      if (!p) {
+        UI.toast ("先选择或新建一个接入点", "warn");
+        return;
+      }
+      btn.disabled = true;
+      if (status) {
+        status.textContent = "正在连接 " + (p.name || "接入点") + " …";
+        status.className = "dim model-status";
+      }
+      UI.postJSON("/api/models", {
+        api_key: p.api_key || "",
+        base_url: p.base_url,
+        api_path: p.api_path,
+        protocol: p.protocol,
+        provider_id: p.id,
+      }).then(function (data     ) {
+        var n = (data.models || []).length;
+        if (status) {
+          status.textContent = "✓ 连接成功，" + n + " 个模型可用";
+          status.className = "ok model-status";
+        }
+        UI.toast ("✓ 连接成功，" + n + " 个模型可用", "ok");
+      }).catch(function (e) {
+        if (status) {
+          status.textContent = "✗ 连接失败: " + e.message;
+          status.className = "err model-status";
+        }
+        UI.toast ("✗ 连接失败: " + e.message, "err");
+      }).finally(function () { btn.disabled = false; });
     });
 
     $("#refreshModelsBtn").addEventListener("click", function () {

@@ -168,6 +168,10 @@
                   </div>
                 </div>
                 <div class="stat-line"><span class="dim">API 路径是拼在 Base URL 后面的前缀。Gemini 预设为 /v1beta/openai；填 / 表示直接接在站点根上。</span></div>
+                <div class="row" style="margin-top:8px">
+                  <button type="button" class="btn btn-primary btn-sm" id="testConnBtn">🔌 测试连接</button>
+                  <span class="dim model-status" id="testConnStatus">保存后点此验证密钥与网络是否可用</span>
+                </div>
               </section>
 
               <section class="form-sec">
@@ -203,26 +207,26 @@
 
         <div class="field-grid">
           <div class="field">
-            <label class="field-label" for="maxTokens">最大上下文 · max_tokens</label>
+            <label class="field-label" for="maxTokens" title="max_tokens：单次回复（含思考内容）的 token 长度上限，影响生成时长与完整度">单次回复长度上限（max_tokens）</label>
             <input type="number" id="maxTokens" placeholder="留空使用默认值">
           </div>
           <div class="field">
-            <label class="field-label" for="maxCompletion">最大输出长度 · max_completion_tokens</label>
+            <label class="field-label" for="maxCompletion" title="max_completion_tokens：新版接口的回复长度上限，与上面功能相同，仅部分新模型识别此参数">回复长度上限 · 新版参数（max_completion_tokens）</label>
             <input type="number" id="maxCompletion" placeholder="留空使用默认值">
           </div>
         </div>
 
-        <label class="field-label">推理努力程度 · reasoning_effort</label>
+        <label class="field-label" title="reasoning_effort：模型回答前\"思考\"的投入程度。档位越高回答越细致，等待时间也越长">思考深度（reasoning_effort）</label>
         <div class="func-selector" style="grid-template-columns:repeat(3,1fr)" id="effortSelector">
-          <button class="fn" data-effort="low">LOW</button>
-          <button class="fn" data-effort="medium">MEDIUM</button>
-          <button class="fn" data-effort="max">MAX</button>
+          <button class="fn" data-effort="low">低</button>
+          <button class="fn" data-effort="medium">中</button>
+          <button class="fn" data-effort="max">高</button>
         </div>
         <div class="stat-line"><span class="dim">这里是"没在连接页给某个模型单独指定时"用的默认值。想按模型分别指定：连接页展开模型卡片勾选它支持的档位，再到对话页的模型菜单里选具体档位。</span></div>
 
         <label class="toggle-text">
           <input type="checkbox" id="thinkingEnabled" checked>
-          <span>启用 thinking 模式</span>
+          <span title="开启后模型先在内部推理再给出答案，质量更高但耗时更长">让模型先思考再回答（thinking 模式）</span>
         </label>
       </section>
 

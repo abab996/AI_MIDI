@@ -75,11 +75,20 @@
       });
       grid.appendChild(card);
     });
-    /* 空档案库引导：无项目时展示占位提示（不渲染空网格） */
+    /* 空档案库引导：无项目时展示占位提示 + 一键示例工程
+       （首次使用没有素材，先试听/编辑内置 demo 熟悉编辑器） */
     if (!projects.length) {
       var empty = document.createElement("div");
       empty.className = "empty-hint";
       empty.textContent = "暂无档案，点击右上角「＋ 新建档案」开始创作";
+      var demoBtn = document.createElement("button");
+      demoBtn.type = "button";
+      demoBtn.className = "btn btn-secondary btn-sm";
+      demoBtn.style.marginTop = "10px";
+      demoBtn.textContent = "🎼 载入示例工程（先试听一段内置 Demo）";
+      demoBtn.addEventListener("click", loadDemoProject);
+      empty.appendChild(document.createElement("br"));
+      empty.appendChild(demoBtn);
       grid.appendChild(empty);
     }
     /* 任务联动：卡片重建后补上任务执行数徽标（不随轮询等待） */
@@ -88,6 +97,20 @@
 
   function reloadProjects() {
     return UI.getJSON("/api/projects").then(renderProjects);
+  }
+
+  var loadDemoBusy = false;
+  /* 一键载入内置示例工程（含示例 MIDI，无需配置 API Key）：
+     创建后直接进入工作台，可试听、编辑、播放 */
+  function loadDemoProject() {
+    if (loadDemoBusy) return;
+    loadDemoBusy = true;
+    UI.postJSON("/api/demo/project").then(function (payload: any) {
+      reloadProjects();
+      enterProject(payload);
+    }).catch(function (e: any) {
+      UI.toast!("✗ 载入示例工程失败: " + e.message, "err");
+    }).finally(function () { loadDemoBusy = false; });
   }
 
   function renderSearch(rows: any, ids: any) {
@@ -3928,6 +3951,9 @@
         sessionStorage.setItem("apiBannerDismissed", "1");
       });
     }
+    /* 引导清单第 ③ 步：不配置也能载入示例工程试玩 */
+    var bannerDemo = $("#apiBannerDemoBtn");
+    if (bannerDemo) bannerDemo.addEventListener("click", loadDemoProject);
 
     /* 搜索 */
     var searchTimer: any = null;

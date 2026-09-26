@@ -67,10 +67,26 @@
       </div>
     </div>
 
-    <!-- 首次使用引导：未配置 API Key 时显示（对话功能依赖它） -->
+    <!-- 首次使用引导：未配置 API Key 时显示（对话功能依赖它）。
+         三步清单替代单行警告：新用户核心路径"配 Key → 选模型 → 发消息"
+         此前只有一条横幅链接，三层概念无从下手 -->
     <div class="api-banner" id="apiBanner" hidden>
-      <span class="api-banner-text">⚠ 尚未配置 AI 接口（API Key）——发送对话消息前需要先完成配置</span>
-      <a class="btn btn-primary btn-sm" href="/settings.html" data-dir="forward">去设置</a>
+      <div class="api-banner-main">
+        <div class="api-banner-title">🚀 三步开始创作</div>
+        <ol class="api-banner-steps">
+          <li>
+            <a href="/settings.html" data-dir="forward">打开设置 · 连接页</a>，选一个服务商预设（默认 DeepSeek 开箱即用，粘贴密钥即可）
+          </li>
+          <li>
+            粘贴 API Key 并保存 —— 完成后本提示自动消失
+          </li>
+          <li>
+            回到对话页选模型开始对话；也可以先不配置，
+            <button type="button" class="api-banner-demo-btn" id="apiBannerDemoBtn">载入示例工程</button>
+            试听编辑器
+          </li>
+        </ol>
+      </div>
       <button class="btn btn-secondary btn-sm" id="apiBannerClose" type="button" title="本次启动不再提示">✕</button>
     </div>
 
@@ -95,9 +111,9 @@
     <div class="studio-bar">
       <button class="btn btn-secondary" id="backBtn">← 返回档案库</button>
       <div class="studio-title" id="studioProjectName">[PROJECT: --]</div>
-      <span class="stamp warn" id="wsStamp">WS: --</span>
-      <span class="stamp" id="apiStamp">API: --</span>
-      <span class="stamp" id="engineStamp" title="音频引擎状态">ENGINE: --</span>
+      <span class="stamp warn" id="wsStamp" title="工作区绑定状态：BOUND=已绑定外部文件夹并同步；UNBOUND=未绑定（使用档案库内置目录）；--=读取中">WS: --</span>
+      <span class="stamp" id="apiStamp" title="AI 接口状态：READY=已配置密钥/可调用的供应商；NONE=尚未配置，去设置页连接页完成">API: --</span>
+      <span class="stamp" id="engineStamp" title="音频引擎状态：WEBAUDIO=浏览器内置合成；ENGINE=原生音频引擎（在设置页音频页切换）">ENGINE: --</span>
       <div class="nav-right">
         <button class="btn btn-secondary btn-sm" id="arrangeToggleBtn" title="展开 / 收起编曲窗">▦ 编曲窗</button>
         <a class="btn btn-secondary btn-sm" href="/settings.html" data-dir="forward">设置</a>

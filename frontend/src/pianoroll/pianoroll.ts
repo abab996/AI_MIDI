@@ -532,6 +532,23 @@
     this.scheduleAutoSave();
   };
 
+  /* 滚轮手势级历史入栈：手势首个刻度 pushHistory 一次，600ms 内的连续
+     刻度不再重复入栈（连续滚动力度/微移整段算一次可撤销操作） */
+  PianoRoll.prototype.pushHistoryForWheelGesture = function (this: PianoRollController) {
+    var now = Date.now();
+    if (!(this as any)._wheelGestureAt || now - (this as any)._wheelGestureAt > 600) {
+      this.pushHistory();
+    }
+    (this as any)._wheelGestureAt = now;
+  };
+
+  /* 播放音量（0-1）：走带条滑块入口，作用于两个 WebAudio 引擎 */
+  PianoRoll.prototype.applyPlaybackVolume = function (this: PianoRollController, v: number) {
+    var clamped = Math.max(0, Math.min(1, v));
+    try { this.synth.setVolume(clamped); } catch (e) {}
+    try { this.soundfont.setVolume(clamped); } catch (e) {}
+  };
+
   PianoRoll.prototype.undo = function (this: PianoRollController) {
     var tab = this.getActiveTab();
     if (!tab || !tab.undoStack || !tab.undoStack.length) {
@@ -1748,13 +1765,13 @@
       self.handleGridMouseUp(e);
     });
 
-    // 鼠标滚轮（缩放、Alt+力度、Shift+微移）
+    // 鼠标滚轮（缩放、Alt+力度、Alt+Shift+微移、Shift+横向滚动）
     canvas.addEventListener("wheel", function (e: any) {
       e.preventDefault();
       var pos = self.getGridCoords(e);
       var hitNote = self.findNoteAt(pos.beat, pos.pitch);
 
-      if (e.altKey) {
+      if (e.altKey && !e.shiftKey) {
         // Alt + 滚轮：调节音符力度 (FL Studio 经典)
         var dVel = e.deltaY < 0 ? 5 : -5;
         var tab = self.getActiveTab();
@@ -1773,7 +1790,10 @@
         }
 
         if (targetNotes.length) {
-          self.pushHistory();
+          /* 手势级入栈：一次滚动手势只记一条历史。此前每个滚动刻度都
+             pushHistory，一次手势产生几十条把 50 条撤销栈刷满，
+             Ctrl+Z 只能回退一档 ±5 力度，撤销语义严重劣化 */
+          self.pushHistoryForWheelGesture();
           targetNotes.forEach(function (n: any) {
             var curV = parseInt(n.velocity, 10);
             if (isNaN(curV)) curV = 100;
@@ -1783,12 +1803,13 @@
           self.showHUD("力度: " + rep.velocity + " (" + Math.round(rep.velocity / 1.27) + "%)");
           self.render();
         }
-      } else if (e.shiftKey) {
-        // Shift + 滚轮：水平微移 (Nudge)
+      } else if (e.altKey && e.shiftKey) {
+        // Alt + Shift + 滚轮：整拍微移音符（原 Shift+滚轮语义迁移至此，
+        // 把 Shift+滚轮让给横向滚动）
         var dBeat = (e.deltaY > 0 ? 1 : -1) * self.snapGrid;
         var targets = self.selectedNotes.length ? self.selectedNotes : (hitNote ? [hitNote] : []);
         if (targets.length) {
-          self.pushHistory();
+          self.pushHistoryForWheelGesture();
           targets.forEach(function (n: any) {
             var dur = n.end - n.start;
             n.start = Math.max(0, Math.round((n.start + dBeat) * 1000) / 1000);
@@ -1796,14 +1817,22 @@
           });
           self.showHUD("微移: " + (dBeat > 0 ? "+" : "") + dBeat + " 拍");
           self.render();
-        } else {
-          self.scrollX = Math.max(0, self.scrollX + (e.deltaY > 0 ? 1 : -1));
-          self.render();
         }
+      } else if (e.shiftKey) {
+        // Shift + 滚轮：横向滚动（业界统一语义）。
+        // 此前该手势在有选中音符时是"微移音符"、无音符时才滚动，
+        // 同一手势两种语义易误操作，且长曲横向导航只能靠中键拖
+        self.scrollX = Math.max(0, self.scrollX + (e.deltaY > 0 ? 1 : -1) * self.pixelsPerBeat);
+        self.render();
       } else if (e.ctrlKey) {
-        // Ctrl + 滚轮：时间水平缩放
+        // Ctrl + 滚轮：时间水平缩放（以鼠标下的拍位置为锚点）
+        var oldPpb = self.pixelsPerBeat;
         var zoomFactor = e.deltaY < 0 ? 1.15 : 0.87;
         self.pixelsPerBeat = Math.max(16, Math.min(256, self.pixelsPerBeat * zoomFactor));
+        if (self.pixelsPerBeat !== oldPpb) {
+          // 缩放后回算 scrollX，让鼠标指向的拍停在原屏幕位置（不再跳变）
+          self.scrollX = Math.max(0, pos.beat * self.pixelsPerBeat - pos.mx);
+        }
         self.showHUD("缩放: " + Math.round(self.pixelsPerBeat) + " px/beat");
         self.render();
       } else {
@@ -2100,7 +2129,12 @@
         type: "resize_note",
         note: newNote,
         startBeat: newNote.end,
-        freeSnap: e.altKey
+        freeSnap: e.altKey,
+        /* 延迟 resize：拖动超 4px 才改变长度——此前 mousedown 即进入
+           resize 态，想点一下放个音符很容易意外拖长 */
+        pendingResize: true,
+        pendingStartBeat: pos.beat,
+        pendingStartPitch: pos.pitch
       };
     }
     this.render();
@@ -2208,6 +2242,13 @@
       }
     } else if (this.dragState.type === "resize_note") {
       var note = this.dragState.note;
+      /* 新建音符的延迟 resize：位移不超 4px 时不改长度（保持默认时值） */
+      if (this.dragState.pendingResize) {
+        var pendPx = Math.abs(pos.beat - (this.dragState.pendingStartBeat || 0)) * this.pixelsPerBeat +
+                     Math.abs(pos.pitch - (this.dragState.pendingStartPitch || 0)) * this.noteRowHeight;
+        if (pendPx <= 4) return;
+        this.dragState.pendingResize = false;
+      }
       var snap = this.dragState.freeSnap ? 0.02 : this.snapGrid;
       var snappedEnd = Math.max(note!.start + snap, Math.round(pos.beat / snap) * snap);
       var snappedRounded = Math.round(snappedEnd * 1000) / 1000;
@@ -3276,11 +3317,34 @@
       metroBtn!.classList.toggle("active", self.isMetronome);
     });
 
+    // 播放音量滑块：接通两个 WebAudio 引擎现成的 setVolume（此前 volume
+    // 硬编码 0.7/0.75 且全前端无调用点，音量不合适只能调系统音量）。
+    // 引擎模式由原生调音台控制，此处调整不参与（masterGain 不存在时静默）
+    var volRange = document.getElementById("prVolRange") as HTMLInputElement | null;
+    if (volRange) {
+      var savedVol = 75;
+      try { savedVol = parseInt(localStorage.getItem("prVolume") || "75", 10) || 75; } catch (e) {}
+      volRange.value = String(Math.max(0, Math.min(100, savedVol)));
+      self.applyPlaybackVolume(savedVol / 100);
+      volRange.addEventListener("input", function () {
+        var v = (parseInt(this.value, 10) || 0) / 100;
+        self.applyPlaybackVolume(v);
+        try { localStorage.setItem("prVolume", String(Math.round(v * 100))); } catch (e) {}
+      });
+    }
+
     var bpmInput = document.getElementById("prBpmInput");
     if (bpmInput) bpmInput.addEventListener("change", function () {
       self.bpm = Math.max(20, Math.min(400, parseInt(this.value as any, 10) || 120));
       var tab = self.getActiveTab();
-      if (tab) tab.bpm = self.bpm;
+      if (tab) {
+        tab.bpm = self.bpm;
+        /* BPM 落盘：此前只写 tab.bpm 不置 dirty，只改速度不动音符时
+           关标签（closeTab 仅 dirty 才保存）后修改丢失。不入撤销快照
+           （pushHistory 只序列化音符，BPM 变更撤销无意义） */
+        tab.dirty = true;
+        self.scheduleAutoSave();
+      }
       // 播放中改 BPM：重锚调度（已排音符按旧 BPM 时间轴展开，直接换速
       // 会与后续窗口错位跳变；编曲窗 setBpm 有同等重锚逻辑）。
       // 录制中不重锚——重锚会停掉正在响的音符、打断录音

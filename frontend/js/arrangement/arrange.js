@@ -602,6 +602,21 @@
       });
     }
 
+    // 总音量滑块：接编曲引擎 masterGain（此前 0.9 硬编码，每轨有音量
+    // 滑块但没有总线输出控制，音量不合适只能调系统音量）
+    var volRange = document.getElementById("arrVolRange")                           ;
+    if (volRange) {
+      var savedVol = 90;
+      try { savedVol = parseInt(localStorage.getItem("arrMasterVolume") || "90", 10) || 90; } catch (e) {}
+      volRange.value = String(Math.max(0, Math.min(100, savedVol)));
+      self.applyMasterVolume(savedVol / 100);
+      volRange.addEventListener("input", function () {
+        var v = (parseInt(this.value, 10) || 0) / 100;
+        self.applyMasterVolume(v);
+        try { localStorage.setItem("arrMasterVolume", String(Math.round(v * 100))); } catch (e) {}
+      });
+    }
+
     // Ctrl+滚轮缩放 / Shift+滚轮或触摸板横滚：横向滚动时挂起播放头跟随 2s
     if (this.el.arrTracksScroll) {
       this.el.arrTracksScroll.addEventListener("wheel", function (e     ) {
@@ -896,6 +911,16 @@
   };
 
   /** 横向缩放：以视口 40% 处的拍位为锚点，缩放后回滚到原锚点 */
+  /* 总输出音量（0-1）：走带条滑块入口，作用于引擎 masterGain。
+     引擎模式（无 WebAudio ctx）时 masterGain 为空，静默跳过 */
+  Arrange.prototype.applyMasterVolume = function (                         v        ) {
+    var g = this.engine && this.engine.masterGain;
+    if (!g) return;
+    var ctx = window.SharedAudio && window.SharedAudio.get();
+    if (!ctx) return;
+    try { g.gain.setTargetAtTime(Math.max(0, Math.min(1, v)), ctx.currentTime, 0.01); } catch (e) {}
+  };
+
   Arrange.prototype.setPpb = function (                         val     ) {
     val = clamp(Math.round(val), 8, 80);
     if (val === this.ppb) return;

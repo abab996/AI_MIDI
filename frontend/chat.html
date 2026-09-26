@@ -248,6 +248,10 @@
           <button type="button" class="btn btn-sm btn-secondary arr-icon-btn" id="arrResumeBtn" title="暂停后光标回到本次播放起点">
             <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M12.5 3a.75.75 0 0 1 .75.75v8.5a.75.75 0 0 1-1.5 0v-8.5A.75.75 0 0 1 12.5 3z"/><path d="M10.02 7.178 3.653 3.572C3.046 3.229 2.3 3.669 2.3 4.368v7.264c0 .7.754 1.139 1.353.796l6.367-3.606a.92.92 0 0 0 0-1.244z"/></svg>
           </button>
+          <div class="arr-zoom-wrap" title="总音量 (影响编曲窗全部轨道输出)">
+            <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M11.536 14.01A8.47 8.47 0 0 0 14.026 8a8.47 8.47 0 0 0-2.49-6.01l-.708.707A7.48 7.48 0 0 1 13.025 8c0 2.071-.84 3.946-2.197 5.303l.708.707z"/><path d="M10.121 12.596A6.48 6.48 0 0 0 12.025 8a6.48 6.48 0 0 0-1.904-4.596l-.707.707A5.48 5.48 0 0 1 11.025 8a5.48 5.48 0 0 1-1.61 3.89l.706.706z"/><path d="M8.707 11.182A4.49 4.49 0 0 0 10.025 8a4.49 4.49 0 0 0-1.318-3.182L8 5.525A3.5 3.5 0 0 1 9.025 8 3.5 3.5 0 0 1 8 10.475l.707.707zM6.5 5.043v7.914L3.293 10H1.5A.5.5 0 0 1 1 9.5v-3a.5.5 0 0 1 .5-.5h1.793z"/></svg>
+            <input type="range" id="arrVolRange" min="0" max="100" step="1" value="90" aria-label="总音量">
+          </div>
         </div>
 
         <div class="pr-divider"></div>
@@ -534,6 +538,10 @@
         <button type="button" class="btn btn-sm btn-secondary pr-icon-btn" id="prMetroBtn" title="节拍器">
           <svg class="pr-icon" viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M8 1a.5.5 0 0 1 .5.5v2.072l3.414 8.536A2 2 0 0 1 10.05 15H5.95a2 2 0 0 1-1.864-2.892L7.5 3.572V1.5A.5.5 0 0 1 8 1zm-2.92 11.455a1 1 0 0 0 .932 1.445h4.1a1 1 0 0 0 .932-1.445L8 4.708 5.08 12.455z"/><circle cx="8" cy="8" r="1.5"/></svg>
         </button>
+        <div class="arr-zoom-wrap" title="播放音量 (WebAudio 音源；原生引擎模式由引擎调音台控制)">
+          <svg class="pr-icon" viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M11.536 14.01A8.47 8.47 0 0 0 14.026 8a8.47 8.47 0 0 0-2.49-6.01l-.708.707A7.48 7.48 0 0 1 13.025 8c0 2.071-.84 3.946-2.197 5.303l.708.707z"/><path d="M10.121 12.596A6.48 6.48 0 0 0 12.025 8a6.48 6.48 0 0 0-1.904-4.596l-.707.707A5.48 5.48 0 0 1 11.025 8a5.48 5.48 0 0 1-1.61 3.89l.706.706z"/><path d="M8.707 11.182A4.49 4.49 0 0 0 10.025 8a4.49 4.49 0 0 0-1.318-3.182L8 5.525A3.5 3.5 0 0 1 9.025 8 3.5 3.5 0 0 1 8 10.475l.707.707zM6.5 5.043v7.914L3.293 10H1.5A.5.5 0 0 1 1 9.5v-3a.5.5 0 0 1 .5-.5h1.793z"/></svg>
+          <input type="range" id="prVolRange" min="0" max="100" step="1" value="75" aria-label="播放音量">
+        </div>
         <div class="pr-bpm-wrap" title="BPM (曲速)">
           <span class="dim">BPM</span>
           <input type="number" id="prBpmInput" value="120" min="30" max="300">

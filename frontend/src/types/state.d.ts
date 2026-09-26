@@ -43,6 +43,10 @@ interface DragState {
   note?: MidiNote;
   snapshot?: string;
   origNotes?: { note: MidiNote; start: number; end: number; pitch: number }[];
+  /* 新建音符的延迟 resize：拖动超过阈值前不改变音符长度 */
+  pendingResize?: boolean;
+  pendingStartBeat?: number;
+  pendingStartPitch?: number;
 }
 
 interface RecordConfig {
@@ -253,6 +257,7 @@ interface ArrangeController {
   addAudioClipFromDrop(trackIdx: any, absPath: any, name: any, startBeat: any): void;
   addMidiClipFromDrop(trackIdx: any, fileName: any, startBeat: any): unknown;
   addTrack(): void;
+  applyMasterVolume(v: number): void;
   appendTreeNode(container: any, dir: any, sub: any, depth: any): void;
   applyMixSafe(): void;
   barSnap(beat: any): number;
@@ -480,6 +485,7 @@ interface PianoRollController {
   activeRecordNotes: { [pitch: string]: LiveRecordNote };
   activeTabId: string | null;
   addDeleteEffect(note: any): void;
+  applyPlaybackVolume(v: number): void;
   animFrameId: number | null;
   anyModalOpen(): boolean;
   applyVelocityBrush(b1: any, v1: any, b2: any, v2: any, groups: any): void;
@@ -569,6 +575,7 @@ interface PianoRollController {
   playNoteSound(midiNote: any, velocity?: any, when?: any): void;
   prModalIds: string[];
   pushHistory(): void;
+  pushHistoryForWheelGesture(): void;
   quickLegato(): void;
   quickQuantize(): void;
   recordConfig: RecordConfig;

@@ -1416,6 +1416,18 @@ func (s *Supervisor) runOnce() string {
 		}
 	}
 
+	/* P6：启动即载入插件清单缓存（存在时）。
+	   价值有两层：① 用户不必每次启动重扫插件目录（扫描要逐个加载插件，几十秒起）；
+	   ② 扫描会"加载再卸载"每个插件，某些插件在随后被真正实例化时会崩——
+	   走缓存路径完全不碰插件二进制，能规避这一类问题。
+	   缓存缺失/损坏时静默跳过（回落到显式扫描）。 */
+	if failReason == "" {
+		if n, err := s.LoadPluginCache(); err != nil {
+			slog.Debug("[engine] 无插件清单缓存（首次启动属正常）", "err", err)
+		} else {
+			slog.Info("[engine] 插件清单缓存已载入", "count", n)
+		}
+	}
 	/* 重放 FX 链（P4）：排在 setTrackVoice 之后——链是"轨声部之后"的处理位点。
 	   master 链与各轨链都重放，顺序与前端一致性无关（链参数是绝对状态）。 */
 	s.mu.RLock()

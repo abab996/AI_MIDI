@@ -87,6 +87,10 @@
         <span class="tab-icon">📚</span>
         <span class="tab-text">知识库<small>Library</small></span>
       </button>
+      <button class="settings-tab" data-pane="paneSound" type="button" aria-selected="false">
+        <span class="tab-icon">🎹</span>
+        <span class="tab-text">声音管理<small>Sound</small></span>
+      </button>
       <button class="settings-tab" data-pane="paneShortcuts" type="button" aria-selected="false">
         <span class="tab-icon">⌨️</span>
         <span class="tab-text">快捷键<small>Shortcuts</small></span>
@@ -372,6 +376,49 @@
         </details>
       </section>
 
+      <!-- 声音管理（音源注册表）：SF2 / 采样包 / VST3 / MM 插件 -->
+      <section class="card brackets settings-card settings-pane" id="paneSound" hidden>
+        <div class="group-title">声音管理 · Sound Library</div>
+
+        <div class="lib-hint">
+          音源注册表是全局唯一的事实源：输出机架、钢琴窗音色与素材库都从这里取音源。<br>
+          SF2 落盘在 <code>Library/soundfonts</code>，把文件拷进去后点「↻ 重新扫描」即可入册；采样包登记的是磁盘上的素材目录。
+        </div>
+
+        <div class="snd-toolbar">
+          <div class="snd-search-wrap">
+            <span class="snd-search-icon" aria-hidden="true">🔍</span>
+            <input type="search" id="sndSearch" class="snd-search" autocomplete="off"
+                   placeholder="搜索名称 / 厂商 / 标签…" aria-label="搜索音源">
+          </div>
+          <label class="snd-sort-wrap">
+            <span class="snd-sort-label">排序</span>
+            <select id="sndSort" class="snd-sort" aria-label="排序方式">
+              <option value="name">名称</option>
+              <option value="added">添加时间</option>
+              <option value="size">大小</option>
+            </select>
+          </label>
+          <div class="snd-add-wrap">
+            <button type="button" class="btn btn-primary btn-sm" id="sndAddBtn"
+                    aria-haspopup="menu" aria-expanded="false">＋ 添加 ▾</button>
+            <div class="select-menu snd-add-menu" id="sndAddMenu" role="menu" hidden>
+              <div class="select-option" data-act="sf2" role="menuitem" tabindex="-1">🎹 上传 SF2 音色库</div>
+              <div class="select-option" data-act="pack" role="menuitem" tabindex="-1">📁 添加采样包文件夹</div>
+              <div class="select-option snd-option-soon" data-act="vst" role="menuitem" aria-disabled="true">🎛 扫描 VST3（P5 开放）</div>
+              <div class="select-option snd-option-soon" data-act="mm" role="menuitem" aria-disabled="true">🧩 安装 .mm 插件（P6 开放）</div>
+            </div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" id="sndRescanBtn"
+                  title="重新扫描音色库目录与素材目录，把磁盘上已有的音源补进注册表">↻ 重新扫描</button>
+        </div>
+        <input type="file" id="sndSf2Input" accept=".sf2,.sf3" hidden>
+
+        <div class="snd-groups" id="sndGroups" role="listbox" aria-label="音源列表"></div>
+        <div class="snd-drop-hint" id="sndDropHint">松开即导入 SF2 音色库</div>
+        <div class="dim snd-foot" id="sndFoot"></div>
+      </section>
+
       <!-- 关于 -->
       <section class="card brackets settings-card settings-pane" id="paneAbout" hidden>
         <div class="group-title">关于 · About</div>
@@ -426,6 +473,7 @@
 </div>
 
 <script src="/js/app.js"></script>
+<script src="/js/soundlib.js"></script>
 <script src="/js/brand-icons.js"></script>
 <script src="/js/shortcuts.js"></script>
 <script src="/js/update.js"></script>
@@ -621,7 +669,6 @@
   });
 
   refreshStatus();
-  paintBackend();
   loadDevices();
   setInterval(refreshStatus, 5000);
   // 延迟实时刷新

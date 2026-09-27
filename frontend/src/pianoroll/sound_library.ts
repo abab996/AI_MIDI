@@ -75,29 +75,34 @@
     });
   };
 
-  SoundLibrary.prototype.saveSoundFont = function (this: SoundLibraryApi, name: string, arrayBuffer: ArrayBuffer, presets: Sf2Preset[]) {
+  SoundLibrary.prototype.saveSoundFont = function (this: SoundLibraryApi, name: string, arrayBuffer: ArrayBuffer, presets: Sf2Preset[], sourceId?: string) {
     var self = this;
     // 镜像到原生引擎音色库（Library/soundfonts/）：失败仅告警，不影响浏览器音源。
     // 响应里的 saved 为服务器落盘绝对路径——存入记录供原生引擎直通加载，
     // 否则加载时只能靠"文件名消毒规则 + 引擎进程 CWD"间接推导（CWD 不对
-    // 时原生音源会静默失效回退 WebAudio）
-    var diskPathPromise = null;
+    // 时原生音源会静默失效回退 WebAudio）。
+    // 响应里的 source 为音源注册表条目：记下 id 作为本地缓存与注册表的桥
+    // （浏览器模式解码时按 id 反查，见 recordForSource）。
+    var metaPromise = null;
     try {
-      diskPathPromise = fetch("/api/audio/soundfonts?name=" + encodeURIComponent(name), {
+      metaPromise = fetch("/api/audio/soundfonts?name=" + encodeURIComponent(name), {
         method: "POST",
         headers: { "Content-Type": "application/octet-stream" },
         body: arrayBuffer
       }).then(function (res) { return res.json(); })
         .then(function (j) {
-          return (j && j.saved) ? j.saved : null;
+          return {
+            diskPath: (j && j.saved) ? j.saved : null,
+            sourceId: (j && j.source && j.source.id) ? j.source.id : null
+          };
         })
         .catch(function (err) {
           console.warn("[SoundLibrary] 引擎同步失败（浏览器音源不受影响）", err);
-          return null;
+          return { diskPath: null, sourceId: null };
         });
-    } catch (e) { /* 非阻塞 */ diskPathPromise = Promise.resolve(null); }
+    } catch (e) { /* 非阻塞 */ metaPromise = Promise.resolve({ diskPath: null, sourceId: null }); }
     var id = "sf2_" + Date.now() + "_" + Math.random().toString(36).substr(2, 6);
-    return diskPathPromise.then(function (diskPath) {
+    return metaPromise.then(function (meta) {
       return self.init().then(function (db: IDBDatabase) {
         return new Promise(function (resolve, reject) {
           var tx = db.transaction(STORE_NAME, "readwrite");
@@ -108,7 +113,8 @@
             size: arrayBuffer.byteLength,
             presets: presets || [],
             data: arrayBuffer,
-            diskPath: diskPath || "",
+            diskPath: meta.diskPath || "",
+            sourceId: sourceId || meta.sourceId || "",
             createdAt: Date.now()
           };
           var req = store.put(record);
@@ -125,6 +131,24 @@
           };
         });
       });
+    });
+  };
+
+  // recordForSource 按音源注册表 id 反查本地解码缓存记录（浏览器模式发声用）。
+  // 优先 sourceId 直配，回退按名称匹配——历史记录没有 sourceId 字段。
+  SoundLibrary.prototype.recordForSource = function (this: SoundLibraryApi, sourceId: string, name?: string) {
+    var self = this;
+    return this.listSoundFonts().then(function (list: SoundFontRecord[]) {
+      var all = list || [];
+      for (var i = 0; i < all.length; i++) {
+        if (sourceId && (all[i] as any).sourceId === sourceId) return all[i];
+      }
+      if (name) {
+        for (var j = 0; j < all.length; j++) {
+          if (all[j].name === name) return all[j];
+        }
+      }
+      return null;
     });
   };
 

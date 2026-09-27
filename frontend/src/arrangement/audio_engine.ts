@@ -48,6 +48,28 @@
       return !!(window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine());
     } catch (e) { return false; }
   }
+
+  /** 预设 id 归一化为引擎要的 bank/program。
+      兼容两种写法：注册表格式 "0:48"，历史格式 "sf2_0_48_2"（含解析出的
+      可选 idx 后缀）。有真预设数组（WebAudio 解析结果）时优先按 id 匹配，
+      匹配不到再退回字符串解析。 */
+  function normalizePresetId(presetId: any, presets: any) {
+    var id = String(presetId || "");
+    if (presets && presets.length) {
+      for (var i = 0; i < presets.length; i++) {
+        if (presets[i] && presets[i].id === id) {
+          return { bank: presets[i].bank || 0, program: presets[i].program || 0 };
+        }
+      }
+    }
+    var m = /^(\d+):(\d+)$/.exec(id);
+    if (m) return { bank: parseInt(m[1], 10) || 0, program: parseInt(m[2], 10) || 0 };
+    if (window.SoundRegistry && window.SoundRegistry.parsePresetId) {
+      return window.SoundRegistry.parsePresetId(id);
+    }
+    var parts = id.replace(/^sf2_/, "").split("_");
+    return { bank: parseInt(parts[0], 10) || 0, program: parseInt(parts[1], 10) || 0 };
+  }
   function trackIndexOf(trackId: any, tracks: any) {
     if (!tracks) return -1;
     for (var i = 0; i < tracks.length; i++) if (tracks[i].id === trackId) return i;
@@ -220,7 +242,10 @@
     var src = track.source || { type: "synth", wave: "sawtooth" };
     var key;
     if (src.type === "sf2") {
-      key = "sf2:" + (src.libId || "") + ":" + (src.presetId || "");
+      /* 注册表 id 优先（新数据），回退 IndexedDB 记录 id（历史工程）。
+         两者都取不到会退化成 "sf2::0:0" 之类的键——两家音色库都用预设 0:0
+         时同轨切换就不会重载音源，因此源标识不能省。 */
+      key = "sf2:" + (src.sourceId || src.libId || "") + ":" + (src.presetId || "");
     } else if (src.type === "builtin") {
       key = "builtin:" + (src.tone || "piano");
     } else {
@@ -345,62 +370,68 @@
 
   /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立）。
       严格路由：引擎模式下加载失败 → onSoundFontError 上浮 UI 提示，
-      该轨静音，绝不回退 WebAudio 解析 */
+      该轨静音，绝不回退 WebAudio 解析。
+
+      引擎模式下优先走音源注册表：注册表条目自带磁盘绝对路径，
+      无需 IndexedDB 记录（换机器/清缓存后仍能发声）。IndexedDB 只在
+      浏览器模式（WebAudio 需要采样数据）与未入册的历史工程里兜底。 */
   ArrangeEngine.prototype.loadTrackSoundFont = function (this: ArrangeEngineInstance, track: any, nodes: any, src: any) {
     var self = this;
-    if (!window.SoundLibrary || !src.libId) return;
+    if (!src) return;
     nodes.sfLoading = true;
+
+    var reg = window.SoundRegistry ? window.SoundRegistry.get(src.sourceId) : null;
+    var regPath = (reg && window.SoundRegistry) ? window.SoundRegistry.diskPathOf(reg) : "";
+
+    var native = function (diskPath: string, presets: Sf2Preset[] | null) {
+      if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.loadSoundFont) return false;
+      var tracks = self.getTracks ? self.getTracks() : [];
+      var idx = trackIndexOf(track.id, tracks);
+      /* 轨已不存在（异步加载期间被删除/切换工程）：直接放弃。
+         此前兜底 idx=0 会把音色装载到引擎 0 号轨并 setTrackPreset，
+         静默改写工程第一轨的音色 */
+      if (idx < 0) { nodes.sfLoading = false; return true; }
+      window.EngineBridge.loadSoundFont(diskPath, idx).then(function () {
+        nodes.sfLoading = false;
+        nodes._useNative = true;
+        nodes._nativeTrackIdx = idx;
+        if (!src.presetId) return;
+        var p = normalizePresetId(src.presetId, presets || nodes.soundfont && nodes.soundfont.loadedPresets);
+        return window.EngineBridge.setTrackPreset(idx, p.bank, p.program).catch(function (e) {
+          // 预设不存在：回退该文件预设 0 并提示
+          return window.EngineBridge.setTrackPreset(idx, 0, 0).then(function () {
+            if (window.UI && UI.toast) UI.toast!("⚠ 预设不存在，已用该音色库首个预设", "warn");
+          }).catch(function () { throw e; });
+        });
+      }).then(function () {
+        if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, { name: (reg && reg.name) || src.name, presets: presets || [], native: true });
+      }).catch(function (e) {
+        nodes.sfLoading = false;
+        nodes._useNative = false;
+        if (self.onSoundFontError) self.onSoundFontError(track.id, e);
+      });
+      return true;
+    };
+
+    // 引擎模式 + 注册表已入册：磁盘路径直供，跳过 IndexedDB
+    if (regPath && native(regPath, null)) return;
+
+    if (!window.SoundLibrary || !src.libId) { nodes.sfLoading = false; return; }
     window.SoundLibrary.getSoundFont(src.libId).then(function (rec: any) {
       if (!rec || !rec.data) throw new Error("音源数据不存在");
-      if (isNativePreferred() && window.EngineBridge && window.EngineBridge.loadSoundFont) {
-        var tracks = self.getTracks ? self.getTracks() : [];
-        var idx = trackIndexOf(track.id, tracks);
-        /* 轨已不存在（异步加载期间被删除/切换工程）：直接放弃。
-           此前兜底 idx=0 会把音色装载到引擎 0 号轨并 setTrackPreset，
-           静默改写工程第一轨的音色 */
-        if (idx < 0) return;
-        // 服务器落盘的绝对路径优先（上传时由 /api/audio/soundfonts 的
-        // saved 字段存入记录）；旧记录无 diskPath 时按 safe 规则推导相对
-        // 路径——后者依赖引擎进程 CWD 恰为 exe 目录，CWD 不同则加载失败
-        var diskPath = rec.diskPath;
-        if (!diskPath) {
-          var rawName = rec.name || src.name || "soundfont";
-          var safe = rawName.replace(/[^\p{L}\p{N}_\-\.]/gu, "_");
-          safe = safe.replace(/\.[^/.]+$/, "");
-          if (!safe) safe = "soundfont";
-          diskPath = "Library/soundfonts/" + safe + ".sf2";
-        }
-        // 原生优先：经 JUCE 加载；失败即上浮错误（不回退 Web 解析）
-        return window.EngineBridge.loadSoundFont(diskPath, idx).then(function(){
-          nodes.sfLoading = false;
-          nodes._useNative = true;
-          nodes._nativeTrackIdx = idx;
-          if (src.presetId) {
-            // 多预设音色库：选择目标预设（预设不存在时引擎侧拒绝）
-            var preset = null;
-            var parts = String(src.presetId).replace(/^sf2_/, "").split("_");
-            if (nodes.soundfont && nodes.soundfont.loadedPresets) {
-              for (var i = 0; i < nodes.soundfont.loadedPresets.length; i++) {
-                if (nodes.soundfont.loadedPresets[i] && nodes.soundfont.loadedPresets[i].id === src.presetId) { preset = nodes.soundfont.loadedPresets[i]; break; }
-              }
-            }
-            var bank = preset ? (preset.bank || 0) : (parseInt(parts[0], 10) || 0);
-            var program = preset ? (preset.program || 0) : (parseInt(parts[1], 10) || 0);
-            return window.EngineBridge.setTrackPreset(idx, bank, program).catch(function (e) {
-              // 预设不存在：回退该文件预设 0 并提示
-              return window.EngineBridge.setTrackPreset(idx, 0, 0).then(function () {
-                if (window.UI && UI.toast) UI.toast!("⚠ 预设不存在，已用该音色库首个预设", "warn");
-              }).catch(function () { throw e; });
-            });
-          }
-        }).then(function(){
-          if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, { name: rec.name, presets: rec.presets, native: true });
-        }).catch(function(e){
-          nodes.sfLoading = false;
-          nodes._useNative = false;
-          if (self.onSoundFontError) self.onSoundFontError(track.id, e);
-        });
+      // 服务器落盘的绝对路径优先（上传时由 /api/audio/soundfonts 的
+      // saved 字段存入记录）；旧记录无 diskPath 时按 safe 规则推导相对
+      // 路径——后者依赖引擎进程 CWD 恰为 exe 目录，CWD 不同则加载失败
+      var diskPath = rec.diskPath;
+      if (!diskPath) {
+        var rawName = rec.name || src.name || "soundfont";
+        var safe = rawName.replace(/[^\p{L}\p{N}_\-\.]/gu, "_");
+        safe = safe.replace(/\.[^/.]+$/, "");
+        if (!safe) safe = "soundfont";
+        diskPath = "Library/soundfonts/" + safe + ".sf2";
       }
+      if (native(diskPath, rec.presets || null)) return;
+
       // webaudio 模式：Web 解析（引擎模式永不走到这里——isNativePreferred
       // 在引擎模式下等于"引擎就绪"，未就绪时播放已被门控拦截）
       var parsed = nodes.soundfont.parseSF2(rec.data);

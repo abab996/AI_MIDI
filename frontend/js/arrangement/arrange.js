@@ -3688,46 +3688,26 @@
           self.showHUD("✗ 导入音色库失败: " + (err && err.message ? err.message : "存储空间不足或文件损坏"));
           if (window.UI && UI.toast) UI.toast ("✗ 导入音色库失败: " + (err && err.message ? err.message : "未知错误"), "err");
         };
-        if (window.SoundLibrary && window.SoundLibrary.showImportDialog) {
-          window.SoundLibrary.showImportDialog(refreshRack);
-        } else {
-          var input = document.createElement("input");
-          input.type = "file";
-          input.accept = ".sf2";
-          input.onchange = function (e) {
-            var file = e.target .files && e.target .files[0];
-            if (!file) return;
-            if (!window.SoundLibrary) return;
-            var reader = new FileReader();
-            reader.onload = function () {
-              var buf = reader.result;
-              var presets        = [];
-              try {
-                // 解析 presets（与聊天页音源库上传一致），失败不阻断保存
-                if (window.PianoRoll && window.PianoRoll.soundfont && window.PianoRoll.soundfont.parseSF2) {
-                  presets = window.PianoRoll.soundfont.parseSF2(buf       ).presets || [];
-                }
-              } catch (err) {
-                // 解析失败仍按无预设保存，保证基础导入可用
-                presets = [];
-              }
-              // 大文件写入 IndexedDB 可能触发配额错误：禁用按钮 + 补 catch，
-              // 失败必须给出可见反馈（此前静默吞掉，HUD 却显示成功）
-              var origLabel = addSf2Btn .textContent;
-              addSf2Btn .disabled = true;
-              addSf2Btn .textContent = "导入中…";
-              window.SoundLibrary.saveSoundFont(file .name, buf       , presets)
-                .then(refreshRack)
-                .catch(fail)
-                .finally(function () {
-                  addSf2Btn .disabled = false;
-                  addSf2Btn .textContent = origLabel;
-                });
-            };
-            reader.readAsArrayBuffer(file);
-          };
-          input.click();
-        }
+        // 统一走音源注册表导入：落盘 + 入册一次完成（旧入口只写 IndexedDB
+        // 镜像，机架能看见但"声音管理"里查不到）
+        var input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".sf2";
+        input.onchange = function (e) {
+          var file = e.target .files && e.target .files[0];
+          if (!file) return;
+          if (!window.SoundRegistry) return;
+          var origLabel = addSf2Btn .textContent;
+          addSf2Btn .disabled = true;
+          addSf2Btn .textContent = "导入中…";
+          window.SoundRegistry.importSf2(file, function (stage) {
+            addSf2Btn .textContent = stage;
+          }).then(refreshRack).catch(fail).finally(function () {
+            addSf2Btn .disabled = false;
+            addSf2Btn .textContent = origLabel;
+          });
+        };
+        input.click();
       });
     }
   };
@@ -3802,20 +3782,46 @@
         source: { type: "builtin", tone: "strings", label: "内置 · 弦乐群" }
       });
 
-      var cachedFonts = window.SoundLibrary ? window.SoundLibrary.getCachedSoundFonts() : [];
-      cachedFonts.forEach(function (sf) {
-        var firstPreset = (sf.presets && sf.presets.length) ? sf.presets[0].id : null;
+      // 音源注册表（唯一事实源）：Library/soundfonts 里已入册的自定义音色库。
+      // 取代此前直接扫 IndexedDB 缓存的做法——注册表按磁盘路径登记，
+      // 引擎模式发声不需要浏览器端有记录（换机器/清缓存后依然可用）。
+      var reg = window.SoundRegistry;
+      var sf2List = reg ? reg.enabledOf("sf2") : [];
+      sf2List.forEach(function (sf     ) {
+        var presetId = reg .firstPreset(sf.id);
+        var rt = sf.runtime || {};
+        var bits           = [];
+        if (rt.missing) bits.push("⚠ 文件缺失");
+        if (rt.presetCount) bits.push(rt.presetCount + " 预设");
+        if (rt.size && window.UI && UI.fmtSize) bits.push(UI.fmtSize(rt.size));
+        if (reg .isBuiltin(sf)) bits.push("内置");
+        var desc = bits.length ? bits.join(" · ") : "SoundFont 音色库";
+        if (reg .isAI(sf)) desc += " · ✨AI";
         items.push({
           type: "source",
           subType: "sf2",
           id: "sf2-" + sf.id,
-          badge: "SF2 扩展",
+          badge: "SF2",
           badgeClass: "arr-rack-badge-sf2",
           title: sf.name || "自定义音色库",
-          desc: firstPreset ? "预设: " + ((sf.presets [0].name || "Preset")) : "已挂载自定义 SoundFont 音色",
-          source: { type: "sf2", libId: sf.id, presetId: firstPreset, label: (sf.name || "自定义音色").slice(0, 24) }
+          desc: desc,
+          source: { type: "sf2", sourceId: sf.id, libId: "", presetId: presetId, label: (sf.name || "自定义音色").slice(0, 24) }
         });
       });
+      // 预设列表按需异步取（首个预设决定拖到轨道时的默认音色）：
+      // 拿回后重绘一次，已尝试过的条目记档，避免失败时反复重试成死循环
+      if (!self._presetTried) self._presetTried = {};
+      var tried = self._presetTried;
+      var missingPresets = sf2List.filter(function (sf     ) { return !reg .firstPreset(sf.id) && !tried[sf.id]; });
+      if (missingPresets.length) {
+        missingPresets.forEach(function (sf     ) { tried[sf.id] = true; });
+        Promise.all(missingPresets.map(function (sf     ) {
+          return reg .presets(sf.id).catch(function () { return []; });
+        })).then(function () {
+          var w = document.getElementById("arrRackWindow");
+          if (self._currentRackFilter === filter && w && !w.hidden) self.renderOutputRack(filter);
+        });
+      }
     }
 
     // 3. 采样素材
@@ -3955,6 +3961,42 @@
     });
   };
 
+  /** 解析 SF2 音源对应的磁盘绝对路径。注册表条目优先——引擎模式发声
+      只需要它，不再依赖浏览器端 IndexedDB 记录；未入册的历史工程回退到
+      IndexedDB 记录的 diskPath，最后按文件名消毒规则推导相对路径。 */
+  Arrange.prototype.resolveSf2DiskPath = function (                         source     ) {
+    var reg = window.SoundRegistry;
+    if (reg && source && source.sourceId) {
+      var s = reg.get(source.sourceId);
+      var p = s ? reg.diskPathOf(s) : "";
+      if (p) return Promise.resolve(p);
+    }
+    if (!source || !source.libId || !window.SoundLibrary) return Promise.resolve("");
+    return window.SoundLibrary.getSoundFont(source.libId).then(function (rec     ) {
+      if (!rec) return "";
+      if (rec.diskPath) return rec.diskPath          ;
+      var safe = (rec.name || "soundfont").replace(/[^\p{L}\p{N}_\-\.]/gu, "_").replace(/\.[^/.]+$/, "");
+      return "Library/soundfonts/" + (safe || "soundfont") + ".sf2";
+    }).catch(function () { return ""; });
+  };
+
+  /** 浏览器模式（WebAudio）下取 SF2 的采样数据：优先按注册表 id 反查
+      本地解码缓存，回退历史 IndexedDB 记录（libId）。 */
+  Arrange.prototype.loadSf2BufferForWebAudio = function (                         source     ) {
+    var reg = window.SoundRegistry;
+    if (reg && source && source.sourceId) {
+      var s = reg.get(source.sourceId);
+      return reg.browserRecord(s).then(function (hit     ) {
+        if (hit && hit.id && window.SoundLibrary) return window.SoundLibrary.getSoundFont(hit.id);
+        return null;
+      });
+    }
+    if (source && source.libId && window.SoundLibrary) {
+      return window.SoundLibrary.getSoundFont(source.libId);
+    }
+    return Promise.resolve(null);
+  };
+
   /** 预览机架音源 (播放一个 C4 音符)。
       引擎模式：发到专用试听轨（PREVIEW_TRACK=29，见 engine_bridge.js 轨位表）；
       webaudio 模式：在共享 AudioContext 上播放（原行为） */
@@ -3986,26 +4028,21 @@
           window.EngineBridge.setTrackVoice(trk, p).then(playNativeNote).catch(function (e) {
             self.showHUD("✗ 试听失败: " + (e && e.message ? e.message : "引擎不可用"));
           });
-        } else if (source.type === "sf2" && source.libId && window.SoundLibrary) {
-          window.SoundLibrary.getSoundFont(source.libId).then(function (rec     ) {
-            if (!rec || !rec.data) throw new Error("音源数据不存在");
-            var diskPath = rec.diskPath;
-            if (!diskPath) {
-              var safe = (rec.name || "soundfont").replace(/[^\p{L}\p{N}_\-\.]/gu, "_").replace(/\.[^/.]+$/, "");
-              diskPath = "Library/soundfonts/" + (safe || "soundfont") + ".sf2";
-            }
+        } else if (source.type === "sf2" && (source.sourceId || source.libId)) {
+          this.resolveSf2DiskPath(source).then(function (diskPath        ) {
+            if (!diskPath) throw new Error("音源数据不存在");
             return window.EngineBridge.loadSoundFont(diskPath, trk).then(function () {
               if (!source.presetId) return;
-              var parts = String(source.presetId).replace(/^sf2_/, "").split("_");
-              var bank = parseInt(parts[0], 10) || 0;
-              var program = parseInt(parts[1], 10) || 0;
-              return window.EngineBridge.setTrackPreset(trk, bank, program).catch(function () {
+              var p = window.SoundRegistry
+                ? window.SoundRegistry.parsePresetId(source.presetId)
+                : { bank: 0, program: 0 };
+              return window.EngineBridge.setTrackPreset(trk, p.bank, p.program).catch(function () {
                 return window.EngineBridge.setTrackPreset(trk, 0, 0).then(function () {
                   if (self.showHUD) self.showHUD("⚠ 预设不存在，已用该音色库首个预设");
                 });
               });
             });
-          }).then(playNativeNote).catch(function (err) {
+          }).then(playNativeNote).catch(function (err     ) {
             if (self.showHUD) self.showHUD("✗ 试听失败: " + (err && err.message ? err.message : "引擎不可用"));
           });
         } else {
@@ -4046,15 +4083,15 @@
         synth.init();
         synth.setWaveform(source.wave || "sawtooth");
         playNote(synth);
-      } else if (source.type === "sf2" && source.libId && window.SoundLibrary) {
-        window.SoundLibrary.getSoundFont(source.libId).then(function (rec     ) {
+      } else if (source.type === "sf2" && (source.sourceId || source.libId)) {
+        this.loadSf2BufferForWebAudio(source).then(function (rec     ) {
           if (!rec || !rec.data) throw new Error("音源数据不存在");
           var player = new window.SoundFontPlayer(ctx, gain);
           player.init();
           player.parseSF2(rec.data);
           if (source.presetId) player.setPreset(source.presetId);
           playNote(player);
-        }).catch(function (err) {
+        }).catch(function (err     ) {
           cleanup();
           if (self.showHUD) self.showHUD("✗ 试听失败: " + err.message);
         });

@@ -240,6 +240,8 @@ interface TreeCacheNode {
 interface ArrangeController {
   _confirmFn: (() => void) | null;
   _currentRackFilter: string;
+  /* 已尝试拉过预设的音源 id：拉取失败后不再重试，避免重绘死循环 */
+  _presetTried?: { [sourceId: string]: boolean };
   _exporting: boolean;
   _followSuspendUntil: number;
   _lastMixTrackCount?: number;
@@ -363,6 +365,9 @@ interface ArrangeController {
   ppb: number;
   previewRackSample(path: any): void;
   previewRackSource(source: any): unknown;
+  /* SF2 音源解析：注册表优先，回退 IndexedDB 记录 */
+  resolveSf2DiskPath(source: any): Promise<string>;
+  loadSf2BufferForWebAudio(source: any): Promise<unknown>;
   pushHistory(): void;
   rafId: number | null;
   redo(): void;
@@ -629,7 +634,12 @@ interface PianoRollController {
   undo(): void;
   updateGhostTrackSelect(): void;
   updateLoopBoundsFromNotes(notes: any): void;
-  updateSoundSelectOptions(parsed: any): void;
+  /* 音色下拉：parsed={name,presets}；meta 为注册表条目（可选）；
+     preferId 指定选中哪个预设（默认首个） */
+  updateSoundSelectOptions(parsed: any, meta?: any, preferId?: string): void;
+  /* 把注册表音源应用到钢琴窗音色（拉预设 + 记住磁盘路径），
+     返回是否真正切换成功（无可用预设时为 false） */
+  applyRegistrySoundFont(src: any, presetId?: string): Promise<boolean>;
   velocityCanvas: HTMLCanvasElement | null;
   velocityCtx: CanvasRenderingContext2D | null;
   velocityHeight: number;

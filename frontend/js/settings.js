@@ -1042,6 +1042,7 @@
     if (paneId === activePane) return;
     if (paneId === "paneShortcuts") renderShortcutsPane();
     if (paneId === "paneLibrary") loadLibraryFiles();
+    if (paneId === "paneSound") loadSoundLibrary();
     paneToken++;
     var token = paneToken;
 
@@ -1458,6 +1459,689 @@
     });
   }
 
+  /* ═══════════ 声音管理（音源注册表 /api/sound/*） ═══════════
+     注册表是全局唯一事实源，本面板只做展示与增删启停：
+     分组卡（SF2 / 采样包 / VST3 / MM）+ 条目卡六态 + AI 徽标 + 详情弹窗
+     + 添加下拉 + 拖文件导入 + 键盘操作（↑↓ 选择、Enter 详情、Delete 删除）。 */
+
+  var SND_COLLAPSED_KEY = "melodymate_snd_collapsed";
+
+  var sndState = {
+    q: "",
+    sort: "name",
+    collapsed: {}                               ,
+    selected: "",
+    dropDepth: 0
+  };
+
+  /* 试听状态：正在试听的音源 id（按钮脉冲态），以及停止定时器 */
+  var sndAudition = { id: "", timer: null        };
+
+  function sndReg() { return (window       ).SoundRegistry; }
+
+  function sndLoadCollapsed() {
+    try {
+      var raw = localStorage.getItem(SND_COLLAPSED_KEY);
+      if (raw) sndState.collapsed = JSON.parse(raw) || {};
+    } catch (e) { sndState.collapsed = {}; }
+  }
+
+  function sndSaveCollapsed() {
+    try { localStorage.setItem(SND_COLLAPSED_KEY, JSON.stringify(sndState.collapsed)); } catch (e) {}
+  }
+
+  function sndFmtDate(ts     ) {
+    if (!ts) return "—";
+    var d = new Date(ts * 1000);
+    var p = function (n     ) { return (n < 10 ? "0" : "") + n; };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  function sndSortList(list     ) {
+    var arr = list.slice();
+    arr.sort(function (a     , b     ) {
+      if (sndState.sort === "added") return (b.addedAt || 0) - (a.addedAt || 0);
+      if (sndState.sort === "size") {
+        var sa = (a.runtime && a.runtime.size) || 0;
+        var sb = (b.runtime && b.runtime.size) || 0;
+        return sb - sa;
+      }
+      return String(a.name || "").toLowerCase().localeCompare(String(b.name || "").toLowerCase());
+    });
+    return arr;
+  }
+
+  function sndEmptyHint(kind        ) {
+    var map                          = {
+      sf2: "还没有 SF2 音色库：用「＋ 添加」上传，或把 .sf2 文件拷入 Library/soundfonts 后点「↻ 重新扫描」。",
+      samplepack: "还没有采样包：「＋ 添加 → 采样包文件夹」选择磁盘上的素材目录即可。",
+      vst3: "VST3 扫描将在 P5 里程碑开放。",
+      mm: "MM 插件安装将在 P6 里程碑开放。"
+    };
+    var el = document.createElement("div");
+    el.className = "dim snd-empty";
+    el.textContent = map[kind] || "暂无条目";
+    return el;
+  }
+
+  function sndIconBtn(cls        , icon        , title        ) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "snd-icon-btn " + cls;
+    b.textContent = icon;
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    return b;
+  }
+
+  /* 条目卡：kind 徽标 / 名称+元信息 / hover 浮出的操作列。
+     idx 用于进场 stagger（40ms 递进，见 4.10 动效表）。 */
+  function sndSourceRow(src     , idx        ) {
+    var reg = sndReg();
+    var meta = reg.kindMeta(src.kind);
+    var rt = src.runtime || {};
+
+    var row = document.createElement("div");
+    row.className = "snd-source-card";
+    row.style.setProperty("--snd-delay", Math.min(idx, 12) * 0.04 + "s");
+    row.dataset.id = src.id;
+    row.dataset.name = (src.name || "").toLowerCase();
+    row.setAttribute("role", "option");
+    row.tabIndex = -1;
+    if (src.id === sndState.selected) row.classList.add("selected");
+    if (src.enabled === false) row.classList.add("is-off");
+    if (rt.missing) row.classList.add("is-missing");
+
+    var badge = document.createElement("span");
+    badge.className = "snd-kind-badge " + meta.cls;
+    badge.textContent = meta.badge;
+    row.appendChild(badge);
+
+    var info = document.createElement("div");
+    info.className = "snd-info";
+
+    var nameLine = document.createElement("div");
+    nameLine.className = "snd-name-line";
+    var nameEl = document.createElement("span");
+    nameEl.className = "snd-name";
+    nameEl.textContent = src.name || "(未命名)";
+    nameEl.title = src.name || "";
+    nameLine.appendChild(nameEl);
+    if (reg.isAI(src)) {
+      var ai = document.createElement("span");
+      ai.className = "snd-badge-ai";
+      ai.textContent = "✨AI";
+      ai.title = "AI 生成" + (src.ai && src.ai.createdBy ? "（" + src.ai.createdBy + "）" : "");
+      nameLine.appendChild(ai);
+    }
+    if (src.enabled === false) {
+      var off = document.createElement("span");
+      off.className = "snd-tag snd-tag-off";
+      off.textContent = "已停用";
+      nameLine.appendChild(off);
+    }
+    if (rt.missing) {
+      var miss = document.createElement("span");
+      miss.className = "snd-tag snd-tag-warn";
+      miss.textContent = "文件缺失";
+      nameLine.appendChild(miss);
+    }
+    info.appendChild(nameLine);
+
+    var bits           = [];
+    if (src.kind === "sf2") {
+      if (rt.presetCount) bits.push(rt.presetCount + " 预设");
+      if (rt.size) bits.push(UI.fmtSize (rt.size));
+    } else if (src.kind === "samplepack") {
+      if ((src.dirs || []).length) bits.push((src.dirs || []).length + " 个目录");
+      if (rt.sampleFiles) bits.push(rt.sampleFiles + " 文件");
+    }
+    if (src.vendor) bits.push(src.vendor);
+    bits.push(reg.originLabel(src));
+
+    var metaLine = document.createElement("div");
+    metaLine.className = "snd-meta-line";
+    metaLine.textContent = bits.join(" · ");
+    info.appendChild(metaLine);
+
+    var loc = document.createElement("div");
+    loc.className = "snd-loc";
+    loc.textContent = (src.kind === "samplepack")
+      ? (src.dirs || []).join("  ·  ")
+      : (rt.fileName || src.path || "");
+    loc.title = (src.kind === "samplepack") ? (src.dirs || []).join("\n") : (rt.absPath || src.path || "");
+    info.appendChild(loc);
+    row.appendChild(info);
+
+    var actions = document.createElement("div");
+    actions.className = "snd-actions";
+
+    var playBtn = sndIconBtn("action-audition", "▷", "试听");
+    if (sndAudition.id === src.id) playBtn.classList.add("playing");
+    actions.appendChild(playBtn);
+
+    var detailBtn = sndIconBtn("action-detail", "ⓘ", "详情");
+    actions.appendChild(detailBtn);
+
+    var toggleBtn = sndIconBtn("action-toggle", src.enabled === false ? "◻" : "⏻",
+      src.enabled === false ? "启用" : "停用");
+    actions.appendChild(toggleBtn);
+
+    var delBtn = sndIconBtn("action-del danger", "🗑", "删除");
+    actions.appendChild(delBtn);
+
+    row.appendChild(actions);
+    return row;
+  }
+
+  function sndGroupCard(kind        , list     , totalInKind        ) {
+    var reg = sndReg();
+    var meta = reg.kindMeta(kind);
+    var collapsed = !!sndState.collapsed[kind];
+
+    var card = document.createElement("section");
+    card.className = "card brackets snd-group";
+    card.dataset.kind = kind;
+
+    var head = document.createElement("button");
+    head.type = "button";
+    head.className = "snd-group-head";
+    head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    var caret = document.createElement("span");
+    caret.className = "snd-group-caret" + (collapsed ? " collapsed" : "");
+    caret.textContent = "▾";
+    head.appendChild(caret);
+    var icon = document.createElement("span");
+    icon.className = "snd-group-icon";
+    icon.textContent = meta.icon;
+    head.appendChild(icon);
+    var nm = document.createElement("span");
+    nm.className = "snd-group-name";
+    nm.textContent = meta.label;
+    head.appendChild(nm);
+    var cnt = document.createElement("span");
+    cnt.className = "snd-group-count";
+    cnt.textContent = String(totalInKind);
+    head.appendChild(cnt);
+    head.addEventListener("click", function () {
+      sndState.collapsed[kind] = !sndState.collapsed[kind];
+      sndSaveCollapsed();
+      renderSoundLibrary();
+    });
+    card.appendChild(head);
+
+    if (collapsed) return card;
+
+    var body = document.createElement("div");
+    body.className = "snd-group-body";
+    if (!list.length) {
+      body.appendChild(sndEmptyHint(kind));
+    } else {
+      list.forEach(function (src     , i        ) { body.appendChild(sndSourceRow(src, i)); });
+    }
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderSoundLibrary() {
+    var wrap = $("#sndGroups");
+    if (!wrap) return;
+    var reg = sndReg();
+    if (!reg) {
+      wrap.innerHTML = "";
+      wrap.appendChild(libEmptyHint("音源注册表未加载（soundlib.js 缺失或后端不可用）。"));
+      return;
+    }
+    var total = reg.all().length;
+    var shown = 0;
+    var frag = document.createDocumentFragment();
+
+    reg.kindOrder().forEach(function (kind        ) {
+      var list = sndSortList(reg.query(kind, sndState.q));
+      var inKind = reg.list(kind);
+      shown += list.length;
+      // 搜索中：空组直接隐藏，避免一屏「无匹配」的空卡
+      if (sndState.q && !list.length) return;
+      frag.appendChild(sndGroupCard(kind, list, inKind.length));
+    });
+
+    wrap.innerHTML = "";
+    wrap.appendChild(frag);
+
+    var foot = $("#sndFoot");
+    if (foot) {
+      foot.textContent = sndState.q
+        ? "匹配 " + shown + " / 共 " + total + " 个音源"
+        : "共 " + total + " 个音源";
+    }
+  }
+
+  function loadSoundLibrary() {
+    var reg = sndReg();
+    var wrap = $("#sndGroups");
+    if (!reg || !wrap) return Promise.resolve();
+    wrap.innerHTML = "";
+    wrap.appendChild(libEmptyHint("正在加载音源列表…"));
+    return reg.load(true).then(renderSoundLibrary).catch(function (e     ) {
+      wrap.innerHTML = "";
+      wrap.appendChild(libEmptyHint("音源列表加载失败：" + (e && e.message ? e.message : "后端不可用")));
+    });
+  }
+
+  /* ===== 详情弹窗（复用全站 modal 外观：.modal-overlay/.modal.card.brackets） ===== */
+
+  function sndDetailModal(src     , onChanged            ) {
+    var reg = sndReg();
+    var rt = src.runtime || {};
+    var overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    var modal = document.createElement("div");
+    modal.className = "modal card brackets snd-detail-modal";
+    overlay.appendChild(modal);
+
+    var title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = src.name || "(未命名)";
+    modal.appendChild(title);
+
+    var body = document.createElement("div");
+    body.className = "snd-detail-body";
+
+    var rows                          = [];
+    rows.push(["类型", reg.kindMeta(src.kind).label]);
+    rows.push(["来源", reg.originLabel(src)]);
+    if (src.vendor) rows.push(["厂商", src.vendor]);
+    if (src.kind === "sf2") {
+      rows.push(["文件", rt.absPath || src.path || "—"]);
+      if (rt.size) rows.push(["大小", UI.fmtSize(rt.size)]);
+      if (rt.presetCount) rows.push(["预设数", String(rt.presetCount)]);
+    } else if (src.kind === "samplepack") {
+      (src.dirs || []).forEach(function (d        , i        ) {
+        rows.push(["目录 " + (i + 1), d]);
+      });
+      if (rt.sampleFiles !== undefined) rows.push(["音频文件", String(rt.sampleFiles)]);
+    }
+    if (src.hash) rows.push(["哈希", src.hash]);
+    if ((src.capabilities || []).length) rows.push(["能力", src.capabilities.join("、")]);
+    rows.push(["添加时间", sndFmtDate(src.addedAt)]);
+    if (src.ai) {
+      rows.push(["AI 作者", src.ai.author || src.ai.createdBy || "AI"]);
+    }
+    if (src.tags && src.tags.length) rows.push(["标签", src.tags.join("、")]);
+
+    rows.forEach(function (kv) {
+      var r = document.createElement("div");
+      r.className = "snd-detail-row";
+      var k = document.createElement("span");
+      k.className = "snd-detail-key";
+      k.textContent = kv[0];
+      var v = document.createElement("span");
+      v.className = "snd-detail-val";
+      v.textContent = kv[1];
+      v.title = kv[1];
+      r.appendChild(k);
+      r.appendChild(v);
+      body.appendChild(r);
+    });
+    modal.appendChild(body);
+
+    var actions = document.createElement("div");
+    actions.className = "modal-actions";
+
+    var revealBtn = document.createElement("button");
+    revealBtn.type = "button";
+    revealBtn.className = "btn btn-secondary btn-sm";
+    revealBtn.textContent = "📁 打开位置";
+    revealBtn.addEventListener("click", function () {
+      UI.postJSON("/api/sound/reveal", { id: src.id }).catch(function (e     ) {
+        UI.toast ("✗ 打开位置失败: " + (e && e.message ? e.message : "未知错误"), "err");
+      });
+    });
+    actions.appendChild(revealBtn);
+
+    /* 重命名：SF2 常用（文件名即展示名），采样包同理 */
+    var renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "btn btn-secondary btn-sm";
+    renameBtn.textContent = "✏ 重命名";
+    renameBtn.addEventListener("click", function () {
+      UI.prompt ("音源名称", src.name || "").then(function (name     ) {
+        if (!name || !String(name).trim()) return;
+        reg.update(src.id, { name: String(name).trim() }).then(function () {
+          UI.toast ("✓ 已重命名", "ok");
+          close();
+          onChanged();
+        }).catch(function (e     ) {
+          UI.toast ("✗ 重命名失败: " + (e && e.message ? e.message : "未知错误"), "err");
+        });
+      });
+    });
+    actions.appendChild(renameBtn);
+
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "btn btn-primary btn-sm";
+    closeBtn.textContent = "关闭";
+    actions.appendChild(closeBtn);
+    modal.appendChild(actions);
+
+    function close() {
+      overlay.classList.remove("modal-in");
+      overlay.classList.add("modal-out");
+      setTimeout(function () {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey);
+      }, 220);
+    }
+    function onKey(e     ) {
+      if (e.key === "Escape") { e.stopPropagation(); close(); }
+    }
+    closeBtn.addEventListener("click", close);
+    overlay.addEventListener("click", function (e) {
+      if (e.target === overlay) close();
+    });
+    document.addEventListener("keydown", onKey);
+
+    document.body.appendChild(overlay);
+    overlay.hidden = false;
+    /* 复用全站 modal 入场曲线（modal-fly + modal-size） */
+    void overlay.offsetWidth;
+    overlay.classList.add("modal-in");
+  }
+
+  /* ===== 试听：走引擎 29 试听轨（引擎未就绪则明确提示，不静默失败） ===== */
+
+  function sndStopAudition() {
+    if (sndAudition.timer) {
+      clearTimeout(sndAudition.timer);
+      sndAudition.timer = null;
+    }
+    if (sndAudition.id) {
+      try {
+        var trk = (window.EngineBridge && window.EngineBridge.PREVIEW_TRACK) || 29;
+        window.EngineBridge.noteOffTrack(trk, 60);
+      } catch (e) {}
+      sndAudition.id = "";
+      var prev = document.querySelector(".snd-source-card .action-audition.playing");
+      if (prev) prev.classList.remove("playing");
+    }
+  }
+
+  function sndAuditionSource(src     , btn     ) {
+    if (sndAudition.id === src.id) { sndStopAudition(); return; }
+    sndStopAudition();
+
+    if (!(window.AudioBackend && window.AudioBackend.isEngineReady())) {
+      UI.toast ("✗ 音频引擎未就绪，试听不可用", "err");
+      return;
+    }
+    var reg = sndReg();
+    var trk = (window.EngineBridge && window.EngineBridge.PREVIEW_TRACK) || 29;
+    var diskPath = reg.diskPathOf(src);
+    if (!diskPath) {
+      UI.toast ("✗ 音源缺少磁盘路径，无法试听", "err");
+      return;
+    }
+    var play = function (bank        , program        ) {
+      return window.EngineBridge.loadSoundFont(diskPath, trk)
+        .then(function () { return window.EngineBridge.setTrackPreset(trk, bank, program); })
+        .catch(function () { return window.EngineBridge.setTrackPreset(trk, 0, 0); });
+    };
+    reg.presets(src.id).then(function (presets       ) {
+      var bank = 0, program = 0;
+      if (presets && presets.length) {
+        bank = presets[0].bank || 0;
+        program = presets[0].program || 0;
+      }
+      return play(bank, program);
+    }).then(function () {
+      sndAudition.id = src.id;
+      if (btn) btn.classList.add("playing");
+      window.EngineBridge.noteOnTrack(trk, 60, 100);
+      sndAudition.timer = setTimeout(sndStopAudition, 1200);
+    }).catch(function (e     ) {
+      UI.toast ("✗ 试听失败: " + (e && e.message ? e.message : "引擎不可用"), "err");
+    });
+  }
+
+  /* ===== 交互绑定 ===== */
+
+  function sndHandleAction(action        , src     , btn     ) {
+    var reg = sndReg();
+    if (action === "action-audition") { sndAuditionSource(src, btn); return; }
+
+    if (action === "action-detail") {
+      sndDetailModal(src, function () { loadSoundLibrary(); });
+      return;
+    }
+    if (action === "action-toggle") {
+      var next = src.enabled === false;
+      reg.setEnabled(src.id, next).then(function () {
+        UI.toast (next ? "✓ 已启用 " + src.name : "已停用 " + src.name, next ? "ok" : "");
+      }).catch(function (e     ) {
+        UI.toast ("✗ 操作失败: " + (e && e.message ? e.message : "未知错误"), "err");
+      });
+      return;
+    }
+    if (action === "action-del") {
+      var extra = src.kind === "sf2" ? "磁盘文件会一并删除，" : "";
+      UI.confirm ("确定删除「" + src.name + "」？" + extra + "此操作不可恢复。").then(function (ok     ) {
+        if (!ok) return;
+        /* 退场：确认弹窗关闭后条目淡出收拢（0.18s，reduced-motion 下瞬时） */
+        var row = document.querySelector('.snd-source-card[data-id="' + src.id + '"]');
+        var done = function () {
+          reg.remove(src.id, { file: src.kind === "sf2" }).then(function () {
+            UI.toast ("✓ 已删除: " + src.name, "ok");
+          }).catch(function (e     ) {
+            UI.toast ("✗ 删除失败: " + (e && e.message ? e.message : "未知错误"), "err");
+            loadSoundLibrary();
+          });
+        };
+        if (row && !reducedMotion) {
+          row.classList.add("snd-leave");
+          setTimeout(done, 180);
+        } else {
+          done();
+        }
+      });
+      return;
+    }
+  }
+
+  function sndImportSf2(files     ) {
+    var reg = sndReg();
+    if (!reg || !files || !files.length) return;
+    var list = Array.prototype.slice.call(files);
+    var okNames           = [];
+    /* 顺序导入：并发写注册表会互相覆盖（后端虽是串行，但并发上传无意义） */
+    var chain = Promise.resolve();
+    list.forEach(function (f     ) {
+      chain = chain.then(function () {
+        if (!/\.sf[23]$/i.test(f.name || "")) return null;
+        return reg.importSf2(f).then(function () { okNames.push(f.name); });
+      });
+    });
+    chain.then(function () {
+      if (okNames.length) UI.toast ("✓ 已导入 " + okNames.length + " 个音色库", "ok");
+    }).catch(function (e     ) {
+      UI.toast ("✗ 导入失败: " + (e && e.message ? e.message : "文件损坏或空间不足"), "err");
+    });
+  }
+
+  function sndAddPack() {
+    var reg = sndReg();
+    UI.postJSON("/api/arrangement/pick-folder", {}).then(function (j     ) {
+      var dir = j && j.path;
+      if (!dir) return null;
+      var name = dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "采样包";
+      return reg.addSamplePack(name, [dir]);
+    }).then(function (r     ) {
+      if (!r) return;
+      UI.toast ("✓ 已添加采样包", "ok");
+    }).catch(function (e     ) {
+      UI.toast ("✗ 添加采样包失败: " + (e && e.message ? e.message : "未知错误"), "err");
+    });
+  }
+
+  function bindSoundPane() {
+    if (!$("#sndGroups")) return;
+    sndLoadCollapsed();
+
+    /* 搜索：200ms 防抖（列表规模小，重绘比增量 DOM 便宜） */
+    var searchTimer      = null;
+    $("#sndSearch").addEventListener("input", function () {
+      var val = (this       ).value || "";
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () {
+        sndState.q = val.trim();
+        renderSoundLibrary();
+      }, 200);
+    });
+
+    $("#sndSort").addEventListener("change", function () {
+      sndState.sort = (this       ).value || "name";
+      renderSoundLibrary();
+    });
+
+    /* 添加下拉（复用 .select-menu.menu-in 弹出手感） */
+    var addBtn = $("#sndAddBtn");
+    var addMenu = $("#sndAddMenu");
+    var closeAddMenu = function () {
+      if (!addMenu || addMenu.hidden) return;
+      addMenu.hidden = true;
+      addMenu.classList.remove("menu-in");
+      addBtn.setAttribute("aria-expanded", "false");
+    };
+    addBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (!addMenu.hidden) { closeAddMenu(); return; }
+      addMenu.hidden = false;
+      addMenu.classList.remove("menu-in");
+      void addMenu.offsetWidth;
+      addMenu.classList.add("menu-in");
+      addBtn.setAttribute("aria-expanded", "true");
+    });
+    document.addEventListener("click", closeAddMenu);
+    addMenu.addEventListener("click", function (e) {
+      var opt = (e.target       ).closest(".select-option");
+      if (!opt) return;
+      var act = opt.dataset.act;
+      if (opt.classList.contains("snd-option-soon")) {
+        UI.toast ("该功能将在后续里程碑开放：" + opt.textContent, "");
+        return;
+      }
+      closeAddMenu();
+      if (act === "sf2") $("#sndSf2Input").click();
+      else if (act === "pack") sndAddPack();
+    });
+
+    $("#sndSf2Input").addEventListener("change", function () {
+      sndImportSf2((this       ).files);
+      (this       ).value = "";
+    });
+
+    $("#sndRescanBtn").addEventListener("click", function () {
+      var btn = this                     ;
+      if (btn.disabled) return;
+      btn.disabled = true;
+      var label = btn.textContent;
+      btn.textContent = "⟳ 扫描中…";
+      sndReg().rescan().then(function (j     ) {
+        var r = (j && j.result) || {};
+        var parts           = [];
+        if (r.soundFonts) parts.push("音色库 +" + r.soundFonts);
+        if (r.packs) parts.push("采样包 +" + r.packs);
+        if (r.dirs) parts.push("目录 +" + r.dirs);
+        UI.toast (parts.length ? "✓ 扫描完成：" + parts.join("，") : "✓ 扫描完成，没有发现新音源", "ok");
+      }).catch(function (e     ) {
+        UI.toast ("✗ 扫描失败: " + (e && e.message ? e.message : "未知错误"), "err");
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = label;
+      });
+    });
+
+    /* 条目操作：事件委托（行会被整批重绘） */
+    $("#sndGroups").addEventListener("click", function (e) {
+      var row = (e.target       ).closest(".snd-source-card");
+      if (!row) return;
+      var src = sndReg().get(row.dataset.id);
+      if (!src) return;
+      var btn = (e.target       ).closest(".snd-icon-btn");
+      if (!btn) {
+        /* 点卡片空白处 = 选中（键盘导航的当前项） */
+        sndSelect(row.dataset.id || "");
+        return;
+      }
+      sndHandleAction(btn.classList[1], src, btn);
+    });
+
+    /* 键盘：↑↓ 移动选择、Enter 详情、Delete 删除、Esc 取消选择 */
+    $("#sndGroups").addEventListener("keydown", function (e) {
+      var rows = UI.qsa(".snd-source-card", $("#sndGroups"));
+      if (!rows.length) return;
+      var idx = -1;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].dataset.id === sndState.selected) { idx = i; break; }
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        sndSelect(rows[Math.min(rows.length - 1, idx + 1)].dataset.id || "");
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        sndSelect(rows[Math.max(0, idx - 1)].dataset.id || "");
+      } else if (e.key === "Enter" && idx >= 0) {
+        e.preventDefault();
+        var src = sndReg().get(rows[idx].dataset.id || "");
+        if (src) sndDetailModal(src, function () { loadSoundLibrary(); });
+      } else if (e.key === "Delete" && idx >= 0) {
+        e.preventDefault();
+        var cur = sndReg().get(rows[idx].dataset.id || "");
+        if (cur) sndHandleAction("action-del", cur, null);
+      } else if (e.key === "Escape") {
+        sndSelect("");
+      }
+    });
+
+    /* 拖 .sf2 到面板任意处 = 导入（拖动计数避免子元素间抖动闪断） */
+    var pane = $("#paneSound");
+    var hint = $("#sndDropHint");
+    pane.addEventListener("dragover", function (e) {
+      if (!e.dataTransfer || e.dataTransfer.types.indexOf("Files") < 0) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    pane.addEventListener("dragenter", function (e) {
+      if (!e.dataTransfer || e.dataTransfer.types.indexOf("Files") < 0) return;
+      sndState.dropDepth++;
+      if (hint) hint.classList.add("active");
+    });
+    pane.addEventListener("dragleave", function () {
+      sndState.dropDepth = Math.max(0, sndState.dropDepth - 1);
+      if (!sndState.dropDepth && hint) hint.classList.remove("active");
+    });
+    pane.addEventListener("drop", function (e) {
+      e.preventDefault();
+      sndState.dropDepth = 0;
+      if (hint) hint.classList.remove("active");
+      var dt = e.dataTransfer;
+      if (dt && dt.files && dt.files.length) sndImportSf2(dt.files);
+    });
+
+    /* 注册表变化（别处增删改）→ 重绘本面板 */
+    sndReg().onChange(function () { renderSoundLibrary(); });
+  }
+
+  function sndSelect(id        ) {
+    sndState.selected = id;
+    UI.qsa(".snd-source-card", $("#sndGroups")).forEach(function (r) {
+      r.classList.toggle("selected", r.dataset.id === id);
+    });
+    var el = document.querySelector('.snd-source-card[data-id="' + id + '"]');
+    if (el) (el       ).focus();
+  }
+
   /* ═══════════ 关于页专属特效（paneAbout） ═══════════
      纯白球 + mix-blend-mode: difference：浅色主题呈黑球白字、深色主题呈
      浅色球洞，随主题自动翻转。三态：
@@ -1682,7 +2366,11 @@
     if (initialPane === "paneLibrary") {
       loadLibraryFiles();
     }
+    if (initialPane === "paneSound") {
+      loadSoundLibrary();
+    }
     bindLibraryPane();
+    bindSoundPane();
     initAboutFx();
 
     /* 检查更新：调 /api/update/check，有新版本走 update.js 的通知卡，

@@ -153,10 +153,10 @@ interface SoundLibraryApi {
   init(): Promise<IDBDatabase>;
   getCachedSoundFonts(): SoundFontRecord[];
   listSoundFonts(): Promise<SoundFontRecord[]>;
-  saveSoundFont(name: string, arrayBuffer: ArrayBuffer, presets: Sf2Preset[]): Promise<unknown>;
+  saveSoundFont(name: string, arrayBuffer: ArrayBuffer, presets: Sf2Preset[], sourceId?: string): Promise<unknown>;
   getSoundFont(id: string): Promise<unknown>;
+  recordForSource(sourceId: string, name?: string): Promise<SoundFontRecord | null>;
   deleteSoundFont(id: string, name?: string): Promise<unknown>;
-  showImportDialog?(onDone?: () => void): void;
 }
 
 interface EngineBridgeApi {
@@ -350,6 +350,7 @@ interface Window {
   SynthEngine: SynthEngineConstructor;
   SoundFontPlayer: SoundFontPlayerConstructor;
   SoundLibrary: SoundLibraryApi;
+  SoundRegistry: SoundRegistryApi;
   EngineBridge: EngineBridgeApi;
   MidiInputRouter: MidiInputRouterApi;
   PianoRollTools: PianoRollToolsApi;

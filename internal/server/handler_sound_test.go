@@ -427,3 +427,89 @@ func TestLegacySoundfontUploadRegistersSource(t *testing.T) {
 		t.Fatalf("删除后注册表应为空: %+v", got)
 	}
 }
+
+// 经完整 Router（含 Host/Origin 校验、请求体上限、更新闸门等中间件）
+// 走一遍声音管理主链路：新增接口必须真的注册进 mux，且限流档位不误伤上传。
+func TestSoundRoutesThroughFullRouter(t *testing.T) {
+	root := withTempSoundRoot(t)
+	r := NewRouter(nil, nil)
+
+	call := func(method, target string, body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, target, bytes.NewReader(body))
+		req.Host = "127.0.0.1:7860"
+		req.Header.Set("Origin", "http://127.0.0.1:7860")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+	decode := func(w *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("响应不是 JSON: %s", w.Body.String())
+		}
+		return out
+	}
+
+	// 空注册表
+	if w := call(http.MethodGet, "/api/sound/sources", nil); w.Code != 200 {
+		t.Fatalf("列举失败: %d %s", w.Code, w.Body.String())
+	}
+
+	// 导入 SF2（走通 288MB 限流档位 + handler）
+	w := call(http.MethodPost, "/api/sound/import/sf2?name=Full.sf2", testSF2("Full Font", 2))
+	if w.Code != 200 {
+		t.Fatalf("导入失败: %d %s", w.Code, w.Body.String())
+	}
+	imp := decode(w)
+	src := imp["source"].(map[string]any)
+	id := src["id"].(string)
+
+	// 预设可读
+	w = call(http.MethodGet, "/api/sound/presets?id="+id, nil)
+	if w.Code != 200 {
+		t.Fatalf("预设列举失败: %d %s", w.Code, w.Body.String())
+	}
+	if n := len(decode(w)["presets"].([]any)); n != 2 {
+		t.Fatalf("应有 2 个预设: %d", n)
+	}
+
+	// 采样包 → 素材目录镜像对 /api/arrangement/dirs 可见（老素材树仍能读到）
+	packDir := filepath.Join(root, "samples", "pack")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{"kind": "samplepack", "name": "包", "dirs": []string{packDir}})
+	if w = call(http.MethodPost, "/api/sound/sources", payload); w.Code != 200 {
+		t.Fatalf("新增采样包失败: %d %s", w.Code, w.Body.String())
+	}
+	w = call(http.MethodGet, "/api/arrangement/dirs", nil)
+	if w.Code != 200 {
+		t.Fatalf("素材目录读取失败: %d", w.Code)
+	}
+	dirs, _ := decode(w)["dirs"].([]any)
+	if len(dirs) != 1 || !sameDirString(dirs[0].(string), packDir) {
+		t.Fatalf("采样包应同步到素材目录: %v", dirs)
+	}
+
+	// 删除 SF2 条目（连带磁盘文件）后注册表清空
+	if w = call(http.MethodDelete, "/api/sound/sources/"+id+"?file=1", nil); w.Code != 200 {
+		t.Fatalf("删除失败: %d %s", w.Code, w.Body.String())
+	}
+	if got := soundlib.List(soundlib.KindSF2, ""); len(got) != 0 {
+		t.Fatalf("删除后应为空: %+v", got)
+	}
+
+	// 未知子路径仍要 404（路由收敛，不漏到静态资源）
+	if w = call(http.MethodGet, "/api/sound/nope", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("未知接口应 404: %d", w.Code)
+	}
+}
+
+func sameDirString(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}

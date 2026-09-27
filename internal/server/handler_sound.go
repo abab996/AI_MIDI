@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -54,6 +55,8 @@ func (r *Router) handleSoundSub(w http.ResponseWriter, req *http.Request) {
 		r.handleSoundSamples(w, req)
 	case sub == "import/sf2":
 		r.handleSoundImportSF2(w, req)
+	case sub == "reveal":
+		r.handleSoundReveal(w, req)
 	case sub == "migrate":
 		r.handleSoundMigrate(w, req)
 	default:
@@ -402,8 +405,68 @@ func (r *Router) handleSoundImportSF2(w http.ResponseWriter, req *http.Request) 
 	})
 }
 
-// handleSoundMigrate POST /api/sound/migrate
-// 重新扫描 Library/soundfonts 与素材目录并入册（用户手动拷入文件后不必重启）
+// handleSoundReveal POST /api/sound/reveal {"id":"..."}
+// 在资源管理器里定位音源：SF2 选中文件本身，采样包打开首个目录。
+// 与知识库「📁 打开文件夹」同思路——用户要拿外部工具批量整理文件。
+func (r *Router) handleSoundReveal(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	var in struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil || strings.TrimSpace(in.ID) == "" {
+		writeError(w, http.StatusBadRequest, "缺少音源 id")
+		return
+	}
+	view, err := soundlib.Get(in.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "音源不存在")
+		return
+	}
+
+	var target string
+	selectFile := false
+	switch view.Kind {
+	case soundlib.KindSF2:
+		abs := soundlib.ResolvePath(view.Path)
+		info, statErr := os.Stat(abs)
+		if statErr != nil || info.IsDir() {
+			writeError(w, http.StatusNotFound, "音色文件不存在")
+			return
+		}
+		target, selectFile = abs, true
+	case soundlib.KindSamplePack:
+		for _, d := range view.Dirs {
+			abs := soundlib.ResolvePath(d)
+			if info, statErr := os.Stat(abs); statErr == nil && info.IsDir() {
+				target = abs
+				break
+			}
+		}
+		if target == "" {
+			writeError(w, http.StatusNotFound, "采样包目录不存在或不可访问")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "该音源类型不支持定位文件")
+		return
+	}
+
+	// explorer /select,"文件" 会选中该文件；目录直接打开
+	args := []string{target}
+	if selectFile {
+		args = []string{"/select,", target}
+	}
+	if err := exec.Command("explorer", args...).Start(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "打开位置失败", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": target})
+}
+
+// handleSoundMigrate POST /api/sound/migrate// 重新扫描 Library/soundfonts 与素材目录并入册（用户手动拷入文件后不必重启）
 func (r *Router) handleSoundMigrate(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST")

@@ -6623,6 +6623,470 @@ body.is-panning *,
 
 .lib-builtin[open] { margin-bottom: 4px; }
 
+/* ═══════════ 设置页 · 声音管理（paneSound） ═══════════
+   音源注册表的展示层：分组卡（复用 .card.brackets）+ 条目卡 + 详情弹窗。
+   颜色全部取自 :root 令牌（双主题自动翻转）；动效只用 transform/opacity，
+   并在 prefers-reduced-motion 下关闭（见本段末尾的降级块）。
+   条目卡列表区既是鼠标操作区也是键盘 listbox（↑↓/Enter/Delete）。 */
+
+.snd-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 14px;
+  flex-wrap: wrap;
+}
+
+.snd-search-wrap {
+  position: relative;
+  flex: 1 1 220px;
+  min-width: 160px;
+  display: flex;
+  align-items: center;
+}
+
+.snd-search-icon {
+  position: absolute;
+  left: 10px;
+  font-size: 12px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.snd-search {
+  width: 100%;
+  padding: 6px 10px 6px 30px;
+  font-size: 13px;
+  color: var(--color-ink);
+  background: var(--color-bg-console);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.snd-search::placeholder { color: var(--color-ink-faint); }
+
+.snd-search:hover { border-color: var(--color-border-strong); }
+
+.snd-search:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.snd-sort-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.snd-sort-label { font-size: 12px; color: var(--color-ink-dim); white-space: nowrap; }
+
+.snd-sort {
+  padding: 5px 8px;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-ink);
+  background: var(--color-bg-console);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.snd-sort:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.snd-add-wrap { position: relative; flex-shrink: 0; }
+
+.snd-add-menu {
+  min-width: 220px;
+  right: 0;
+  left: auto;
+  top: calc(100% + 6px);
+}
+
+.snd-option-soon {
+  color: var(--color-ink-faint) !important;
+  cursor: not-allowed;
+}
+
+.snd-option-soon:hover {
+  background: transparent !important;
+  color: var(--color-ink-faint) !important;
+}
+
+/* ===== 分组卡 ===== */
+
+.snd-groups { display: flex; flex-direction: column; gap: 12px; }
+
+.snd-group { margin-bottom: 0; }
+
+.snd-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.snd-group-head:hover { color: var(--color-primary); background: var(--color-bg-alt); }
+
+.snd-group-head:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-primary-soft);
+}
+
+.snd-group-caret {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--color-ink-dim);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.snd-group-caret.collapsed { transform: rotate(-90deg); }
+
+.snd-group-icon { font-size: 14px; }
+
+.snd-group-name { flex: 1; min-width: 0; }
+
+.snd-group-count {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-ink-dim);
+  padding: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+}
+
+.snd-group-body { padding: 8px; }
+
+/* ===== 条目卡 ===== */
+
+.snd-source-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-card);
+  cursor: default;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  /* 进场：stagger 由 --snd-delay 提供（4.10 动效表 spring-in 40ms） */
+  animation: snd-in 0.4s cubic-bezier(0.34, 1.45, 0.64, 1) both;
+  animation-delay: var(--snd-delay, 0s);
+}
+
+.snd-source-card:last-child { margin-bottom: 0; }
+
+.snd-source-card:hover { border-color: var(--color-border-strong); background: var(--color-bg-alt); }
+
+.snd-source-card.selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.snd-source-card:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+/* 停用：整行降透明度，操作仍可用（停用要能点回来） */
+.snd-source-card.is-off { opacity: 0.55; }
+
+.snd-source-card.is-missing .snd-loc { color: var(--color-danger); }
+
+.snd-source-card.snd-leave {
+  animation: snd-leave 0.18s cubic-bezier(0.55, 0, 0.85, 0.36) both;
+  pointer-events: none;
+}
+
+@keyframes snd-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes snd-leave {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: scaleY(0.6); }
+}
+
+/* kind 徽标：色相区分种类，色值取自令牌 */
+.snd-kind-badge {
+  flex-shrink: 0;
+  min-width: 46px;
+  text-align: center;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 7px;
+  border: 1px solid var(--color-primary);
+  border-radius: 3px;
+  color: var(--color-primary);
+}
+
+.snd-kind-badge.snd-kind-sf2 { color: var(--color-primary); border-color: var(--color-primary); }
+.snd-kind-badge.snd-kind-pack { color: var(--color-hud); border-color: var(--color-hud); }
+.snd-kind-badge.snd-kind-mm { color: var(--color-accent); border-color: var(--color-accent); }
+
+/* VST3 的紫：主色与录音红混出，不新增色板（P5 接入真实插件时可再调）。
+   color-mix 在旧 WebView2 上不支持，故先给可用令牌兜底再增强。 */
+.snd-kind-badge.snd-kind-vst {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  border-style: dashed;
+}
+
+@supports (color: color-mix(in srgb, red, blue)) {
+  .snd-kind-badge.snd-kind-vst {
+    color: color-mix(in srgb, var(--color-primary) 45%, var(--color-record) 55%);
+    border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-record) 55%);
+    border-style: solid;
+  }
+}
+
+.snd-info { flex: 1; min-width: 0; }
+
+.snd-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+.snd-name {
+  font-size: 13px;
+  color: var(--color-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snd-meta-line {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-ink-dim);
+  margin-top: 1px;
+}
+
+.snd-loc {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+.snd-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  color: var(--color-ink-dim);
+}
+
+.snd-tag-off { border-color: var(--color-border-dashed); }
+
+.snd-tag-warn { color: var(--color-danger); border-color: var(--color-danger); }
+
+/* AI 徽标：橙描边胶囊 + 呼吸光（reduced-motion 下静态）。
+   同一徽标也用在机架、素材库、钢琴窗音源库与插件窗口标题上。 */
+.snd-badge-ai {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border: 1px solid var(--color-accent);
+  border-radius: 999px;
+  color: var(--color-accent);
+  background: transparent;
+  animation: snd-ai-breathe 2s ease-in-out infinite;
+}
+
+@keyframes snd-ai-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 var(--color-primary-soft); }
+  50% { box-shadow: 0 0 6px 1px var(--color-accent); }
+}
+
+/* 操作列：默认淡出，hover/focus-within/选中时浮出（键盘用户也能触达） */
+.snd-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transform: translateX(4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.snd-source-card:hover .snd-actions,
+.snd-source-card:focus-within .snd-actions,
+.snd-source-card.selected .snd-actions {
+  opacity: 1;
+  transform: none;
+}
+
+.snd-icon-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--color-ink-dim);
+  background: var(--color-bg-console);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.snd-icon-btn:hover { color: var(--color-primary); border-color: var(--color-border-strong); }
+
+.snd-icon-btn:active { transform: scale(0.92); }
+
+.snd-icon-btn:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.snd-icon-btn.danger:hover { color: var(--color-danger); border-color: var(--color-danger); }
+
+.snd-icon-btn.playing { color: var(--color-primary); animation: snd-pulse 0.8s ease-in-out infinite; }
+
+@keyframes snd-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+.snd-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.snd-empty {
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 6px;
+  padding: 16px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-ink-dim);
+}
+
+.snd-foot {
+  margin-top: 10px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+/* 拖文件导入提示：进入拖拽区时淡入上浮（display 切换，不改布局） */
+.snd-drop-hint {
+  display: none;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed var(--color-primary);
+  border-radius: 6px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.snd-drop-hint.active {
+  display: block;
+  animation: snd-hint-in 0.15s ease-out both;
+}
+
+@keyframes snd-hint-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ===== 详情弹窗 ===== */
+
+.snd-detail-modal { max-width: 560px; width: 92vw; }
+
+.snd-detail-body {
+  max-height: 46vh;
+  overflow: auto;
+  margin: 6px 0 4px;
+}
+
+.snd-detail-row {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--color-grid);
+  font-size: 12px;
+}
+
+.snd-detail-row:last-child { border-bottom: none; }
+
+.snd-detail-key {
+  flex-shrink: 0;
+  width: 76px;
+  color: var(--color-ink-dim);
+}
+
+.snd-detail-val {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-ink);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+/* ===== 钢琴窗「音源库」弹窗（pianoroll.ts 复用同一套徽标） ===== */
+
+.sound-lib-hint {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  text-align: center;
+}
+
+.sound-lib-error { color: var(--color-danger); }
+
+.sound-lib-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sound-lib-meta { font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .snd-source-card,
+  .snd-source-card.snd-leave,
+  .snd-badge-ai,
+  .snd-icon-btn.playing,
+  .snd-drop-hint.active {
+    animation: none;
+  }
+  .snd-actions,
+  .snd-group-caret,
+  .snd-icon-btn {
+    transition: none;
+  }
+}
+
 /* ═══════════ 设置页 · 关于面板（paneAbout） ═══════════
    居中竖排：Logo（随主题换图，theme.js 驱动 .app-logo-img）→ 名称 →
    版本 → 功能介绍 → 外链 → 日志/报障 */

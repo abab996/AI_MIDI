@@ -4323,32 +4323,26 @@
       sUploadInput.addEventListener("change", function () {
         var file = this.files![0];
         if (!file) return;
-        var reader = new FileReader();
-        reader.onload = function () {
-          var buf = reader.result;
-          var presets;
-          try {
-            if (window.PianoRoll && window.SoundLibrary) {
-              presets = window.PianoRoll.soundfont.parseSF2(buf as any).presets;
-            } else {
-              return;
-            }
-          } catch (err: any) {
-            UI.toast!("✗ 解析 SF2 失败: " + err.message, "err");
-            return;
-          }
-          sUploadBtn.disabled = true;
-          window.SoundLibrary.saveSoundFont(file.name, buf as any, presets).then(function () {
-            UI.toast!("✓ 成功导入音色库: " + file.name, "ok");
-            window.PianoRoll.refreshSoundLibraryList();
-          }).catch(function (err) {
-            /* 大 SF2 常见 IndexedDB 配额错误：必须给出可见反馈 */
-            UI.toast!("✗ 导入失败: " + (err && err.message ? err.message : "存储空间不足"), "err");
-          }).finally(function () {
-            sUploadBtn.disabled = false;
-          });
-        };
-        reader.readAsArrayBuffer(file);
+        /* 统一走音源注册表导入：落盘 + 入册 + 浏览器解码缓存一次完成，
+           与设置页「声音管理」、机架共用同一份音源清单 */
+        if (!window.SoundRegistry) {
+          UI.toast!("✗ 音源注册表未就绪，请刷新页面后重试", "err");
+          return;
+        }
+        var origLabel = sUploadBtn.textContent;
+        sUploadBtn.disabled = true;
+        window.SoundRegistry.importSf2(file, function (stage) {
+          sUploadBtn.textContent = stage;
+        }).then(function () {
+          UI.toast!("✓ 成功导入音色库: " + file.name, "ok");
+          window.PianoRoll.refreshSoundLibraryList();
+        }).catch(function (err: any) {
+          /* 上传/落盘失败的可见反馈（含超大文件、非法 SF2） */
+          UI.toast!("✗ 导入失败: " + (err && err.message ? err.message : "文件损坏或空间不足"), "err");
+        }).finally(function () {
+          sUploadBtn.disabled = false;
+          sUploadBtn.textContent = origLabel;
+        });
       });
     }
     if (sCloseBtn && sModal) {

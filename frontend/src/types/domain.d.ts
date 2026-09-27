@@ -143,7 +143,88 @@ interface SoundFontRecord {
   presetsCount?: number;
   presets?: Sf2Preset[];
   diskPath?: string;
+  /* 音源注册表条目 id：本地解码缓存与注册表之间的桥
+     （浏览器模式发声时按它反查，历史记录可能没有） */
+  sourceId?: string;
   createdAt?: number;
+}
+
+/* ===== 音源注册表（/api/sound/*，实现见 frontend/src/soundlib.ts） ===== */
+
+interface SoundSourceInfo {
+  id: string;
+  kind: "sf2" | "samplepack" | "vst3" | "mm" | string;
+  name: string;
+  vendor?: string;
+  origin: "builtin" | "user" | "ai" | string;
+  path?: string;
+  dirs?: string[];
+  category?: string;
+  classUid?: string;
+  capabilities?: string[];
+  hash?: string;
+  ai?: { author?: string; createdBy?: string };
+  enabled: boolean;
+  tags?: string[];
+  addedAt?: number;
+  updatedAt?: number;
+  /* 磁盘实况（后端每次列举重算，不落盘） */
+  runtime?: {
+    absPath?: string;
+    fileName?: string;
+    missing?: boolean;
+    size?: number;
+    presetCount?: number;
+    sampleDirs?: number;
+    sampleFiles?: number;
+  };
+}
+
+interface SoundKindMeta {
+  label: string;
+  shortLabel: string;
+  badge: string;
+  icon: string;
+  cls: string;
+}
+
+interface SoundRegistryApi {
+  /* 内部状态（缓存/在途请求/订阅者） */
+  _sources: SoundSourceInfo[];
+  _loaded: boolean;
+  _loading: Promise<SoundSourceInfo[]> | null;
+  _presetCache: { [id: string]: Sf2Preset[] | undefined };
+  _presetInflight: { [id: string]: Promise<Sf2Preset[]> | undefined };
+  _listeners: Array<() => void>;
+  _emit(): void;
+  kindMeta(kind: string): SoundKindMeta;
+  kindOrder(): string[];
+  isPluginKind(kind: string): boolean;
+  isAI(src: any): boolean;
+  isBuiltin(src: any): boolean;
+  originLabel(src: any): string;
+  onChange(fn: () => void): void;
+  load(force?: boolean): Promise<SoundSourceInfo[]>;
+  reload(): Promise<SoundSourceInfo[]>;
+  all(): SoundSourceInfo[];
+  list(kind?: string): SoundSourceInfo[];
+  get(id: string): SoundSourceInfo | null;
+  enabledOf(kind?: string): SoundSourceInfo[];
+  query(kind: string, q: string): SoundSourceInfo[];
+  countByKind(kind: string): number;
+  presets(id: string): Promise<Sf2Preset[]>;
+  firstPreset(id: string): string | null;
+  parsePresetId(presetId: any): { bank: number; program: number };
+  importSf2(file: File, onProgress?: (stage: string) => void): Promise<any>;
+  addSamplePack(name: string, dirs: string[]): Promise<any>;
+  update(id: string, patch: any): Promise<any>;
+  setEnabled(id: string, enabled: boolean): Promise<any>;
+  remove(id: string, opts?: { file?: boolean }): Promise<any>;
+  rescan(): Promise<any>;
+  samples(packId: string, sub?: string): Promise<any>;
+  diskPathOf(src: any): string;
+  browserRecord(src: any): Promise<SoundFontRecord | null>;
+  metaText(src: any): string;
 }
 
 interface MidiInputSettings {

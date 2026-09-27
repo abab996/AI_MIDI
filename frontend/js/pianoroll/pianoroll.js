@@ -753,7 +753,7 @@
       }).catch(function () { finish(false, "✗ 获取引擎状态失败"); });
       return;
     }
-    // 自定义 SF2：优先从解析结果取 bank/program，id 兜底解析
+    // 自定义 SF2：优先从解析结果取 bank/program，注册表 / id 兜底解析
     var preset = null;
     if (this.soundfont && this.soundfont.loadedPresets) {
       for (var i = 0; i < this.soundfont.loadedPresets.length; i++) {
@@ -761,7 +761,10 @@
       }
     }
     if (preset) { bank = preset.bank || 0; program = preset.program || 0; }
-    else {
+    else if (window.SoundRegistry && window.SoundRegistry.parsePresetId) {
+      var pp = window.SoundRegistry.parsePresetId(key);
+      bank = pp.bank; program = pp.program;
+    } else {
       var parts = key.replace(/^sf2_/, "").split("_");
       bank = parseInt(parts[0], 10) || 0;
       program = parseInt(parts[1], 10) || 0;
@@ -3564,61 +3567,81 @@
     this.refreshSoundLibraryList();
   };
 
+  /* 音源库弹窗：列出音源注册表里的 SF2（后端 Library/registry.json）。
+     此前列出的是 IndexedDB 记录——只反映"这台浏览器传过什么"，
+     与设置页「声音管理」、机架看到的音源各说各话。 */
   PianoRoll.prototype.refreshSoundLibraryList = function (                         ) {
     var listEl = document.getElementById("soundLibList");
-    if (!listEl || !window.SoundLibrary) return;
-    listEl.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-ink-faint);text-align:center">正在加载音源列表…</div>';
+    if (!listEl || !window.SoundRegistry) return;
+    listEl.innerHTML = '<div class="sound-lib-hint">正在加载音源列表…</div>';
 
     var self = this;
-    window.SoundLibrary.listSoundFonts().then(function (fonts) {
+    window.SoundRegistry.load().then(function () {
+      var fonts = window.SoundRegistry.list("sf2");
       listEl .innerHTML = "";
       if (!fonts.length) {
-        listEl .innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-ink-faint);text-align:center">暂无自定义音色库，可点击下方上传 .sf2 文件</div>';
+        listEl .innerHTML = '<div class="sound-lib-hint">暂无音色库，可点击下方上传 .sf2 文件</div>';
         return;
       }
-      fonts.forEach(function (f) {
+      fonts.forEach(function (f     ) {
+        var reg = window.SoundRegistry ;
+        var bits           = [];
+        bits.push(reg.originLabel(f));
+        var rt = f.runtime || {};
+        if (rt.missing) bits.push("⚠ 文件缺失");
+        if (rt.size) bits.push(UI.fmtSize(rt.size));
+        if (rt.presetCount) bits.push(rt.presetCount + " 预设");
+
         var row = document.createElement("div");
         row.className = "sound-lib-row";
-        row.innerHTML =
-          '<div style="flex:1"><strong>' + UI.esc(f.name) + '</strong> <span class="dim">(' + UI.fmtSize(f.size       ) + ')</span></div>' +
-          '<button class="btn btn-secondary btn-sm action-load">加载使用</button>' +
-          '<button class="btn btn-danger btn-sm action-del">删除</button>';
+        var info = document.createElement("div");
+        info.className = "sound-lib-info";
+        var strong = document.createElement("strong");
+        strong.textContent = f.name;
+        info.appendChild(strong);
+        if (reg.isAI(f)) {
+          var ai = document.createElement("span");
+          ai.className = "snd-badge-ai";
+          ai.textContent = "✨ AI";
+          info.appendChild(ai);
+        }
+        var meta = document.createElement("span");
+        meta.className = "dim sound-lib-meta";
+        meta.textContent = bits.join(" · ");
+        info.appendChild(meta);
+        row.appendChild(info);
 
-        row.querySelector(".action-load") .addEventListener("click", function () {
-          window.SoundLibrary.getSoundFont(f.id).then(function (rec     ) {
-            if (rec && rec.data) {
-              var parsed = self.soundfont.parseSF2(rec.data);
-              self.updateSoundSelectOptions(parsed);
-              if (!parsed.presets || !parsed.presets.length) {
-                /* P2-1：空预设误导——updateSoundSelectOptions 已保持当前音源，
-                   提示文案必须如实说明未切换 */
-                if (window.UI && window.UI.toast) window.UI.toast ("✗ 该文件没有可用预设，音源未切换", "err");
-              } else {
-                if (window.UI && window.UI.toast) window.UI.toast ("✓ 已加载音色库: " + f.name, "ok");
-                /* 引擎模式 SF2 轨加载所需：磁盘路径 + 预设元数据（parseSF2
-                   结果已进 soundfont.loadedPresets，无需重复持有） */
-                self._sf2DiskPath = rec.diskPath || null;
-                self._sf2LibName = f.name || "";
-              }
-              var modal = document.getElementById("soundLibModalOverlay");
-              if (modal) self.closeModalAnimated(modal);
-            } else {
-              if (window.UI && window.UI.toast) window.UI.toast ("✗ 音色数据读取失败，请重新上传", "err");
-            }
-          }).catch(function (err) {
-            /* 此前无 catch：加载失败时弹窗永远停在加载态且无提示 */
+        var loadBtn = document.createElement("button");
+        loadBtn.type = "button";
+        loadBtn.className = "btn btn-secondary btn-sm action-load";
+        loadBtn.textContent = "加载使用";
+        row.appendChild(loadBtn);
+
+        var delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "btn btn-danger btn-sm action-del";
+        delBtn.textContent = "删除";
+        row.appendChild(delBtn);
+
+        loadBtn.addEventListener("click", function () {
+          self.applyRegistrySoundFont(f).then(function (ok         ) {
+            if (!ok) return;
+            if (window.UI && window.UI.toast) window.UI.toast ("✓ 已加载音色库: " + f.name, "ok");
+            var modal = document.getElementById("soundLibModalOverlay");
+            if (modal) self.closeModalAnimated(modal);
+          }).catch(function (err     ) {
             if (window.UI && window.UI.toast) window.UI.toast ("✗ 加载音色失败: " + (err && err.message ? err.message : "未知错误"), "err");
           });
         });
 
-        row.querySelector(".action-del") .addEventListener("click", function () {
+        delBtn.addEventListener("click", function () {
           /* UI.confirm 应用内弹窗：与全站弹窗外观一致（原生 confirm 突兀且阻塞渲染） */
-          UI.confirm ("确定删除音色库「" + f.name + "」？此操作不可恢复。").then(function (ok) {
+          UI.confirm ("确定删除音色库「" + f.name + "」？磁盘文件会一并删除，此操作不可恢复。").then(function (ok) {
             if (!ok) return;
-            window.SoundLibrary.deleteSoundFont(f.id, f.name).then(function () {
+            window.SoundRegistry .remove(f.id, { file: true }).then(function () {
               self.refreshSoundLibraryList();
               if (window.UI && window.UI.toast) window.UI.toast ("✓ 已删除音色库: " + f.name, "ok");
-            }).catch(function (err) {
+            }).catch(function (err     ) {
               if (window.UI && window.UI.toast) window.UI.toast ("✗ 删除失败: " + (err && err.message ? err.message : "未知错误"), "err");
             });
           });
@@ -3626,15 +3649,37 @@
 
         listEl .appendChild(row);
       });
-    }).catch(function (err) {
-      /* IndexedDB 打不开等场景：此前列表永远停在"正在加载…"且无报错 */
-      listEl .innerHTML = '<div style="padding:14px;font-size:12px;color:var(--color-danger);text-align:center">音源列表加载失败: ' + UI.esc(err && err.message ? err.message : String(err)) + '</div>';
+    }).catch(function (err     ) {
+      /* 注册表读取失败：此前列表永远停在"正在加载…"且无报错 */
+      listEl .innerHTML = '<div class="sound-lib-hint sound-lib-error">音源列表加载失败: ' +
+        UI.esc(err && err.message ? err.message : String(err)) + '</div>';
     });
   };
 
-  PianoRoll.prototype.updateSoundSelectOptions = function (                           parsed     ) {
-    if (!parsed || !parsed.presets) return;
+  /** 把注册表音源应用到钢琴窗音色：预设从注册表取（后端直读 SF2 的 pdta），
+      磁盘路径来自条目本身，因此引擎模式发声不再依赖浏览器端解码缓存。
+      返回是否真正切换了音色（无可用预设时保持原音源）。 */
+  PianoRoll.prototype.applyRegistrySoundFont = function (                           src     , presetId         ) {
     var self = this;
+    return window.SoundRegistry.presets(src.id).then(function (presets       ) {
+      if (!presets || !presets.length) {
+        /* 空预设的误导性提示：必须如实说明未切换 */
+        if (window.UI && window.UI.toast) window.UI.toast ("✗ 该音色库没有可用预设，音源未切换", "err");
+        return false;
+      }
+      self.updateSoundSelectOptions({ name: src.name, presets: presets }, src, presetId);
+      /* 引擎模式 SF2 轨加载所需：磁盘绝对路径 + 音色库名 */
+      self._sf2DiskPath = window.SoundRegistry.diskPathOf(src) || null;
+      self._sf2LibName = src.name || "";
+      return true;
+    });
+  };
+
+  /** 刷新音色下拉。parsed 为 { name, presets }；meta 为注册表条目（可选，
+      用于在标签上标明来源音色库）；preferId 指定选中哪个预设（默认首个）。
+      空预设列表时保持当前音源，避免取 [0] 崩溃。 */
+  PianoRoll.prototype.updateSoundSelectOptions = function (                           parsed     , meta      , preferId         ) {
+    if (!parsed || !parsed.presets) return;
     var baseOpts = [
       { value: "synth_sawtooth", label: "合成器: 锯齿波 (Sawtooth)" },
       { value: "synth_square", label: "合成器: 方波 (Square)" },
@@ -3643,14 +3688,21 @@
       { value: "sf2_piano", label: "SF2: 温暖钢琴 (Piano)" },
       { value: "sf2_strings", label: "SF2: 弦乐群 (Strings)" }
     ];
+    var libLabel = meta && meta.name ? meta.name : parsed.name;
     parsed.presets.forEach(function (p     ) {
-      baseOpts.push({ value: p.id, label: "SF2: " + (p.name || parsed.name) });
+      baseOpts.push({ value: p.id, label: "SF2: " + (p.name || libLabel) });
     });
-    if (!parsed.presets.length) return;   /* 空预设列表：保持当前音源，避免取 [0] 崩溃 */
-    if (this.soundDropdown) {
-      this.soundDropdown.updateOptions(baseOpts, parsed.presets[0].id);
+    if (!parsed.presets.length) return;
+    var pick = parsed.presets[0].id;
+    if (preferId) {
+      for (var i = 0; i < parsed.presets.length; i++) {
+        if (parsed.presets[i].id === preferId) { pick = preferId; break; }
+      }
     }
-    this.soundSource = parsed.presets[0].id;
+    if (this.soundDropdown) {
+      this.soundDropdown.updateOptions(baseOpts, pick);
+    }
+    this.soundSource = pick;
   };
 
   window.PianoRoll = new (PianoRoll       )();

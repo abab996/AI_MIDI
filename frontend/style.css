@@ -8608,3 +8608,17 @@ html.has-titlebar .top-nav {
   background: var(--color-primary);
   border-color: var(--color-primary);
 }
+/* 声音管理：MM 插件「同步已安装插件」行（P6） */
+.snd-sync-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+  font-size: 12px;
+}
+.snd-sync-row[hidden] { display: none; }
+.snd-sync-row code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-hud);
+}

@@ -105,6 +105,7 @@ func SyncInstalledMM(installDir string) (Source, bool, error) {
 			s.Kind, s.Origin = KindMM, origin
 			s.Capabilities, s.Hash = caps, mmHashOf(mf)
 			s.Category, s.Enabled = mf.Kind, true
+			s.ClassUID = mf.ID // 插件 id（带点的反向域名）：界面据此打开 mm-ui.html
 			s.UpdatedAt = time.Now().Unix()
 			s.AI = mmAIInfo(mmIsAI(mf))
 			return nil
@@ -120,6 +121,7 @@ func SyncInstalledMM(installDir string) (Source, bool, error) {
 		Origin:       origin,
 		Path:         rel,
 		Category:     mf.Kind, // effect / instrument
+		ClassUID:     mf.ID,   // 插件 id（mm-ui.html?plugin=… 用）
 		Capabilities: caps,
 		Hash:         mmHashOf(mf),
 		Enabled:      true,

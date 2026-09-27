@@ -1043,6 +1043,7 @@
     if (paneId === "paneShortcuts") renderShortcutsPane();
     if (paneId === "paneLibrary") loadLibraryFiles();
     if (paneId === "paneSound") loadSoundLibrary();
+    if (paneId === "paneSound") bindSoundSyncInstalled();
     paneToken++;
     var token = paneToken;
 
@@ -1515,8 +1516,8 @@
     var map                          = {
       sf2: "还没有 SF2 音色库：用「＋ 添加」上传，或把 .sf2 文件拷入 Library/soundfonts 后点「↻ 重新扫描」。",
       samplepack: "还没有采样包：「＋ 添加 → 采样包文件夹」选择磁盘上的素材目录即可。",
-      vst3: "VST3 扫描将在 P5 里程碑开放。",
-      mm: "MM 插件安装将在 P6 里程碑开放。"
+      vst3: "还没有扫描到 VST3 插件：到「引擎」分区扫描系统插件目录（Common Files\\VST3）。",
+      mm: "还没有 MM 插件：用 mm new/build/install 安装 .mm 包（或让 AI 在对话里创建），装好后点下方「↻ 同步已安装插件」。"
     };
     var el = document.createElement("div");
     el.className = "dim snd-empty";
@@ -1623,6 +1624,20 @@
     var detailBtn = sndIconBtn("action-detail", "ⓘ", "详情");
     actions.appendChild(detailBtn);
 
+    /* MM 插件：多一个「界面」入口 —— 打开 mm-ui.html 承载窗（sandbox iframe +
+       postMessage 桥）。插件 id 存在注册表条目的 classUid 里（同步时写入）。 */
+    if (src.kind === "mm" && src.classUid) {
+      var uiBtn = sndIconBtn("action-ui", "🎛", "打开插件界面");
+      uiBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var theme = document.documentElement.dataset.theme || "dark";
+        var url = "/mm-ui.html?plugin=" + encodeURIComponent(src.classUid) + "&theme=" + encodeURIComponent(theme);
+        var w = window.open(url, "mmui_" + src.classUid, "width=760,height=560");
+        if (!w) UI.toast ("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn");
+      });
+      actions.appendChild(uiBtn);
+    }
+
     var toggleBtn = sndIconBtn("action-toggle", src.enabled === false ? "◻" : "⏻",
       src.enabled === false ? "启用" : "停用");
     actions.appendChild(toggleBtn);
@@ -1632,6 +1647,22 @@
 
     row.appendChild(actions);
     return row;
+  }
+
+  /** bindSoundSyncInstalled 「↻ 同步已安装插件」：命令行/AI 安装后一键入册（P6） */
+  function bindSoundSyncInstalled() {
+    var btn = $("#sndSyncInstalled");
+    if (!btn || btn.dataset.bound === "1") return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      UI.postJSON("/api/engine/plugins/sync", {}).then(function (r     ) {
+        UI.toast ("✓ 已同步（新增 " + (r.added || 0) + " / 更新 " + (r.updated || 0) + "）", "ok");
+        loadSoundLibrary();
+      }).catch(function (err     ) {
+        UI.toast ("✗ 同步失败: " + (err && err.message ? err.message : "未知错误"), "err");
+      }).then(function () { btn.disabled = false; });
+    });
   }
 
   function sndGroupCard(kind        , list     , totalInKind        ) {
@@ -1686,6 +1717,10 @@
   function renderSoundLibrary() {
     var wrap = $("#sndGroups");
     if (!wrap) return;
+    /* MM 分组上方给一个「同步已安装插件」入口：命令行 mm install / AI 装完之后，
+       点一下就把 Library/plugins/ 下已装的插件登记进注册表（P6） */
+    var syncRow = $("#sndSyncInstalledBtn");
+    if (syncRow) syncRow.hidden = false;
     var reg = sndReg();
     if (!reg) {
       wrap.innerHTML = "";

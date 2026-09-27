@@ -290,6 +290,13 @@ async function main() {
       };
     })()`);
     check("页面把 v1 工程迁移到 v2", state.version === 2 && !state.legacy, state);
+    // 迁移必须**落盘**：服务端 GET 返回原样内容，客户端读到 v1 后自行迁移并
+    // 经 _needsMigrationSave → scheduleSave 回写。这里等过防抖窗口后从磁盘确认。
+    await new Promise((r) => setTimeout(r, 1600));
+    const persistedV1 = await api("GET", `/api/projects/${projectId}/arrangement`);
+    check("v1 迁移已落盘为 v2（客户端迁移回写，rev 归零后由保存推进）",
+      !!(persistedV1.json && Number(persistedV1.json.version) === 2),
+      persistedV1.json && { version: persistedV1.json.version, rev: persistedV1.json.rev });
     check("机架条目数 = 2（synth + 弦乐 0:48）", state.rackCount === 2, state.rackCount);
     check("条目种类齐备 synth/sf2", state.kinds.includes("synth") && state.kinds.includes("sf2"), state.kinds);
     check("轨道音源只剩 {itemId,presetId}",
@@ -677,8 +684,11 @@ async function main() {
       return { hasEmpty: !!empty, text: empty ? empty.textContent : "",
                hint: (document.getElementById("matHint")||{}).textContent || "" };
     })()`);
-    check("效果器页签给出引导空态（未接入前）",
-      fxTab.hasEmpty && /效果器/.test(fxTab.text), fxTab);
+    // P3 时这里是占位空态（"未接入"）；P4/P5/P6 之后该页签是**活**的：
+    // 它列出可挂 FX 槽的音源（VST3/MM）并把人引导到混音台。断言"已接入"而不是
+    // 断言某个具体类名——类名会随后续界面演进失效（这条断言上一轮就是这样过期的）。
+    check("效果器页签已接入（不再是 P3 占位空态）且引导到混音台 FX 槽",
+      fxTab.hasEmpty === false && /FX/.test(fxTab.hint), fxTab);
     check("页签提示语随页签切换", /FX/.test(fxTab.hint) || /效果器/.test(fxTab.hint), fxTab.hint);
 
     // 音源卡片「＋ 入架」→ 分配

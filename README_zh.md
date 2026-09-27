@@ -34,6 +34,45 @@
 
 > ℹ️ 早期测试版：暂不支持 VST 插件与 AI 联动，欢迎反馈问题。
 
+### 🎛 v3.2 新增 —— 三层音源体系（P2–P6）
+
+- **乐器箱（原输出机架）** —— 轨道音源只能来自机架；编排模型升级到 v2
+  （`rack` / `mixer` / `pianoRoll`），界面与 AI 共用同一套 ops API，
+  AI 改动不会覆盖本地未保存的片段编辑。
+- **素材库（三页签）** —— 采样 / 音源 / 效果器，波形真渲染、按包筛选、键盘可达。
+- **混音台 v1** —— 每轨一条通道条 + 主通道，推子（dB/ARIA）、声像、M/S、
+  每通道 8 个 FX 槽、电平表，`F9` 开合。
+- **VST3 宿主** —— 扫描/装载/卸载插件、读写参数、打开插件原生界面；
+  乐器与效果器都支持。
+- **MM 插件平台** —— 自带插件格式（`.mm`）：SDK、校验器、一键编译安装、
+  沙箱隔离的插件界面承载窗、能力授权（fail-closed），以及 **AI 闭环**：
+  在对话里让助手创建 → 编译 → 安装插件。
+- **插件注册表** —— 已安装的 `.mm` 出现在 设置 → 声音管理，带能力清单、
+  哈希校验与 ✨AI 徽标。
+
+### 🧰 v3.2 新增命令
+
+```bash
+# MM 插件工具链（构建：go build -o mm.exe ./cmd/mm）
+mm new <目录> --kind effect|instrument --name "我的效果器" --id com.example.myfx
+mm build <目录> [--sdk <mm-sdk>]     # 配置 + 编译 + 写哈希 + 打包 + 校验
+mm validate <包.mm> | mm inspect <包.mm>
+mm install <包.mm> --dest <Library>/plugins [--grant files,network]
+
+# 前端 / 引擎检查
+npm run build                 # tsc --noEmit + 产出前端 JS
+npm run check:rack            # 乐器箱（含音源选择器）
+npm run check:material        # 素材库
+npm run check:mixer           # 混音台
+MM_BASE=http://127.0.0.1:端口 npm run check:ui   # 浏览器级走查
+
+# 引擎冒烟（协议/设备/合成器/fx+混音/VST3/MM/SF2/走带/重连）
+go build -o engine_smoke.exe ./tools/engine_smoke
+.\engine_smoke.exe -vst3dir <目录> -mmgain <gain.dll> -mmsynth <synth.dll>
+```
+
+数据根结构：`Library/soundfonts`（SF2）、`Library/plugins/<id>@<版本>`（已装 MM 插件）、
+`Library/plugin-src/<id>`（插件源码工程）、`Library/registry.json`（音源注册表）。
 ### 🔊 音频引擎（Windows 版）
 - 内置 JUCE 原生引擎：ASIO 低延迟监听、实时电平表、离线渲染导出
 - 未安装引擎时自动降级浏览器音频（功能完整，延迟略高）

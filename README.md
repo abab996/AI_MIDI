@@ -34,6 +34,49 @@
 
 > ℹ️ Early beta: VST plugins and AI-link are not supported yet — feedback welcome.
 
+### 🎛 New in v3.2 — three-tier sound system (P2–P6)
+
+- **Instrument case (was: output rack)** — tracks get their sound from the rack only.
+  Arrangement model upgraded to v2 (`rack` / `mixer` / `pianoRoll`), with a shared
+  ops API that the UI and the AI both write through, so AI edits never clobber
+  unsaved local clip edits.
+- **Material library (3 tabs)** — samples / sound sources / effects, with real
+  waveform rendering, per-pack filtering and keyboard navigation.
+- **Mixer v1** — one strip per track + master, faders with dB/ARIA, pan, M/S,
+  8 FX slots per channel, level meters, `F9` to toggle.
+- **VST3 host** — scan/load/unload plugins, read & set parameters, open the native
+  editor. Instruments and effects both supported.
+- **MM plugin platform** — a first-party plugin format (`.mm`): SDK, validator,
+  one-command build/install, sandboxed plugin UI carrier window, capability
+  authorization (fail-closed), and an AI closed loop: let the assistant create,
+  build and install a plugin from chat.
+- **Plugin registry** — installed `.mm` plugins show up in Settings → Sound Library
+  with capabilities, hash verification and an ✨AI badge.
+
+### 🧰 Commands added in v3.2
+
+```bash
+# MM plugin toolchain (built with: go build -o mm.exe ./cmd/mm)
+mm new <dir> --kind effect|instrument --name "My Fx" --id com.example.myfx
+mm build <dir> [--sdk <mm-sdk>]      # configure + compile + hash + pack + validate
+mm validate <pkg.mm> | mm inspect <pkg.mm>
+mm install <pkg.mm> --dest <Library>/plugins [--grant files,network]
+
+# Front-end / engine checks
+npm run build                 # tsc --noEmit + emit front-end JS
+npm run check:rack            # instrument case (+ picker)
+npm run check:material        # material library
+npm run check:mixer           # mixer
+MM_BASE=http://127.0.0.1:PORT npm run check:ui   # browser-level walkthrough
+
+# Engine smoke test (protocol, devices, synth, fx/mixer, VST3, MM, SF2, transport)
+go build -o engine_smoke.exe ./tools/engine_smoke
+.\engine_smoke.exe -vst3dir <dir> -mmgain <gain.dll> -mmsynth <synth.dll>
+```
+
+Data root layout: `Library/soundfonts` (SF2), `Library/plugins/<id>@<ver>` (installed
+MM plugins), `Library/plugin-src/<id>` (plugin sources), `Library/registry.json`
+(sound-source registry).
 ### 🔊 Audio Engine (Windows)
 - Built-in JUCE native engine: low-latency ASIO monitoring, live level meters, offline WAV bounce
 - Without the engine the app falls back to browser audio automatically (fully functional, slightly higher latency)

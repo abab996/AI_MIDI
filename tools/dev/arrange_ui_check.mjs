@@ -1014,6 +1014,35 @@ async function main() {
       await cdp.send("Emulation.setEmulatedMedia", { features: [] });
       check("承载页双主题截图产出", fs.existsSync(mmWarm) && fs.existsSync(mmDark));
 
+      // 混音台 FX 槽 → MM 承载窗入口（打开 /mm-ui.html，带 plugin/track/slot/theme）
+      await cdp.send("Page.navigate", { url: base + "/chat.html" });
+      await cdp.waitFor("window.Arrange && window.Arrange.initialized", 20000, "回编曲页(MM 入口)");
+      await cdp.evaluate(`window.__openProject(${JSON.stringify(projectId)}, "")`);
+      await cdp.waitFor(`window.Arrange.projectId === ${JSON.stringify(projectId)}`, 15000, "重开项目(MM 入口)");
+      await cdp.evaluate('window.ArrMixer.open(window.Arrange)');
+      await new Promise((r) => setTimeout(r, 400));
+      const mmEntry = await cdp.evaluate(`(async function(){
+        var A = window.Arrange;
+        window.ArrMixer.commitFx(A, 0, 1, { plugin: "com.melodymate.example.gain", bypass: false });
+        await new Promise(function(r){ setTimeout(r, 300); });
+        var slot = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-fx-slot[data-slot="1"]');
+        var captured = null;
+        var origOpen = window.open;
+        window.open = function(url){ captured = url; return { focus: function(){} }; };
+        slot.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+        await new Promise(function(r){ setTimeout(r, 200); });
+        var all = document.querySelectorAll(".ctx-item, .arr-menu-item, .ctx-menu button");
+        var mmItem = null;
+        for (var i = 0; i < all.length; i++) { if (all[i].textContent.indexOf("MM 承载窗") >= 0) { mmItem = all[i]; break; } }
+        if (mmItem) mmItem.click();
+        await new Promise(function(r){ setTimeout(r, 200); });
+        window.open = origOpen;
+        return { hasMmEntry: !!mmItem, url: captured, count: all.length };
+      })()`);
+      check("MM 槽的 FX 菜单提供「插件界面（MM 承载窗）」入口", mmEntry.hasMmEntry, mmEntry);
+      check("点击入口打开 /mm-ui.html 且带 plugin/track/slot/theme",
+        !!mmEntry.url && mmEntry.url.indexOf("/mm-ui.html?plugin=com.melodymate.example.gain") === 0 &&
+        /[?&]slot=1/.test(mmEntry.url) && /[?&]track=0/.test(mmEntry.url) && /[?&]theme=/.test(mmEntry.url), mmEntry.url);
       await api("POST", "/api/engine/plugins/unload", { track: 0, slot: 0 });
       // 回到编曲页，避免影响后续段落
       await cdp.send("Page.navigate", { url: base + "/chat.html" });

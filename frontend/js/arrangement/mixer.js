@@ -741,10 +741,13 @@
       label: entry.plugin ? "🔌 更换插件…" : "🔌 装载插件…",
       action: function () { openPluginPicker(ctrl, idx, slot); }
     });
+    /* 插件界面入口按类型分流：VST3 走引擎原生编辑器；MM（.mm 包里的原生库）
+       没有原生窗口，走 mm-ui.html 承载页（sandbox iframe + postMessage 桥） */
+    var isMm = !!entry.plugin && entry.plugin.indexOf("VST3|") !== 0;
     items.push({
-      label: "🎛 插件界面（原生编辑器）…",
+      label: isMm ? "🎛 插件界面（MM 承载窗）…" : "🎛 插件界面（原生编辑器）…",
       disabled: !entry.plugin,
-      action: function () { openPluginEditor(ctrl, idx, slot); }
+      action: function () { openPluginEditor(ctrl, idx, slot, isMm, entry.plugin || ""); }
     });
     items.push({
       label: "🗑 清空槽位",
@@ -787,8 +790,19 @@
     });
   }
 
-  /** openPluginEditor 打开插件原生编辑器（参数在插件自己的界面里） */
-  function openPluginEditor(ctrl                   , idx        , slot        ) {
+  /** openPluginEditor VST3 → 引擎原生编辑器；MM → mm-ui.html 承载页 */
+  function openPluginEditor(ctrl                   , idx        , slot        , isMm          , pluginRef         ) {
+    if (isMm) {
+      var id = String(pluginRef || "").trim();
+      var qs = "?plugin=" + encodeURIComponent(id) + "&slot=" + slot;
+      if (idx === MASTER_TRACK) qs += "&master=1";
+      else qs += "&track=" + idx;
+      var theme = document.documentElement.dataset.theme;
+      if (theme) qs += "&theme=" + encodeURIComponent(theme);
+      var win = window.open("/mm-ui.html" + qs, "mmui_" + id + "_" + slot, "width=760,height=560");
+      if (!win) toast("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn");
+      return;
+    }
     UI.postJSON("/api/engine/plugins/editor", {
       track: idx === MASTER_TRACK ? 0 : idx, slot: slot, master: idx === MASTER_TRACK
     }).then(function () {

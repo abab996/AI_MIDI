@@ -1919,11 +1919,24 @@
         provider_id: p.id,
       }).then(function (data     ) {
         var n = (data.models || []).length;
-        if (status) {
-          status.textContent = "✓ 连接成功，" + n + " 个模型可用";
-          status.className = "ok model-status";
+        /* 后端契约：失败原因以 message 字段带回（HTTP 仍 200、models 为空）
+           ——此前只看 models 长度，不可达端点也会误报"连接成功" */
+        var failed = !!(data.message && String(data.message).indexOf("✓") !== 0) || n === 0;
+        if (failed) {
+          /* 后端 message 自带 ✗/✓ 前缀的剥掉，避免"✗ 连接失败: ✗ 获取…"双符号 */
+          var reason = String(data.message || "未获取到任何模型").replace(/^[✗✓]\s*/, "");
+          if (status) {
+            status.textContent = "✗ 连接失败: " + reason;
+            status.className = "err model-status";
+          }
+          UI.toast ("✗ 连接失败: " + reason, "err");
+        } else {
+          if (status) {
+            status.textContent = "✓ 连接成功，" + n + " 个模型可用";
+            status.className = "ok model-status";
+          }
+          UI.toast ("✓ 连接成功，" + n + " 个模型可用", "ok");
         }
-        UI.toast ("✓ 连接成功，" + n + " 个模型可用", "ok");
       }).catch(function (e) {
         if (status) {
           status.textContent = "✗ 连接失败: " + e.message;

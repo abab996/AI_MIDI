@@ -297,6 +297,7 @@
     thinkUserCollapsed = false;
     lastMessages = [];
     streamSysLines = [];
+    lastErrorView = null;      /* 切项目/切任务后不显示上一上下文的错误行 */
     stopBgPoll();          /* 后台轮询绑定旧上下文，随视图切换一并停止 */
     bgHint = null;
     bgLastTasksJson = "";
@@ -1327,6 +1328,9 @@
       chatEmpty.textContent = "发送消息开始对话——让 AI 为你的 MIDI 配和弦、写旋律或讲解乐理";
       chat.appendChild(chatEmpty);
     }
+    /* 最近一次失败的分类错误行：任何整表重建（载荷刷新/收尾重建/后台
+       轮询）都补渲染，修复"报错闪一下就消失" */
+    if (lastErrorView) renderErrorLineDom(lastErrorView);
     /* 恢复上一帧的展开态：details 的 open 属性 + body 的 .open 类都要恢复，
        否则重渲染后 sync 会把每个展开块误判为"刚展开"而重播动画 */
     restoreOpenDetails(chat, openDetails);
@@ -2203,19 +2207,19 @@
         link.classList.add("pop");
         UI.toast!("✓ AI 生成了新的 MIDI 文件，点上方「↓ 新生成的 MIDI」下载", "ok");
       } else if (ev.type === "error") {
-        appendSysLine("⚠ " + ev.message);
+        appendErrorLine(ev);
         chatDone();
       } else if (ev.type === "done") {
         chatDone();
       }
     }, function () {
       chatDone();
-    }, { signal: abortController.signal }).catch(function (e) {
+    }, { signal: abortController.signal }).catch(function (e: any) {
       if (e && e.name === "AbortError") {
         chatDone();
         return;
       }
-      appendSysLine("✗ " + e.message);
+      appendErrorLine({ message: e.message });
       chatDone();
     });
   }
@@ -2662,15 +2666,16 @@
 
   /* 最近一次发出的消息：失败行「↻ 重试」的数据源（重试=回填输入框重发） */
   var lastSentPrompt = "";
+  /* 最近一次失败的分类信息（视图模型级）：任务完成后 ~1s 的项目载荷刷新、
+     chatDone 重建、后台轮询都会整表重渲染聊天区——错误行只挂 DOM 必被
+     抹掉（实测"报错闪一下就消失"的第二根源）。renderMessages 末尾统一
+     补渲染本状态，任何重建路径都保得住 */
+  var lastErrorView: any = null;
 
-  /* 失败行：文案 + 分类引导动作（auth → 去设置）+ 可折叠上游详情 + 重试。
-     此前只有一行 sys-line：密钥失效/限流这类可自助修复的错误没有修复入口，
-     网关 HTML 错误页全文刷屏；后端现在随 error 事件带 code 与截断 detail */
-  function appendErrorLine(ev: any) {
+  /* 失败行（DOM 构建）：文案 + 分类引导（auth → 去设置）+ 可折叠上游详情 + 重试 */
+  function renderErrorLineDom(ev: any) {
     var raw = (ev && ev.message) || "AI 调用失败";
     var msg = UI.friendlyText ? UI.friendlyText(raw) : raw;
-    /* 整表重建恢复时退化为纯文本行（按钮属一次性引导，重建后无需保留） */
-    if (chatBusy) streamSysLines.push("⚠ " + msg);
     var chat = $("#chat");
     var line = document.createElement("div");
     line.className = "sys-line sys-error";
@@ -2714,6 +2719,16 @@
     }
     chat.appendChild(line);
     chat.scrollTop = chat.scrollHeight;
+  }
+
+  /* 失败行入口：登记到视图模型（后续任何整表重建都会补渲染），并立即显示 */
+  function appendErrorLine(ev: any) {
+    lastErrorView = {
+      message: (ev && ev.message) || "AI 调用失败",
+      code: ev && ev.code,
+      detail: ev && ev.detail,
+    };
+    renderErrorLineDom(lastErrorView);
   }
 
   /* ═══════════ 发送消息（SSE） ═══════════ */
@@ -3325,6 +3340,7 @@
     thinkUserCollapsed = false;
     lastMessages = [];
     streamSysLines = [];
+    lastErrorView = null;      /* 新一次发送前清掉上一轮的错误行 */
     lastSentPrompt = message;   /* 失败重试按钮的数据源 */
 
     var messages = [];

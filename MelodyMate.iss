@@ -108,7 +108,7 @@ Source: "mm.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; MM 插件 SDK：编译插件必须（mm build 默认在 <主程序目录>\engine\mm-sdk 下找）。
 ; 只带 include 与 CMake 脚手架 + 两个示例（示例也能作为"照着改"的起点）。
 Source: "engine\mm-sdk\include\mm\mm.h"; DestDir: "{app}\engine\mm-sdk\include\mm"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "engine\mm-sdk\CMakeLists.txt"; DestDir: "{app}\engine\mm-sdk"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "engine\mm-sdk\include\*"; DestDir: "{app}\engine\mm-sdk\include"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 Source: "engine\mm-sdk\examples\*"; DestDir: "{app}\engine\mm-sdk\examples"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 ; 插件安装目录（AI/用户安装的 .mm 落这里；引擎启动时从这里加载）
 Source: "Library\plugins\README.txt"; DestDir: "{app}\Library\plugins"; Flags: ignoreversion skipifsourcedoesntexist

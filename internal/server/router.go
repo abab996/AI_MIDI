@@ -118,6 +118,10 @@ func requestLimitFor(path, method string) int64 {
 		return 64 << 20 // MIDI 上传（handler 内存阈值 32MB，超限部分 spool 临时目录）
 	case strings.HasPrefix(path, "/api/audio/"):
 		return 288 << 20 // soundfont 上传（handler 内部 256MB，留 32MB 头）+ bounce tracks（5MB）
+	case path == "/api/sound/import/sf2":
+		return 288 << 20 // SF2 导入（handler 内部 256MB 限流，与 /api/audio/soundfonts 同规）
+	case strings.HasPrefix(path, "/api/sound/"):
+		return 8 << 20 // 注册表 JSON（采样包目录列表/标签可能较长）
 	case strings.HasPrefix(path, "/api/arrangement/"):
 		return 8 << 20 // 编排数据（handler 内部 5MB）
 	case strings.HasPrefix(path, "/api/library/"):
@@ -241,6 +245,9 @@ func (r *Router) registerRoutes() {
 
 	// Audio 原生音频引擎
 	r.mux.HandleFunc("/api/audio/", r.handleAudioSub)
+
+	// Sound 音源注册表（声音管理：SF2 / 采样包 / VST3 / MM）
+	r.mux.HandleFunc("/api/sound/", r.handleSoundSub)
 
 	// Library 用户知识库文件管理（设置页「知识库」分区；写操作锁定 Library/user/）
 	r.mux.HandleFunc("/api/library/", r.handleLibrarySub)

@@ -27,6 +27,7 @@ import (
 	"melodymate/internal/engine"
 	"melodymate/internal/mcp"
 	"melodymate/internal/server"
+	"melodymate/internal/soundlib"
 )
 
 //go:embed all:frontend
@@ -72,6 +73,15 @@ func main() {
 		slog.Info("已从 AI_MIDI 迁移数据", "from", migrated.From, "files", migrated.Files, "soundfonts", migrated.SoundFonts)
 	}
 	loadVersion()
+
+	// 音源注册表启动迁移：把 Library/soundfonts 里已有音色与素材目录并入
+	// 注册表，使"声音管理"在首启就能看到历史数据。幂等，失败不阻断启动
+	// （注册表是元数据，可经 /api/sound/migrate 随时重建）
+	if res, err := soundlib.Migrate(); err != nil {
+		slog.Error("音源注册表迁移失败", "err", err)
+	} else if res.Changed {
+		slog.Info("音源注册表已就绪", "soundfonts", res.SoundFonts, "packs", res.Packs, "dirs", res.Dirs)
+	}
 
 	// 启动自检：知识库目录缺失（典型为安装包漏装 Library）时打日志留痕。
 	// 此前该故障全链路静默——ListLibraryFiles 返回 nil、系统提示词静默

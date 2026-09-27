@@ -1973,7 +1973,12 @@
     var reg = sndReg();
     UI.postJSON("/api/arrangement/pick-folder", {}).then(function (j: any) {
       var dir = j && j.path;
-      if (!dir) return null;
+      if (!dir) {
+        /* 浏览器模式没有原生目录选择框，接口回空路径——必须给可见反馈，
+           否则「添加采样包」看起来是点不动 */
+        UI.toast!("✗ 未选择目录（浏览器模式请改用桌面版，或把素材目录加入 settings.json 的 MaterialDirs）", "warn");
+        return null;
+      }
       var name = dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "采样包";
       return reg.addSamplePack(name, [dir]);
     }).then(function (r: any) {

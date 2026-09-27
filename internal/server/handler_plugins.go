@@ -70,7 +70,7 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			Format string `json:"format"`
 			Path   string `json:"path"`
 			Track  int    `json:"track"`
-			Slot   int    `json:"slot"`
+			Slot   *int   `json:"slot"` // 指针：nil = 未给（乐器），0 = 第一个 FX 槽
 			Master bool   `json:"master"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
@@ -83,7 +83,11 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			if in.Master {
 				track = -1
 			}
-			state, err := sup.LoadMmPlugin(track, in.Slot, in.Path)
+			slot := -1
+			if in.Slot != nil {
+				slot = *in.Slot
+			}
+			state, err := sup.LoadMmPlugin(track, slot, in.Path)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -96,8 +100,8 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			track = -1
 		}
 		slot := -1
-		if _, has := pluginSlotOf(req); has {
-			slot = in.Slot
+		if in.Slot != nil {
+			slot = *in.Slot
 		}
 		if err := sup.LoadPlugin(track, slot, in.ID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -113,7 +117,7 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		}
 		var in struct {
 			Track  int  `json:"track"`
-			Slot   int  `json:"slot"`
+			Slot   *int `json:"slot"`
 			Master bool `json:"master"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
@@ -121,7 +125,11 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if in.Master {
 			track = -1
 		}
-		if err := sup.UnloadPlugin(track, in.Slot); err != nil {
+		slot := -1
+		if in.Slot != nil {
+			slot = *in.Slot
+		}
+		if err := sup.UnloadPlugin(track, slot); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -146,7 +154,7 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		}
 		var in struct {
 			Track  int     `json:"track"`
-			Slot   int     `json:"slot"`
+			Slot   *int    `json:"slot"`
 			Master bool    `json:"master"`
 			Index  int     `json:"index"`
 			Value  float64 `json:"value"`
@@ -160,8 +168,8 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			track = -1
 		}
 		slot := -1
-		if _, has := pluginSlotOf(req); has {
-			slot = in.Slot
+		if in.Slot != nil {
+			slot = *in.Slot
 		}
 		if err := sup.SetPluginParam(track, slot, in.Index, in.Value); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -181,7 +189,7 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		}
 		var in struct {
 			Track  int  `json:"track"`
-			Slot   int  `json:"slot"`
+			Slot   *int `json:"slot"`
 			Master bool `json:"master"`
 			Close  bool `json:"close"`
 		}
@@ -199,8 +207,8 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			track = -1
 		}
 		slot := -1
-		if _, has := pluginSlotOf(req); has {
-			slot = in.Slot
+		if in.Slot != nil {
+			slot = *in.Slot
 		}
 		if err := sup.OpenPluginEditor(track, slot); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

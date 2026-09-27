@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MM 插件界面</title>
+<!--
+  MM 插件 UI 承载页（P6 / 规格 4.7）
+
+  三级结构：
+    宿主（chat.html / 混音台） ── postMessage ──▶ 本页（承载窗，same-origin）
+                                                  └─ sandbox iframe ──▶ 插件自绘 UI
+
+  为什么中间要有本页：插件 UI 来自 Library/plugins/<id>@<ver>/ui/，必须跑在
+  **无 same-origin 的 sandbox iframe** 里（不信任本地代码）。本页做协议翻译与
+  校验：把插件的 mm.* 消息翻译成宿主 HTTP 调用，把宿主的参数/走带推给插件，
+  并丢弃字段类型非法的消息（插件 UI 崩坏不得影响宿主）。
+
+  query：?plugin=<id>&track=<n>|&master=1&slot=<n>
+-->
+<style>
+  :root[data-theme="dark"] {
+    --bg: #12161c; --bg-alt: #171d25; --ink: #cfe3f0; --ink-dim: #8fa3b8;
+    --border: #2a3542; --accent: #00b8cc; --shadow: rgba(0,0,0,.45);
+  }
+  :root[data-theme="parchment"] {
+    --bg: #f4ecd8; --bg-alt: #efe6d0; --ink: #2c2a26; --ink-dim: #6b6459;
+    --border: #d8cdb4; --accent: #b5651d; --shadow: rgba(90,70,40,.18);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 12px/1.5 "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; background: var(--bg-alt);
+    border-bottom: 1px solid var(--border);
+  }
+  .mm-title { font-weight: 700; letter-spacing: .06em; color: var(--accent); }
+  .mm-sub { color: var(--ink-dim); font-family: "Cascadia Mono", Consolas, monospace; }
+  .mm-spacer { flex: 1; }
+  button {
+    font: inherit; color: var(--ink); background: transparent;
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 2px 8px; cursor: pointer;
+    transition: color .15s ease, border-color .15s ease, transform .15s ease;
+  }
+  button:hover { color: var(--accent); border-color: var(--accent); }
+  button:active { transform: scale(.95); }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+  main { flex: 1; position: relative; min-height: 0; }
+  iframe#plug { width: 100%; height: 100%; border: 0; background: var(--bg); display: block; }
+
+  /* 骨架加载态（等插件 UI ready） */
+  .mm-skeleton {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    gap: 10px; padding: 18px; background: var(--bg);
+  }
+  .mm-skeleton[hidden] { display: none; }
+  .sk-bar { height: 12px; border-radius: 6px; background: var(--bg-alt); border: 1px solid var(--border); }
+  .sk-bar.w60 { width: 60%; } .sk-bar.w40 { width: 40%; } .sk-bar.w80 { width: 80%; }
+  .sk-anim { animation: sk-pulse 1.2s ease-in-out infinite; }
+  @keyframes sk-pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+  .mm-params {
+    border-top: 1px solid var(--border); background: var(--bg-alt);
+    max-height: 42%; overflow: auto; padding: 6px 10px;
+  }
+  .mm-params[hidden] { display: none; }
+  .mm-row { display: grid; grid-template-columns: 1fr 120px 62px; gap: 8px; align-items: center; padding: 2px 0; }
+  .mm-row .nm { color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mm-row .vl { font-family: "Cascadia Mono", Consolas, monospace; text-align: right; }
+  .mm-row input[type=range] { width: 100%; accent-color: var(--accent); }
+  .mm-empty { color: var(--ink-dim); padding: 8px 0; }
+  .mm-status { color: var(--ink-dim); font-family: "Cascadia Mono", Consolas, monospace; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sk-anim { animation: none; }
+    button { transition: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="mm-title">MM PLUGIN</span>
+  <span class="mm-sub" id="mmName">载入中…</span>
+  <span class="mm-spacer"></span>
+  <span class="mm-status" id="mmStatus"></span>
+  <button type="button" id="mmParamsBtn" title="显示/隐藏参数（插件无 UI 时靠它调参）">参数</button>
+  <button type="button" id="mmReloadBtn" title="重新加载插件界面">重载</button>
+</header>
+<main>
+  <iframe id="plug" sandbox="allow-scripts" title="插件界面"></iframe>
+  <div class="mm-skeleton" id="mmSkeleton">
+    <div class="sk-bar w60 sk-anim"></div>
+    <div class="sk-bar w80 sk-anim" style="animation-delay:.1s"></div>
+    <div class="sk-bar w40 sk-anim" style="animation-delay:.2s"></div>
+  </div>
+</main>
+<div class="mm-params" id="mmParams" hidden></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var q = new URLSearchParams(location.search);
+  var pluginId = q.get("plugin") || "";
+  var track = q.get("track") !== null ? parseInt(q.get("track"), 10) : -1;
+  var slot = q.get("slot") !== null ? parseInt(q.get("slot"), 10) : -1;
+  var isMaster = q.get("master") === "1";
+  if (isMaster) track = -1;
+
+  var elName = document.getElementById("mmName");
+  var elStatus = document.getElementById("mmStatus");
+  var elParams = document.getElementById("mmParams");
+  var elSkeleton = document.getElementById("mmSkeleton");
+  var frame = document.getElementById("plug");
+
+  /* 参数模型：宿主权威。id → {index, name, min, max, value} */
+  var paramsById = {};
+  var paramsByIndex = {};
+
+  function target() {
+    var t = {};
+    if (isMaster) t.master = true; else t.track = track;
+    if (slot >= 0) t.slot = slot;
+    return t;
+  }
+
+  function loadParams() {
+    var qs = new URLSearchParams();
+    if (isMaster) qs.set("master", "1"); else qs.set("track", String(track));
+    if (slot >= 0) qs.set("slot", String(slot));
+    return fetch("/api/engine/plugins/params?" + qs.toString())
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
+      .then(function (data) {
+        if (data && data.error) throw new Error(data.error);
+        elName.textContent = (data.name || pluginId) + (data.format ? " · " + data.format : "");
+        paramsById = {}; paramsByIndex = {};
+        (data.params || []).forEach(function (p, i) {
+          var rec = {
+            index: typeof p.index === "number" ? p.index : i,
+            id: p.id || ("param" + i),
+            name: p.name || p.id || ("参数 " + i),
+            min: typeof p.min === "number" ? p.min : 0,
+            max: typeof p.max === "number" ? p.max : 1,
+            value: typeof p.value === "number" ? p.value : 0
+          };
+          paramsById[rec.id] = rec;
+          paramsByIndex[rec.index] = rec;
+        });
+        renderParams();
+        pushParamsToPlugin();
+        return data;
+      });
+  }
+
+  function pushParamsToPlugin() {
+    var list = Object.keys(paramsById).map(function (id) {
+      var p = paramsById[id];
+      return { id: id, index: p.index, value: p.value, text: String(p.value) };
+    });
+    post({ type: "mm.params", params: list });
+  }
+
+  function renderParams() {
+    elParams.textContent = "";
+    var ids = Object.keys(paramsById);
+    if (!ids.length) {
+      var empty = document.createElement("div");
+      empty.className = "mm-empty";
+      empty.textContent = "该插件没有可调参数";
+      elParams.appendChild(empty);
+      return;
+    }
+    ids.forEach(function (id) {
+      var p = paramsById[id];
+      var row = document.createElement("div");
+      row.className = "mm-row";
+      var nm = document.createElement("span");
+      nm.className = "nm"; nm.textContent = p.name; nm.title = id;
+      var range = document.createElement("input");
+      range.type = "range";
+      // 归一化 0~1（宿主按 min/max 换算；插件 UI 也走同一约定）
+      var span = (p.max - p.min) || 1;
+      var norm = (p.value - p.min) / span;
+      range.min = "0"; range.max = "1"; range.step = "0.001"; range.value = String(norm);
+      range.setAttribute("aria-label", p.name);
+      var vl = document.createElement("span");
+      vl.className = "vl"; vl.textContent = p.value.toFixed(2);
+      range.addEventListener("input", function () {
+        var v = parseFloat(range.value);
+        vl.textContent = v.toFixed(2);
+        setParam(p.index, v);
+      });
+      row.appendChild(nm); row.appendChild(range); row.appendChild(vl);
+      elParams.appendChild(row);
+    });
+  }
+
+  function setParam(index, normalized) {
+    var body = target();
+    body.index = index;
+    body.value = normalized;
+    post({ type: "mm.paramChanged", id: paramsByIndex[index] ? paramsByIndex[index].id : String(index), value: normalized });
+    return fetch("/api/engine/plugins/param", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) { elStatus.textContent = "参数写入失败"; }
+    }).catch(function () { elStatus.textContent = "参数写入失败"; });
+  }
+
+  /** 只接受字段类型合法的消息；其余丢弃并计数（插件 UI 不得影响承载页） */
+  var dropped = 0;
+  function onPluginMessage(ev) {
+    var d = ev.data;
+    if (!d || typeof d !== "object" || typeof d.type !== "string" || d.type.indexOf("mm.") !== 0) return;
+    if (d.type === "mm.ready") {
+      elSkeleton.hidden = true;
+      elStatus.textContent = "插件已就绪";
+      loadParams().catch(function (e) { elStatus.textContent = "参数读取失败：" + e.message; });
+      return;
+    }
+    if (d.type === "mm.setParam" && typeof d.id === "string" && typeof d.value === "number") {
+      var rec = paramsById[d.id];
+      if (!rec) { dropped++; elStatus.textContent = "未知参数 " + d.id; return; }
+      setParam(rec.index, Math.max(0, Math.min(1, d.value)));
+      return;
+    }
+    if (d.type === "mm.resize" && typeof d.width === "number" && typeof d.height === "number") {
+      if (d.width > 0 && d.height > 0 && d.width <= 4096 && d.height <= 4096)
+        frame.style.height = Math.max(120, d.height) + "px";
+      return;
+    }
+    if (d.type === "mm.tooltip") { elStatus.textContent = String(d.text || ""); return; }
+    dropped++;
+  }
+  window.addEventListener("message", onPluginMessage);
+
+  function post(msg) {
+    if (!frame.contentWindow) return;
+    try { frame.contentWindow.postMessage(msg, "*"); } catch (e) {}
+  }
+
+  /* 主题：跟随系统/宿主 query（?theme=parchment），并推给插件 UI */
+  var theme = q.get("theme") || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "parchment" : "dark");
+  document.documentElement.dataset.theme = theme;
+  window.addEventListener("message", function (ev) {
+    var d = ev.data;
+    if (d && d.type === "mm.theme" && (d.theme === "dark" || d.theme === "parchment")) {
+      theme = d.theme;
+      document.documentElement.dataset.theme = theme;
+    }
+  });
+
+  document.getElementById("mmParamsBtn").addEventListener("click", function () {
+    elParams.hidden = !elParams.hidden;
+    this.setAttribute("aria-pressed", elParams.hidden ? "false" : "true");
+  });
+  document.getElementById("mmReloadBtn").addEventListener("click", function () {
+    loadFrame();
+  });
+
+  function loadFrame() {
+    elSkeleton.hidden = false;
+    elStatus.textContent = "载入插件界面…";
+    var src = "/api/engine/plugins/ui?plugin=" + encodeURIComponent(pluginId);
+    frame.src = src;
+    /* 插件未提供 UI 时（manifest 无 ui）给可读提示：路由会 404，
+       我们无法从 iframe 内读状态，因此并行探测一次 */
+    fetch(src, { method: "GET" }).then(function (r) {
+      if (!r.ok) {
+        elStatus.textContent = "该插件没有自带界面（可用「参数」面板调参）";
+        elSkeleton.hidden = true;
+        frame.hidden = true;
+        elParams.hidden = false;
+        loadParams().catch(function () {});
+      } else {
+        frame.hidden = false;
+        post({ type: "mm.theme", theme: theme });
+      }
+    }).catch(function () {});
+  }
+
+  if (!pluginId) {
+    elName.textContent = "缺少 plugin 参数";
+    elStatus.textContent = "用法：mm-ui.html?plugin=<id>&track=<n> 或 ?plugin=<id>&slot=<n>（主链加 &master=1）";
+    elSkeleton.hidden = true;
+    return;
+  }
+
+  /* 走带：1.5s 拉一次（宿主节流；插件 UI 只读展示） */
+  setInterval(function () {
+    fetch("/api/engine/plugins/state").catch(function () {});
+  }, 1500);
+
+  loadFrame();
+})();
+</script>
+</body>
+</html>

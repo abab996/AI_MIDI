@@ -3,9 +3,12 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"melodymate/internal/config"
 	"melodymate/internal/engine"
 )
 
@@ -51,6 +54,61 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		writeJSON(w, http.StatusOK, map[string]any{
 			"count": list.Count, "plugins": list.Plugins, "formats": list.Formats,
 		})
+
+	case "/ui":
+		/* P6：MM 插件 UI 的静态承载（前端 mm-ui.html 用 sandbox iframe 加载它）。
+		   路径必须落在 Library/plugins/<id>@<ver>/ 内：逐条校验，拒绝任何穿越。
+		   query：plugin=<插件 id>、asset=<包内相对路径，默认取 manifest 的 ui.entry> */
+		q := req.URL.Query()
+		pluginID := strings.TrimSpace(q.Get("plugin"))
+		if pluginID == "" || strings.ContainsAny(pluginID, "/\\") || strings.Contains(pluginID, "..") {
+			writeError(w, http.StatusBadRequest, "plugin 参数非法")
+			return
+		}
+		asset := strings.TrimSpace(q.Get("asset"))
+		if asset == "" {
+			asset = "ui/index.html"
+		}
+		clean := filepath.ToSlash(filepath.Clean(asset))
+		if strings.HasPrefix(clean, "/") || strings.Contains(clean, "..") {
+			writeError(w, http.StatusBadRequest, "asset 路径非法")
+			return
+		}
+		pluginsRoot := filepath.Join(config.LibraryDir, "plugins")
+		entries, _ := os.ReadDir(pluginsRoot)
+		var base string
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if name == pluginID || strings.HasPrefix(name, pluginID+"@") {
+				base = filepath.Join(pluginsRoot, name)
+				break
+			}
+		}
+		if base == "" {
+			writeError(w, http.StatusNotFound, "插件未安装："+pluginID)
+			return
+		}
+		full := filepath.Join(base, filepath.FromSlash(clean))
+		rel, rerr := filepath.Rel(base, full)
+		if rerr != nil || strings.HasPrefix(rel, "..") {
+			writeError(w, http.StatusBadRequest, "asset 越界")
+			return
+		}
+		if st, serr := os.Stat(full); serr != nil || st.IsDir() {
+			writeError(w, http.StatusNotFound, "插件 UI 资源不存在："+clean)
+			return
+		}
+		/* 只服务插件 UI 需要的静态类型（不当作通用文件服务器） */
+		switch strings.ToLower(filepath.Ext(full)) {
+		case ".html", ".js", ".css", ".json", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf":
+		default:
+			writeError(w, http.StatusForbidden, "不允许的资源类型")
+			return
+		}
+		http.ServeFile(w, req, full)
 
 	case "/state":
 		state, err := sup.PluginState()

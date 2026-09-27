@@ -100,6 +100,18 @@ Source: "Library\*.md"; DestDir: "{app}\Library"; Flags: ignoreversion
 ; 用户自备 sf2 也可放入 {app}\Library\soundfonts（按文件名排序首个为默认）
 Source: "Library\soundfonts\GeneralUser GS v1.471.sf2"; DestDir: "{app}\Library\soundfonts"; Flags: ignoreversion
 Source: "Library\soundfonts\GeneralUser GS LICENSE.txt"; DestDir: "{app}\Library\soundfonts"; Flags: ignoreversion
+; ── MM 插件平台（P6）──────────────────────────────────────────────
+; mm.exe：插件工具链（mm new/build/validate/inspect/install）。
+; AI 闭环工具 mm_create_plugin/mm_build_plugin/mm_install_plugin 会去找它：
+; 查找顺序 = 主程序同目录 → tools\ → output\ → PATH（发行包里就是这里的主程序同目录）。
+Source: "mm.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; MM 插件 SDK：编译插件必须（mm build 默认在 <主程序目录>\engine\mm-sdk 下找）。
+; 只带 include 与 CMake 脚手架 + 两个示例（示例也能作为"照着改"的起点）。
+Source: "engine\mm-sdk\include\mm\mm.h"; DestDir: "{app}\engine\mm-sdk\include\mm"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "engine\mm-sdk\CMakeLists.txt"; DestDir: "{app}\engine\mm-sdk"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "engine\mm-sdk\examples\*"; DestDir: "{app}\engine\mm-sdk\examples"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; 插件安装目录（AI/用户安装的 .mm 落这里；引擎启动时从这里加载）
+Source: "Library\plugins\README.txt"; DestDir: "{app}\Library\plugins"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

@@ -10,6 +10,7 @@ import (
 
 	"melodymate/internal/config"
 	"melodymate/internal/engine"
+	"melodymate/internal/mm"
 	"melodymate/internal/soundlib"
 )
 
@@ -110,6 +111,60 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		http.ServeFile(w, req, full)
+
+	case "/install":
+		/* .mm 包安装两步式（能力授权对话框的后端）：
+		   preview=true  → 只校验并返回声明能力/哈希/AI 标记，不落盘（弹确认框用）
+		   preview=false → 带 grant 安装；声明未授权即拒绝（fail-closed）
+		 pkg 必须落在 <数据根>/Library/plugin-src/ 或 Library/plugins/ 内 */
+		if req.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var in struct {
+			Pkg     string   `json:"pkg"`
+			Grant   []string `json:"grant"`
+			Preview bool     `json:"preview"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		pkg := filepath.Clean(in.Pkg)
+		if pkg == "" || !strings.HasSuffix(strings.ToLower(pkg), ".mm") {
+			writeError(w, http.StatusBadRequest, "pkg 必须是 .mm 文件路径")
+			return
+		}
+		allowed := false
+		for _, root := range []string{filepath.Join(config.LibraryDir, "plugin-src"), filepath.Join(config.LibraryDir, "plugins")} {
+			if rel, err := filepath.Rel(root, pkg); err == nil && !strings.HasPrefix(rel, "..") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			writeError(w, http.StatusForbidden, "只允许安装 Library/plugin-src 下的 .mm 包")
+			return
+		}
+		dest := filepath.Join(config.LibraryDir, "plugins")
+		if in.Preview {
+			preview, err := mm.ValidateAndPreview(pkg, dest, in.Grant)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"preview": preview, "needsGrant": len(preview.MissingGrant) > 0})
+			return
+		}
+		preview, err := mm.Install(pkg, dest, in.Grant)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		added, updated, failed := soundlib.SyncAllInstalledMM()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "installed": preview, "added": added, "updated": updated, "failed": failed,
+		})
 
 	case "/sync":
 		/* 把 Library/plugins/ 下已安装的 MM 插件同步进音源注册表：

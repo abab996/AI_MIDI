@@ -10,7 +10,7 @@ import (
 // 音频后端设置项已移除：固定走原生引擎（桌面）/ WebAudio（无引擎桥的
 // 浏览器模式由前端判定），旧配置里的 backend 键被忽略且不再影响行为
 func TestAudioBackendFieldRemoved(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "aimidi_audio_test_*")
+	tmpDir, err := os.MkdirTemp("", "melodymate_audio_test_*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestAudioBackendFieldRemoved(t *testing.T) {
 }
 
 func TestAudioSampleRateAndTail(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "aimidi_audio_test3_*")
+	tmpDir, err := os.MkdirTemp("", "melodymate_audio_test3_*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestIsTempDirCoverage(t *testing.T) {
 		}
 	}
 	// 真实安装目录（任意非临时路径）不得误判
-	if isTempDir(`C:\Program Files\AI_MIDI`) {
+	if isTempDir(`C:\Program Files\MelodyMate`) {
 		t.Fatal("常规安装目录不应识别为临时区")
 	}
 }

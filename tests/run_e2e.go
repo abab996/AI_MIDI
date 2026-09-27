@@ -12,13 +12,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"aimidi/internal/config"
-	"aimidi/internal/engine"
-	"aimidi/internal/server"
+	"melodymate/internal/config"
+	"melodymate/internal/engine"
+	"melodymate/internal/server"
 )
 
 func main() {
-	fmt.Println("=== AI_MIDI E2E Runner ===")
+	fmt.Println("=== MelodyMate E2E Runner ===")
 	tmpDir, err := os.MkdirTemp("", "e2e_*")
 	if err != nil {
 		panic(err)

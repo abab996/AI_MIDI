@@ -16,7 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // corruptBackupSeq 损坏索引备份名的进程内序号（见 loadIndexLocked）

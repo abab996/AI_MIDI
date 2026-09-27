@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"aimidi/internal/config"
-	"aimidi/internal/mcp"
-	"aimidi/internal/project"
+	"melodymate/internal/config"
+	"melodymate/internal/mcp"
+	"melodymate/internal/project"
 )
 
 const noteTableIntro = `由于无法直接上传midi文件，我们会使用类似midi文件的"note_table"格式来记录音符信息，以下为"note_table"的格式介绍：

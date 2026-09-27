@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // SaveDraft 保存项目输入框草稿

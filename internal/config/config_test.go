@@ -99,7 +99,7 @@ func TestIsGeminiProvider(t *testing.T) {
 }
 
 func TestSettingsReadWrite(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "aimidi_test_*")
+	tmpDir, err := os.MkdirTemp("", "melodymate_test_*")
 	if err != nil {
 		t.Fatal(err)
 	}

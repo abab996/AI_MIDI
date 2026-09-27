@@ -83,6 +83,23 @@ func TestFetchFailureFallsBackToStale(t *testing.T) {
 	}
 }
 
+func TestFetchTriesNextURL(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":"3.2.0","mandatory":false}`))
+	}))
+	defer good.Close()
+
+	c := NewClient(bad.URL, good.URL)
+	m, err := c.Fetch(context.Background())
+	if err != nil || m.Version != "3.2.0" {
+		t.Fatalf("首选失败后应使用下一个清单: m=%+v err=%v", m, err)
+	}
+}
+
 // TestFetchInvalid 清单缺失 version 字段时报错
 func TestFetchInvalid(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,7 +114,7 @@ func TestFetchInvalid(t *testing.T) {
 
 // TestDownloaderSuccessAndSHA 下载状态机：成功落位 + sha256 校验 + 进度快照
 func TestDownloaderSuccessAndSHA(t *testing.T) {
-	payload := strings.Repeat("AI_MIDI", 4096) // 28KB
+	payload := strings.Repeat("MelodyMate", 4096)
 	sum := sha256.Sum256([]byte(payload))
 	sha := hex.EncodeToString(sum[:])
 

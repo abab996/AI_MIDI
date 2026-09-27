@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"aimidi/internal/config"
-	"aimidi/internal/llm"
-	"aimidi/internal/midi"
-	"aimidi/internal/tasks"
+	"melodymate/internal/config"
+	"melodymate/internal/llm"
+	"melodymate/internal/midi"
+	"melodymate/internal/tasks"
 )
 
 const (

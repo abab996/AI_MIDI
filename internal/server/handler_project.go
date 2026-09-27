@@ -14,12 +14,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"aimidi/internal/chat"
-	"aimidi/internal/config"
-	"aimidi/internal/mcp"
-	"aimidi/internal/midi"
-	"aimidi/internal/project"
-	"aimidi/internal/tasks"
+	"melodymate/internal/chat"
+	"melodymate/internal/config"
+	"melodymate/internal/mcp"
+	"melodymate/internal/midi"
+	"melodymate/internal/project"
+	"melodymate/internal/tasks"
 )
 
 func (r *Router) handleProjects(w http.ResponseWriter, req *http.Request) {
@@ -1203,7 +1203,7 @@ func (r *Router) handleProjectDownload(w http.ResponseWriter, req *http.Request,
 	}
 
 	// 多文件打包 zip
-	tmpZip := filepath.Join(os.TempDir(), fmt.Sprintf("AI_MIDI_%s_%s.zip", projectID, uuid.New().String()[:8]))
+	tmpZip := filepath.Join(os.TempDir(), fmt.Sprintf("MelodyMate_%s_%s.zip", projectID, uuid.New().String()[:8]))
 	defer os.Remove(tmpZip)
 
 	zipF, err := os.Create(tmpZip)
@@ -1226,6 +1226,6 @@ func (r *Router) handleProjectDownload(w http.ResponseWriter, req *http.Request,
 	_ = zw.Close()
 	_ = zipF.Close()
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"AI_MIDI_%s_files.zip\"", projectID))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"MelodyMate_%s_files.zip\"", projectID))
 	http.ServeFile(w, req, tmpZip)
 }

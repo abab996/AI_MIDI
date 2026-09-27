@@ -25,21 +25,28 @@ var (
 	LibraryUserDir = filepath.Join(LibraryDir, "user")
 	WebDir         = filepath.Join(ProjectRoot, "frontend")
 	SettingsFile   = filepath.Join(ProjectRoot, "settings.json")
-	LogFile        = filepath.Join(OutputDir, "ai_midi.log")
+	LogFile        = filepath.Join(OutputDir, "melodymate.log")
 )
 
 const (
 	DraftFilename = "draft.txt"
 	ServerPort    = 7860
-	WindowTitle   = "AI_MIDI · AI 编曲助手"
+	WindowTitle   = "MelodyMate · AI 编曲助手"
 	// LibraryUserPrefix ListLibraryFiles 中用户自定义知识文件的文件名前缀
 	// （如 "user/爵士和声.md"），同时是 read_library_file 工具读取用户文件
 	// 时使用的相对路径参数
 	LibraryUserPrefix = "user/"
-	// UpdateManifestURL 更新清单地址（R2 桶绑定的公开自定义域名）。
-	// 应用启动时拉取并比较版本；清单必须公开可读（S3 API 端点不行）。
-	UpdateManifestURL = "https://aimidi-r2.baimoo.top/update.json"
+	// UpdateManifestURL 首选更新清单。新域名尚未交付，先占位；
+	// 拉取时按 UpdateManifestURLs 失败回退到仍在服务的旧桶。
+	UpdateManifestURL = "https://melodymate-r2.baimoo.top/update.json"
 )
+
+// UpdateManifestURLs 按顺序尝试。第一项不可达时继续下一项，
+// 避免改名后旧安装发现不了新版本。
+var UpdateManifestURLs = []string{
+	UpdateManifestURL,
+	"https://aimidi-r2.baimoo.top/update.json",
+}
 
 // AppVersion 应用版本：main 启动时从 wails.json 注入（与打包配置同源，
 // 避免双份维护）；未注入时（单测/浏览器降级）显示 dev。

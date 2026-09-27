@@ -55,7 +55,7 @@ type Client struct {
 // Dial 连接引擎管道并完成协议握手（hello + 版本校验）。
 // 管道在引擎进程创建后数百毫秒内才出现，dialPipe 负责等待。
 func Dial(pid int, dialTimeout, handshakeTimeout time.Duration) (*Client, error) {
-	name := fmt.Sprintf(`\\.\pipe\AI_MIDI_ENGINE_%d`, pid)
+	name := fmt.Sprintf(`\\.\pipe\MelodyMate_ENGINE_%d`, pid)
 	conn, err := dialPipe(name, dialTimeout)
 	if err != nil {
 		return nil, err
@@ -428,7 +428,7 @@ func (c *Client) Shutdown(timeout time.Duration) error {
 func (c *Client) handshake(timeout time.Duration) error {
 	params := map[string]any{
 		"protocolVersion": ProtocolVersion,
-		"client":          "ai_midi_supervisor",
+		"client":          "melodymate_supervisor",
 	}
 
 	resp, err := c.Request("hello", params, timeout)

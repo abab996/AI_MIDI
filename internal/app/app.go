@@ -9,8 +9,8 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"aimidi/internal/chat"
-	"aimidi/internal/engine"
+	"melodymate/internal/chat"
+	"melodymate/internal/engine"
 )
 
 // App Wails 应用程序结构

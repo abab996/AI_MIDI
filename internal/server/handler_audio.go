@@ -12,9 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"aimidi/internal/config"
-	"aimidi/internal/engine"
-	"aimidi/internal/midi"
+	"melodymate/internal/config"
+	"melodymate/internal/engine"
+	"melodymate/internal/midi"
 )
 
 // handleAudioSub /api/audio/* 子路由：引擎状态、设备、设置、测试音

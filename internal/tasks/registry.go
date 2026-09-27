@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"aimidi/internal/config"
-	"aimidi/internal/project"
+	"melodymate/internal/config"
+	"melodymate/internal/project"
 )
 
 const (

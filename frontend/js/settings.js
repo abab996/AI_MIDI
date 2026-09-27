@@ -817,7 +817,7 @@
   var activeMidiInput      = null;
   var midiSignalTimer      = null;
 
-  var MIDI_STORAGE_KEY = "ai-midi-hardware-settings";
+  var MIDI_STORAGE_KEY = "melodymate-hardware-settings";
   var DEFAULT_MIDI_SETTINGS = {
     enabled: true,
     deviceId: "",
@@ -1650,7 +1650,7 @@
           document.referrer.indexOf(location.origin + "/") === 0 &&
           document.referrer.indexOf("/settings.html") < 0;
       } catch (e) {}
-      try { sessionStorage.setItem("ai-midi-nav-dir", "back"); } catch (e) {}
+      try { sessionStorage.setItem("melodymate-nav-dir", "back"); } catch (e) {}
       if (cameFromApp && history.length > 1) {
         history.back();
         return;
@@ -1729,7 +1729,7 @@
     if ($("#issueBtn")) {
       $("#issueBtn").addEventListener("click", function () {
         if (window.UI && window.UI.openExternal) {
-          UI.openExternal ("https://github.com/abab996/AI_MIDI/issues/new");
+          UI.openExternal ("https://github.com/abab996/MelodyMate/issues/new");
         }
       });
     }

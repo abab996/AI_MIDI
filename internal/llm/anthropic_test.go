@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 func TestConvertAnthropicMessages(t *testing.T) {

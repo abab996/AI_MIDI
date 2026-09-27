@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AI_MIDI-go 宣传视频配乐生成器
+MelodyMate-go 宣传视频配乐生成器
 =============================
 生成两首 85 BPM、D 多利亚（D Dorian）的 Lo-Fi MIDI：
   1. Lofi_Chords.mid —— 仅电钢和弦垫（镜头 02-05 的主角文件）
@@ -234,7 +234,7 @@ def write_smf(path, tracks):
 
 
 def make_file(path, with_melody=False, with_drums=False):
-    conv = track_chunk([(0, 0, meta(US_PER_BEAT, "AI_MIDI-go Demo"))])
+    conv = track_chunk([(0, 0, meta(US_PER_BEAT, "MelodyMate-go Demo"))])
     chords = track_chunk(note_events(build_chords(), 0, program=4))     # 4 = Electric Piano
     tracks = [conv, chords]
     if with_melody:

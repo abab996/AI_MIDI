@@ -42,13 +42,13 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build -trimpath -ldflags "-s -w" -o AI_MIDI.exe .
+        run: go build -trimpath -ldflags "-s -w" -o MelodyMate.exe .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AI_MIDI-windows-${{ github.sha }}
-          path: AI_MIDI.exe
+          name: MelodyMate-windows-${{ github.sha }}
+          path: MelodyMate.exe
           retention-days: 14
 
   linux:
@@ -80,11 +80,11 @@ jobs:
         run: go test ./...
 
       - name: Build (browser mode binary)
-        run: go build -trimpath -ldflags "-s -w" -o AI_MIDI-linux-amd64 .
+        run: go build -trimpath -ldflags "-s -w" -o MelodyMate-linux-amd64 .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AI_MIDI-linux-${{ github.sha }}
-          path: AI_MIDI-linux-amd64
+          name: MelodyMate-linux-${{ github.sha }}
+          path: MelodyMate-linux-amd64
           retention-days: 14

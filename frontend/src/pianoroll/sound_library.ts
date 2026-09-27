@@ -2,7 +2,7 @@
 (function (window) {
   "use strict";
 
-  var DB_NAME = "AI_MIDI_SoundLibrary";
+  var DB_NAME = "MelodyMate_SoundLibrary";
   var DB_VERSION = 1;
   var STORE_NAME = "soundfonts";
 

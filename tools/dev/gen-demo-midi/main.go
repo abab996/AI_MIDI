@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"aimidi/internal/midi"
+	"melodymate/internal/midi"
 )
 
 func main() {

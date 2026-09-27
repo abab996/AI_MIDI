@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"aimidi/internal/update"
+	"melodymate/internal/update"
 )
 
 // installTestManifest 把 Router 的清单客户端指向测试服务器并预填缓存

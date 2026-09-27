@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"aimidi/internal/config"
-	"aimidi/internal/project"
+	"melodymate/internal/config"
+	"melodymate/internal/project"
 )
 
 // TestProjectBPMEndpoint 全局 BPM 端到端：POST 写入 → GET 读回 →

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title AI_MIDI-go Project Stats
+title MelodyMate-go Project Stats
 cd /d "%~dp0"
 
 set "EXE=tools\projstats\projstats.exe"

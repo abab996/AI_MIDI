@@ -8,7 +8,12 @@
      才生效，暗蓝用户每次导航会先闪暖纸） */
   (function () {
     try {
-      if (localStorage.getItem("ai-midi-blueprint-theme") === "dark") {
+      var themeKey = "melodymate-blueprint-theme";
+      if (localStorage.getItem(themeKey) == null) {
+        var oldTheme = localStorage.getItem("ai-midi-blueprint-theme");
+        if (oldTheme != null) localStorage.setItem(themeKey, oldTheme);
+      }
+      if (localStorage.getItem(themeKey) === "dark") {
         document.documentElement.dataset.theme = "dark";
       }
     } catch (e) {}
@@ -21,11 +26,11 @@
      -browser 模式默认本就直达 chat.html，此处只兜住手动访问 "/" 的情况。 */
   (function () {
     try {
-      var dir = sessionStorage.getItem("ai-midi-nav-dir");
+      var dir = sessionStorage.getItem("melodymate-nav-dir");
       var explicit = dir === "forward" || dir === "back";
-      var shown = sessionStorage.getItem("ai-midi-index-shown") === "1";
+      var shown = sessionStorage.getItem("melodymate-index-shown") === "1";
       if (explicit || shown) {
-        sessionStorage.setItem("ai-midi-index-shown", "1");
+        sessionStorage.setItem("melodymate-index-shown", "1");
       } else {
         location.replace("/chat.html");
       }
@@ -33,13 +38,13 @@
   })();
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI_MIDI · AI 编曲助手</title>
+<title>MelodyMate · AI 编曲助手</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="stylesheet" href="/style.css">
 <script>
   (function () {
     var dir = null;
-    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    try { dir = sessionStorage.getItem("melodymate-nav-dir"); sessionStorage.removeItem("melodymate-nav-dir"); } catch (e) {}
     if (dir === "forward" || dir === "back") {
       document.documentElement.dataset.nav = dir;
       setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
@@ -131,7 +136,7 @@
 
       <div class="console brackets">
         <div class="console-head">
-          <span>Console // AI_MIDI_OUTPUT</span>
+          <span>Console // MelodyMate_OUTPUT</span>
           <span class="dots"><span></span><span></span><span></span></span>
         </div>
         <div class="console-body" id="consoleBody">
@@ -154,8 +159,8 @@
      每个会话提示一次（避免反复打扰） */
   (function () {
     try {
-      if (sessionStorage.getItem("aimidi_legacy_page_tip_v1") === "1") return;
-      sessionStorage.setItem("aimidi_legacy_page_tip_v1", "1");
+      if (sessionStorage.getItem("melodymate_legacy_page_tip_v1") === "1") return;
+      sessionStorage.setItem("melodymate_legacy_page_tip_v1", "1");
     } catch (e) {}
     document.addEventListener("DOMContentLoaded", function () {
       setTimeout(function () {

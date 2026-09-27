@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AI_MIDI-go 宣传视频 SFX / BGM 垱乐合成器
+MelodyMate-go 宣传视频 SFX / BGM 垱乐合成器
 ========================================
 全部用 numpy 程序化合成，零版权风险。输出 48kHz 16bit WAV 到 promo/sfx/：
   sfx_ding.wav      清脆"叮"（镜头01 转场）

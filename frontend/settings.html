@@ -8,20 +8,25 @@
      才生效，暗蓝用户每次导航会先闪暖纸） */
   (function () {
     try {
-      if (localStorage.getItem("ai-midi-blueprint-theme") === "dark") {
+      var themeKey = "melodymate-blueprint-theme";
+      if (localStorage.getItem(themeKey) == null) {
+        var oldTheme = localStorage.getItem("ai-midi-blueprint-theme");
+        if (oldTheme != null) localStorage.setItem(themeKey, oldTheme);
+      }
+      if (localStorage.getItem(themeKey) === "dark") {
         document.documentElement.dataset.theme = "dark";
       }
     } catch (e) {}
   })();
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI_MIDI · 设置</title>
+<title>MelodyMate · 设置</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="stylesheet" href="/style.css">
 <script>
   (function () {
     var dir = null;
-    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    try { dir = sessionStorage.getItem("melodymate-nav-dir"); sessionStorage.removeItem("melodymate-nav-dir"); } catch (e) {}
     if (dir === "forward" || dir === "back") {
       document.documentElement.dataset.nav = dir;
       setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
@@ -372,8 +377,8 @@
         <div class="group-title">关于 · About</div>
 
         <div class="about-hero">
-          <span class="about-logo-wrap"><img class="app-logo-img about-logo" src="/app_icon_warm.png" alt="AI_MIDI Logo"></span>
-          <div class="about-name">AI_MIDI</div>
+          <span class="about-logo-wrap"><img class="app-logo-img about-logo" src="/app_icon_warm.png" alt="MelodyMate Logo"></span>
+          <div class="about-name">MelodyMate</div>
           <div class="about-tagline">AI 编曲助手 · 让 AI 帮你写和弦、编旋律、做编曲</div>
           <div class="about-version mono" id="aboutVersion">v--</div>
         </div>
@@ -383,14 +388,14 @@
         </div>
 
         <div class="about-links">
-          <a class="about-link" data-ext href="https://aimidi.baimoo.top">🌐 软件官网</a>
-          <a class="about-link" data-ext href="https://github.com/abab996/AI_MIDI">🐙 GitHub 仓库</a>
-          <a class="about-link" data-ext href="https://github.com/abab996/AI_MIDI/blob/main/LICENSE">⚖️ Apache-2.0 License</a>
+          <a class="about-link" data-ext href="https://melodymate.baimoo.top">🌐 软件官网</a>
+          <a class="about-link" data-ext href="https://github.com/abab996/MelodyMate">🐙 GitHub 仓库</a>
+          <a class="about-link" data-ext href="https://github.com/abab996/MelodyMate/blob/main/LICENSE">⚖️ Apache-2.0 License</a>
         </div>
 
         <div class="about-foot">
           <button class="btn btn-secondary btn-sm" id="checkUpdateBtn" type="button">🔄 检查更新</button>
-          <a class="about-link" href="/api/files/download?path=output%2Fai_midi.log">📄 运行日志</a>
+          <a class="about-link" href="/api/files/download?path=output%2Fmelodymate.log">📄 运行日志</a>
           <button class="btn btn-secondary btn-sm" id="issueBtn" title="跳转到 GitHub 提交 Issue（请附运行日志与操作描述）">🐛 提交 Issue</button>
         </div>
         <div class="stat-line about-foot-hint"><span class="dim">报障时请附上日志文件与触发操作的描述</span></div>

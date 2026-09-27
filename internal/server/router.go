@@ -13,7 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // Router HTTP API 与静态资源路由器
@@ -203,6 +203,8 @@ func (r *Router) registerRoutes() {
 
 	// 版本信息（设置页 About 卡片）
 	r.mux.HandleFunc("/api/version", r.handleVersion)
+	// 从 AI_MIDI 迁移后的一次性提示
+	r.mux.HandleFunc("/api/migration", r.handleMigration)
 
 	// 打开外部链接（设置页提交 Issue / 主界面 Star 请求共用；仅放行仓库链接）
 	r.mux.HandleFunc("/api/open-url", r.handleOpenURL)

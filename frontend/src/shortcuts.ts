@@ -4,12 +4,12 @@
    大小写/输入法影响；显示名由 prettyKey 生成（设置页用）。
    系统保留不可自定义：Esc（分层关闭）、Enter（输入框确认/发送）、
    键盘弹奏 27 键（乐器布局）、鼠标手势——不在注册表中，设置页注明。
-   存储：localStorage "ai-midi-shortcuts"（{action: spec|spec[]}）；
+   存储：localStorage "melodymate-shortcuts"（{action: spec|spec[]}）；
    加载时与默认表合并（新增动作自动补默认值）。 */
 (function (window) {
   "use strict";
 
-  var STORAGE_KEY = "ai-midi-shortcuts";
+  var STORAGE_KEY = "melodymate-shortcuts";
 
   /* 动作 → 默认键位（现状盘点：pianoroll.js / arrange.js / midi_input.js
      改造前的硬编码；数组 = 任一命中即触发） */

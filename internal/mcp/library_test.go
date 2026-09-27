@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // withTempLibrary 临时把 LibraryDir/LibraryUserDir 换绑到独立目录。

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AI_MIDI-go 项目代码统计分析器 (TUI Engine)
+MelodyMate-go 项目代码统计分析器 (TUI Engine)
 """
 
 import os
@@ -199,7 +199,7 @@ def main():
     W = 76  # 界面宽度
     
     print("\n" + Color.BOLD + Color.CYAN + " ╔" + "═" * (W - 2) + "╗" + Color.RESET)
-    title = " 🎵  AI_MIDI-go 项目核心代码统计报告 (v3.0.1)  🎵 "
+    title = " 🎵  MelodyMate-go 项目核心代码统计报告 (v3.0.1)  🎵 "
     print(Color.BOLD + Color.CYAN + f" ║{title.center(W - 2)}║" + Color.RESET)
     print(Color.BOLD + Color.CYAN + " ╠" + "═" * (W - 2) + "╣" + Color.RESET)
     

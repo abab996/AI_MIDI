@@ -1,4 +1,4 @@
-/* AI_MIDI-go 宣传视频录制器 v2（4K 高画质）
+/* MelodyMate-go 宣传视频录制器 v2（4K 高画质）
  * ==========================================
  * 放弃 Playwright 自带 recordVideo（VP8 低码率导致文字发糊），
  * 改用 CDP Page.screencast 逐帧 JPEG(q93) 捕获 + deviceScaleFactor 2
@@ -36,7 +36,7 @@ const W = 1920, H = 1080, FPS = 60;
   const durationMs = parseInt(process.argv[4] || "75", 10) * 1000;
   const setupUrl = process.argv[5] || "";
 
-  const frameDir = path.join(process.env.TMP_DIR || os.tmpdir(), "aimidi_frames_" + Date.now());
+  const frameDir = path.join(process.env.TMP_DIR || os.tmpdir(), "melodymate_frames_" + Date.now());
   fs.mkdirSync(frameDir, { recursive: true });
 
   const browser = await chromium.launch({

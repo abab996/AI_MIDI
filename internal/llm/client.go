@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // ChatCompletionMessage 消息结构

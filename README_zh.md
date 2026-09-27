@@ -1,10 +1,10 @@
-# 🎹 AI_MIDI — AI 编曲助手
+# 🎹 MelodyMate — AI 编曲助手
 
 > [**English**](README.md) | **中文**
 
-**AI_MIDI** 是一个「本地优先」的音乐创作辅助应用：只需要一个 API Key，AI 就能帮你配和弦、翻译歌词、设计转音、生成旋律——还能在一个 FL Studio 风格的编曲窗里完成编排和导出。所有项目、文件与对话都只存在于你自己的电脑上。
+**MelodyMate** 是一个「本地优先」的音乐创作辅助应用：只需要一个 API Key，AI 就能帮你配和弦、翻译歌词、设计转音、生成旋律——还能在一个 FL Studio 风格的编曲窗里完成编排和导出。所有项目、文件与对话都只存在于你自己的电脑上。
 
-> v3.0.0 起，AI_MIDI 从网页版升级为**独立桌面应用**：安装即用，无需配置 Python 环境。
+> v3.0.0 起，MelodyMate 从网页版升级为**独立桌面应用**：安装即用，无需配置 Python 环境。
 
 ---
 
@@ -43,13 +43,13 @@
 ## 🚀 快速开始
 
 ### Windows（推荐）
-1. 从 [Releases](../../releases) 下载最新的 `AI_MIDI_Setup_<版本>_windows_amd64.exe`，双击安装（免管理员权限）
+1. 从 [Releases](../../releases) 下载最新的 `MelodyMate_Setup_<版本>_windows_amd64.exe`，双击安装（免管理员权限）
 2. 首次启动阅读使用声明，然后打开 **设置** 页填入 API Key
 3. 新建档案，开始创作！
 
 ### Linux
-1. 从 [Releases](../../releases) 下载最新的 `AI_MIDI_v<版本>_linux_amd64.tar.gz` 并解压
-2. `chmod +x RUN.sh && ./RUN.sh`（桌面模式需要 webkit2gtk；或 `./AI_MIDI -browser` 走浏览器模式）
+1. 从 [Releases](../../releases) 下载最新的 `MelodyMate_v<版本>_linux_amd64.tar.gz` 并解压
+2. `chmod +x RUN.sh && ./RUN.sh`（桌面模式需要 webkit2gtk；或 `./MelodyMate -browser` 走浏览器模式）
 3. Linux 版使用浏览器音频合成，无需引擎
 
 ### 首次配置
@@ -68,13 +68,13 @@
 环境要求：**Go ≥ 1.27**、**Wails v2**（`go install github.com/wailsapp/wails/v2/cmd/wails@latest`）、Windows 10+（Linux 桌面模式需 webkit2gtk）。
 
 ```bat
-git clone https://github.com/abab996/AI_MIDI.git
-cd AI_MIDI
-wails build        :: Windows，产物 buildin\AI_MIDI.exe
+git clone https://github.com/abab996/MelodyMate.git
+cd MelodyMate
+wails build        :: Windows，产物 buildin\MelodyMate.exe
 RUN.bat
 ```
 
-Linux：`go build -o AI_MIDI . && chmod +x RUN.sh && ./RUN.sh`。架构与设计文档见 [`docs/`](docs/)。
+Linux：`go build -o MelodyMate . && chmod +x RUN.sh && ./RUN.sh`。架构与设计文档见 [`docs/`](docs/)。
 
 改前端 TypeScript（`frontend/src`）时需要 **Node.js ≥ 20**。在仓库根目录执行 `npm install` 和 `npm run build`，并把擦除后的 `frontend/js` 一起提交。只改 Go 时，上面的 `wails build` / `go build` 仍然直接可用。
 
@@ -116,10 +116,10 @@ Linux：`go build -o AI_MIDI . && chmod +x RUN.sh && ./RUN.sh`。架构与设计
 ## 📄 许可
 
 代码基于 [Apache License 2.0](LICENSE) 开源。
-Windows 安装包内置的音频引擎（`aimidi-engine.exe`）为闭源组件，随安装包分发。
+Windows 安装包内置的音频引擎（`melodymate-engine.exe`）为闭源组件，随安装包分发。
 
 开发者：架构与设计文档见 [`docs/`](docs/)。
 
 ---
 
-**AI_MIDI** — 让 AI 做你的乐理助手。🎵
+**MelodyMate** — 让 AI 做你的乐理助手。🎵

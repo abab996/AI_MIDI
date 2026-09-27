@@ -22,7 +22,7 @@ var instanceLockFile *os.File
 // AcquireSingleInstanceLock 单实例保护：对临时目录锁文件加 flock。
 // 进程退出时内核自动释放锁，无陈旧锁问题。
 func AcquireSingleInstanceLock(name string) bool {
-	lockPath := filepath.Join(os.TempDir(), "AI_MIDI_"+strings.ReplaceAll(strings.TrimPrefix(name, "Local\\"), "\\", "_")+".lock")
+	lockPath := filepath.Join(os.TempDir(), "MelodyMate_"+strings.ReplaceAll(strings.TrimPrefix(name, "Local\\"), "\\", "_")+".lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		slog.Warn("[app] 单实例锁文件创建失败（放行继续）", "path", lockPath, "err", err)
@@ -30,7 +30,7 @@ func AcquireSingleInstanceLock(name string) bool {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		slog.Warn("[app] 检测到已有 AI_MIDI 实例在运行", "lock", lockPath)
+		slog.Warn("[app] 检测到已有 MelodyMate 实例在运行", "lock", lockPath)
 		return false
 	}
 	instanceLockFile = f // 持有句柄直至进程退出，锁随之释放

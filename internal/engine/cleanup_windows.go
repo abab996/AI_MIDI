@@ -10,7 +10,7 @@ import (
 )
 
 // cleanupOrphanEngines 启动清场：枚举系统全部进程，终止镜像名为
-// aimidi-engine.exe 的残留实例（skipPID 保留，通常为本会话当前子进程）。
+// melodymate-engine.exe 的残留实例（skipPID 保留，通常为本会话当前子进程）。
 //
 // 背景：主程序被强杀时 defer Stop 不执行，Job Object 挂靠若失败
 // （嵌套 Job 限制等），引擎会成为孤儿——占住声卡设备，且下次启动
@@ -33,7 +33,8 @@ func cleanupOrphanEngines(skipPID int) {
 	killed := 0
 	for {
 		name := windows.UTF16ToString(entry.ExeFile[:])
-		if name == "aimidi-engine.exe" && int(entry.ProcessID) != skipPID {
+		// aimidi-engine.exe 是改名前的镜像名，升级后的残留同样占住声卡
+		if (name == "melodymate-engine.exe" || name == "aimidi-engine.exe") && int(entry.ProcessID) != skipPID {
 			if terminateByPID(entry.ProcessID) {
 				killed++
 				slog.Info("[engine] 清理残留引擎进程", "pid", entry.ProcessID)

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"aimidi/internal/config"
-	"aimidi/internal/mcp"
+	"melodymate/internal/config"
+	"melodymate/internal/mcp"
 )
 
 // 用户知识库文件（Library/user/）管理端点，设置页「知识库」分区使用。

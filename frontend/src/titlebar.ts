@@ -88,7 +88,7 @@
     var name = document.createElement("span");
     name.className = "title-bar-name";
     name.id = "titleBarName";
-    name.innerHTML = "<b>AI_MIDI</b>";
+    name.innerHTML = "<b>MelodyMate</b>";
     bar.appendChild(name);
 
     var spacer = document.createElement("span");

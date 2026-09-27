@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
-	"aimidi/internal/llm"
+	"melodymate/internal/config"
+	"melodymate/internal/llm"
 )
 
 // TestCloneHistorySnapshotStaysIntact 复核撤回快照损坏 bug 的修复：

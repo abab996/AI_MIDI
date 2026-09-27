@@ -15,11 +15,11 @@
     "#1": {
       "0409": {
         "identity": {
-          "name": "com.wails.AI_MIDI",
+          "name": "com.wails.MelodyMate",
           "version": "3.1.2.0",
           "processorArchitecture": "*"
         },
-        "description": "AI_MIDI Assistant v3.1.2",
+        "description": "MelodyMate Assistant v3.1.2",
         "minimum-os": "win7",
         "execution-level": "asInvoker",
         "ui-access": false,
@@ -38,13 +38,13 @@
         },
         "info": {
           "0409": {
-            "CompanyName": "AI_MIDI",
-            "FileDescription": "AI_MIDI · AI 编曲助手",
+            "CompanyName": "MelodyMate",
+            "FileDescription": "MelodyMate · AI 编曲助手",
             "FileVersion": "3.1.2.0",
-            "InternalName": "AI_MIDI",
+            "InternalName": "MelodyMate",
             "LegalCopyright": "Copyright 2026",
-            "OriginalFilename": "AI_MIDI.exe",
-            "ProductName": "AI_MIDI · AI 编曲助手",
+            "OriginalFilename": "MelodyMate.exe",
+            "ProductName": "MelodyMate · AI 编曲助手",
             "ProductVersion": "3.1.2.0"
           }
         }

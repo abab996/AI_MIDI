@@ -3,7 +3,7 @@ package llm
 import (
 	"strings"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // JoinEndpoint 将规范化后的 base_url 与 API 后缀拼接为完整端点。

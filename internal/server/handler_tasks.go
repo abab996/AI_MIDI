@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"aimidi/internal/chat"
-	"aimidi/internal/tasks"
+	"melodymate/internal/chat"
+	"melodymate/internal/tasks"
 )
 
 func (r *Router) handleTasks(w http.ResponseWriter, req *http.Request) {

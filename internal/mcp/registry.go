@@ -1,7 +1,7 @@
 package mcp
 
 import (
-	"aimidi/internal/llm"
+	"melodymate/internal/llm"
 )
 
 var mcpTools = []llm.ToolDefinition{

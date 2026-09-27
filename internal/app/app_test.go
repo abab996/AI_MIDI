@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"aimidi/internal/config"
-	"aimidi/internal/project"
+	"melodymate/internal/config"
+	"melodymate/internal/project"
 )
 
 // isolateConfig 把 config 的目录常量指到临时目录，并写入指向 mockLLM 的 settings

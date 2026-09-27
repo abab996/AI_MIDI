@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"aimidi/internal/midi"
+	"melodymate/internal/midi"
 )
 
 // SafeJoin 在指定根目录下安全解析相对路径，防止路径穿越

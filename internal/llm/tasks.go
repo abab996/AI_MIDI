@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 const (

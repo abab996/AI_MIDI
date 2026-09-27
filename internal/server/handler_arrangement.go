@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // arrangeAudioExt 支持的音频素材扩展名 → MIME

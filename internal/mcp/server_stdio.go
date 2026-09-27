@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 type jsonRPCRequest struct {
@@ -27,11 +27,11 @@ type jsonRPCResponse struct {
 
 // RunMCPServer 以 stdio 传输运行 MCP JSON-RPC 服务
 func RunMCPServer() {
-	envOutput := os.Getenv("AI_MIDI_OUTPUT_DIR")
+	envOutput := os.Getenv("MelodyMate_OUTPUT_DIR")
 	if envOutput == "" {
 		envOutput = config.OutputDir
 	}
-	envMirror := os.Getenv("AI_MIDI_MIRROR_DIR")
+	envMirror := os.Getenv("MelodyMate_MIRROR_DIR")
 
 	reader := bufio.NewReader(os.Stdin)
 	writer := os.Stdout
@@ -69,7 +69,7 @@ func RunMCPServer() {
 					"tools": map[string]any{},
 				},
 				"serverInfo": map[string]any{
-					"name":    "ai-midi-tools",
+					"name":    "melodymate-tools",
 					"version": "1.0.0",
 				},
 			}, nil)

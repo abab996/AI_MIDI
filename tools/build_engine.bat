@@ -13,13 +13,13 @@ echo [build_engine] CMake 配置（VS2022 x64）...
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 || exit /b 1
 
 echo [build_engine] 编译 Release x64...
-cmake --build build --config Release --target aimidi-engine || exit /b 1
+cmake --build build --config Release --target melodymate-engine || exit /b 1
 
 if not exist "..\bin" mkdir "..\bin"
-copy /y "build\aimidi-engine_artefacts\Release\aimidi-engine.exe" "..\bin\aimidi-engine.exe" >nul || (
-    echo [错误] 复制产物失败，请检查 build\aimidi-engine_artefacts\Release\
+copy /y "build\melodymate-engine_artefacts\Release\melodymate-engine.exe" "..\bin\melodymate-engine.exe" >nul || (
+    echo [错误] 复制产物失败，请检查 build\melodymate-engine_artefacts\Release\
     exit /b 1
 )
 
-echo [OK] 已更新 bin\aimidi-engine.exe
+echo [OK] 已更新 bin\melodymate-engine.exe
 endlocal

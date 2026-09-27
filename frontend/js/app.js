@@ -1,6 +1,36 @@
-/* AI_MIDI 前端共享工具库 */
+/* MelodyMate 前端共享工具库 */
 (function (global        ) {
   "use strict";
+
+  /* 旧版 localStorage 键迁到 melodymate-*。只在新键不存在时复制，不删除旧键。
+     IndexedDB AI_MIDI_SoundLibrary 要等声音管理确认磁盘音源已入册后再删（P1）。 */
+  function migrateLegacyStorage() {
+    var pairs = [
+      ["ai-midi-blueprint-theme", "melodymate-blueprint-theme"],
+      ["ai-midi-shortcuts", "melodymate-shortcuts"],
+      ["ai-midi-hardware-settings", "melodymate-hardware-settings"],
+      ["ai-midi-task-sort", "melodymate-task-sort"],
+      ["aimidi_disclaimer_v1", "melodymate_disclaimer_v1"],
+      ["aimidi_star_seen", "melodymate_star_seen"]
+    ];
+    try {
+      for (var i = 0; i < pairs.length; i++) {
+        var from = pairs[i][0], to = pairs[i][1];
+        if (localStorage.getItem(to) == null) {
+          var value = localStorage.getItem(from);
+          if (value != null) localStorage.setItem(to, value);
+        }
+      }
+    } catch (e) {}
+  }
+  migrateLegacyStorage();
+
+  function announceLegacyMigration() {
+    fetch("/api/migration").then(function (res) { return res.json(); }).then(function (info) {
+      if (!info || !info.pending) return;
+      toast("已从 AI_MIDI 迁移 " + info.files + " 个文件 / " + info.soundfonts + " 个音源", "ok");
+    }).catch(function () {});
+  }
 
   /* ---- 全局脚本错误兜底 ----
      toast 提示（同消息 3s 去重防刷屏）+ POST /api/client-error 落后端日志；
@@ -405,7 +435,7 @@
       a.addEventListener("click", function () {
         var dir = a.getAttribute("data-dir")          ;
         document.documentElement.dataset.nav = dir;
-        try { sessionStorage.setItem("ai-midi-nav-dir", dir); } catch (e) {}
+        try { sessionStorage.setItem("melodymate-nav-dir", dir); } catch (e) {}
       });
     });
   }
@@ -834,5 +864,8 @@
     }
   });
 
-  document.addEventListener("DOMContentLoaded", initNavDirections);
+  document.addEventListener("DOMContentLoaded", function () {
+    initNavDirections();
+    announceLegacyMigration();
+  });
 })(window);

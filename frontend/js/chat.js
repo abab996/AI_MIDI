@@ -3874,13 +3874,13 @@
     var overlay = $("#disclaimerOverlay");
     if (!overlay) return;
     try {
-      if (localStorage.getItem("aimidi_disclaimer_v1") === "1") return;
+      if (localStorage.getItem("melodymate_disclaimer_v1") === "1") return;
     } catch (e) { /* localStorage 不可用（隐私模式）时每次启动都显示 */ }
     overlay.hidden = false;
     var ok = $("#disclaimerOk");
     if (ok) {
       ok.addEventListener("click", function () {
-        try { localStorage.setItem("aimidi_disclaimer_v1", "1"); } catch (e) {}
+        try { localStorage.setItem("melodymate_disclaimer_v1", "1"); } catch (e) {}
         overlay.hidden = true;
       });
     }
@@ -3892,8 +3892,8 @@
 
   /* ═══════════ 请求 Star（每个新版本首次打开弹一次） ═══════════ */
 
-  var STAR_SEEN_KEY = "aimidi_star_seen";
-  var STAR_REPO_URL = "https://github.com/abab996/AI_MIDI";
+  var STAR_SEEN_KEY = "melodymate_star_seen";
+  var STAR_REPO_URL = "https://github.com/abab996/MelodyMate";
   var starPromptVer = "";   /* 本次提示对应的版本（关闭时写入记忆键） */
 
   function showStarPrompt(ver     ) {
@@ -4521,7 +4521,7 @@
         var t = e.target       ;
         var a = t && t.closest ? t.closest("a[data-dir]") : null;
         if (!a) return;
-        try { sessionStorage.setItem("ai-midi-nav-dir", a.getAttribute("data-dir") || "forward"); } catch (err) {}
+        try { sessionStorage.setItem("melodymate-nav-dir", a.getAttribute("data-dir") || "forward"); } catch (err) {}
       });
     }
     /* 渐显完成后的 span 还原为纯文本节点（事件委托，避免长文本积累

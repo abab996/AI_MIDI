@@ -12,7 +12,7 @@ import (
 	"time"
 	"unsafe"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 var (
@@ -235,7 +235,7 @@ func ShowNativeTransparentSplash(duration time.Duration) *SplashController {
 
 		// 5. 创建 Windows 原生分层窗口 (WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
 		className, _ := syscall.UTF16PtrFromString("STATIC")
-		windowTitle, _ := syscall.UTF16PtrFromString("AI_MIDI_Splash")
+		windowTitle, _ := syscall.UTF16PtrFromString("MelodyMate_Splash")
 		hwnd, _, _ := procCreateWindowExW.Call(
 			0x00080000|0x00000008|0x00000080, // WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW
 			uintptr(unsafe.Pointer(className)),

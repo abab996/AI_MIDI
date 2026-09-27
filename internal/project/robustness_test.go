@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // ═══════════ index.json 损坏保护 ═══════════

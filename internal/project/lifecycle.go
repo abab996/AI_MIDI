@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"aimidi/internal/llm"
+	"melodymate/internal/llm"
 )
 
 // LocateUserInHistory 由显示列表 index 定位 full_history 中同一条 user 消息的下标

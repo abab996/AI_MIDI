@@ -16,8 +16,8 @@ if errorlevel 2 (
 )
 
 echo [1/5] 终止残留进程...
-taskkill /F /IM aimidi-engine.exe 2>nul
-taskkill /F /IM AI_MIDI.exe 2>nul
+taskkill /F /IM melodymate-engine.exe 2>nul
+taskkill /F /IM MelodyMate.exe 2>nul
 
 echo [2/5] 回滚主仓库代码...
 git reset --hard b5b4afe || exit /b 1
@@ -27,13 +27,13 @@ cd engine
 git reset --hard 701b916 || exit /b 1
 
 echo [4/5] 重新编译引擎 (MSVC Release)...
-cmake --build build --config Release --target aimidi-engine || exit /b 1
-copy /y "build\aimidi-engine_artefacts\Release\aimidi-engine.exe" "..\bin\aimidi-engine.exe" >nul || exit /b 1
+cmake --build build --config Release --target melodymate-engine || exit /b 1
+copy /y "build\melodymate-engine_artefacts\Release\melodymate-engine.exe" "..\bin\melodymate-engine.exe" >nul || exit /b 1
 cd ..
 
 echo [5/5] 重新打包 Wails 主程序...
 call wails build || exit /b 1
-copy /y "build\bin\AI_MIDI.exe" "AI_MIDI.exe" >nul || exit /b 1
+copy /y "build\bin\MelodyMate.exe" "MelodyMate.exe" >nul || exit /b 1
 
 echo ========================================================
 echo  回滚并重新编译完成！

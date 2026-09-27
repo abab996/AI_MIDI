@@ -22,11 +22,11 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"aimidi/internal/app"
-	"aimidi/internal/config"
-	"aimidi/internal/engine"
-	"aimidi/internal/mcp"
-	"aimidi/internal/server"
+	"melodymate/internal/app"
+	"melodymate/internal/config"
+	"melodymate/internal/engine"
+	"melodymate/internal/mcp"
+	"melodymate/internal/server"
 )
 
 //go:embed all:frontend
@@ -48,7 +48,7 @@ func openBrowser(url string) {
 		cmd = exec.Command("xdg-open", url)
 	}
 	if err := cmd.Start(); err != nil {
-		log.Printf("[AI_MIDI] 打开浏览器失败: %v（请手动访问 %s）", err, url)
+		log.Printf("[MelodyMate] 打开浏览器失败: %v（请手动访问 %s）", err, url)
 	}
 }
 
@@ -64,7 +64,13 @@ func loadVersion() {
 }
 
 func main() {
+	migrated, migErr := app.MigrateLegacyInstall(config.ProjectRoot)
 	config.SetupLogging()
+	if migErr != nil {
+		slog.Error("从 AI_MIDI 迁移数据失败", "err", migErr)
+	} else if migrated.Files > 0 {
+		slog.Info("已从 AI_MIDI 迁移数据", "from", migrated.From, "files", migrated.Files, "soundfonts", migrated.SoundFonts)
+	}
 	loadVersion()
 
 	// 启动自检：知识库目录缺失（典型为安装包漏装 Library）时打日志留痕。
@@ -87,8 +93,8 @@ func main() {
 	}
 
 	// 2. 单实例保护
-	if !app.AcquireSingleInstanceLock("Local\\AI_MIDI_SingleInstance") {
-		app.ShowErrorDialog(config.WindowTitle, "AI_MIDI 已在运行中。\n如需重新启动，请先关闭现有窗口。")
+	if !app.AcquireSingleInstanceLock("Local\\MelodyMate_SingleInstance") {
+		app.ShowErrorDialog(config.WindowTitle, "MelodyMate 已在运行中。\n如需重新启动，请先关闭现有窗口。")
 		os.Exit(0)
 	}
 
@@ -108,7 +114,7 @@ func main() {
 	// 后台预取更新清单：让前端启动时的 /api/update/check 即时返回
 	go router.PrefetchUpdate()
 
-	// 原生音频引擎守护（M1）：随主程序启动拉起 aimidi-engine，
+	// 原生音频引擎守护（M1）：随主程序启动拉起 melodymate-engine，
 	// 崩溃自动重启；进程退出时优雅回收。缺失/失败均不阻断主程序（降级 Web Audio）。
 	audioSettings := config.LoadSettings().Audio
 	engineSup := engine.NewSupervisor(engine.Config{
@@ -171,7 +177,7 @@ func main() {
 			openBrowser(fmt.Sprintf("http://%s/chat.html", addr))
 		}()
 
-		fmt.Printf("[AI_MIDI] HTTP 服务已在 http://%s 启动 (浏览器模式)\n", addr)
+		fmt.Printf("[MelodyMate] HTTP 服务已在 http://%s 启动 (浏览器模式)\n", addr)
 		// 不设 ReadTimeout/WriteTimeout：WriteTimeout 会掐断 SSE 长下行。
 		// 慢速请求体的保护由 ReadHeaderTimeout + handler 侧 LimitReader/MaxBytes 承担
 		srv := &http.Server{
@@ -219,7 +225,7 @@ func main() {
 		wasMaximized = savedState.Maximized
 	}
 
-	fmt.Printf("[AI_MIDI] DPI scale=%.2f, work area=%dx%d (logical), window=%dx%d (logical), ratio=%.2f\n",
+	fmt.Printf("[MelodyMate] DPI scale=%.2f, work area=%dx%d (logical), window=%dx%d (logical), ratio=%.2f\n",
 		dpiScale, workW, workH, width, height, ratio)
 
 	err = wails.Run(&options.App{

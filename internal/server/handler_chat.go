@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"aimidi/internal/chat"
+	"melodymate/internal/chat"
 )
 
 // sseCallback 构造带写超时的事件回调。必须给每次 Fprint 设写截止时间：

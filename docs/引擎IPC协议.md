@@ -1,7 +1,7 @@
-# AI_MIDI 引擎 IPC 协议（v1）
+# MelodyMate 引擎 IPC 协议（v1）
 
 > 版本：1 ｜ 日期：2026-08-23 ｜ 修订：2026-09-05（见文末修订记录，线格式不变）
-> 适用双方：`AI_MIDI.exe`（Go 主进程，客户端）↔ `aimidi-engine.exe`（JUCE 引擎，服务端）
+> 适用双方：`MelodyMate.exe`（Go 主进程，客户端）↔ `melodymate-engine.exe`（JUCE 引擎，服务端）
 > 实现镜像：Go 侧 `internal/engine/protocol.go`（M1 后续落地）；C++ 侧 `engine/Source/Ipc/Protocol.h`
 > **本文为协议唯一权威来源**，两侧实现与 engine/README 摘要如有出入，以本文为准。
 
@@ -9,7 +9,7 @@
 
 ## 1. 管道命名与连接规则
 
-- 管道名：`\\.\pipe\AI_MIDI_ENGINE_<引擎进程PID>`
+- 管道名：`\\.\pipe\MelodyMate_ENGINE_<引擎进程PID>`
 - PID 为**引擎自身**的进程 PID。主进程经 `os/exec` 启动引擎后从 `cmd.Process.Pid` 获得该值并拼接连接；
 - 单实例单客户端：引擎以 `PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE | PIPE_REJECT_REMOTE_CLIENTS`
   创建字节模式管道，仅允许主进程连接；名字被占用（残留实例/抢占）时每 500ms 重试；
@@ -67,7 +67,7 @@ shutdown → 回复后进程优雅退出
 | | |
 |---|---|
 | params | `{}` 或 `{"protocolVersion":1}` |
-| result | `{"name":"aimidi-engine","version":"0.1.0","protocolVersion":1,"capabilities":["devices","testTone"]}` |
+| result | `{"name":"melodymate-engine","version":"0.1.0","protocolVersion":1,"capabilities":["devices","testTone"]}` |
 | 错误 | 版本不匹配 |
 
 ### 4.2 `ping`

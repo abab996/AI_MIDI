@@ -1,14 +1,14 @@
 @echo off
 chcp 65001 >nul
-title AI_MIDI · AI 编曲助手
+title MelodyMate · AI 编曲助手
 cd /d "%~dp0"
 
 echo ┌────────────────────────────────────────────────────────┐
-echo │  [AI_MIDI] 工程蓝图级 AI 编曲助手 (Go + Wails)         │
+echo │  [MelodyMate] 工程蓝图级 AI 编曲助手 (Go + Wails)         │
 echo │  正在启动桌面客户端...                                │
 echo └────────────────────────────────────────────────────────┘
 
-if not exist "AI_MIDI.exe" (
+if not exist "MelodyMate.exe" (
     echo [提示] 未找到预编译可执行文件，正在执行 Wails 构建...
     call wails build
     if errorlevel 1 (
@@ -16,17 +16,17 @@ if not exist "AI_MIDI.exe" (
         pause
         exit /b 1
     )
-    if not exist "build\bin\AI_MIDI.exe" (
-        echo [错误] 构建未产出 build\bin\AI_MIDI.exe，无法继续。
+    if not exist "build\bin\MelodyMate.exe" (
+        echo [错误] 构建未产出 build\bin\MelodyMate.exe，无法继续。
         pause
         exit /b 1
     )
-    copy /y "build\bin\AI_MIDI.exe" "AI_MIDI.exe" >nul
+    copy /y "build\bin\MelodyMate.exe" "MelodyMate.exe" >nul
 )
 
-if not exist "bin\aimidi-engine.exe" (
-    echo [提示] 未找到原生音频引擎 bin\aimidi-engine.exe，将以浏览器音频模式运行（延迟较高）。
+if not exist "bin\melodymate-engine.exe" (
+    echo [提示] 未找到原生音频引擎 bin\melodymate-engine.exe，将以浏览器音频模式运行（延迟较高）。
     echo        如需启用原生引擎，请先运行 tools\build_engine.bat。
 )
 
-start "" "%~dp0AI_MIDI.exe" %*
+start "" "%~dp0MelodyMate.exe" %*

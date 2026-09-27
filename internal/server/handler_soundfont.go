@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"aimidi/internal/config"
-	"aimidi/internal/engine"
+	"melodymate/internal/config"
+	"melodymate/internal/engine"
 )
 
 var sf2NameRe = regexp.MustCompile(`[^\p{L}\p{N}_\-\.]`)

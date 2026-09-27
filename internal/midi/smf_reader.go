@@ -10,7 +10,7 @@ import (
 	"os"
 	"sort"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // RawMidiEvent 内部用于多轨时间归并的原始 MIDI 事件

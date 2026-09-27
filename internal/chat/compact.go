@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"aimidi/internal/config"
-	"aimidi/internal/llm"
+	"melodymate/internal/config"
+	"melodymate/internal/llm"
 )
 
 // ShouldCompact 判定是否需要执行上下文压缩

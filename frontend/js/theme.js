@@ -1,9 +1,9 @@
-/* AI_MIDI 蓝图主题与冷暖双色调联动控制 (含至少 1.2 秒开屏启动图控制) */
+/* MelodyMate 蓝图主题与冷暖双色调联动控制 (含至少 1.2 秒开屏启动图控制) */
 (function () {
   "use strict";
 
   var root = document.documentElement;
-  var THEME_KEY = "ai-midi-blueprint-theme";
+  var THEME_KEY = "melodymate-blueprint-theme";
   var switchTimer                = null;
 
   function themeButtons() {

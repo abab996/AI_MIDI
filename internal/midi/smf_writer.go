@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 type smfEvent struct {

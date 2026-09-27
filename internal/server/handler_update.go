@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"aimidi/internal/config"
-	"aimidi/internal/update"
+	"melodymate/internal/config"
+	"melodymate/internal/update"
 )
 
 // updater 更新检查与下载的进程内状态（挂在 Router 上，随应用生命周期存在）
@@ -20,9 +20,9 @@ type updater struct {
 }
 
 func newUpdater() *updater {
-	u := &updater{client: update.NewClient(config.UpdateManifestURL)}
+	u := &updater{client: update.NewClient(config.UpdateManifestURLs...)}
 	// 仅 Windows 走「应用内下载 + 运行安装包」；下载成功后启动安装程序，
-	// 安装脚本（AI_MIDI.iss）会自动结束旧进程并原位升级、保留用户数据
+	// 安装脚本（MelodyMate.iss）会自动结束旧进程并原位升级、保留用户数据
 	if runtime.GOOS == "windows" {
 		u.downloader = update.NewDownloader(launchInstaller)
 	}
@@ -112,7 +112,7 @@ func (r *Router) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Windows：单飞下载（重复点击直接返回当前进度）
-	dest := filepath.Join(updateDownloadDir(), fmt.Sprintf("AI_MIDI_Setup_%s_windows_amd64.exe", mani.Version))
+	dest := filepath.Join(updateDownloadDir(), fmt.Sprintf("MelodyMate_Setup_%s_windows_amd64.exe", mani.Version))
 	// 注意：下载生命周期独立于本次 HTTP 请求——req.Context() 在 handler
 	// 返回后即被取消，传入会让下载瞬间中断（这是此前的致命 bug）
 	if err := r.updater.downloader.Start(context.Background(), dlURL, dest, mani.SHA256Windows); err != nil && err != update.ErrInProgress {
@@ -128,7 +128,7 @@ func (r *Router) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
 // var 形式便于测试注入临时目录。
 var updateDownloadDir = func() string {
 	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "AI_MIDI")
+		return filepath.Join(dir, "MelodyMate")
 	}
 	return os.TempDir()
 }

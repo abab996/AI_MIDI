@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 const anthropicVersion = "2023-06-01"

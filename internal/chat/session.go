@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"aimidi/internal/project"
-	"aimidi/internal/tasks"
+	"melodymate/internal/project"
+	"melodymate/internal/tasks"
 )
 
 // UndoEntry 撤销栈快照项

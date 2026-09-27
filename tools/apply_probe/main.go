@@ -49,7 +49,7 @@ func main() {
 		driver, device = os.Args[1], os.Args[2]
 	}
 
-	cmd := exec.Command("bin/aimidi-engine.exe")
+	cmd := exec.Command("bin/melodymate-engine.exe")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -64,7 +64,7 @@ func main() {
 	pid := cmd.Process.Pid
 	fmt.Printf("engine pid=%d\n", pid)
 
-	name := fmt.Sprintf(`\\.\pipe\AI_MIDI_ENGINE_%d`, pid)
+	name := fmt.Sprintf(`\\.\pipe\MelodyMate_ENGINE_%d`, pid)
 	var conn *os.File
 	deadline := time.Now().Add(10 * time.Second)
 	for {

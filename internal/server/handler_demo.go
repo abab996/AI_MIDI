@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"aimidi/internal/midi"
-	"aimidi/internal/project"
+	"melodymate/internal/midi"
+	"melodymate/internal/project"
 )
 
 // demoMIDI 内置示例 MIDI（小星星第一乐句 + 和声层，tools/dev/gen-demo-midi

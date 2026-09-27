@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 type noCacheFileSystem struct {

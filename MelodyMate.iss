@@ -1,23 +1,23 @@
-; AI_MIDI v3 安装脚本 — Inno Setup 6
-; 编译命令: ISCC.exe AI_MIDI.iss
-; 产物: dist\installer\AI_MIDI_Setup_3.1.2.exe
+; MelodyMate v3 安装脚本 — Inno Setup 6
+; 编译命令: ISCC.exe MelodyMate.iss
+; 产物: dist\installer\MelodyMate_Setup_3.1.2.exe
 ;
 ; 发布物约定（长期规范）:
-;   - Windows 版仅上传本安装包（AI_MIDI_Setup_<ver>.exe），不再分发便携压缩包
-;   - Linux 版仅上传 tar.gz 压缩包（AI_MIDI_v<ver>_linux_amd64.tar.gz）
+;   - Windows 版仅上传本安装包（MelodyMate_Setup_<ver>.exe），不再分发便携压缩包
+;   - Linux 版仅上传 tar.gz 压缩包（MelodyMate_v<ver>_linux_amd64.tar.gz）
 ;
 ; 设计说明（沿用 v2.0.1 安装脚本约定）:
-;   - per-user 安装（默认 {localappdata}\Programs\AI_MIDI）：运行数据
+;   - per-user 安装（默认 {localappdata}\Programs\MelodyMate）：运行数据
 ;     （settings.json / projects / output）写在 exe 同级目录，装到
 ;     Program Files 会因普通用户无写权限导致数据保存失败（UAC 虚拟化），
 ;     故采用免管理员、数据目录可写的 per-user 模式（与 VSCode 等一致）。
 ;   - AppId 与 v2.0.1 相同：覆盖安装时系统可识别旧版本并原位升级。
 ;   - 卸载时保留用户数据（设置/项目/输出），不主动删除。
 
-#define MyAppName "AI_MIDI"
+#define MyAppName "MelodyMate"
 #define MyAppVersion "3.1.2"
 #define MyAppPublisher "abab996"
-#define MyAppExeName "AI_MIDI.exe"
+#define MyAppExeName "MelodyMate.exe"
 
 [Setup]
 ; 唯一应用标识（与 v2.0.1 一致；变更后无法检测到旧版卸载）
@@ -26,12 +26,14 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-AppPublisherURL=https://github.com/abab996/AI_MIDI
-AppSupportURL=https://github.com/abab996/AI_MIDI
-AppUpdatesURL=https://github.com/abab996/AI_MIDI
+AppPublisherURL=https://github.com/abab996/MelodyMate
+AppSupportURL=https://github.com/abab996/MelodyMate
+AppUpdatesURL=https://github.com/abab996/MelodyMate
 
 ; per-user 安装：无需管理员权限，升级/卸载不依赖 UAC
 PrivilegesRequired=lowest
+; 不沿用旧的 AI_MIDI 目录。AppId 仍能识别升级，数据由程序首启从旧目录复制。
+UsePreviousAppDir=no
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -44,7 +46,7 @@ UninstallDisplayName={#MyAppName} {#MyAppVersion}
 ; 输出与压缩
 OutputDir=dist\installer
 ; 文件名带平台标识，与 Linux 包（_linux_amd64）命名规则对齐
-OutputBaseFilename=AI_MIDI_Setup_{#MyAppVersion}_windows_amd64
+OutputBaseFilename=MelodyMate_Setup_{#MyAppVersion}_windows_amd64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -73,7 +75,7 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 Source: "build\bin\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; 闭源 JUCE 音频引擎（随安装包分发）。缺失即打包失败——此前 skipifsourcedoesntexist
 ; 会静默漏装，装出的应用永久只有 WebAudio，用户侧表现为"原生引擎无声"
-Source: "bin\aimidi-engine.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "bin\melodymate-engine.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 ; 启动脚本与配置模板
 Source: "RUN.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "settings.example.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -117,11 +119,12 @@ var
   ResultCode: Integer;
 begin
   Result := '';
-  // 先尝试优雅关闭（不带 /F，投递 WM_CLOSE）：给主程序落盘设置与草稿的机会
-  Exec('taskkill.exe', '/IM AI_MIDI.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // 先尝试优雅关闭（不带 /F，投递 WM_CLOSE）：给主程序落盘设置与草稿的机会。
+  // 同时结束改名前的 AI_MIDI.exe。
+  Exec('taskkill.exe', '/IM AI_MIDI.exe /IM MelodyMate.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Sleep(800);
   // 再强制终止残留进程（无消息队列的引擎进程对不带 /F 的 taskkill 无响应）
-  Exec('taskkill.exe', '/F /IM AI_MIDI.exe /IM aimidi-engine.exe', '',
+  Exec('taskkill.exe', '/F /IM AI_MIDI.exe /IM aimidi-engine.exe /IM MelodyMate.exe /IM melodymate-engine.exe', '',
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if ResultCode = 128 then // 128 = 进程未找到，属正常
     Sleep(300);
@@ -129,7 +132,7 @@ end;
 
 [UninstallRun]
 ; 卸载前先终止运行中的主程序与引擎（数据文件保留）
-Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExeName} /IM aimidi-engine.exe"; Flags: runhidden; RunOnceId: "KillApps"
+Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExeName} /IM melodymate-engine.exe /IM AI_MIDI.exe /IM aimidi-engine.exe"; Flags: runhidden; RunOnceId: "KillApps"
 
 [UninstallDelete]
 ; 清理运行期生成的空壳目录（用户数据文件不在删除列表，升级/重装可保留）

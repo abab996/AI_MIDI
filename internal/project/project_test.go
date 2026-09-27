@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 func setupTestProjectDir(t *testing.T) string {
-	tmpDir, err := os.MkdirTemp("", "aimidi_proj_test_*")
+	tmpDir, err := os.MkdirTemp("", "melodymate_proj_test_*")
 	if err != nil {
 		t.Fatal(err)
 	}

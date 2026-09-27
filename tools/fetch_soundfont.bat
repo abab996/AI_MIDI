@@ -3,7 +3,7 @@ rem ============================================================
 rem Fetch the bundled default soundfont GeneralUser GS v1.471
 rem (~27 MB) into Library\soundfonts. Redistribution is allowed
 rem by its license (see LICENSE.txt, author S. Christian Collins).
-rem MUST run before ISCC packaging: AI_MIDI.iss requires the file.
+rem MUST run before ISCC packaging: MelodyMate.iss requires the file.
 rem ============================================================
 setlocal
 cd /d "%~dp0.."

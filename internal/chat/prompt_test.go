@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // 用户自定义知识文件必须出现在 system prompt 清单中，且有独立分组说明

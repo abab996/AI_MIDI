@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // 窗口状态记忆：尺寸/位置/最大化随退出保存、随启动恢复。

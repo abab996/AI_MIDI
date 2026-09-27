@@ -24,7 +24,7 @@
 
   /* 排序偏好本地记忆 */
   try {
-    var saved = localStorage.getItem("ai-midi-task-sort");
+    var saved = localStorage.getItem("melodymate-task-sort");
     if (saved === "time" || saved === "default") state.sortMode = saved;
   } catch (e) {}
 
@@ -326,7 +326,7 @@
       sortSel.value = state.sortMode;
       sortSel.addEventListener("change", function () {
         state.sortMode = sortSel.value;
-        try { localStorage.setItem("ai-midi-task-sort", state.sortMode); } catch (e) {}
+        try { localStorage.setItem("melodymate-task-sort", state.sortMode); } catch (e) {}
         renderPanel();
       });
     }

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"aimidi/internal/engine"
+	"melodymate/internal/engine"
 )
 
 // AudioSettings 音频设置（与引擎包共享同一类型定义）

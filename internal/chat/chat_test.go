@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"aimidi/internal/config"
-	"aimidi/internal/project"
+	"melodymate/internal/config"
+	"melodymate/internal/project"
 )
 
 func TestNormalizeQuestions(t *testing.T) {
@@ -146,7 +146,7 @@ func searchSubstr(s, substr string) bool {
 }
 
 func setupChatTest(t *testing.T) (string, func()) {
-	tmpDir, err := os.MkdirTemp("", "aimidi_chat_test_*")
+	tmpDir, err := os.MkdirTemp("", "melodymate_chat_test_*")
 	if err != nil {
 		t.Fatal(err)
 	}

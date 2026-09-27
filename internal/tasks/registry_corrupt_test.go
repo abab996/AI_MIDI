@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // TestCorruptTasksJsonBackedUpNotOverwritten tasks.json 损坏（如进程崩溃

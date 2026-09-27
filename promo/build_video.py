@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-AI_MIDI-go 宣传视频 · 后期合成器 v5
+MelodyMate-go 宣传视频 · 后期合成器 v5
 ====================================
 结构（31.25 小节 ≈ 87.5s @85 BPM）：
   intro(3) → A 舞台·对话写歌(7) → 过场1(1.25) → B 快速任务(4) → 过场2(1.25) →
@@ -275,7 +275,7 @@ def main():
     silent = os.path.join(OUT_DIR, "video_all.mp4")
     run_enc([FFMPEG, "-y", "-v", "error"] + inputs +
             ["-filter_complex", ";".join(fc), "-map", "[vout]", "-an"], silent)
-    final = os.path.join(OUT_DIR, "AI_MIDI-go_promo.mp4")
+    final = os.path.join(OUT_DIR, "MelodyMate-go_promo.mp4")
     run([FFMPEG, "-y", "-v", "error", "-i", silent, "-i", mix_path,
          "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", final])
     print("FINAL ->", final, f"{total:.2f}s")
@@ -284,7 +284,7 @@ def main():
     if os.environ.get("SKIP4K"):
         print("SKIP4K=1 → 跳过 4K 衍生")
         return
-    final4k = os.path.join(OUT_DIR, "AI_MIDI-go_promo_4K.mp4")
+    final4k = os.path.join(OUT_DIR, "MelodyMate-go_promo_4K.mp4")
     run_enc([FFMPEG, "-y", "-v", "error", "-i", final,
              "-vf", "scale=3840:2160:flags=bilinear,format=yuv420p"],
             final4k, preset="veryfast", crf="15")

@@ -9,7 +9,7 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 var (

@@ -6,8 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"aimidi/internal/project"
-	"aimidi/internal/tasks"
+	"melodymate/internal/project"
+	"melodymate/internal/tasks"
 )
 
 // NormalizeQuestions 清洗模型传入的问题参数

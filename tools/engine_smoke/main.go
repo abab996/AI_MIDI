@@ -1,5 +1,5 @@
 // 引擎 IPC 冒烟测试客户端。
-// 按 docs/引擎IPC协议.md v1 对 aimidi-engine 跑通全链路验收：
+// 按 docs/引擎IPC协议.md v1 对 melodymate-engine 跑通全链路验收：
 //
 //	未握手拒绝 → hello(带版本) → 错误版本拒绝 → ping → listDevices(检查 ASIO 类型)
 //	→ applySetup 回环 → testTone 开/关 → 断线重连(握手复位) → shutdown 优雅退出
@@ -10,7 +10,7 @@
 // 管道缓冲区中，随下一次请求一并读出并被跳过。连接建立阶段若探测失败则丢弃
 // 句柄重建连接（服务端重新监听后的新实例必然可用）。
 //
-// 用法（主仓库根目录）：go run ./tools/engine_smoke [-engine bin/aimidi-engine.exe]
+// 用法（主仓库根目录）：go run ./tools/engine_smoke [-engine bin/melodymate-engine.exe]
 package main
 
 import (
@@ -246,7 +246,7 @@ func (c *client) drainTimecode(d time.Duration) (count int, playingLast bool, be
 // 全部 I/O 带看门狗；任何传输层异常都丢弃句柄重连。返回的会话已通过网关验证，
 // 尚未 hello。
 func openSession(enginePID int) (*client, error) {
-	name := fmt.Sprintf(`\\.\pipe\AI_MIDI_ENGINE_%d`, enginePID)
+	name := fmt.Sprintf(`\\.\pipe\MelodyMate_ENGINE_%d`, enginePID)
 	var lastErr error
 	for attempt := 1; attempt <= maxRedial; attempt++ {
 		conn, err := dialOnce(name, dialTimeout)
@@ -321,7 +321,7 @@ func expectError(name, gotErr, wantSub string) {
 }
 
 func main() {
-	enginePath := flag.String("engine", "bin/aimidi-engine.exe", "引擎可执行文件路径")
+	enginePath := flag.String("engine", "bin/melodymate-engine.exe", "引擎可执行文件路径")
 	flag.Parse()
 
 	if _, err := os.Stat(*enginePath); err != nil {
@@ -365,7 +365,7 @@ func main() {
 		}
 		_ = json.Unmarshal(r.Result, &info)
 		check("hello 返回引擎信息",
-			info.Name == "aimidi-engine" && info.ProtocolVersion == 1,
+			info.Name == "melodymate-engine" && info.ProtocolVersion == 1,
 			fmt.Sprintf("name=%q proto=%d", info.Name, info.ProtocolVersion))
 	}
 

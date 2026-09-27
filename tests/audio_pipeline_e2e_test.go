@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"aimidi/internal/midi"
+	"melodymate/internal/midi"
 )
 
 // 模拟前端到后端的完整链路：note_table -> SMF -> 引擎 bounce 尾音

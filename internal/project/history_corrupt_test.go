@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // TestCorruptHistoryBackedUpNotOverwritten history.json 损坏时必须先备份

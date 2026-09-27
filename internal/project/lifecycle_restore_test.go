@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 func TestRestoreAICreatedFiles(t *testing.T) {

@@ -1,4 +1,4 @@
-module aimidi
+module melodymate
 
 go 1.27.0
 

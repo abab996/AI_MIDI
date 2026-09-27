@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	name := fmt.Sprintf(`\\.\pipe\AI_MIDI_ENGINE_%s`, os.Args[1])
+	name := fmt.Sprintf(`\\.\pipe\MelodyMate_ENGINE_%s`, os.Args[1])
 	f, err := os.OpenFile(name, os.O_RDWR, 0)
 	if err != nil {
 		fmt.Println("CONNECT-FAIL:", err)

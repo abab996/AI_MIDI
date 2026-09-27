@@ -1,10 +1,10 @@
-# 🎹 AI_MIDI — AI-Assisted Music Theory & MIDI Composition
+# 🎹 MelodyMate — AI-Assisted Music Theory & MIDI Composition
 
 > **English** | [**中文**](README_zh.md)
 
-**AI_MIDI** is a local-first desktop app that lets AI assist your music creation: add chords to a melody, translate lyrics, design vocal runs, generate new ideas — and arrange everything in an FL Studio-style arrangement view. All you need is one API key. Your projects, files and conversations never leave your computer.
+**MelodyMate** is a local-first desktop app that lets AI assist your music creation: add chords to a melody, translate lyrics, design vocal runs, generate new ideas — and arrange everything in an FL Studio-style arrangement view. All you need is one API key. Your projects, files and conversations never leave your computer.
 
-> v3.0.0 upgrades AI_MIDI from a web app to a **standalone desktop application** — install and go, no Python required.
+> v3.0.0 upgrades MelodyMate from a web app to a **standalone desktop application** — install and go, no Python required.
 
 ---
 
@@ -43,13 +43,13 @@
 ## 🚀 Quick Start
 
 ### Windows (recommended)
-1. Grab the latest `AI_MIDI_Setup_<version>_windows_amd64.exe` from [Releases](../../releases) and run it — no admin rights needed
+1. Grab the latest `MelodyMate_Setup_<version>_windows_amd64.exe` from [Releases](../../releases) and run it — no admin rights needed
 2. On first launch, read the usage notice, then open **Settings** and enter your API key
 3. Create a project and start composing!
 
 ### Linux
-1. Download the latest `AI_MIDI_v<version>_linux_amd64.tar.gz` from [Releases](../../releases) and unzip it
-2. `chmod +x RUN.sh && ./RUN.sh` (desktop mode needs webkit2gtk; otherwise `./AI_MIDI -browser` opens in your browser)
+1. Download the latest `MelodyMate_v<version>_linux_amd64.tar.gz` from [Releases](../../releases) and unzip it
+2. `chmod +x RUN.sh && ./RUN.sh` (desktop mode needs webkit2gtk; otherwise `./MelodyMate -browser` opens in your browser)
 3. Linux uses browser audio synthesis — no engine needed
 
 ### First-time Configuration
@@ -68,13 +68,13 @@ Open the **Settings** page and fill in your API key. The default connects to Dee
 Requirements: **Go ≥ 1.27**, **Wails v2** (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), Windows 10+ (Linux: webkit2gtk for desktop mode).
 
 ```bat
-git clone https://github.com/abab996/AI_MIDI.git
-cd AI_MIDI
-wails build        :: Windows -> buildin\AI_MIDI.exe
+git clone https://github.com/abab996/MelodyMate.git
+cd MelodyMate
+wails build        :: Windows -> buildin\MelodyMate.exe
 RUN.bat
 ```
 
-Linux: `go build -o AI_MIDI . && chmod +x RUN.sh && ./RUN.sh`. Architecture & design documents live in [`docs/`](docs/).
+Linux: `go build -o MelodyMate . && chmod +x RUN.sh && ./RUN.sh`. Architecture & design documents live in [`docs/`](docs/).
 
 Frontend TypeScript lives in `frontend/src`. Editing it needs **Node.js ≥ 20**: from the repo root run `npm install` and `npm run build`, then commit the erased `frontend/js` alongside the `.ts` sources. Go-only changes still build with `wails build` / `go build` and do not need Node.
 
@@ -116,10 +116,10 @@ Frontend TypeScript lives in `frontend/src`. Editing it needs **Node.js ≥ 20**
 ## 📄 License
 
 Code licensed under [Apache License 2.0](LICENSE).
-The bundled audio engine (`aimidi-engine.exe`, Windows installer) is a closed-source component distributed via the installer.
+The bundled audio engine (`melodymate-engine.exe`, Windows installer) is a closed-source component distributed via the installer.
 
 Developers: architecture and design documents live in [`docs/`](docs/).
 
 ---
 
-**AI_MIDI** — compose smarter, theory-first. 🎵
+**MelodyMate** — compose smarter, theory-first. 🎵

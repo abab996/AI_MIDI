@@ -104,10 +104,10 @@ func ResolveEnginePath(override string) string {
 		candidates = append(candidates, override)
 	}
 	if exeDir, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exeDir), "bin", "aimidi-engine.exe"))
+		candidates = append(candidates, filepath.Join(filepath.Dir(exeDir), "bin", "melodymate-engine.exe"))
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(cwd, "bin", "aimidi-engine.exe"))
+		candidates = append(candidates, filepath.Join(cwd, "bin", "melodymate-engine.exe"))
 	}
 
 	for _, c := range candidates {
@@ -116,9 +116,9 @@ func ResolveEnginePath(override string) string {
 		}
 	}
 	if len(candidates) == 0 {
-		candidates = append(candidates, filepath.Join("bin", "aimidi-engine.exe"))
+		candidates = append(candidates, filepath.Join("bin", "melodymate-engine.exe"))
 	}
-	slog.Warn("[engine] 未找到 aimidi-engine.exe，使用首选候选路径", "candidates", candidates)
+	slog.Warn("[engine] 未找到 melodymate-engine.exe，使用首选候选路径", "candidates", candidates)
 	return candidates[0]
 }
 

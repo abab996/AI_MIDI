@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"aimidi/internal/chat"
-	"aimidi/internal/config"
-	"aimidi/internal/project"
+	"melodymate/internal/chat"
+	"melodymate/internal/config"
+	"melodymate/internal/project"
 )
 
 func setupTestServer(t *testing.T) (*httptest.Server, func()) {
-	tmpDir, err := os.MkdirTemp("", "aimidi_server_test_*")
+	tmpDir, err := os.MkdirTemp("", "melodymate_server_test_*")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-// Package engine 提供原生音频引擎子进程（aimidi-engine.exe）的接入层：
+// Package engine 提供原生音频引擎子进程（melodymate-engine.exe）的接入层：
 // 进程守护、命名管道客户端、协议编解码。
 //
 // 协议权威文档：docs/引擎IPC协议.md（v1）。

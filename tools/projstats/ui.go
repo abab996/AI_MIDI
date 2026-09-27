@@ -599,11 +599,11 @@ func (m *model) drawBanner(c *canvas) {
 	c.addStyled("╭"+strings.Repeat("─", inner)+"╮", "\x1b[96m", "")
 	c.newline()
 
-	title := "🎵 AI_MIDI-go 项目全景统计报告"
+	title := "🎵 MelodyMate-go 项目全景统计报告"
 	l := max(0, (inner-runewidth.StringWidth(title))/2)
 	c.addStyled("│", "\x1b[96m", "")
 	c.add(strings.Repeat(" ", l), "", nil)
-	c.addStyled("🎵 AI_MIDI-go ", "\x1b[1m\x1b[96m", "")
+	c.addStyled("🎵 MelodyMate-go ", "\x1b[1m\x1b[96m", "")
 	c.addStyled("项目全景统计报告", "\x1b[1m\x1b[97m", "")
 	c.add(strings.Repeat(" ", max(0, inner-l-runewidth.StringWidth(title))), "", nil)
 	c.addStyled("│", "\x1b[96m", "")

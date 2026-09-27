@@ -3,7 +3,7 @@ package tasks
 import (
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // resetRegistry 清空注册表内存态，避免测试间与磁盘残留互相影响

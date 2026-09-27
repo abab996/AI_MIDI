@@ -207,7 +207,7 @@
     var betaOverlay = document.getElementById("arrBetaModal");
     if (betaOverlay && betaOverlay.hidden) {
       try {
-        if (sessionStorage.getItem("aimidi_arr_beta_v1") !== "1") {
+        if (sessionStorage.getItem("melodymate_arr_beta_v1") !== "1") {
           setTimeout(function () {
             if (self.isOpen) self.showOverlay(betaOverlay);
           }, 500);
@@ -3366,7 +3366,7 @@
     var betaOk = document.getElementById("arrBetaOk");
     if (betaOverlay && betaOk) {
       betaOk.addEventListener("click", function () {
-        try { sessionStorage.setItem("aimidi_arr_beta_v1", "1"); } catch (e) {}
+        try { sessionStorage.setItem("melodymate_arr_beta_v1", "1"); } catch (e) {}
         self.hideOverlay(betaOverlay);
       });
     }

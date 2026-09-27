@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"aimidi/internal/config"
+	"melodymate/internal/config"
 )
 
 // 预设里的 Ollama / LM Studio / vLLM / llama.cpp 密钥就是空串，本机服务也

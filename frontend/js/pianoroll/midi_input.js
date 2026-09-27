@@ -2,7 +2,7 @@
 (function (window) {
   "use strict";
 
-  var MIDI_STORAGE_KEY = "ai-midi-hardware-settings";
+  var MIDI_STORAGE_KEY = "melodymate-hardware-settings";
 
   function MidiInputRouter(                        ) {
     this.midiAccess = null;

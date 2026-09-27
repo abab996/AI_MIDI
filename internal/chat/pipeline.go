@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"aimidi/internal/config"
-	"aimidi/internal/llm"
-	"aimidi/internal/mcp"
-	"aimidi/internal/midi"
-	"aimidi/internal/project"
-	"aimidi/internal/tasks"
+	"melodymate/internal/config"
+	"melodymate/internal/llm"
+	"melodymate/internal/mcp"
+	"melodymate/internal/midi"
+	"melodymate/internal/project"
+	"melodymate/internal/tasks"
 )
 
 // StreamCallback 流式事件推送回调函数

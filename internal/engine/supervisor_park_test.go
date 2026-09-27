@@ -18,7 +18,7 @@ func TestSupervisorParkSurvivesDisabledWake(t *testing.T) {
 	sup := NewSupervisor(Config{EnginePath: missing}, AudioSettings{})
 
 	// 直接起 loop 而不走 Start()：跳过 cleanupOrphanEngines 对系统内
-	// aimidi-engine.exe 的真实清理（测试不应杀外部进程）
+	// melodymate-engine.exe 的真实清理（测试不应杀外部进程）
 	sup.mu.Lock()
 	sup.ctx, sup.cancel = context.WithCancel(context.Background())
 	sup.doneCh = make(chan struct{})

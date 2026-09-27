@@ -1,5 +1,5 @@
 // 一次性验证脚本：bounce tracks 路径 33 轨越界防护（修复前引擎进程崩溃）
-// 用法：go run ./tools/bounce_probe [-engine bin/aimidi-engine.exe]
+// 用法：go run ./tools/bounce_probe [-engine bin/melodymate-engine.exe]
 package main
 
 import (
@@ -126,7 +126,7 @@ func (c *client) request(method string, params map[string]any) (*response, error
 }
 
 func main() {
-	enginePath := flag.String("engine", "bin/aimidi-engine.exe", "引擎可执行文件路径")
+	enginePath := flag.String("engine", "bin/melodymate-engine.exe", "引擎可执行文件路径")
 	flag.Parse()
 
 	cmd := exec.Command(*enginePath)
@@ -136,7 +136,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = cmd.Process.Kill() }()
-	pipeName := fmt.Sprintf(`\\.\pipe\AI_MIDI_ENGINE_%d`, cmd.Process.Pid)
+	pipeName := fmt.Sprintf(`\\.\pipe\MelodyMate_ENGINE_%d`, cmd.Process.Pid)
 
 	var conn *os.File
 	var err error

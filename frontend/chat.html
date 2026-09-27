@@ -8,20 +8,25 @@
      才生效，暗蓝用户每次导航会先闪暖纸） */
   (function () {
     try {
-      if (localStorage.getItem("ai-midi-blueprint-theme") === "dark") {
+      var themeKey = "melodymate-blueprint-theme";
+      if (localStorage.getItem(themeKey) == null) {
+        var oldTheme = localStorage.getItem("ai-midi-blueprint-theme");
+        if (oldTheme != null) localStorage.setItem(themeKey, oldTheme);
+      }
+      if (localStorage.getItem(themeKey) === "dark") {
         document.documentElement.dataset.theme = "dark";
       }
     } catch (e) {}
   })();
 </script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI_MIDI · 多轮对话</title>
+<title>MelodyMate · 多轮对话</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="stylesheet" href="/style.css">
 <script>
   (function () {
     var dir = null;
-    try { dir = sessionStorage.getItem("ai-midi-nav-dir"); sessionStorage.removeItem("ai-midi-nav-dir"); } catch (e) {}
+    try { dir = sessionStorage.getItem("melodymate-nav-dir"); sessionStorage.removeItem("melodymate-nav-dir"); } catch (e) {}
     if (dir === "forward" || dir === "back") {
       document.documentElement.dataset.nav = dir;
       setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
@@ -736,7 +741,7 @@
   <div class="modal card brackets" style="max-width:520px">
     <div class="modal-title">📜 使用声明 · Disclaimer</div>
     <div class="confirm-text" style="text-align:left; line-height:1.9; font-size:12.5px">
-      欢迎使用 AI_MIDI！开始前请阅读以下说明：<br><br>
+      欢迎使用 MelodyMate！开始前请阅读以下说明：<br><br>
       1. 本软件<b>仅供音乐创作辅助与学习交流</b>使用；<br>
       2. 本软件<b>完全免费并开源</b>（Apache-2.0），任何人不得将其用于收费分发或捆绑销售；<br>
       3. AI 生成内容仅供参考，生成结果可能与你熟悉的作品存在相似之处，<b>商用前请自行核实并承担相应责任</b>；<br>
@@ -752,12 +757,12 @@
 <!-- 请求 Star 弹窗（localStorage 按版本记忆：每个新版本首次打开弹一次） -->
 <div class="modal-overlay" id="starOverlay" hidden role="dialog" aria-modal="true" aria-label="请求支持">
   <div class="modal card brackets" style="max-width:480px">
-    <div class="modal-title">⭐ 支持一下 AI_MIDI</div>
+    <div class="modal-title">⭐ 支持一下 MelodyMate</div>
     <div class="confirm-text" style="text-align:left; line-height:1.9; font-size:12.5px">
-      感谢使用 AI_MIDI！本项目完全<b>免费开源</b>（Apache-2.0），开发全靠兴趣与热情。<br><br>
+      感谢使用 MelodyMate！本项目完全<b>免费开源</b>（Apache-2.0），开发全靠兴趣与热情。<br><br>
       如果这个工具对你有帮助，欢迎到 GitHub 给项目点一个 ⭐ Star——<br>
       这是对开发者最大的鼓励，也能帮助更多音乐爱好者发现它。<br><br>
-      你的每一次支持，都会让 AI_MIDI 变得更好！
+      你的每一次支持，都会让 MelodyMate 变得更好！
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" id="starLaterBtn">不再提示</button>

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
- * AI_MIDI-go 宣传视频 · 演示导播引擎（Showrunner）
+ * MelodyMate-go 宣传视频 · 演示导播引擎（Showrunner）
  * ---------------------------------------------------------------
  * 仅当 URL 带 ?demo=1 时激活；普通用户访问零影响。
  *
@@ -500,7 +500,7 @@
   }
 
   /* ═════════════ 准备流程（键 0）═════════════ */
-  const PID_KEY = "ai-midi-demo-project";
+  const PID_KEY = "melodymate-demo-project";
   Demo.projectId = (() => {
     try { return localStorage.getItem(PID_KEY) || null; } catch (_) { return null; }
   })();

@@ -101,9 +101,10 @@ func IsValidVersionString(v string) bool {
 	return true
 }
 
-// Client 更新清单拉取客户端（带进程内缓存与降级）
+// Client 更新清单拉取客户端（带进程内缓存与降级）。
+// urls 按顺序尝试，前一个失败才请求下一个。
 type Client struct {
-	url      string
+	urls     []string
 	http     *http.Client
 	ttl      time.Duration
 	mu       sync.Mutex
@@ -111,10 +112,16 @@ type Client struct {
 	cachedAt time.Time
 }
 
-// NewClient 创建清单客户端。url 为公开可读的 update.json 完整地址。
-func NewClient(url string) *Client {
+// NewClient 创建清单客户端。每个 url 都是公开可读的 update.json 完整地址。
+func NewClient(urls ...string) *Client {
+	clean := make([]string, 0, len(urls))
+	for _, u := range urls {
+		if strings.TrimSpace(u) != "" {
+			clean = append(clean, u)
+		}
+	}
 	return &Client{
-		url:  url,
+		urls: clean,
 		http: &http.Client{Timeout: 5 * time.Second},
 		ttl:  10 * time.Minute,
 	}
@@ -131,7 +138,7 @@ func (c *Client) Fetch(ctx context.Context) (*Manifest, error) {
 	}
 	c.mu.Unlock()
 
-	m, err := c.fetchOnce(ctx)
+	m, err := c.fetchFirst(ctx)
 	if err != nil {
 		c.mu.Lock()
 		if c.cached != nil {
@@ -158,11 +165,26 @@ func (c *Client) Cached() *Manifest {
 	return c.cached
 }
 
-func (c *Client) fetchOnce(ctx context.Context) (*Manifest, error) {
+func (c *Client) fetchFirst(ctx context.Context) (*Manifest, error) {
+	if len(c.urls) == 0 {
+		return nil, fmt.Errorf("没有配置更新清单地址")
+	}
+	var last error
+	for _, u := range c.urls {
+		m, err := c.fetchURL(ctx, u)
+		if err == nil {
+			return m, nil
+		}
+		last = err
+	}
+	return nil, last
+}
+
+func (c *Client) fetchURL(ctx context.Context, rawURL string) (*Manifest, error) {
 	// 清单必须新鲜：自定义域名有 CDN 缓存，对象更新后边缘节点可能继续
 	// 返回旧内容——加唯一查询参数绕开边缘缓存（对象元数据另带
 	// Cache-Control: no-store，双保险）
-	fresh := c.url
+	fresh := rawURL
 	bust := "_u=" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	if strings.Contains(fresh, "?") {
 		fresh += "&" + bust

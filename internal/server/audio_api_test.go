@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"aimidi/internal/config"
-	"aimidi/internal/engine"
+	"melodymate/internal/config"
+	"melodymate/internal/engine"
 )
 
 func setupTestRouter(t *testing.T) (*Router, func()) {

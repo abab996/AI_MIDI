@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "ai-midi",
+  "name": "melodymate",
   "engines": {
     "node": ">=20"
   },

@@ -10,6 +10,7 @@ import (
 
 	"melodymate/internal/config"
 	"melodymate/internal/engine"
+	"melodymate/internal/soundlib"
 )
 
 // handleEnginePluginsSub /api/engine/plugins*：VST3 宿主的 HTTP 入口。
@@ -109,6 +110,22 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		http.ServeFile(w, req, full)
+
+	case "/sync":
+		/* 把 Library/plugins/ 下已安装的 MM 插件同步进音源注册表：
+		   命令行 mm install 或手工拷贝之后，插件要能在「声音管理」与素材库
+		   「音源」页签里出现；同时作为设置页「刷新」按钮的入口。 */
+		if req.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		added, updated, failed := soundlib.SyncAllInstalledMM()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added, "updated": updated, "failed": failed})
+
+	case "/installed":
+		/* 已安装的 MM 插件清单（设置页「声音管理·MM 插件」分组用） */
+		list := soundlib.ListInstalledMM()
+		writeJSON(w, http.StatusOK, map[string]any{"count": len(list), "plugins": list})
 
 	case "/state":
 		state, err := sup.PluginState()

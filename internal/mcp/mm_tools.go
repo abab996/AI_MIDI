@@ -21,6 +21,7 @@ import (
 
 	"melodymate/internal/config"
 	"melodymate/internal/llm"
+	"melodymate/internal/soundlib"
 )
 
 const mmMaxSourceBytes = 512 << 10 // 单文件 512 KiB
@@ -266,7 +267,33 @@ func executeMMTool(name string, args map[string]any) (string, error) {
 		if err != nil {
 			return "安装被拒绝：\n" + out + "\n（能力授权 fail-closed：插件声明了能力就必须由用户确认后再传 grant）", nil
 		}
-		return out + "\n已安装到 " + dest + "；可在设置页「声音管理」或机架/混音台里加载。", nil
+		/* 同步注册表：装完不同步的话，插件在「声音管理」与素材库「音源」页签里
+		   都看不到（用户只能靠命令行知道装了什么）。AI 生成的插件同时带上
+		   ✨AI 徽标（origin=ai）。 */
+		regLine := ""
+		if entries, rerr := os.ReadDir(dest); rerr == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				if e.Name() == id || strings.HasPrefix(e.Name(), id+"@") {
+					if src, created, serr := soundlib.SyncInstalledMM(filepath.Join(dest, e.Name())); serr == nil {
+						action := "已登记"
+						if !created {
+							action = "已更新登记"
+						}
+						regLine = "\n音源注册表：" + action + " " + src.Name + "（kind=mm，origin=" + src.Origin + "）"
+						if src.AI != nil {
+							regLine += " —— 声音管理/素材库里会显示 ✨AI 徽标"
+						}
+					} else {
+						regLine = "\n（注册表同步失败：" + serr.Error() + "）"
+					}
+					break
+				}
+			}
+		}
+		return out + "\n已安装到 " + dest + "；可在设置页「声音管理」或机架/混音台里加载。" + regLine, nil
 	}
 	return "错误：未知工具 " + name, nil
 }

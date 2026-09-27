@@ -28,6 +28,25 @@ import (
 // StreamCallback 流式事件推送回调函数
 type StreamCallback func(event map[string]any) error
 
+// toolEnv 组装一次工具执行的上下文。
+//
+// 编曲/机架类工具改完 arrangement.json 后经 Emit 推 arrangement 事件，前端
+// 收到后自己拉取并热应用——事件里不带完整编排数据：一个工程可能含上百个
+// clip 与成千上万音符，把整份 JSON 塞进对话流会拖慢每条工具调用。
+func toolEnv(projectID, baseDir, mirrorDir string, onEvent StreamCallback) mcp.ToolEnv {
+	return mcp.ToolEnv{
+		ProjectID: projectID,
+		BaseDir:   baseDir,
+		MirrorDir: mirrorDir,
+		Emit: func(event map[string]any) {
+			if onEvent == nil || event == nil {
+				return
+			}
+			_ = onEvent(event)
+		},
+	}
+}
+
 // parseToolArgs 解析工具调用参数。模型可能输出畸形 JSON、空串或字面量
 // "null"，任一情况都返回非 nil 空 map，保证调用方写入键（如 bpm 兜底）
 // 不会触发 assignment to entry in nil map panic（该 panic 在桌面事件桥
@@ -510,8 +529,9 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 				"messages": pendingSnapshot,
 			})
 
-			// 执行 MCP 工具
-			resText, _ := mcp.ExecuteTool(fnName, rawArgs, baseDir, mirrorDir)
+			// 执行 MCP 工具（上下文带上项目 id 与事件回调：编曲/机架类工具
+			// 改完 arrangement.json 后经 arrangement SSE 事件让前端热应用）
+			resText, _ := mcp.ExecuteToolEnv(toolEnv(projectID, baseDir, mirrorDir, onEvent), fnName, rawArgs)
 
 			if fnName == "create_midi" {
 				fn, _ := rawArgs["filename"].(string)
@@ -742,7 +762,7 @@ func AnswerStream(ctx context.Context, projectID, questionID string, answers any
 			"messages": pendingSnapshot,
 		})
 
-		resText, _ := mcp.ExecuteTool(fnName, args, baseDir, mirrorDir)
+		resText, _ := mcp.ExecuteToolEnv(toolEnv(projectID, baseDir, mirrorDir, onEvent), fnName, args)
 
 		// create_midi 补执行也要推送 files/download 事件
 		if fnName == "create_midi" {

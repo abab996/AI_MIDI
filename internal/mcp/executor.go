@@ -107,8 +107,34 @@ func deleteWithMirror(mainPath, mainBase, mirrorBase string) error {
 	return nil
 }
 
-// ExecuteTool 执行指定的 MCP 工具调用并返回结果文本
+// ToolEnv 工具执行上下文。
+//
+// 除路径外的两项是可选的：ProjectID 让编曲/机架类工具知道改哪个工程；
+// Emit 是事件回调（对话流 SSE），编排类工具改完状态后经它把 arrangement
+// 事件推给前端热应用——AI 改完界面立刻跟着变，而不是等下次刷新。
+type ToolEnv struct {
+	ProjectID string
+	BaseDir   string
+	MirrorDir string
+	Emit      func(event map[string]any)
+}
+
+// ExecuteTool 执行指定的 MCP 工具调用并返回结果文本。
+// 无项目上下文的调用方（stdio MCP 服务）用它；编曲类工具会返回可解释错误。
 func ExecuteTool(name string, rawArgs map[string]any, baseDir, mirrorDir string) (string, error) {
+	return ExecuteToolEnv(ToolEnv{BaseDir: baseDir, MirrorDir: mirrorDir}, name, rawArgs)
+}
+
+// ExecuteToolEnv 带上下文的工具执行入口
+func ExecuteToolEnv(env ToolEnv, name string, rawArgs map[string]any) (string, error) {
+	if isArrangeTool(name) {
+		return executeArrangeTool(env, name, rawArgs)
+	}
+	return executeFileTool(env, name, rawArgs)
+}
+
+func executeFileTool(env ToolEnv, name string, rawArgs map[string]any) (string, error) {
+	baseDir, mirrorDir := env.BaseDir, env.MirrorDir
 	switch name {
 	case "read_library_file":
 		fn, _ := rawArgs["filename"].(string)

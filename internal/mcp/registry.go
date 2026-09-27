@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"strings"
+
 	"melodymate/internal/llm"
 )
 
@@ -182,9 +184,16 @@ var AskUserTool = llm.ToolDefinition{
 	},
 }
 
-// GetMCPTools 返回当前可用的 MCP 工具列表
+// GetMCPTools 返回当前可用的 MCP 工具列表。
+// projectID 非空时追加编曲/机架类工具（它们要落到具体工程的状态上）。
 func GetMCPTools(projectID string) []llm.ToolDefinition {
-	return mcpTools
+	if strings.TrimSpace(projectID) == "" {
+		return mcpTools
+	}
+	out := make([]llm.ToolDefinition, 0, len(mcpTools)+len(arrangeTools))
+	out = append(out, mcpTools...)
+	out = append(out, arrangeTools...)
+	return out
 }
 
 // GetLocalTools 返回本地交互工具列表

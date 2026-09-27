@@ -493,9 +493,11 @@ func runPluginSection(c *client, dir string) {
 
 		// MIDI → 插件 → 轨道电平：插件若因许可/演示限制不出声，记录实测值
 		_, _ = c.request("plugin.state", nil)
+		/* 用真实 Midi 帧弹奏（noteOnTrack 不是 IPC 方法：此前发的是无效请求，
+		   "电平 0" 里混着"根本没发出去"的成分——VST3 与 MM 两处都修） */
 		peak := 0.0
 		for _, key := range []int{60, 64, 67} {
-			_, _ = c.request("noteOnTrack", map[string]interface{}{"track": 0, "key": key, "velocity": 100})
+			_ = c.writeFrame(0x04, []byte{0, 0x90, byte(key), 100})
 		}
 		for i := 0; i < 12; i++ {
 			time.Sleep(100 * time.Millisecond)
@@ -512,7 +514,7 @@ func runPluginSection(c *client, dir string) {
 			}
 		}
 		for _, key := range []int{60, 64, 67} {
-			_, _ = c.request("noteOffTrack", map[string]interface{}{"track": 0, "key": key})
+			_ = c.writeFrame(0x04, []byte{0, 0x80, byte(key), 0})
 		}
 		fmt.Printf("      乐器插件实测轨道电平峰值 = %.4f（受插件许可/演示限制时可能为 0）\n", peak)
 		check("乐器插件接管轨道输出（无残留 SF2 串音，电平非负）", peak >= 0, "")
@@ -566,6 +568,8 @@ func expectError(name, gotErr, wantSub string) {
 func main() {
 	enginePath := flag.String("engine", "bin/melodymate-engine.exe", "引擎可执行文件路径")
 	vst3Dir := flag.String("vst3dir", "", "VST3 插件目录（P5 检查用；留空则跳过插件段落）")
+	mmSynth := flag.String("mmsynth", "", "MM 乐器库路径（P6 检查用：装载 .mm 乐器并量电平；留空跳过）")
+	mmGain := flag.String("mmgain", "", "MM 效果器库路径（P6 检查用；留空跳过）")
 	flag.Parse()
 
 	if _, err := os.Stat(*enginePath); err != nil {
@@ -889,6 +893,13 @@ func main() {
 		fmt.Println("[跳过] VST3 插件检查（未设置 -vst3dir）")
 	}
 
+	// 8.75) P6：MM 插件运行时（.mm 原生库 → FX 槽 / 轨道乐器）
+	if *mmGain != "" || *mmSynth != "" {
+		runMmSection(c, *mmGain, *mmSynth)
+	} else {
+		fmt.Println("[跳过] MM 插件检查（未设置 -mmgain / -mmsynth）")
+	}
+
 	// 8.6) 真实 SF2 加载（文件存在时）：守护器启动即自动加载默认音色，
 	// 此处验证引擎对真实文件解析成功（tsf 渲染路径打通的前置条件）
 	if sfPath, sfErr := filepath.Abs("Library/soundfonts/PianoteqTest.sf2"); sfErr == nil {
@@ -976,6 +987,100 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("\n冒烟测试全部通过 ✅")
+}
+
+/*
+runMmSection P6：MM 插件运行时端到端检查。
+
+	gain = .mm 效果器（进 FX 槽）；synth = .mm 乐器（挂轨道）。
+	乐器那一段是 **无许可依赖的"出声"硬证据**：VST3 乐器受第三方授权限制
+	（未授权插件渲染静音），MM 乐器由本仓 SDK 编译，必须量到非零电平。
+*/
+func runMmSection(c *client, gainDll, synthDll string) {
+	fmt.Println("── MM 插件运行时（P6）")
+
+	if gainDll != "" {
+		r, reqErr := c.request("plugin.load", map[string]interface{}{
+			"format": "mm", "path": gainDll, "id": gainDll, "track": 0, "slot": 0,
+		})
+		ok := reqErr == nil && r != nil && r.OK
+		check("MM 效果器装入 FX 槽", ok, errText(r, reqErr))
+		if ok {
+			var st struct {
+				Count   int `json:"count"`
+				Plugins []struct {
+					ID     string `json:"id"`
+					Name   string `json:"name"`
+					Params []struct {
+						ID      string  `json:"id"`
+						Index   int     `json:"index"`
+						Min     float64 `json:"min"`
+						Max     float64 `json:"max"`
+						Default float64 `json:"default"`
+					} `json:"params"`
+				} `json:"plugins"`
+			}
+			_ = json.Unmarshal(r.Result, &st)
+			hasParams := len(st.Plugins) > 0 && len(st.Plugins[0].Params) > 0
+			check("引擎经 MM ABI 读到插件自报参数（id/范围）", hasParams, string(r.Result))
+			if hasParams {
+				fmt.Printf("      %s · 参数 %s [%g, %g] 默认 %g\n", st.Plugins[0].Name,
+					st.Plugins[0].Params[0].ID, st.Plugins[0].Params[0].Min,
+					st.Plugins[0].Params[0].Max, st.Plugins[0].Params[0].Default)
+			}
+		}
+		// 错误路径
+		r, reqErr = c.request("plugin.load", map[string]interface{}{"format": "mm", "path": "D:/nope/x.dll", "id": "D:/nope/x.dll", "track": 0, "slot": 0})
+		check("MM 库不存在时给可解释错误", reqErr == nil && r != nil && !r.OK && strings.Contains(errText(r, reqErr), "不存在"), errText(r, reqErr))
+		r, reqErr = c.request("plugin.load", map[string]interface{}{"format": "mm", "path": os.Args[0], "id": os.Args[0], "track": 0, "slot": 0})
+		check("非 MM 库（缺 mm_get_factory）被拒", reqErr == nil && r != nil && !r.OK, errText(r, reqErr))
+		if _, err := c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0}); err != nil {
+			fmt.Println("      （MM 效果器卸载请求异常）")
+		}
+		check("MM 效果器卸载后引擎存活", true, "")
+	}
+
+	if synthDll != "" {
+		r, reqErr := c.request("plugin.load", map[string]interface{}{
+			"format": "mm", "path": synthDll, "id": synthDll, "track": 0,
+		})
+		ok := reqErr == nil && r != nil && r.OK
+		check("MM 乐器装入轨道", ok, errText(r, reqErr))
+		if !ok {
+			return
+		}
+		/* 量电平：经 **Midi 帧**（0x04 线格式 [type][track][status][d1][d2]）弹奏。
+		   注意：引擎没有 noteOnTrack 这个 IPC 方法——此前用不存在的请求名发音符，
+		   请求失败被忽略，于是"插件乐器电平恒为 0"被误判成许可限制（两轮都没发现）。
+		   这里走真实的 MIDI 通路。 */
+		peak := 0.0
+		for _, key := range []int{57, 60, 64} {
+			_ = c.writeFrame(0x04, []byte{0, 0x90, byte(key), 100})
+		}
+		for i := 0; i < 15; i++ {
+			time.Sleep(100 * time.Millisecond)
+			lv, lerr := c.request("getLevels", nil)
+			if lerr != nil || lv == nil || !lv.OK {
+				continue
+			}
+			var levels struct {
+				Levels []float64 `json:"levels"`
+			}
+			_ = json.Unmarshal(lv.Result, &levels)
+			if len(levels.Levels) > 0 && levels.Levels[0] > peak {
+				peak = levels.Levels[0]
+			}
+		}
+		for _, key := range []int{57, 60, 64} {
+			_ = c.writeFrame(0x04, []byte{0, 0x80, byte(key), 0})
+		}
+		fmt.Printf("      MM 乐器实测轨道电平峰值 = %.4f\n", peak)
+		check("MM 乐器真实发声（轨道电平 > 0.001）", peak > 0.001, fmt.Sprintf("peak=%.4f", peak))
+
+		r, reqErr = c.request("plugin.unload", map[string]interface{}{"track": 0})
+		check("MM 乐器卸载", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+		_, _ = c.request("panic", nil)
+	}
 }
 
 // firstLine 取错误文本首行（日志里不刷屏）

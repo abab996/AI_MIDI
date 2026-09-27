@@ -97,3 +97,6 @@ input/
 
 # ---------- 补充：窗口几何记忆（设备本地偏好，不入库） ----------
 window-state.json
+# 运行时产物：插件清单缓存与已安装 MM 插件
+Library/vst3-cache.xml
+Library/plugins/

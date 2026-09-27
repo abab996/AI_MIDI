@@ -67,12 +67,28 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		}
 		var in struct {
 			ID     string `json:"id"`
+			Format string `json:"format"`
+			Path   string `json:"path"`
 			Track  int    `json:"track"`
 			Slot   int    `json:"slot"`
 			Master bool   `json:"master"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		/* P6：format=mm 走 MM 运行时（path 是 .mm 包解包后的原生库路径） */
+		if in.Format == "mm" {
+			track := in.Track
+			if in.Master {
+				track = -1
+			}
+			state, err := sup.LoadMmPlugin(track, in.Slot, in.Path)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mm": state})
 			return
 		}
 		track := in.Track

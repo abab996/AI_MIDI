@@ -740,6 +740,35 @@ func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
 	return resp.Err()
 }
 
+// LoadMmPlugin 装载 MM 插件（.mm 包解包后的原生库）到 FX 槽。
+// 引擎侧按 format=mm 分流：path 是库文件路径，不走 VST3 清单。
+func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]any, error) {
+	if strings.TrimSpace(dllPath) == "" {
+		return nil, fmt.Errorf("缺少 MM 插件库路径")
+	}
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	/* id 也带库路径：引擎的 plugin.load 先做 id 必填校验，format=mm 分支在其后 */
+	params := map[string]any{"format": "mm", "path": dllPath, "id": dllPath, "slot": slot}
+	if track < 0 {
+		params["master"] = true
+	} else {
+		params["track"] = track
+	}
+	resp, err := cli.Request("plugin.load", params, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	_ = json.Unmarshal(resp.Result, &out)
+	return out, nil
+}
+
 // UnloadPlugin 卸载插件（slot < 0 卸乐器）
 func (s *Supervisor) UnloadPlugin(track, slot int) error {
 	cli, err := s.Ready(5 * time.Second)

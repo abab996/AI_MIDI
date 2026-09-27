@@ -572,6 +572,8 @@ async function main() {
       kind: "samplepack", name: "UI 检查采样包", dirs: [sampleDir],
     });
     check("同名目录登记为采样包（供分组标签）", packAdd.status === 200, packAdd.json);
+    /* 注册表在页面里是带缓存的：登记完必须强制重取，否则采样包标签读不到新条目 */
+    await cdp.evaluate("window.SoundRegistry ? window.SoundRegistry.load(true) : null");
 
     const tabs = await cdp.evaluate(`(function(){
       var t = document.querySelectorAll("#matTabs .mat-tab");
@@ -610,11 +612,22 @@ async function main() {
         var d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
         for (var i = 3; i < d.length; i += 4) { if (d[i] > 0) { painted = true; break; } }
       } catch (e) {}
+      /* 采样包标签取"目标根目录那一行"的（树里还有其他根目录，取全局第一个会张冠李戴） */
+      var rootRows = document.querySelectorAll("#matBody .arr-file-item.dir");
+      var packTag = "";
+      for (var k = 0; k < rootRows.length; k++) {
+        if (rootRows[k].title === ${JSON.stringify(sampleDir)}) {
+          var tag = rootRows[k].querySelector(".mat-pack-tag");
+          packTag = tag ? tag.textContent : "";
+          break;
+        }
+      }
       return { count: r.length, painted: painted,
                meta: first.querySelector(".mat-item-meta").textContent,
                title: first.title,
                draggable: first.draggable,
-               packTag: (document.querySelector("#matBody .mat-pack-tag")||{}).textContent || "" };
+               packTag: packTag,
+               roots: rootRows.length };
     })()`);
     check("采样页签渲染文件行（含拖拽语义）", rows.count >= 2 && rows.draggable, rows);
     check("波形缩略图已绘制（canvas 有像素）", rows.painted, rows);
@@ -711,6 +724,208 @@ async function main() {
     if (packAdd.json && packAdd.json.source) await api("DELETE", `/api/sound/sources/${packAdd.json.source.id}`);
     try { fs.rmSync(sampleDir, { recursive: true, force: true }); } catch {}
 
+
+    // 7) 混音台 v1（P4）
+    console.log("[UI] 混音台：通道条 1:1 / 推子 / 声像 / M,S / FX 槽 / 主通道 / 电平表");
+    await cdp.waitFor("!!window.ArrMixer", 10000, "混音台模块加载");
+    const mixerOpen = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      document.getElementById("mxrBtn").click();
+      await new Promise(function(r){ setTimeout(r, 350); });
+      var panel = document.getElementById("mxrPanel");
+      return {
+        open: window.ArrMixer.isOpen() && !panel.hidden,
+        strips: document.querySelectorAll("#mxrLanes .mxr-strip").length,
+        tracks: A.tracks.length,
+        master: !!document.querySelector("#mxrMaster .mxr-fader"),
+        faders: document.querySelectorAll("#mxrLanes .mxr-fader").length,
+        pans: document.querySelectorAll("#mxrLanes .mxr-pan").length,
+        ms: document.querySelectorAll("#mxrLanes .mxr-ms-btn").length,
+        slots: document.querySelectorAll("#mxrLanes .mxr-fx-slot").length,
+        meters: document.querySelectorAll("#mxrLanes .mxr-meter").length,
+        btnActive: document.getElementById("mxrBtn").classList.contains("active"),
+        count: (document.getElementById("mxrCount")||{}).textContent || ""
+      };
+    })()`);
+    check("F9/按钮打开混音台面板", mixerOpen.open && mixerOpen.btnActive, mixerOpen);
+    check("通道条与轨道 1:1", mixerOpen.strips === mixerOpen.tracks && mixerOpen.tracks >= 2, mixerOpen);
+    check("每条通道有推子/声像/M,S/8 个 FX 槽/双表",
+      mixerOpen.faders === mixerOpen.tracks && mixerOpen.pans === mixerOpen.tracks &&
+      mixerOpen.ms === mixerOpen.tracks * 2 && mixerOpen.slots === mixerOpen.tracks * 8 &&
+      mixerOpen.meters === mixerOpen.tracks * 2, mixerOpen);
+    check("主通道固定渲染（主推子）", mixerOpen.master, mixerOpen);
+
+    // 推子：设值 → 本地状态 + 服务端持久化（通道 + 主总线）
+    const faderState = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      window.ArrMixer.setGain(A, 0, 0.5, true);
+      window.ArrMixer.setMasterGain(A, 0.7, true);
+      await new Promise(function(r){ setTimeout(r, 700); });
+      var thumb = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-fader-thumb');
+      return {
+        trackVolume: A.tracks[0].volume,
+        chanGain: window.ArrMixer.channelOf(A, A.tracks[0].id).gain,
+        masterGain: window.ArrMixer.masterOf(A).gain,
+        thumbBottom: thumb ? thumb.style.bottom : "",
+        valueText: document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-value').textContent,
+        ariaNow: document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-fader').getAttribute("aria-valuenow")
+      };
+    })()`);
+    check("推子改音量 → track.volume + mixer 通道 + 主总线",
+      Math.abs(faderState.trackVolume - 0.5) < 1e-6 && Math.abs(faderState.chanGain - 0.5) < 1e-6 &&
+      Math.abs(faderState.masterGain - 0.7) < 1e-6, faderState);
+    check("推子位置/数值 dB/ARIA 同步",
+      parseFloat(faderState.thumbBottom) === 50 && faderState.valueText === "-6.0" && faderState.ariaNow === "0.500",
+      faderState);
+
+    const persistedMix = await api("GET", `/api/projects/${projectId}/arrangement`);
+    const pm = (persistedMix.json && persistedMix.json.mixer) || {};
+    const pArr = persistedMix.json || {};
+    const pTrack0 = (pArr.tracks || [])[0] || {};
+    check("混音台状态落到服务端（通道 gain + 主总线 + FX 槽数组）",
+      pTrack0.volume === 0.5 &&
+      pm.channels && pm.channels[pTrack0.id] && Math.abs(pm.channels[pTrack0.id].gain - 0.5) < 1e-6 &&
+      pm.master && Math.abs(pm.master.gain - 0.7) < 1e-6, pm);
+
+    // 声像 / M,S
+    const mixToggles = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      var strip = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"]');
+      strip.querySelector('.mxr-ms-btn[data-act="mute"]').dispatchEvent(new MouseEvent("pointerdown", {bubbles:true}));
+      await new Promise(function(r){ setTimeout(r, 500); });
+      A.mixer.channels[A.tracks[0].id].pan = -0.5;
+      window.ArrMixer.refreshStrip(A, 0);
+      var panEl = strip.querySelector(".mxr-pan");
+      return {
+        mute: A.tracks[0].mute,
+        mutedClass: strip.classList.contains("muted"),
+        panText: panEl.querySelector(".mxr-pan-text").textContent,
+        panRotate: panEl.querySelector(".mxr-pan-knob").style.transform
+      };
+    })()`);
+    check("M 按钮切换静音并联动通道条", mixToggles.mute === true && mixToggles.mutedClass, mixToggles);
+    check("声像显示 L50 且旋钮按角度旋转",
+      mixToggles.panText === "L50" && /rotate\(-67\.5deg\)/.test(mixToggles.panRotate), mixToggles);
+
+    // FX 槽：菜单 → 干湿比/旁通 → 落库 + 引擎回读
+    const fxMenu = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      var slot = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-fx-slot[data-slot="0"]');
+      slot.dispatchEvent(new MouseEvent("pointerdown", {bubbles:true}));
+      await new Promise(function(r){ setTimeout(r, 150); });
+      var menuItems = [].map.call(document.querySelectorAll(".ctx-menu .ctx-item, .arr-menu .arr-menu-item, .ctx-menu button"), function(b){ return b.textContent.trim(); });
+      return { items: menuItems };
+    })()`);
+    check("FX 槽点击弹出菜单（含旁通/干湿比/装载未开放）",
+      fxMenu.items.some(function (t) { return t.indexOf("干湿比") >= 0; }) &&
+      fxMenu.items.some(function (t) { return t.indexOf("装载插件") >= 0; }), fxMenu);
+    await cdp.evaluate(`(function(){
+      var m = document.querySelector(".ctx-menu, .arr-menu");
+      if (m) m.hidden = true;
+      return true;
+    })()`);
+
+    const fxApplied = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      window.ArrMixer.commitFx(A, 0, 0, { bypass: false, wet: 0.5 });
+      await new Promise(function(r){ setTimeout(r, 700); });
+      var slot = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-fx-slot[data-slot="0"]');
+      return {
+        entry: window.ArrMixer.channelOf(A, A.tracks[0].id).fx[0],
+        cls: slot.className,
+        title: slot.title
+      };
+    })()`);
+    check("FX 槽参数写入状态（bypass/wet）",
+      fxApplied.entry && fxApplied.entry.bypass === false && Math.abs(fxApplied.entry.wet - 0.5) < 1e-6, fxApplied);
+    check("FX 槽按钮反映启用态（非旁通样式 + 提示）",
+      fxApplied.cls.indexOf("bypass") < 0 && /wet/.test(fxApplied.title) === false, fxApplied);
+    const fxPersisted = await api("GET", `/api/projects/${projectId}/arrangement`);
+    const pfx = (((fxPersisted.json || {}).mixer || {}).channels || {})[pTrack0.id];
+    const pfx0 = pfx ? (pfx.fx || [])[0] : null;
+    check("FX 槽参数落到服务端", pfx0 && pfx0.bypass === false && Math.abs(pfx0.wet - 0.5) < 1e-6, pfx0);
+
+    // 增删轨道 → 通道条即时对齐
+    const trackSync = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      var before = document.querySelectorAll("#mxrLanes .mxr-strip").length;
+      await A.arrangeOps([{ op: "addTrack", name: "混音台检查轨" }]);
+      await new Promise(function(r){ setTimeout(r, 400); });
+      var afterAdd = document.querySelectorAll("#mxrLanes .mxr-strip").length;
+      var added = A.tracks[A.tracks.length - 1];
+      await A.arrangeOps([{ op: "removeTrack", track: added.id }]);
+      await new Promise(function(r){ setTimeout(r, 400); });
+      var afterRemove = document.querySelectorAll("#mxrLanes .mxr-strip").length;
+      return { before: before, afterAdd: afterAdd, afterRemove: afterRemove, tracks: A.tracks.length };
+    })()`);
+    check("增删轨道即时增删通道条",
+      trackSync.afterAdd === trackSync.before + 1 && trackSync.afterRemove === trackSync.before, trackSync);
+
+    // 电平表：注入电平 → scaleY 变化 + 主电平
+    const meterState = await cdp.evaluate(`(async function(){
+      window.__engineLevels = [0.9, 0.2];
+      window.__engineMasterLevel = 0.8;
+      window.ArrMixer.paintMeters(window.Arrange);
+      await new Promise(function(r){ setTimeout(r, 80); });
+      var fills = document.querySelectorAll("#mxrLanes .mxr-meter-fill");
+      var masterFill = document.querySelector("#mxrMaster .mxr-meter-fill");
+      return {
+        first: fills[0] ? fills[0].style.transform : "",
+        second: fills[2] ? fills[2].style.transform : "",
+        master: masterFill ? masterFill.style.transform : ""
+      };
+    })()`);
+    check("电平表按电平改 scaleY（只动 transform）",
+      /scaleY\(0\.[6-9]/.test(meterState.first) && /scaleY\(0\.[0-9]/.test(meterState.second), meterState);
+    check("主通道表接主总线电平", /scaleY\(0\.[6-9]/.test(meterState.master), meterState);
+
+    // 键盘可达：↑↓ 调推子、←→ 调声像
+    const mixerKeys = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      window.ArrMixer.setGain(A, 0, 0.5, true);
+      var fader = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-fader');
+      fader.focus();
+      var before = A.tracks[0].volume;
+      for (var i = 0; i < 3; i++) {
+        fader.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowUp", bubbles: true}));
+      }
+      await new Promise(function(r){ setTimeout(r, 200); });
+      var afterUp = A.tracks[0].volume;
+      var pan = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-pan');
+      pan.focus();
+      var panBefore = window.ArrMixer.panOf(A, 0);
+      pan.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowRight", bubbles: true}));
+      await new Promise(function(r){ setTimeout(r, 200); });
+      return { before: before, afterUp: afterUp, panBefore: panBefore, panAfter: window.ArrMixer.panOf(A, 0) };
+    })()`);
+    check("↑ 键推子 +2dB/次（3 次≈ +6dB）",
+      mixerKeys.afterUp > mixerKeys.before && mixerKeys.afterUp < 1.0, mixerKeys);
+    check("→ 键声像 +0.05", Math.abs(mixerKeys.panAfter - (mixerKeys.panBefore + 0.05)) < 1e-6, mixerKeys);
+
+    // F9 关闭 + 混音台双主题截图
+    const f9 = await cdp.evaluate(`(async function(){
+      document.dispatchEvent(new KeyboardEvent("keydown", {key: "F9", code: "F9", bubbles: true}));
+      await new Promise(function(r){ setTimeout(r, 300); });
+      var closed = document.getElementById("mxrPanel").hidden && !window.ArrMixer.isOpen();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key: "F9", code: "F9", bubbles: true}));
+      await new Promise(function(r){ setTimeout(r, 350); });
+      return { closed: closed, reopened: !document.getElementById("mxrPanel").hidden };
+    })()`);
+    check("F9 开合混音台", f9.closed && f9.reopened, f9);
+
+    // 混音台双主题截图（裁到面板本身，便于逐像素检查）
+    const mxrBox = await cdp.evaluate(`(function(){
+      var el = document.getElementById("mxrPanel");
+      var r = el.getBoundingClientRect();
+      return { x: Math.max(0, r.x), y: Math.max(0, r.y), width: Math.min(r.width, 1460), height: Math.min(r.height, 700) };
+    })()`);
+    await cdp.evaluate('document.documentElement.dataset.theme = "parchment"');
+    await new Promise((r) => setTimeout(r, 500));
+    const mxrWarm = await cdp.screenshot("mixer-warm", mxrBox);
+    await cdp.evaluate('document.documentElement.dataset.theme = "dark"');
+    await new Promise((r) => setTimeout(r, 500));
+    const mxrDark = await cdp.screenshot("mixer-dark", mxrBox);
+    check("混音台双主题截图产出", fs.existsSync(mxrWarm) && fs.existsSync(mxrDark));
 
     // 6) AI 热应用：模拟服务端推送（走同一函数）
     const hot = await cdp.evaluate(`(function(){

@@ -313,7 +313,8 @@
 
         <div class="arr-actions">
           <span class="stamp ok" id="arrSaveStamp">SAVED</span>
-          <button type="button" class="btn btn-sm btn-secondary" id="arrRackBtn" title="打开工程输出机架 (Channel / Output Rack)，可试听并拖拽音源与采样到轨道">🎛 输出机架</button>
+          <button type="button" class="btn btn-sm btn-secondary" id="arrRackBtn" title="打开乐器箱 (Instrument Rack)，可试听并拖拽音源与采样到轨道">🎛 乐器箱</button>
+          <button type="button" class="btn btn-sm btn-secondary" id="mxrBtn" title="混音台 (F9)：通道条 / 推子 / 声像 / FX 槽" aria-expanded="false" aria-controls="mxrPanel">🎚 混音台</button>
           <button type="button" class="btn btn-sm btn-primary" id="arrExportWavBtn" title="离线导出 WAV（按全局采样率，尾音到静默不截断）">⬇ WAV</button>
           <a class="btn btn-sm btn-secondary" href="/settings.html?tab=paneShortcuts" data-dir="forward" title="设置页可查看与自定义全部快捷键">⌨ 快捷键</a>
         </div>
@@ -374,6 +375,21 @@
           <div class="arr-panel-hint" id="matHint">⇱ 拖拽音频到轨道创建音频 Clip · 双击试听</div>
         </aside>
       </div>
+
+      <!-- 混音台（P4）：底部升起面板，通道条与轨道 1:1 + 主通道 -->
+      <section class="mxr-panel" id="mxrPanel" hidden aria-label="混音台">
+        <header class="mxr-head">
+          <span class="mxr-title">MIXER 混音台</span>
+          <span class="mxr-count" id="mxrCount">0 CH</span>
+          <span class="mxr-spacer"></span>
+          <span class="mxr-hint">拖推子调音量 · 双击复位 · ↑↓ 微调（Shift 更细）· 点 FX 槽设置</span>
+          <button type="button" class="mxr-close" id="mxrCloseBtn" title="关闭混音台 (F9)" aria-label="关闭混音台">✕</button>
+        </header>
+        <div class="mxr-body">
+          <div class="mxr-lanes" id="mxrLanes" role="group" aria-label="通道条"></div>
+          <aside class="mxr-strip mxr-master-strip" id="mxrMaster" aria-label="主通道"></aside>
+        </div>
+      </section>
     </section>
     </div><!-- /arrStage -->
   </section>
@@ -936,6 +952,7 @@
 <script src="/js/arrangement/audio_engine.js" defer></script>
 <script src="/js/arrangement/rack.js" defer></script>
 <script src="/js/arrangement/material.js" defer></script>
+<script src="/js/arrangement/mixer.js" defer></script>
 <script src="/js/arrangement/arrange.js" defer></script>
 <script src="/js/chat.js" defer></script>
 <script src="/demo/script_data.js" defer></script>

@@ -128,7 +128,8 @@
       "arrSaveStamp", "arrRackBtn", "arrHudBadge",
       "arrMidiCount", "arrMidiList",
       "arrTracksScroll", "arrInner", "arrRulerCanvas", "arrLanes", "arrAddTrackRow", "arrAddTrackBtn", "arrPlayline",
-      "matBody", "matTabs", "matSearch", "arrAddDirBtn"];
+      "matBody", "matTabs", "matSearch", "arrAddDirBtn",
+      "mxrBtn", "mxrPanel", "mxrLanes", "mxrMaster", "mxrCloseBtn", "mxrCount"];
     for (var i = 0; i < ids.length; i++) {
       this.el[ids[i]] = document.getElementById(ids[i]);
     }
@@ -1651,10 +1652,12 @@
         var n = Math.min(self.tracks.length, 32);
         for (var i = 0; i < n; i++) {
           var t = self.tracks[i];
+          /* 声像归混音台管（P4）：轨道没有 pan 字段，通道条写 mixer.channels[id].pan */
+          var mixCh = (self.mixer && self.mixer.channels) ? self.mixer.channels[t.id] : null;
           self.engine.updateTrackMix(
             i,
             t.volume !== undefined ? t.volume : 0.8,
-            0,
+            mixCh && typeof mixCh.pan === "number" ? mixCh.pan : 0,
             !!t.mute,
             !!t.solo,
             true
@@ -1775,6 +1778,8 @@
     if (!lanesEl) return;
     var self = this;
     this.meterEls = {};
+    /* 混音台通道条与轨道 1:1：增删轨道/改名/换色后增量对齐（id 相同只刷内容） */
+    if (window.ArrMixer) window.ArrMixer.syncTracks(this);
     // 释放对旧剪辑元素的观察（IO 持强引用，不 unobserve 则随每次重建累积泄漏）
     if (this.thumbObserver) {
       var old = lanesEl.querySelectorAll(".arr-clip");
@@ -3537,6 +3542,8 @@
 
   Arrange.prototype.bindPanels = function (                       ) {
     window.ArrMaterial.bind(this);
+    // 混音台（P4）：顶栏按钮、面板内推子/声像/FX 槽交互
+    window.ArrMixer.bind(this);
     // 标尺事件绑定（依赖 DOM 就绪）
     this.initRulerPointer();
   };
@@ -3710,6 +3717,15 @@
           rackWin.hidden = true;
           return;
         }
+        /* 混音台是常驻面板：Esc 不关它（避免误关），只关浮窗类 */
+      }
+
+      // 混音台开合（F9，可在设置里改键）
+      if (K && K.matches(e, "arrange.mixer")) {
+        e.preventDefault();
+        /* 注意：这里必须是 self —— 监听器挂在 document 上，this 是 document */
+        window.ArrMixer.toggle(self);
+        return;
       }
 
       // Space 走走带停；焦点在按钮/链接上时让位给浏览器激活语义

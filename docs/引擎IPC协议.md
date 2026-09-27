@@ -1,9 +1,13 @@
-# MelodyMate 引擎 IPC 协议（v1）
+# MelodyMate 引擎 IPC 协议（v2）
 
-> 版本：1 ｜ 日期：2026-08-23 ｜ 修订：2026-09-05（见文末修订记录，线格式不变）
+> 版本：2 ｜ 日期：2026-08-23 ｜ 修订：2026-09-27（P4 增加 FX 链与主总线，见 §4.13 与文末修订记录；线格式不变）
 > 适用双方：`MelodyMate.exe`（Go 主进程，客户端）↔ `melodymate-engine.exe`（JUCE 引擎，服务端）
-> 实现镜像：Go 侧 `internal/engine/protocol.go`（M1 后续落地）；C++ 侧 `engine/Source/Ipc/Protocol.h`
+> 实现镜像：Go 侧 `internal/engine/protocol.go`；C++ 侧 `engine/Source/Ipc/Protocol.h`
 > **本文为协议唯一权威来源**，两侧实现与 engine/README 摘要如有出入，以本文为准。
+>
+> 版本策略：握手双方**严格比对**版本号（`hello` 的 `protocolVersion` 必须等于对方常量）。
+> 主程序与引擎同包分发，版本不一致时旧引擎会被明确拒绝（`protocol version mismatch`），
+> 而不是以旧行为继续跑。
 
 ---
 
@@ -166,13 +170,41 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 | | |
 |---|---|
 | params | `{}` |
-| result | `{"levels":[<float>, ...]}`（32 轨峰值电平） |
+| result | `{"levels":[<float>, ...],"master":<float>}`（32 轨峰值电平 + 主总线峰值，压限后取值） |
+| 说明 | v2 起增加 `master` 字段（P4 混音台主通道表）。读方需容忍字段缺失（旧引擎不会出现，因为握手已挡） |
 
 ### 4.7d `setLoop`（走带循环）
 | | |
 |---|---|
 | params | `{"on":true,"start":<拍>,"end":<拍>}` |
 | result | `{}` |
+
+### 4.13 FX 链与主总线（P4）
+
+信号链（P4 起）：`每轨 synth → 轨插入链 → 轨条(gain/pan) → 汇总 → 主插入链 → 压限 → 输出`。
+每条链 8 个槽（`kMaxFxSlots`）；槽位状态 = 处理器 + 旁通 + 干湿比。
+**P4 只落基础设施与槽参数**：`plugin` 非空会被拒绝（装载在 P5 VST3 / P6 MM 开放），
+空槽在音频线程直接跳过（等价直通），槽参数变更即时生效。
+
+#### 4.13.1 `fx.setChain`
+| | |
+|---|---|
+| params | `{"track":<0-31>, "slots":[{"slot":<0-7>,"plugin":"<ref>?","bypass":<bool>,"wet":<0-1>,"off":<bool>?}]}` 或 `{"master":true,"slots":[...]}` |
+| result | `{"master":<bool>,"track":<int>?,"slots":[{"slot","loaded","bypass","wet"}×8],"active":<int>}` |
+| 错误 | 槽位越界 / slots 非数组 / 轨越界 / `plugin` 非空（`插件装载将在 P5（VST3）/ P6（MM）开放…`） |
+| 说明 | 逐槽应用；`off=true` 显式卸载该槽已有处理器（进延迟释放队列）。被替换/卸载的处理器**不在消息线程立即 delete**——音频回调可能仍在上一块持有指针，改由 `EngineAudioDevice` 的 500ms 定时器回收 |
+
+#### 4.13.2 `fx.getChain`
+| | |
+|---|---|
+| params | `{"track":<0-31>}` 或 `{"master":true}` |
+| result | 同 `fx.setChain` 的 result（`loaded` 反映该槽是否挂了处理器） |
+
+#### 4.13.3 `mixer.setMaster` / `mixer.get`
+| 方法 | params | result | 说明 |
+|---|---|---|---|
+| `mixer.setMaster` | `{"gain":<0.0-4.0>}` | `{"master":<gain>,"masterPeak":<float>,"slotsPerChain":8}` | 主总线增益；越界报错（`gain 超出范围（0.0 ~ 4.0）`） |
+| `mixer.get` | `{}` | 同 `mixer.setMaster` 的 result | 只读回读（诊断/测试） |
 
 ### 4.8 `openControlPanel`
 打开当前声卡的驱动控制面板（仅部分 ASIO 驱动支持）。
@@ -224,6 +256,8 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 - 本协议不含鉴权。本地信任边界收紧（客户端 PID 校验/DACL）列入 M5 前加固项。
 
 ## 修订记录
+
+- **2026-09-27（P4：FX 链与主总线，协议 v1 → v2）**：新增 `fx.setChain` / `fx.getChain` / `mixer.setMaster` / `mixer.get`（§4.13）；`getLevels` result 增加 `master` 字段（§4.7c）。引擎侧新增 `MixerGraph` 插入链（每轨 + 主总线各 8 槽）与延迟释放队列（`FxChain.h`）；主进程新增会话重放 `lastChains` / `lastMasterChain` / `lastMasterGain`（顺序：`loadSoundFont → setTrackPreset → setTrackVoice → fx.setChain → mixer.setMaster`）。插件实例装载仍属 P5/P6：`plugin` 非空时引擎返回可解释错误，槽参数（bypass/wet）可正常下发。握手版本号严格比对，不匹配即拒绝。
 
 - **2026-09-05（v3.0.3）**：线格式不变。行为修订三处——① `bounce` 改消息线程异步执行（对齐 `scheduleSamples`）；② bounce 超时改按渲染时长动态估算（30s–20min）；③ 帧长上限 16 MiB 改为**收发两侧均校验**（此前仅接收侧校验）。另 PipeServer 断开时序改为「先锁内置空句柄再 CloseHandle」（消除对已关闭/复用句柄写入的竞态），不影响协议语义。
 - **2026-09-05（波形声部与 ASIO 修复，随下一版本发布）**：新增 `setTrackVoice`（§4.6a，内置波形声部，与 loadSoundFont 互斥）；`openControlPanel` 改为立即应答 + 后台线程打开（§4.8）；applySetup 超时 15s→60s。主进程新增 `soundfont_loaded` 状态字段（/api/audio/status）。

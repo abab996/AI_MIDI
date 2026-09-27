@@ -374,7 +374,10 @@ interface ArrangeController {
   /* 钢琴窗音源选择（持久化到 arrangement.pianoRoll） */
   pianoRollSource: { itemId: string; presetId: string };
   /* 混音台状态（P4；P2 起登记 gain/pan/mute/solo） */
-  mixer: { channels: { [trackId: string]: MixerChannel }; master?: { gain?: number } };
+  mixer: {
+    channels: { [trackId: string]: MixerChannel };
+    master?: MixerChannel;
+  };
   /* 服务端修订号（SSE/保存回执带回） */
   rev: number;
   /* 定向修改与 AI 工具共用同一服务端实现（POST /arrangement/ops） */

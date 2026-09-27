@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -354,8 +355,9 @@ func main() {
 	}
 	check("握手前 ping 被拒绝（openSession 内验证）", true, "")
 
-	// 2) hello 正常握手（带版本）
-	r, reqErr := c.request("hello", map[string]interface{}{"protocolVersion": 1})
+	// 2) hello 正常握手（带版本；P4 起为协议 v2）
+	const smokeProtocolVersion = 2
+	r, reqErr := c.request("hello", map[string]interface{}{"protocolVersion": smokeProtocolVersion})
 	check("hello 握手", reqErr == nil && r.OK, errText(r, reqErr))
 	if r != nil && r.OK {
 		var info struct {
@@ -365,7 +367,7 @@ func main() {
 		}
 		_ = json.Unmarshal(r.Result, &info)
 		check("hello 返回引擎信息",
-			info.Name == "melodymate-engine" && info.ProtocolVersion == 1,
+			info.Name == "melodymate-engine" && info.ProtocolVersion == smokeProtocolVersion,
 			fmt.Sprintf("name=%q proto=%d", info.Name, info.ProtocolVersion))
 	}
 
@@ -536,6 +538,107 @@ func main() {
 	r, reqErr = c.request("ping", nil)
 	check("click 后连接仍健康", reqErr == nil && r.OK, errText(r, reqErr))
 
+	// 8.65) P4：FX 链基础设施 + 主总线（协议 v2）
+	r, reqErr = c.request("fx.setChain", map[string]interface{}{
+		"track": 0,
+		"slots": []map[string]interface{}{
+			{"slot": 0, "bypass": false, "wet": 0.5},
+			{"slot": 1, "bypass": true, "wet": 1.0},
+		},
+	})
+	chainOK := false
+	if r != nil && r.OK {
+		var chain struct {
+			Track int `json:"track"`
+			Slots []struct {
+				Slot   int     `json:"slot"`
+				Bypass bool    `json:"bypass"`
+				Wet    float64 `json:"wet"`
+				Loaded bool    `json:"loaded"`
+			} `json:"slots"`
+			Active int `json:"active"`
+		}
+		if err := json.Unmarshal(r.Result, &chain); err == nil {
+			chainOK = chain.Track == 0 && len(chain.Slots) == 8 &&
+				math.Abs(chain.Slots[0].Wet-0.5) < 1e-6 && !chain.Slots[0].Bypass &&
+				chain.Slots[1].Bypass
+		}
+	}
+	check("fx.setChain 轨链槽参数（8 槽 / bypass / wet）", reqErr == nil && chainOK, errText(r, reqErr))
+
+	r, reqErr = c.request("fx.getChain", map[string]interface{}{"master": true})
+	masterChainOK := false
+	if r != nil && r.OK {
+		var chain struct {
+			Master bool `json:"master"`
+			Slots  []struct {
+				Slot   int  `json:"slot"`
+				Bypass bool `json:"bypass"`
+				Loaded bool `json:"loaded"`
+			} `json:"slots"`
+			Active int `json:"active"`
+		}
+		if err := json.Unmarshal(r.Result, &chain); err == nil {
+			allBypass := true
+			for _, sl := range chain.Slots {
+				if !sl.Bypass || sl.Loaded {
+					allBypass = false
+				}
+			}
+			masterChainOK = chain.Master && len(chain.Slots) == 8 && chain.Active == 0 && allBypass
+		}
+	}
+	check("fx.getChain 主链默认空置（8 槽全旁通 / 0 装载）", reqErr == nil && masterChainOK, errText(r, reqErr))
+
+	// 插件装载在 P4 明确拒绝（P5/P6 开放），不得静默忽略
+	r, reqErr = c.request("fx.setChain", map[string]interface{}{
+		"track": 0,
+		"slots": []map[string]interface{}{{"slot": 0, "plugin": "vst3:Serum"}},
+	})
+	check("fx.setChain 插件装载在 P4 明确拒绝",
+		reqErr == nil && r != nil && !r.OK &&
+			strings.Contains(errText(r, reqErr), "P5"),
+		errText(r, reqErr))
+
+	r, reqErr = c.request("fx.setChain", map[string]interface{}{
+		"track": 0, "slots": []map[string]interface{}{{"slot": 99}},
+	})
+	check("fx.setChain 越界槽位报错", reqErr == nil && r != nil && !r.OK, errText(r, reqErr))
+
+	r, reqErr = c.request("mixer.setMaster", map[string]interface{}{"gain": 0.42})
+	masterOK := false
+	if r != nil && r.OK {
+		var mix struct {
+			Master      float64 `json:"master"`
+			MasterPeak  float64 `json:"masterPeak"`
+			SlotsPerChn int     `json:"slotsPerChain"`
+		}
+		if err := json.Unmarshal(r.Result, &mix); err == nil {
+			masterOK = math.Abs(mix.Master-0.42) < 1e-6 && mix.SlotsPerChn == 8
+		}
+	}
+	check("mixer.setMaster 生效并回读", reqErr == nil && masterOK, errText(r, reqErr))
+
+	r, reqErr = c.request("mixer.setMaster", map[string]interface{}{"gain": 99.0})
+	check("mixer.setMaster 越界拒绝", reqErr == nil && r != nil && !r.OK, errText(r, reqErr))
+
+	// getLevels 必须同时给 levels 数组与 master 标量（P4 主通道表用）
+	r, reqErr = c.request("getLevels", nil)
+	levelsOK := false
+	if r != nil && r.OK {
+		var lv struct {
+			Levels []float64 `json:"levels"`
+			Master *float64  `json:"master"`
+		}
+		if err := json.Unmarshal(r.Result, &lv); err == nil {
+			levelsOK = len(lv.Levels) == 32 && lv.Master != nil
+		}
+	}
+	check("getLevels 返回 32 轨电平 + master 字段", reqErr == nil && levelsOK, errText(r, reqErr))
+
+	// 复位主增益，避免影响后续走带检查的音量观感
+	_, _ = c.request("mixer.setMaster", map[string]interface{}{"gain": 0.9})
+
 	// 8.6) 真实 SF2 加载（文件存在时）：守护器启动即自动加载默认音色，
 	// 此处验证引擎对真实文件解析成功（tsf 渲染路径打通的前置条件）
 	if sfPath, sfErr := filepath.Abs("Library/soundfonts/PianoteqTest.sf2"); sfErr == nil {
@@ -593,7 +696,7 @@ func main() {
 		os.Exit(1)
 	}
 	check("重连后网关复位（openSession 内验证）", true, "")
-	r, reqErr = c2.request("hello", nil)
+	r, reqErr = c2.request("hello", map[string]interface{}{"protocolVersion": smokeProtocolVersion})
 	check("重连后重新 hello", reqErr == nil && r.OK, errText(r, reqErr))
 
 	// 9) 优雅退出

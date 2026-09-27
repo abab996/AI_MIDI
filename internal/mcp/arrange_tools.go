@@ -15,6 +15,7 @@ package mcp
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"melodymate/internal/llm"
@@ -198,13 +199,76 @@ var arrangeTools = []llm.ToolDefinition{
 			},
 		},
 	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "mixer_get",
+			Description: "读取混音台状态：每条通道的音量/声像/静音/独奏、FX 槽占用，以及主总线增益。回答\"现在混音台什么状态\"或改混音前先读一次。",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "set_fx_slot",
+			Description: "设置一条通道的 FX 槽参数：旁通/启用（bypass）、干湿比（wet 0~1）、清空（off）。track 传 \"master\" 表示主总线。插件装载在 P5/P6 开放——本工具只调槽参数，不要传 plugin 去装载。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"track": map[string]any{
+						"type":        "string",
+						"description": "轨道序号（0 起）/ 轨道 id / 轨道名；或 \"master\"（主总线）",
+					},
+					"slot": map[string]any{
+						"type":        "integer",
+						"description": "槽位序号 0 ~ 7",
+					},
+					"bypass": map[string]any{
+						"type":        "boolean",
+						"description": "true=旁通，false=启用",
+					},
+					"wet": map[string]any{
+						"type":        "number",
+						"description": "干湿比 0.0（全干）~ 1.0（全湿）",
+					},
+					"off": map[string]any{
+						"type":        "boolean",
+						"description": "true=清空该槽",
+					},
+				},
+				"required": []string{"slot"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "set_master_gain",
+			Description: "设置主总线增益（0.0 ~ 4.0，1.0 = 0dB）。整体太吵/太轻时用它，而不是逐轨改音量。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"gain": map[string]any{
+						"type":        "number",
+						"description": "主总线增益 0.0 ~ 4.0（1.0 = 0dB）",
+					},
+				},
+				"required": []string{"gain"},
+			},
+		},
+	},
 }
 
-// isArrangeTool 判断是否为编曲/机架类工具
+// isArrangeTool 判断是否为编曲/机架/混音类工具
 func isArrangeTool(name string) bool {
 	switch name {
 	case "list_sound_sources", "list_rack", "add_rack_item", "remove_rack_item",
-		"arrange_track", "set_track_instrument", "set_track_mix":
+		"arrange_track", "set_track_instrument", "set_track_mix",
+		"mixer_get", "set_fx_slot", "set_master_gain":
 		return true
 	}
 	return false
@@ -222,6 +286,9 @@ func executeArrangeTool(env ToolEnv, name string, args map[string]any) (string, 
 	// list_* 只读：直接读盘，不写文件、不发事件
 	if name == "list_rack" {
 		return listRackText(env.ProjectID), nil
+	}
+	if name == "mixer_get" {
+		return mixerText(env.ProjectID), nil
 	}
 	if name == "arrange_track" && strings.ToLower(strings.TrimSpace(stringArg(args, "op"))) == "list" {
 		return listTracksText(env.ProjectID), nil
@@ -354,6 +421,38 @@ func arrangeOpFor(name string, args map[string]any) (map[string]any, error) {
 			return nil, fmt.Errorf("至少要给出 gain / pan / mute / solo 之一")
 		}
 		return op, nil
+
+	case "set_fx_slot":
+		op := map[string]any{"op": "setFxSlot"}
+		track := strings.ToLower(strings.TrimSpace(stringArg(args, "track")))
+		if track == "master" || track == "主总线" {
+			op["master"] = true
+		} else {
+			t, err := requireTrack(args)
+			if err != nil {
+				return nil, err
+			}
+			op["track"] = trackRef(t)
+		}
+		for _, key := range []string{"slot", "bypass", "wet", "off"} {
+			if v, ok := args[key]; ok && v != nil {
+				op[key] = v
+			}
+		}
+		if _, ok := op["slot"]; !ok {
+			return nil, fmt.Errorf("缺少 slot（0 ~ 7）")
+		}
+		if len(op) <= 2 {
+			return nil, fmt.Errorf("至少要给出 bypass / wet / off 之一")
+		}
+		return op, nil
+
+	case "set_master_gain":
+		gain, ok := args["gain"]
+		if !ok || gain == nil {
+			return nil, fmt.Errorf("缺少 gain（0.0 ~ 4.0）")
+		}
+		return map[string]any{"op": "setMaster", "gain": gain}, nil
 	}
 	return nil, fmt.Errorf("未知工具 %s", name)
 }
@@ -497,13 +596,138 @@ func listTracksText(projectID string) string {
 	return b.String()
 }
 
+// mixerText 混音台只读输出：每通道 + 主总线 + FX 槽占用
+func mixerText(projectID string) string {
+	arr := loadArrangement(projectID)
+	tracks := arrangementTracks(arr)
+	mixer, _ := arr["mixer"].(map[string]any)
+	channels, _ := mixer["channels"].(map[string]any)
+	master, _ := mixer["master"].(map[string]any)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "混音台（%d 条通道）：\n", len(tracks))
+	for i, t := range tracks {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := mapString(tm, "id")
+		var ch map[string]any
+		if channels != nil {
+			ch, _ = channels[id].(map[string]any)
+		}
+		gain := mapFloat(tm, "volume")
+		pan, mute, solo := float64(0), mapBool(tm, "mute"), mapBool(tm, "solo")
+		if ch != nil {
+			if v, ok := ch["gain"].(float64); ok && gain == 0 {
+				gain = v
+			}
+			pan = mapFloat(ch, "pan")
+			if _, ok := ch["mute"]; ok {
+				mute = mapBool(ch, "mute")
+			}
+			if _, ok := ch["solo"]; ok {
+				solo = mapBool(ch, "solo")
+			}
+		}
+		fmt.Fprintf(&b, "- #%d %s  id=%s  音量=%.2f(%.1fdB)  声像=%s", i, mapString(tm, "name"), id,
+			gain, dbOf(gain), panText(pan))
+		flags := []string{}
+		if mute {
+			flags = append(flags, "静音")
+		}
+		if solo {
+			flags = append(flags, "独奏")
+		}
+		if len(flags) > 0 {
+			fmt.Fprintf(&b, "  %s", strings.Join(flags, "/"))
+		}
+		if occupied := fxUsedText(ch); occupied != "" {
+			fmt.Fprintf(&b, "  FX=%s", occupied)
+		}
+		b.WriteString("\n")
+	}
+	masterGain := 1.0
+	if master != nil {
+		if v, ok := master["gain"].(float64); ok {
+			masterGain = v
+		}
+	}
+	fmt.Fprintf(&b, "主总线：增益=%.2f（%.1fdB）", masterGain, dbOf(masterGain))
+	if occupied := fxUsedText(master); occupied != "" {
+		fmt.Fprintf(&b, "  FX=%s", occupied)
+	}
+	b.WriteString("\n（FX 槽只承载旁通/干湿比；插件装载在 P5/P6 开放）")
+	return b.String()
+}
+
+// fxUsedText 已使用（区别于默认「空且旁通」）的槽位摘要
+func fxUsedText(ch map[string]any) string {
+	if ch == nil {
+		return ""
+	}
+	fx, _ := ch["fx"].([]any)
+	used := []string{}
+	for i, e := range fx {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		plugin := mapString(em, "plugin")
+		bypass := true
+		if v, ok := em["bypass"].(bool); ok {
+			bypass = v
+		}
+		wet := 1.0
+		if v, ok := em["wet"].(float64); ok {
+			wet = v
+		}
+		if plugin == "" && bypass && wet == 1 {
+			continue
+		}
+		desc := fmt.Sprintf("%d:%s", i, plugin)
+		if plugin == "" {
+			desc = fmt.Sprintf("%d(空)", i)
+		}
+		if bypass {
+			desc += "·旁通"
+		}
+		if wet != 1 {
+			desc += fmt.Sprintf("·wet %.0f%%", wet*100)
+		}
+		used = append(used, desc)
+	}
+	return strings.Join(used, " ")
+}
+
+func panText(pan float64) string {
+	if pan == 0 {
+		return "居中"
+	}
+	if pan < 0 {
+		return fmt.Sprintf("L%d", int(-pan*100+0.5))
+	}
+	return fmt.Sprintf("R%d", int(pan*100+0.5))
+}
+
+func dbOf(gain float64) float64 {
+	if gain <= 0.0001 {
+		return -60
+	}
+	return 20 * math.Log10(gain)
+}
+
 // afterText 写操作后的回执：带上最新状态，AI 不必再查一次
 func afterText(projectID, tool string, args map[string]any) string {
 	switch tool {
 	case "add_rack_item", "remove_rack_item":
 		return listRackText(projectID)
-	case "arrange_track", "set_track_instrument", "set_track_mix":
+	case "arrange_track", "set_track_instrument":
 		return listTracksText(projectID)
+	case "set_track_mix", "set_fx_slot", "set_master_gain":
+		/* 混音类操作回执给混音台状态（含声像/静音/FX 槽），
+		   而不是轨道清单——后者看不到 pan 与槽位 */
+		return mixerText(projectID)
 	}
 	return ""
 }

@@ -11,6 +11,7 @@
     "check:sound": "node tools/dev/sound_pane_check.mjs",
     "check:rack": "node tools/dev/rack_check.mjs",
     "check:material": "node tools/dev/material_check.mjs",
+    "check:mixer": "node tools/dev/mixer_check.mjs",
     "check:ui": "node tools/dev/arrange_ui_check.mjs",
     "watch": "node tools/dev/watch-frontend.mjs"
   },

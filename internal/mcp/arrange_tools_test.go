@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,6 +232,105 @@ func TestArrangeToolAutoAdoptSourceID(t *testing.T) {
 	}
 }
 
+func TestArrangeToolMixerLoop(t *testing.T) {
+	_, pid := withArrangeEnv(t)
+	events := []map[string]any{}
+	env := toolEnvFor(pid, &events)
+
+	// mixer_get：空混音台也要给得出可读状态
+	out := runTool(t, env, "mixer_get", nil)
+	if !strings.Contains(out, "混音台") || !strings.Contains(out, "主总线") {
+		t.Fatalf("mixer_get 输出异常: %q", out)
+	}
+
+	// 改混音 → 回执带最新状态；事件带 changed=mixer
+	out = runTool(t, env, "set_track_mix", map[string]any{"track": "0", "gain": 0.4, "pan": -0.5})
+	if !strings.Contains(out, "音量=0.40") || !strings.Contains(out, "L50") {
+		t.Fatalf("set_track_mix 回执应含新音量/声像: %q", out)
+	}
+	if len(events) == 0 {
+		t.Fatal("应发出 arrangement 事件")
+	}
+	last := events[len(events)-1]
+	if last["type"] != "arrangement" || last["source"] != "ai" {
+		t.Fatalf("事件形状不对: %v", last)
+	}
+	if changed, _ := last["changed"].([]string); !containsStr(changed, "mixer") {
+		t.Fatalf("changed 应含 mixer: %v", last["changed"])
+	}
+
+	// FX 槽：轨 + 主总线
+	out = runTool(t, env, "set_fx_slot", map[string]any{"track": "0", "slot": 2, "bypass": false, "wet": 0.5})
+	if !strings.Contains(out, "FX=2(空)·wet 50%") {
+		t.Fatalf("set_fx_slot 回执应显示槽位占用: %q", out)
+	}
+	out = runTool(t, env, "set_fx_slot", map[string]any{"track": "master", "slot": 0, "bypass": false})
+	if !strings.Contains(out, "主总线") || !strings.Contains(out, "FX=0(空)") {
+		t.Fatalf("主链 set_fx_slot 回执异常: %q", out)
+	}
+
+	// 主增益
+	out = runTool(t, env, "set_master_gain", map[string]any{"gain": 0.5})
+	if !strings.Contains(out, "主总线：增益=0.50（-6.0dB）") {
+		t.Fatalf("set_master_gain 回执异常: %q", out)
+	}
+
+	// 落盘校验
+	arr := project.LoadArrangementV2(pid)
+	tracks, _ := arr["tracks"].([]any)
+	t0, _ := tracks[0].(map[string]any)
+	mixer, _ := arr["mixer"].(map[string]any)
+	channels, _ := mixer["channels"].(map[string]any)
+	ch, _ := channels[fmt.Sprint(t0["id"])].(map[string]any)
+	if ch == nil {
+		t.Fatalf("mixer 通道未落盘: %v", mixer)
+	}
+	if g, _ := ch["gain"].(float64); g != 0.4 {
+		t.Fatalf("通道 gain = %v, want 0.4", ch["gain"])
+	}
+	fx, _ := ch["fx"].([]any)
+	if len(fx) != 8 {
+		t.Fatalf("FX 槽数 = %d, want 8", len(fx))
+	}
+	slot2, _ := fx[2].(map[string]any)
+	if slot2["bypass"] != false {
+		t.Fatalf("槽 2 应为启用: %v", slot2)
+	}
+	master, _ := mixer["master"].(map[string]any)
+	if g, _ := master["gain"].(float64); g != 0.5 {
+		t.Fatalf("主增益 = %v, want 0.5", master["gain"])
+	}
+
+	// 错误路径
+	bad := []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"set_fx_slot", map[string]any{"track": "0"}, "缺少 slot"},
+		{"set_fx_slot", map[string]any{"track": "0", "slot": 0}, "至少要给出"},
+		{"set_fx_slot", map[string]any{"track": "0", "slot": 99, "wet": 0.5}, "槽位序号超出范围"},
+		{"set_fx_slot", map[string]any{"track": "9", "slot": 0, "wet": 0.5}, "超出范围"},
+		{"set_master_gain", map[string]any{}, "缺少 gain"},
+		{"set_track_mix", map[string]any{"track": "0", "pan": 3}, "pan 超出范围"},
+	}
+	for _, tc := range bad {
+		out := runTool(t, env, tc.tool, tc.args)
+		if !strings.HasPrefix(out, "错误：") || !strings.Contains(out, tc.want) {
+			t.Fatalf("%s(%v) 应报 %q，实际 %q", tc.tool, tc.args, tc.want, out)
+		}
+	}
+}
+
+func containsStr(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestArrangeToolValidationMessages(t *testing.T) {
 	_, pid := withArrangeEnv(t)
 	env := toolEnvFor(pid, nil)
@@ -249,6 +349,8 @@ func TestArrangeToolValidationMessages(t *testing.T) {
 		{"arrange_track", map[string]any{"op": "nuke"}, "只支持"},
 		{"arrange_track", map[string]any{"op": "rename", "track": "0"}, "需要 name"},
 		{"set_track_mix", map[string]any{"track": "0"}, "至少要给出"},
+		{"set_fx_slot", map[string]any{"track": "0"}, "缺少 slot"},
+		{"set_master_gain", map[string]any{}, "缺少 gain"},
 	}
 	for _, tc := range cases {
 		out := runTool(t, env, tc.tool, tc.args)

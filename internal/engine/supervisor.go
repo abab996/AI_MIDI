@@ -56,12 +56,17 @@ type Supervisor struct {
 	lastSoundFonts map[int]string         // 每轨独立 SF2（重启后重放）
 	lastPresets    map[int][2]int         // 每轨 SF2 预设选择 bank/program（重启后重放）
 	lastVoices     map[int]map[string]any // 每轨内置波形声部参数（重启后重放）
-	hasSoundfont   bool                   // 当前会话是否已加载任何音色（/api/audio/status 透出）
-	exePath        string
-	lastReadyAt    time.Time // 最近一次进入 StateReady 的时间（秒崩判定用）
-	stopOnce       sync.Once
-	doneCh         chan struct{} // 关闭表示主循环退出
-	wakeCh         chan struct{} // StateDisabled 驻留时由 ApplySettings 启用引擎唤醒
+	/* P4：FX 链槽位参数与主总线增益（重启后重放；插件实例由 P5/P6 装载，
+	   这里存的是"槽位状态"——bypass/wet 与（P5 起）插件引用） */
+	lastChains      map[int][]map[string]any
+	lastMasterChain []map[string]any
+	lastMasterGain  float64
+	hasSoundfont    bool // 当前会话是否已加载任何音色（/api/audio/status 透出）
+	exePath         string
+	lastReadyAt     time.Time // 最近一次进入 StateReady 的时间（秒崩判定用）
+	stopOnce        sync.Once
+	doneCh          chan struct{} // 关闭表示主循环退出
+	wakeCh          chan struct{} // StateDisabled 驻留时由 ApplySettings 启用引擎唤醒
 }
 
 // NewSupervisor 创建守护器（不启动；调用 Start）
@@ -416,6 +421,163 @@ func (s *Supervisor) SetTrackMix(p TrackMixParams) error {
 		return err
 	}
 	return resp.Err()
+}
+
+/* ===== P4：FX 链与主总线 ===== */
+
+// FxSlotParams 一个 FX 槽的状态（协议 v2 的 fx.setChain 元素）
+type FxSlotParams struct {
+	Slot   int     `json:"slot"`
+	Plugin string  `json:"plugin,omitempty"` // 插件引用：P4 传空（装载在 P5/P6 开放）
+	Bypass bool    `json:"bypass"`
+	Wet    float64 `json:"wet"`
+	Off    bool    `json:"off,omitempty"` // 显式卸载该槽
+}
+
+// SetFxChain 下发一条 FX 链（轨或主总线）。track < 0 表示主总线。
+// 成功时把槽位状态记入 lastChains/lastMasterChain，崩溃重启后重放。
+func (s *Supervisor) SetFxChain(track int, slots []FxSlotParams) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	payload := make([]map[string]any, 0, len(slots))
+	for _, sl := range slots {
+		item := map[string]any{
+			"slot":   sl.Slot,
+			"bypass": sl.Bypass,
+			"wet":    sl.Wet,
+		}
+		if sl.Plugin != "" {
+			item["plugin"] = sl.Plugin
+		}
+		if sl.Off {
+			item["off"] = true
+		}
+		payload = append(payload, item)
+	}
+	params := map[string]any{"slots": payload}
+	if track < 0 {
+		params["master"] = true
+	} else {
+		params["track"] = track
+	}
+	resp, err := cli.Request("fx.setChain", params, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if err := resp.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if track < 0 {
+		s.lastMasterChain = payload
+	} else {
+		if s.lastChains == nil {
+			s.lastChains = make(map[int][]map[string]any)
+		}
+		s.lastChains[track] = payload
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// SetMaster 设置主总线增益（0.0 ~ 4.0）。崩溃重启后重放。
+func (s *Supervisor) SetMaster(gain float64) error {
+	if gain < 0 || gain > 4 {
+		return fmt.Errorf("gain 超出范围（0.0 ~ 4.0）: %v", gain)
+	}
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	resp, err := cli.Request("mixer.setMaster", map[string]any{"gain": gain}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if err := resp.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.lastMasterGain = gain
+	s.mu.Unlock()
+	return nil
+}
+
+// GetLevelsSnapshot 一次 IPC 取回全部轨电平与主总线电平（P4 电平表轮询用：
+// 电平表 20~30Hz，两次请求会白翻一倍管道往返）。
+func (s *Supervisor) GetLevelsSnapshot() ([]float32, float32, error) {
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return nil, 0, fmt.Errorf("引擎未就绪")
+	}
+	resp, err := cli.TryRequest("getLevels", nil, s.cfg.RequestTimeout)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, 0, err
+	}
+	var res struct {
+		Levels []float32 `json:"levels"`
+		Master float32   `json:"master"`
+	}
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		return nil, 0, err
+	}
+	return res.Levels, res.Master, nil
+}
+
+// GetMasterLevel 主总线峰值电平（P4 起 getLevels 的 master 字段）
+func (s *Supervisor) GetMasterLevel() (float32, error) {
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli == nil {
+		return 0, fmt.Errorf("引擎未就绪")
+	}
+	resp, err := cli.TryRequest("getLevels", nil, s.cfg.RequestTimeout)
+	if err != nil {
+		return 0, err
+	}
+	if err := resp.Err(); err != nil {
+		return 0, err
+	}
+	var res struct {
+		Master float32 `json:"master"`
+	}
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		return 0, err
+	}
+	return res.Master, nil
+}
+
+// GetChain 读取某条链的槽位状态（诊断/前端回读用）
+func (s *Supervisor) GetChain(track int) (map[string]any, error) {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	params := map[string]any{}
+	if track < 0 {
+		params["master"] = true
+	} else {
+		params["track"] = track
+	}
+	resp, err := cli.Request("fx.getChain", params, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // SetTrackVoice 把引擎轨道切换到内置波形声部（合成波音色的原生渲染路径，
@@ -926,6 +1088,60 @@ func (s *Supervisor) runOnce() string {
 			}
 			if failReason != "" {
 				break
+			}
+		}
+	}
+
+	/* 重放 FX 链（P4）：排在 setTrackVoice 之后——链是"轨声部之后"的处理位点。
+	   master 链与各轨链都重放，顺序与前端一致性无关（链参数是绝对状态）。 */
+	s.mu.RLock()
+	chains := make(map[int][]map[string]any, len(s.lastChains))
+	for tr, c := range s.lastChains {
+		cp := make([]map[string]any, len(c))
+		copy(cp, c)
+		chains[tr] = cp
+	}
+	masterChain := append([]map[string]any(nil), s.lastMasterChain...)
+	masterGain, hasMasterGain := s.lastMasterGain, s.lastMasterGain > 0
+	s.mu.RUnlock()
+	if failReason == "" {
+		for tr, slots := range chains {
+			if _, err := cli.Request("fx.setChain", map[string]any{
+				"track": tr, "slots": slots,
+			}, 10*time.Second); err != nil {
+				select {
+				case <-cli.Done():
+					failReason = "冷启动重放失败: IPC 会话失效"
+				default:
+					slog.Warn("[engine] 重放 FX 链失败（track)", "track", tr, "err", err)
+				}
+			}
+			if failReason != "" {
+				break
+			}
+		}
+	}
+	if failReason == "" && len(masterChain) > 0 {
+		if _, err := cli.Request("fx.setChain", map[string]any{
+			"master": true, "slots": masterChain,
+		}, 10*time.Second); err != nil {
+			select {
+			case <-cli.Done():
+				failReason = "冷启动重放失败: IPC 会话失效"
+			default:
+				slog.Warn("[engine] 重放主总线 FX 链失败", "err", err)
+			}
+		}
+	}
+	if failReason == "" && hasMasterGain {
+		if _, err := cli.Request("mixer.setMaster", map[string]any{
+			"gain": masterGain,
+		}, 10*time.Second); err != nil {
+			select {
+			case <-cli.Done():
+				failReason = "冷启动重放失败: IPC 会话失效"
+			default:
+				slog.Warn("[engine] 重放主总线增益失败", "err", err)
 			}
 		}
 	}

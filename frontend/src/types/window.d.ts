@@ -184,6 +184,12 @@ interface EngineBridgeApi {
   bounce(params: Record<string, unknown>): Promise<string>;
   setLoop(on: boolean, start: number, end: number): Promise<void>;
   getLevels(): Promise<number[]>;
+  /* P4 混音台：FX 链 / 主总线 / 主总线电平（track < 0 = 主总线） */
+  setFxChain?(track: number, slots: Array<Record<string, unknown>>): Promise<void>;
+  getFxChain?(track: number): Promise<Record<string, unknown> | null>;
+  setMaster?(gain: number): Promise<void>;
+  getMasterLevel?(): Promise<number>;
+  getLevelsWithMaster?(): Promise<{ levels: number[]; master: number } | null>;
   panic(): Promise<void>;
   getBackend(): string;
   isNativePreferred(): boolean;
@@ -423,6 +429,41 @@ interface ArrMaterialApi {
 
 declare const ArrMaterial: ArrMaterialApi;
 
+/** 混音台 v1（arrangement/mixer.ts，P4） */
+interface ArrMixerApi {
+  MAX_SLOTS: number;
+  MIN_DB: number;
+  MAX_DB: number;
+  MASTER_TRACK: number;
+  state: { open: boolean; raf: number; ids: string[]; peakHold: { [key: string]: number } };
+  bind(ctrl: any): void;
+  isOpen(): boolean;
+  open(ctrl: any): void;
+  close(ctrl: any): void;
+  toggle(ctrl: any): void;
+  render(ctrl: any): void;
+  syncTracks(ctrl: any): void;
+  refreshStrip(ctrl: any, idx: number): void;
+  gainToDbText(gain: number): string;
+  posToGain(pos: number): number;
+  gainToPos(gain: number): number;
+  levelToRatio(level: number): number;
+  channelOf(ctrl: any, trackId: string): MixerChannel;
+  masterOf(ctrl: any): MixerChannel;
+  gainOf(ctrl: any, idx: number): number;
+  panOf(ctrl: any, idx: number): number;
+  setGain(ctrl: any, idx: number, gain: number, commit: boolean): void;
+  setMasterGain(ctrl: any, gain: number, commit: boolean): void;
+  toggleMute(ctrl: any, idx: number): void;
+  toggleSolo(ctrl: any, idx: number): void;
+  commitFx(ctrl: any, idx: number, slot: number, patch: any): void;
+  paintMeters(ctrl: any): void;
+  shortPluginName(ref: string): string;
+  _resetForTest(): void;
+}
+
+declare const ArrMixer: ArrMixerApi;
+
 /** 自动更新检查（update.js）：手动触发检查用 */
 interface UpdateApi {
   /** 检查更新；有更新会弹自带通知卡。resolve 值：UpdateInfo 或 { error } */
@@ -443,6 +484,7 @@ interface Window {
   SoundRegistry: SoundRegistryApi;
   ArrRack: ArrRackApi;
   ArrMaterial: ArrMaterialApi;
+  ArrMixer: ArrMixerApi;
   EngineBridge: EngineBridgeApi;
   MidiInputRouter: MidiInputRouterApi;
   PianoRollTools: PianoRollToolsApi;
@@ -457,6 +499,8 @@ interface Window {
   __openProject?: (projectId: string, taskId: string) => void;
   __engineTimecode?: EngineTimecode;
   __engineLevels?: number[];
+  /* P4：主总线峰值电平（电平轮询一次取回轨电平 + 主电平） */
+  __engineMasterLevel?: number;
   __engineState?: string;
   marked?: MarkedApi;
   chrome?: { webview?: object };

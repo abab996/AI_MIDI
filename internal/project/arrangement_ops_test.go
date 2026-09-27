@@ -525,6 +525,132 @@ func TestApplyOpsPianoRoll(t *testing.T) {
 	}
 }
 
+// ── P4：混音台（FX 槽 / 主总线） ─────────────────────────────
+
+func TestApplyOpsMixerFxSlotsAndMaster(t *testing.T) {
+	_, pid := setupArrangementEnv(t)
+
+	// 轨 FX 槽：槽 8 个，写入 bypass/wet 后回读一致
+	res, err := ApplyOps(pid, []map[string]any{
+		{"op": "setFxSlot", "track": 0, "slot": 0, "plugin": "vst3:Serum", "bypass": false, "wet": 0.75},
+	})
+	if err != nil {
+		t.Fatalf("setFxSlot: %v", err)
+	}
+	if !hasChange(res.Changed, ChangeMixer) {
+		t.Fatalf("changed 应含 mixer: %v", res.Changed)
+	}
+	arr := res.Arrangement
+	mixer, _ := arr["mixer"].(map[string]any)
+	channels, _ := mixer["channels"].(map[string]any)
+	tracks, _ := arr["tracks"].([]any)
+	t0, _ := tracks[0].(map[string]any)
+	ch, _ := channels[fmt.Sprint(t0["id"])].(map[string]any)
+	if ch == nil {
+		t.Fatalf("mixer.channels 未创建轨道通道: %v", channels)
+	}
+	slots, _ := ch["fx"].([]any)
+	if len(slots) != MaxFxSlots {
+		t.Fatalf("FX 槽数 = %d, want %d", len(slots), MaxFxSlots)
+	}
+	s0, _ := slots[0].(map[string]any)
+	if s0["plugin"] != "vst3:Serum" || s0["bypass"] != false {
+		t.Fatalf("槽 0 状态不对: %v", s0)
+	}
+	if wet, _ := s0["wet"].(float64); wet != 0.75 {
+		t.Fatalf("槽 0 wet = %v, want 0.75", s0["wet"])
+	}
+	// 未写入的槽保持旁通默认
+	s1, _ := slots[1].(map[string]any)
+	if s1["bypass"] != true {
+		t.Fatalf("未使用的槽应默认旁通: %v", s1)
+	}
+
+	// 主总线：增益 + 主链 FX 槽
+	res, err = ApplyOps(pid, []map[string]any{
+		{"op": "setMaster", "gain": 0.65},
+		{"op": "setFxSlot", "master": true, "slot": 2, "bypass": false, "wet": 0.4},
+	})
+	if err != nil {
+		t.Fatalf("setMaster/setFxSlot(master): %v", err)
+	}
+	master, _ := res.Arrangement["mixer"].(map[string]any)
+	m := master["master"].(map[string]any)
+	if g, _ := m["gain"].(float64); g != 0.65 {
+		t.Fatalf("主总线增益 = %v, want 0.65", m["gain"])
+	}
+	mslots, _ := m["fx"].([]any)
+	if len(mslots) != MaxFxSlots {
+		t.Fatalf("主链槽数 = %d, want %d", len(mslots), MaxFxSlots)
+	}
+	ms2, _ := mslots[2].(map[string]any)
+	if ms2["bypass"] != false {
+		t.Fatalf("主链槽 2 应为非旁通: %v", ms2)
+	}
+
+	// 落盘可回读（整份 PUT 不丢 mixer）
+	persisted := readArrangementMap(t, pid)
+	pm, _ := persisted["mixer"].(map[string]any)
+	if pm == nil || pm["master"] == nil {
+		t.Fatalf("落盘丢了 mixer.master: %v", persisted["mixer"])
+	}
+
+	// 清空槽位
+	res, err = ApplyOps(pid, []map[string]any{
+		{"op": "setFxSlot", "track": 0, "slot": 0, "off": true},
+	})
+	if err != nil {
+		t.Fatalf("清空槽位: %v", err)
+	}
+	mixer2, _ := res.Arrangement["mixer"].(map[string]any)
+	ch2, _ := mixer2["channels"].(map[string]any)
+	c2, _ := ch2[fmt.Sprint(t0["id"])].(map[string]any)
+	sl2, _ := c2["fx"].([]any)
+	s02, _ := sl2[0].(map[string]any)
+	if s02["plugin"] != "" {
+		t.Fatalf("清空槽位后仍留插件引用: %v", s02)
+	}
+}
+
+func TestApplyOpsMixerValidation(t *testing.T) {
+	_, pid := setupArrangementEnv(t)
+	cases := []struct {
+		name string
+		ops  []map[string]any
+		want string
+	}{
+		{"槽位越界", []map[string]any{{"op": "setFxSlot", "track": 0, "slot": 99}}, "槽位序号超出范围"},
+		{"负槽位", []map[string]any{{"op": "setFxSlot", "track": 0, "slot": -1}}, "槽位序号超出范围"},
+		{"空参数", []map[string]any{{"op": "setFxSlot", "track": 0, "slot": 0}}, "至少要给出"},
+		{"wet 越界", []map[string]any{{"op": "setFxSlot", "track": 0, "slot": 0, "wet": 1.5}}, "wet 超出范围"},
+		{"旁通类型错误", []map[string]any{{"op": "setFxSlot", "track": 0, "slot": 0, "bypass": "no"}}, "必须是布尔值"},
+		{"主增益越界", []map[string]any{{"op": "setMaster", "gain": 9}}, "主总线增益超出范围"},
+		{"主增益缺失", []map[string]any{{"op": "setMaster"}}, "必须是数字"},
+		{"轨越界", []map[string]any{{"op": "setFxSlot", "track": 99, "slot": 0, "wet": 0.5}}, "超出范围"},
+		{"插件引用过长", []map[string]any{{"op": "setFxSlot", "track": 0, "slot": 0, "plugin": strings.Repeat("x", 301)}}, "插件引用过长"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ApplyOps(pid, tc.ops)
+			if err == nil {
+				t.Fatalf("期望报错（%s），实际成功", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误信息 = %q，期望包含 %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func hasChange(list []string, kind string) bool {
+	for _, k := range list {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // ── 小工具 ───────────────────────────────────────────────────
 
 // TestRackItemIDVectors 条目 id 的固定向量：与前端

@@ -10,6 +10,12 @@ interface WailsApp {
   EngineClearSamples(): Promise<void>;
   EngineClick(arg1: number, arg2: boolean): Promise<void>;
   EngineGetLevels(): Promise<number[]>;
+  /* P4：轨电平 + 主总线电平一次取回（电平表轮询） */
+  EngineGetLevelsWithMaster(): Promise<{ levels: number[]; master: number }>;
+  EngineGetMasterLevel(): Promise<number>;
+  EngineSetFxChain(arg1: number, arg2: Array<Record<string, unknown>>): Promise<void>;
+  EngineGetFxChain?: (arg1: number) => Promise<Record<string, unknown> | null>;
+  EngineSetMaster(arg1: number): Promise<void>;
   EngineGetTimecode(): Promise<EngineTimecodeWire>;
   EngineLoadSoundFont(arg1: string): Promise<void>;
   EngineLoadSoundFontTrack(arg1: number, arg2: string): Promise<void>;

@@ -67,6 +67,7 @@
     "arrange.splitAtPlayhead": "KeyS",
     "arrange.toggleLoop": "KeyL",
     "arrange.renameTrack": "F2",
+    "arrange.mixer": "F9",
     "arrange.undo": "Ctrl+KeyZ",
     "arrange.redo": ["Ctrl+KeyY", "Ctrl+Shift+KeyZ"],
     "arrange.copy": "Ctrl+KeyC",

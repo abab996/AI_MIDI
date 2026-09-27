@@ -20,8 +20,10 @@ const (
 	MsgTimecode byte = 0x05 // 预留（M2/M3）
 )
 
-// ProtocolVersion 协议版本（握手双向校验）
-const ProtocolVersion uint32 = 1
+// ProtocolVersion 协议版本（握手双向校验）。
+// v2（P4）：fx.setChain / fx.getChain / mixer.setMaster / mixer.get，
+// getLevels 增加 master 字段。
+const ProtocolVersion uint32 = 2
 
 // MaxFrameSize 单帧上限（防异常长度）
 const MaxFrameSize = 16 * 1024 * 1024

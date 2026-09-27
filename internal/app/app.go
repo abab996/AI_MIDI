@@ -233,6 +233,72 @@ func (a *App) EngineSetLoop(on bool, start, end float64) error {
 	return sup.SetLoop(on, start, end)
 }
 
+/* ===== P4：混音台（FX 链 / 主总线 / 主总线电平） ===== */
+
+// EngineSetFxChain 下发一条 FX 链（track < 0 表示主总线）。
+// slots 元素：{slot, plugin?, bypass, wet, off?}；plugin 非空在 P4 会被
+// 引擎拒绝（装载在 P5/P6 开放）——如实返回错误，不静默忽略。
+func (a *App) EngineSetFxChain(track int, slots []map[string]any) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	parsed := make([]engine.FxSlotParams, 0, len(slots))
+	for _, m := range slots {
+		slot := engine.FxSlotParams{}
+		if v, ok := m["slot"].(float64); ok {
+			slot.Slot = int(v)
+		}
+		if v, ok := m["plugin"].(string); ok {
+			slot.Plugin = v
+		}
+		if v, ok := m["bypass"].(bool); ok {
+			slot.Bypass = v
+		}
+		if v, ok := m["wet"].(float64); ok {
+			slot.Wet = v
+		} else {
+			slot.Wet = 1.0
+		}
+		if v, ok := m["off"].(bool); ok {
+			slot.Off = v
+		}
+		parsed = append(parsed, slot)
+	}
+	return sup.SetFxChain(track, parsed)
+}
+
+// EngineSetMaster 设置主总线增益（0.0 ~ 4.0）
+func (a *App) EngineSetMaster(gain float64) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.SetMaster(gain)
+}
+
+// EngineGetMasterLevel 主总线峰值电平（混音台主通道表）
+func (a *App) EngineGetMasterLevel() (float32, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return 0, errEngineUnavailable
+	}
+	return sup.GetMasterLevel()
+}
+
+// EngineGetLevelsWithMaster 一次 IPC 取回轨电平与主总线电平（P4 电平表轮询）
+func (a *App) EngineGetLevelsWithMaster() (map[string]any, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return nil, errEngineUnavailable
+	}
+	levels, master, err := sup.GetLevelsSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"levels": levels, "master": master}, nil
+}
+
 // ===== 聊天流事件桥（桌面模式专用）=====
 //
 // Wails Windows 的 assetserver 用 bytes.Buffer 缓存整个响应体，到

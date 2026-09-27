@@ -75,6 +75,31 @@
       }
       return Promise.resolve();
     },
+    /* ===== P4：FX 链与主总线 =====
+       slots 元素 {slot, plugin?, bypass, wet, off?}；track < 0 表示主总线。
+       插件装载（plugin 非空）在 P4 会被引擎拒绝——调用方按 Promise reject
+       的 message 提示用户（P5/P6 开放后同一调用即可装载）。 */
+    setFxChain: function (track        , slots       ) {
+      if (app && app.EngineSetFxChain) { return app.EngineSetFxChain(track, slots || []); }
+      return Promise.resolve();
+    },
+    getFxChain: function (track        ) {
+      if (app && app.EngineGetFxChain) { return app.EngineGetFxChain(track); }
+      return Promise.resolve(null);
+    },
+    setMaster: function (gain        ) {
+      if (app && app.EngineSetMaster) { return app.EngineSetMaster(gain); }
+      return Promise.resolve();
+    },
+    getMasterLevel: function () {
+      if (app && app.EngineGetMasterLevel) { return app.EngineGetMasterLevel(); }
+      return Promise.resolve(0);
+    },
+    /* 一次取回轨电平 + 主总线电平（电平表 20~30Hz：两次请求白翻一倍往返） */
+    getLevelsWithMaster: function () {
+      if (app && app.EngineGetLevelsWithMaster) { return app.EngineGetLevelsWithMaster(); }
+      return Promise.resolve(null);
+    },
     /* ===== 走带控制（M3 阶段一）=====
        无引擎（浏览器模式 available=false）时一律 resolve 而非 reject：
        这些是即发即忘的走带/调度调用，浏览器模式下本就没有引擎可控制，
@@ -198,6 +223,7 @@
   // 电平轮询（50ms，替代前端 AnalyserNode）- 带 pending 守卫
   (function(){
     window.__engineLevels = [];
+    window.__engineMasterLevel = 0;
     var pending = false;
     var pendingSince = 0;
     function tick(){
@@ -215,6 +241,16 @@
       } catch(e) {}
       pending = true;
       pendingSince = performance.now();
+      /* P4：优先一次取回（轨电平 + 主总线电平） */
+      if (EngineBridge.getLevelsWithMaster) {
+        EngineBridge.getLevelsWithMaster().then(function(snap     ){
+          if (snap && Array.isArray(snap.levels)) {
+            window.__engineLevels = snap.levels;
+            if (typeof snap.master === "number") window.__engineMasterLevel = snap.master;
+          }
+        }).catch(function(){}).then(function(){ pending = false; });
+        return;
+      }
       EngineBridge.getLevels().then(function(arr){
         if (Array.isArray(arr)) window.__engineLevels = arr;
       }).catch(function(){}).then(function(){ pending = false; });

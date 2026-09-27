@@ -223,6 +223,10 @@ func (c *opsCtx) apply(name string, op map[string]any) error {
 		return c.setRackItem(op)
 	case "removerackitem":
 		return c.removeRackItem(op)
+	case "setfxslot":
+		return c.setFxSlot(op)
+	case "setmaster":
+		return c.setMaster(op)
 	case "setpianoroll":
 		return c.setPianoRoll(op)
 	case "setbpm":
@@ -538,6 +542,144 @@ func (c *opsCtx) removeRackItem(op map[string]any) error {
 	c.mark(ChangeRack, ChangeTracks)
 	c.note("机架移除 %s", stringField(item, "name"))
 	return nil
+}
+
+/* ═══════════ 混音台（P4）：FX 槽与主总线 ═══════════ */
+
+// MaxFxSlots 每轨 / 主总线的插入槽数量（与引擎 kMaxFxSlots、
+// 前端 .mxr-fx-slot 数量一致）
+const MaxFxSlots = 8
+
+// setFxSlot 设置一个 FX 槽（轨或主总线）。
+//
+//	{op:"setFxSlot", track|master:true, slot:0, plugin?, bypass?, wet?, off?}
+//
+// 插件装载在 P4 只落状态、不装载实例（P5 的 VST3 / P6 的 MM 装载后同一份
+// 状态即生效）；装插件时引擎会拒绝，前端据此提示——这里允许写入引用是因为
+// 工程可能来自更高版本（前向兼容），但会把状态如实存进 arrangement.mixer。
+func (c *opsCtx) setFxSlot(op map[string]any) error {
+	slot, err := intFieldStrict(op, "slot")
+	if err != nil {
+		return err
+	}
+	if slot < 0 || slot >= MaxFxSlots {
+		return fmt.Errorf("槽位序号超出范围（0 ~ %d）", MaxFxSlots-1)
+	}
+	isMaster := boolField(op, "master")
+	target := ""
+	ch := map[string]any(nil)
+	if isMaster {
+		target = "主总线"
+		ch = masterMix(c.arr)
+	} else {
+		tracks := trackList(c.arr)
+		idx, terr := c.trackIndex(op)
+		if terr != nil {
+			return terr
+		}
+		tm, terr := trackMap(tracks, idx)
+		if terr != nil {
+			return terr
+		}
+		target = fmt.Sprintf("轨道 #%d「%s」", idx+1, stringField(tm, "name"))
+		ch = mixChannel(c.arr, stringField(tm, "id"))
+	}
+
+	slots, _ := ch["fx"].([]any)
+	for len(slots) < MaxFxSlots {
+		slots = append(slots, map[string]any{"slot": len(slots), "bypass": true, "wet": 1.0})
+	}
+	entry, _ := slots[slot].(map[string]any)
+	if entry == nil {
+		entry = map[string]any{"slot": slot, "bypass": true, "wet": 1.0}
+	}
+
+	parts := []string{}
+	if v, ok := op["plugin"]; ok && v != nil {
+		ref := strings.TrimSpace(fmt.Sprint(v))
+		if ref == "" {
+			entry["plugin"] = ""
+			parts = append(parts, "卸载插件")
+		} else {
+			if len(ref) > 300 {
+				return fmt.Errorf("插件引用过长（上限 300 字符）")
+			}
+			entry["plugin"] = ref
+			parts = append(parts, "插件 "+ref)
+		}
+	}
+	if v, ok := op["bypass"]; ok && v != nil {
+		b, berr := boolFieldStrict(v, "bypass")
+		if berr != nil {
+			return berr
+		}
+		entry["bypass"] = b
+		parts = append(parts, fmt.Sprintf("旁通=%v", b))
+	}
+	if v, ok := op["wet"]; ok && v != nil {
+		wet, werr := floatFieldStrict(v, "wet")
+		if werr != nil {
+			return werr
+		}
+		if wet < 0 || wet > 1 {
+			return fmt.Errorf("wet 超出范围（0.0 ~ 1.0）")
+		}
+		entry["wet"] = wet
+		parts = append(parts, fmt.Sprintf("wet=%.2f", wet))
+	}
+	if v, ok := op["off"]; ok && v != nil {
+		b, berr := boolFieldStrict(v, "off")
+		if berr != nil {
+			return berr
+		}
+		if b {
+			entry["plugin"] = ""
+			parts = append(parts, "清空槽位")
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("至少要给出 plugin / bypass / wet / off 之一")
+	}
+	slots[slot] = entry
+	ch["fx"] = slots
+	c.mark(ChangeMixer)
+	c.note("%s FX 槽 %d：%s", target, slot, strings.Join(parts, " "))
+	return nil
+}
+
+// setMaster 主总线增益与（可选）主链 FX 槽。
+//
+//	{op:"setMaster", gain:0.9}
+func (c *opsCtx) setMaster(op map[string]any) error {
+	gain, err := floatFieldStrict(op["gain"], "gain")
+	if err != nil {
+		return err
+	}
+	if gain < 0 || gain > 4 {
+		return fmt.Errorf("主总线增益超出范围（0.0 ~ 4.0）")
+	}
+	masterMix(c.arr)["gain"] = gain
+	c.mark(ChangeMixer)
+	c.note("主总线增益 → %.2f", gain)
+	return nil
+}
+
+// masterMix 取（必要时创建）主总线混音状态
+func masterMix(arr map[string]any) map[string]any {
+	mixer, _ := arr["mixer"].(map[string]any)
+	if mixer == nil {
+		mixer = map[string]any{}
+		arr["mixer"] = mixer
+	}
+	master, _ := mixer["master"].(map[string]any)
+	if master == nil {
+		master = map[string]any{"gain": 1.0}
+		mixer["master"] = master
+	}
+	if _, ok := master["fx"]; !ok {
+		master["fx"] = []any{}
+	}
+	return master
 }
 
 func (c *opsCtx) setPianoRoll(op map[string]any) error {

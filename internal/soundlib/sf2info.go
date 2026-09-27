@@ -49,6 +49,57 @@ type SF2Info struct {
 	Presets     []Preset `json:"presets,omitempty"`
 }
 
+// SF2PresetName 按 presetId（"bank:program"）取预设名，取不到返回空串。
+// 机架条目取名要用它（"GeneralUser GS › 钢琴"），而只读 PHDR 块的代价与
+// 注册表列举同级，不会因上百 MB 的音色库拖慢 AI 入架。
+func SF2PresetName(sourceID, presetID string) string {
+	bank, program, ok := ParsePresetID(presetID)
+	if !ok {
+		return ""
+	}
+	view, err := Get(sourceID)
+	if err != nil || view.Kind != KindSF2 || view.Runtime.Missing || view.Runtime.AbsPath == "" {
+		return ""
+	}
+	info, err := ReadSF2Presets(view.Runtime.AbsPath)
+	if err != nil {
+		return ""
+	}
+	for _, p := range info.Presets {
+		if p.Bank == bank && p.Program == program {
+			return p.Name
+		}
+	}
+	return ""
+}
+
+// ParsePresetID 解析预设 id。注册表格式 "0:48" 为主；同时兼容历史
+// IndexedDB 格式 "sf2_0_48[_idx]"（老工程的 presetId 直接存进了机架）。
+func ParsePresetID(presetID string) (bank, program int, ok bool) {
+	id := strings.TrimSpace(presetID)
+	if id == "" {
+		return 0, 0, false
+	}
+	if i := strings.Index(id, ":"); i > 0 {
+		b, err1 := strconv.Atoi(strings.TrimSpace(id[:i]))
+		p, err2 := strconv.Atoi(strings.TrimSpace(id[i+1:]))
+		if err1 == nil && err2 == nil && b >= 0 && p >= 0 {
+			return b, p, true
+		}
+		return 0, 0, false
+	}
+	parts := strings.Split(strings.TrimPrefix(id, "sf2_"), "_")
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	b, err1 := strconv.Atoi(parts[0])
+	p, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || b < 0 || p < 0 {
+		return 0, 0, false
+	}
+	return b, p, true
+}
+
 // ReadSF2Info 读取音色库名称与预设总数（读 PHDR 块头即可，不解逐条记录——
 // 设置页列 269 个音色库时不必为每家读一遍预设名）
 func ReadSF2Info(path string) (SF2Info, error) {
@@ -99,7 +150,11 @@ func parseSF2Info(r io.ReadSeeker, withPresets bool) (SF2Info, error) {
 		end = size // 声明长度越界（截断文件）：以实际文件长度为准
 	}
 
-	// 只关心两级结构：顶层块 → LIST(INFO/pdta) 的子块
+	// 只关心两级结构：顶层块 → LIST(INFO/pdta) 的子块。
+	// 块 id 大小写：SoundFont 2.01 规范里 pdta 的子块是小写（phdr/pbag/…），
+	// 而 LIST 类型名是大写（INFO/sdta/pdta）；不同写库工具混用两种写法，
+	// 因此一律按不区分大小写匹配（此前只认大写 "PHDR"，真实音色库全部
+	// 解析出 0 个预设——设置页/机架/卷帘的预设列表全空）。
 	_ = walkChunks(r, 12, end, func(c chunk) error {
 		if c.id != "LIST" || c.size < 4 {
 			return nil
@@ -115,14 +170,14 @@ func parseSF2Info(r io.ReadSeeker, withPresets bool) (SF2Info, error) {
 		switch string(lt) {
 		case "pdta":
 			return walkChunks(r, c.dataOff+4, subEnd, func(sc chunk) error {
-				if sc.id != "PHDR" {
+				if !strings.EqualFold(sc.id, "phdr") {
 					return nil
 				}
 				return readPhdr(r, sc, &out, withPresets)
 			})
 		case "INFO":
 			return walkChunks(r, c.dataOff+4, subEnd, func(sc chunk) error {
-				if sc.id != "INAM" {
+				if !strings.EqualFold(sc.id, "INAM") {
 					return nil
 				}
 				if name := readText(r, sc); name != "" {

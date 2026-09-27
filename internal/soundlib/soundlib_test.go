@@ -88,6 +88,42 @@ func writeSF2(t *testing.T, dir, name string, presets []Preset) string {
 	return path
 }
 
+// writeSF2RealCasing 写一份"真实写库工具"风格的最小 SF2：
+// pdta 的子块用小写 id（phdr），这是 SoundFont 2.01 规范与 GeneralUser GS /
+// Pianoteq 导出文件的共同写法。此前解析器只认大写 "PHDR"，导致真实音色库
+// 全部解析出 0 个预设（设置页/机架/卷帘预设列表全空），而合成样本恰好用
+// 大写，测试因此漏过了这条路径。
+func writeSF2RealCasing(t *testing.T, dir, name string, presets []Preset) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inam := append([]byte(name), 0)
+	if len(inam)%2 == 1 {
+		inam = append(inam, 0)
+	}
+	info := riffList("INFO", riffChunk("INAM", inam))
+
+	pdta := make([]byte, 0, (len(presets)+1)*sf2PhdrRecordSize)
+	for _, p := range presets {
+		pdta = append(pdta, phdrRecord(p.Name, p.Bank, p.Program)...)
+	}
+	pdta = append(pdta, phdrRecord("EOP", 0, 0)...)
+	dtal := riffList("pdta", riffChunk("phdr", pdta)) // 小写：真实文件如此
+
+	body := append(append([]byte("sfbk"), info...), dtal...)
+	out := make([]byte, 8, 8+len(body))
+	copy(out[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(body)))
+	full := append(out, body...)
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, full, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func stdPresets() []Preset {
 	return []Preset{
 		{Name: "Stereo Grand", Bank: 0, Program: 0},
@@ -134,6 +170,29 @@ func TestReadSF2PresetsListsBankProgram(t *testing.T) {
 	}
 	if info.Presets[2].ID != "0:48" || info.Presets[2].Program != 48 {
 		t.Fatalf("末个预设不对: %+v", info.Presets[2])
+	}
+}
+
+// 真实写库工具用小写块 id（phdr）：必须同样解析出预设
+// （这是 GeneralUser GS / Pianoteq 等真实文件的实际写法）
+func TestReadSF2PresetsAcceptsLowercaseChunks(t *testing.T) {
+	root := withTempRoot(t)
+	path := writeSF2RealCasing(t, filepath.Join(root, "Library", "soundfonts"), "real.sf2", stdPresets())
+
+	info, err := ReadSF2Presets(path)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if info.PresetCount != 3 || len(info.Presets) != 3 {
+		t.Fatalf("小写 phdr 应解析出 3 个预设: count=%d len=%d", info.PresetCount, len(info.Presets))
+	}
+	if info.Presets[2].ID != "0:48" || info.Presets[2].Name != "Stereo Strings Fast" {
+		t.Fatalf("预设内容不对: %+v", info.Presets[2])
+	}
+
+	meta, err := ReadSF2Info(path)
+	if err != nil || meta.PresetCount != 3 {
+		t.Fatalf("ReadSF2Info 也应解析到 3 个预设: %+v err=%v", meta, err)
 	}
 }
 

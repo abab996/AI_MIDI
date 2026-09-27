@@ -260,6 +260,11 @@ var audioExts = map[string]bool{
 	".flac": true, ".m4a": true, ".aac": true,
 }
 
+// IsAudioPath 判断路径是否为可识别的音频文件（按扩展名，不看磁盘）
+func IsAudioPath(p string) bool {
+	return audioExts[strings.ToLower(filepath.Ext(strings.TrimSpace(p)))]
+}
+
 // SortSources 稳定排序：种类 → 名称（前端分组展示依赖它保持顺序稳定）
 func SortSources(list []Source) {
 	kindRank := func(k string) int {

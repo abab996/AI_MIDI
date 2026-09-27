@@ -242,6 +242,7 @@ interface ArrangeController {
   _currentRackFilter: string;
   _exporting: boolean;
   _followSuspendUntil: number;
+  _lastMixTrackCount?: number;
   _lastSampleSig: string;
   _mixSyncTimer: number | null;
   _modalToken: number;
@@ -646,6 +647,10 @@ interface ArrangeEngineInstance {
   _hbFallback: number | null;
   _heartbeat: HeartbeatHandle | null;
   _nativeTimers: EngineNativeTimer[];
+  _nativeOn?: { [key: string]: number };
+  _nativeOnPush(idx: any, midi: any, trackId: any): void;
+  _nativeOnRemove(idx: any, midi: any): void;
+  _nativeOnFlush(): void;
   _now(): number;
   _onHeartbeat(): void;
   _pendingClicks: PendingClick[];

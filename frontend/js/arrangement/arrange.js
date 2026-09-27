@@ -430,6 +430,10 @@
     this._pruneTrackNodes();
     this.engine.bpm = this.bpm;
     this.engine.loop = this.loop;   // 播放中载入新数据也保持循环边界同步
+    /* 混音下发：引擎模式下唯一入口是 applyMixSafe→setTrackMix，此前
+       deserialize 完全不下发——引擎按默认 gain=1.0/mute=false 播放，
+       与界面上的轨道音量/静音/独奏显示不符（含收缩尾槽，见 applyMixSafe） */
+    this.applyMixSafe();
     this.syncTransportUI();
   };
 
@@ -536,12 +540,15 @@
     }
     if (!this.tracks.length) this.tracks = [this.makeTrack(1)];
     this._pruneTrackNodes();
-    this.engine.applyMix(this.tracks);
+    /* 撤销/重做后混音与调度表都要回推引擎：applyMixSafe 一并完成
+       Web 混音、原生 setTrackMix（含收缩尾槽）与采样表重排——
+       此前只调 web-only 的 engine.applyMix，引擎侧保留被撤销前的旧
+       gain/mute/solo（UI 显示未静音但仍在响 / 或静音后不放声） */
+    this.applyMixSafe();
     this.engine.bpm = this.bpm;
     this.engine.loop = this.loop;   // 撤销/重做同步循环边界（此前播放中撤销循环改动仍按旧边界跑）
     this.syncTransportUI();
     this.renderAll();
-    this.rescheduleSamplesDebounced();   // 撤销/重做同样要把音频调度表拉回当前快照
   };
 
   Arrange.prototype.pushHistory = function (                       ) {
@@ -1467,7 +1474,8 @@
       if (this._mixSyncTimer) clearTimeout(this._mixSyncTimer);
       this._mixSyncTimer = setTimeout(function () {
         self._mixSyncTimer = null;
-        for (var i = 0; i < self.tracks.length && i < 32; i++) {
+        var n = Math.min(self.tracks.length, 32);
+        for (var i = 0; i < n; i++) {
           var t = self.tracks[i];
           self.engine.updateTrackMix(
             i,
@@ -1478,6 +1486,14 @@
             true
           );
         }
+        /* 收缩尾槽：删轨后引擎侧残留的槽位保留旧 gain/mute/solo——若被删
+           的是 solo 轨，引擎 anySolo 恒真，其余全部轨被混音器丢弃（播放全
+           无声）。对上次发过、本次已不存在的槽位显式发 active=false */
+        var prev = self._lastMixTrackCount || 0;
+        for (var j = n; j < Math.min(prev, 32); j++) {
+          self.engine.updateTrackMix(j, 0, 0, false, false, false);
+        }
+        self._lastMixTrackCount = n;
       }, 80);
     }
     this.rescheduleSamplesDebounced();
@@ -1517,10 +1533,13 @@
     }
   };
 
-  /** 调度签名：坐标/长度/offset/mute/fade 任一变化都算——用于跳过
-      音量拖动等不影响素材表的 applyMixSafe 调用 */
+  /** 调度签名：坐标/长度/offset/mute/fade/BPM 任一变化都算——用于跳过
+      音量拖动等不影响素材表的 applyMixSafe 调用。
+      BPM 必须在签名内：scheduleSamples 把剪辑坐标按当时 BPM 烘焙成采样数，
+      播放中改速若不重发，音频轨会继续按旧 BPM 的表发声，与 MIDI 轨渐进
+      失同步（此前签名漏 BPM，setBpm 触发的重排被去重跳过） */
   Arrange.prototype.sampleScheduleSig = function (                       ) {
-    var parts = [];
+    var parts = ["bpm:" + this.bpm];
     for (var ti = 0; ti < this.tracks.length; ti++) {
       var tr = this.tracks[ti];
       for (var ci = 0; ci < tr.clips.length; ci++) {

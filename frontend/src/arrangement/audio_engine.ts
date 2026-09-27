@@ -653,12 +653,17 @@
     if (isNativePreferred() && window.EngineBridge) {
       try {
         var tracks = this.getTracks ? this.getTracks() : [];
+        // 1) 未到 off 时刻的音符（事件仍在 _pendingOff）
         for (var k = 0; k < this._pendingOff.length; k++) {
           var ev = this._pendingOff[k];
           if (!ev.trackId || !ev.nodes || !ev.nodes._useNative) continue;
           var idx = trackIndexOf(ev.trackId, tracks);
           if (idx >= 0) { try { window.EngineBridge.noteOffTrack(idx, ev.midi); } catch(e) {} }
         }
+        // 2) off 已排入 timer 却随 _clearNativeTimers 被撤销的音符：
+        //    这些 noteOn 已在引擎里发声，不补发就是永久挂音
+        //    （引擎 Transport.stop 只停时钟，不杀声部——Transport.h 已确认）
+        this._nativeOnFlush();
       } catch(e) {}
     }
     this._pendingOn = [];
@@ -667,6 +672,37 @@
     this._pendingClips = [];
     this.isPlaying = false;
     this.stopAllVoices();
+  };
+
+  /* ═══════════ 原生发音登记（挂音防护） ═══════════
+     计数式登记：同一轨同一音高可能重叠发声（循环回绕、同音重复），
+     按 "idx:midi" 计数，noteOff 发出时销账，停止时对残留计数补发 off */
+  ArrangeEngine.prototype._nativeOnPush = function (this: ArrangeEngineInstance, idx: any, midi: any, trackId: any) {
+    if (!this._nativeOn) this._nativeOn = {};
+    var key = idx + ":" + midi;
+    this._nativeOn[key] = (this._nativeOn[key] || 0) + 1;
+  };
+
+  ArrangeEngine.prototype._nativeOnRemove = function (this: ArrangeEngineInstance, idx: any, midi: any) {
+    if (!this._nativeOn) return;
+    var key = idx + ":" + midi;
+    if (!this._nativeOn[key]) return;
+    this._nativeOn[key]--;
+    if (this._nativeOn[key] <= 0) delete this._nativeOn[key];
+  };
+
+  /** 对全部残留的发音中音符补发 noteOff，并清空登记表 */
+  ArrangeEngine.prototype._nativeOnFlush = function (this: ArrangeEngineInstance) {
+    if (!this._nativeOn || !window.EngineBridge || !window.EngineBridge.noteOffTrack) return;
+    for (var key in this._nativeOn) {
+      if (!Object.prototype.hasOwnProperty.call(this._nativeOn, key) || !this._nativeOn[key]) continue;
+      var parts = key.split(":");
+      var idx = parseInt(parts[0], 10);
+      var midi = parseInt(parts[1], 10);
+      if (isNaN(idx) || isNaN(midi)) continue;
+      try { window.EngineBridge.noteOffTrack(idx, midi); } catch (e) {}
+    }
+    this._nativeOn = {};
   };
 
   /** 原生音符精确调度：Web Audio 路径有 when 参数可精确到采样，原生
@@ -825,8 +861,12 @@
       var nStart = clip.start + n.start;
       var nEnd = clip.start + n.end;
       if (nStart < evFrom || nStart >= evTo) continue;
-      // 原生优先时：synth 轨也允许（无 Web 节点也能经 EngineBridge 发声）
-      var native = isNativePreferred() && track && track.source && track.source.type === "synth";
+      /* 引擎模式：synth / sf2 / builtin 三种音源都有原生发声路径——
+         ensureTrack 已把波形声部或 SF2 音色装载到引擎同 idx 轨，
+         _useNative 在 IPC 确认后置位（确认前静音，严格路由）。
+         此前白名单只放行 synth，而引擎模式下 ctx=null 不创建 Web 节点，
+         sf2/builtin 轨会被整轨丢弃（音符永远发不出去，整轨静音） */
+      var native = isNativePreferred();
       if (!native && !nodes.synth && !nodes.soundfont) continue;
       var midiNote = pitchCache[n.note];
       if (midiNote === undefined) {
@@ -877,6 +917,7 @@
   /** 触发到期事件：创建音频节点 + 近端（≤TRIGGER_S）包络 */
   ArrangeEngine.prototype._triggerDue = function (this: ArrangeEngineInstance, now: any) {
     var i, ev;
+    var self = this;
 
     // 音符 on：过期补触发（主线程卡顿恢复后仍出声，不静默丢音——
     // 调度在主线程，WebView2 被渲染/GC 阻塞超 250ms 时此前窗口内音符
@@ -895,12 +936,21 @@
             var idxOn = trackIndexOf(ev.trackId, tracksOn);
             if (idxOn >= 0) {
               // 到点才发（此前触发即发：原生路径提前 0~150ms，与精确
-              // 调度的音频轨节奏错位）。过期事件立即发不迟于现在
+              // 调度的音频轨节奏错位）。过期事件立即发不迟于现在。
+              // 实参经 IIFE 绑定：var 是函数作用域，直接捕获会让同批
+              // 触发的所有闭包共享同一组绑定，timer 触发时全部读到本批
+              // 最后一个音符的 midi/vel/idx——和弦塔缩成齐奏、跨轨错位
               var delayOn = Math.max(0, ev.t - now);
-              var midi = ev.midi, vel = ev.vel, idx = idxOn;
-              this._schedNative(delayOn, function () {
-                window.EngineBridge.noteOnTrack(idx, midi, vel);
-              });
+              this._schedNative(delayOn, (function (idx: any, midi: any, vel: any, trackId: any) {
+                return function () {
+                  window.EngineBridge.noteOnTrack(idx, midi, vel);
+                  // 登记在发音中的原生音符：off 一旦排入 timer 就离开
+                  // _pendingOff，停止时 _clearNativeTimers 会撤销它——
+                  // 不登记就无法在 stopSchedule 里补发（引擎 Transport.stop
+                  // 只停时钟不杀声部，漏一个 off 就是一个挂音）
+                  self._nativeOnPush(idx, midi, trackId);
+                };
+              })(idxOn, ev.midi, ev.vel, ev.trackId));
               handledNative = true;
             }
           }
@@ -938,12 +988,15 @@
             var tracksOff = this.getTracks ? this.getTracks() : [];
             var idxOff = trackIndexOf(ev.trackId, tracksOff);
             if (idxOff >= 0) {
-              // 同 note-on：到点才发，不再提前 TRIGGER_S+0.05s
+              // 同 note-on：到点才发（实参经 IIFE 绑定，避免 var 共享）；
+              // 发出后从发音登记表销账，停止时按残留补发
               var delayOff = Math.max(0, ev.t - now);
-              var midiOff = ev.midi, idx2 = idxOff;
-              this._schedNative(delayOff, function () {
-                window.EngineBridge.noteOffTrack(idx2, midiOff);
-              });
+              this._schedNative(delayOff, (function (idx: any, midi: any) {
+                return function () {
+                  window.EngineBridge.noteOffTrack(idx, midi);
+                  self._nativeOnRemove(idx, midi);
+                };
+              })(idxOff, ev.midi));
               handledOff = true;
             }
           }

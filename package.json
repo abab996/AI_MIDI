@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p frontend/tsconfig.json --noEmit && node tools/dev/emit-frontend.mjs",
     "typecheck": "tsc -p frontend/tsconfig.json --noEmit --pretty false",
+    "test": "node tools/dev/audio_engine_test.mjs",
     "watch": "node tools/dev/watch-frontend.mjs"
   },
   "devDependencies": {

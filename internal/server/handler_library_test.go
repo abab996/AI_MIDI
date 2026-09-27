@@ -215,23 +215,22 @@ func TestLibraryRejectsPathNames(t *testing.T) {
 // 只接受 host 精确匹配 + 路径边界（防开放跳转）
 func TestAllowedOpenURL(t *testing.T) {
 	allow := []string{
-		"https://github.com/abab996/MelodyMate",
-		"https://github.com/abab996/MelodyMate/issues/new",
-		"https://github.com/abab996/MelodyMate?tab=readme",
 		"https://github.com/abab996/AI_MIDI",
 		"https://github.com/abab996/AI_MIDI/issues/new",
+		"https://github.com/abab996/AI_MIDI?tab=readme",
 		"https://melodymate.baimoo.top",
 		"https://melodymate.baimoo.top/anything",
 		"https://aimidi.baimoo.top",
 	}
 	deny := []string{
-		"https://github.com/abab996/MelodyMate.evil.com",            // 域名吞并
-		"https://github.com/abab996/MelodyMate@evil.com",            // userinfo 变体
-		"https://github.com/abab996/MelodyMateness",                 // 前缀同源但路径不同
-		"https://evil.com/?x=https://github.com/abab996/MelodyMate", // 参数注入
-		"http://github.com/abab996/MelodyMate",                      // 非 https
-		"https://github.com/other/repo",                             // 同站其他仓库
-		"https://melodymate.baimoo.top.evil.com",                    // 官网域名吞并
+		"https://github.com/abab996/MelodyMate",                  // 仓库尚未改名
+		"https://github.com/abab996/AI_MIDI.evil.com",            // 域名吞并
+		"https://github.com/abab996/AI_MIDI@evil.com",            // userinfo 变体
+		"https://github.com/abab996/AI_MIDIness",                 // 前缀同源但路径不同
+		"https://evil.com/?x=https://github.com/abab996/AI_MIDI", // 参数注入
+		"http://github.com/abab996/AI_MIDI",                      // 非 https
+		"https://github.com/other/repo",                          // 同站其他仓库
+		"https://melodymate.baimoo.top.evil.com",                 // 官网域名吞并
 		"javascript:alert(1)",
 		"",
 	}

@@ -257,14 +257,14 @@ func (r *Router) handleModelProfiles(w http.ResponseWriter, req *http.Request) {
 // 与官网（Star 请求弹窗、设置页提交 Issue / 关于页链接），不接受任意 URL
 // （防开放跳转——与更新降级通道同思路，URL 语义由前端写死）。
 // 校验用 host + 路径前缀（host 精确匹配，路径带边界），天然挡掉
-// "github.com/abab996/MelodyMate.evil.com"（域名吞并）、
-// "github.com/abab996/MelodyMate@evil.com"（userinfo）等前缀绕过变体。
+// "github.com/abab996/AI_MIDI.evil.com"（域名吞并）、
+// "github.com/abab996/AI_MIDI@evil.com"（userinfo）等前缀绕过变体。
+// 仓库名仍是 AI_MIDI，产品改名后链接不能指到尚未建立的 MelodyMate 仓库。
 var openURLAllow = []struct {
 	host string
 	path string
 }{
-	{"github.com", "/abab996/MelodyMate"},
-	{"github.com", "/abab996/AI_MIDI"}, // 过渡期旧仓库
+	{"github.com", "/abab996/AI_MIDI"},
 	{"melodymate.baimoo.top", ""},
 	{"aimidi.baimoo.top", ""}, // 过渡期旧官网
 }

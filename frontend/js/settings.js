@@ -1729,7 +1729,7 @@
     if ($("#issueBtn")) {
       $("#issueBtn").addEventListener("click", function () {
         if (window.UI && window.UI.openExternal) {
-          UI.openExternal ("https://github.com/abab996/MelodyMate/issues/new");
+          UI.openExternal ("https://github.com/abab996/AI_MIDI/issues/new");
         }
       });
     }

@@ -26,9 +26,9 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-AppPublisherURL=https://github.com/abab996/MelodyMate
-AppSupportURL=https://github.com/abab996/MelodyMate
-AppUpdatesURL=https://github.com/abab996/MelodyMate
+AppPublisherURL=https://github.com/abab996/AI_MIDI
+AppSupportURL=https://github.com/abab996/AI_MIDI
+AppUpdatesURL=https://github.com/abab996/AI_MIDI
 
 ; per-user 安装：无需管理员权限，升级/卸载不依赖 UAC
 PrivilegesRequired=lowest

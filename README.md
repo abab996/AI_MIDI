@@ -68,8 +68,8 @@ Open the **Settings** page and fill in your API key. The default connects to Dee
 Requirements: **Go ≥ 1.27**, **Wails v2** (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`), Windows 10+ (Linux: webkit2gtk for desktop mode).
 
 ```bat
-git clone https://github.com/abab996/MelodyMate.git
-cd MelodyMate
+git clone https://github.com/abab996/AI_MIDI.git
+cd AI_MIDI
 wails build        :: Windows -> buildin\MelodyMate.exe
 RUN.bat
 ```

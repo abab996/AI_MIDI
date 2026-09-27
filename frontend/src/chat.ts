@@ -3893,7 +3893,7 @@
   /* ═══════════ 请求 Star（每个新版本首次打开弹一次） ═══════════ */
 
   var STAR_SEEN_KEY = "melodymate_star_seen";
-  var STAR_REPO_URL = "https://github.com/abab996/MelodyMate";
+  var STAR_REPO_URL = "https://github.com/abab996/AI_MIDI";
   var starPromptVer = "";   /* 本次提示对应的版本（关闭时写入记忆键） */
 
   function showStarPrompt(ver: any) {

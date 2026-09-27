@@ -751,7 +751,11 @@ func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]a
 		return nil, err
 	}
 	/* id 也带库路径：引擎的 plugin.load 先做 id 必填校验，format=mm 分支在其后 */
-	params := map[string]any{"format": "mm", "path": dllPath, "id": dllPath, "slot": slot}
+	params := map[string]any{"format": "mm", "path": dllPath, "id": dllPath}
+	/* slot 只在真的给了槽位时才带：presence 决定"效果器进槽"还是"乐器挂轨道"（引擎按此分流） */
+	if slot >= 0 {
+		params["slot"] = slot
+	}
 	if track < 0 {
 		params["master"] = true
 	} else {

@@ -927,6 +927,100 @@ async function main() {
     const mxrDark = await cdp.screenshot("mixer-dark", mxrBox);
     check("混音台双主题截图产出", fs.existsSync(mxrWarm) && fs.existsSync(mxrDark));
 
+    // 8) MM 插件 UI 承载页（P6 / 规格 4.7）
+    console.log("[UI] MM 插件 UI 承载页（sandbox iframe + postMessage 桥）");
+    const mmDll = path.join(repoRoot, "Library", "plugins", "com.melodymate.example.gain@1.0.0", "bin", "win-x64", "mm_example_gain.dll");
+    const mmPkgOk = fs.existsSync(mmDll);
+    if (!mmPkgOk) {
+      console.log("  skip MM 承载页（未安装示例插件：先跑 mm install …）");
+    } else {
+      // 先把 MM 效果器装进 slot 0，承载页才有参数可读
+      const mmLoad = await api("POST", "/api/engine/plugins/load", { format: "mm", path: mmDll, track: 0, slot: 0 });
+      check("MM 效果器装入 slot 0（承载页前置）", mmLoad.status === 200, mmLoad.json);
+
+      const mmUrl = base + "/mm-ui.html?plugin=" + encodeURIComponent("com.melodymate.example.gain") + "&track=0&slot=0";
+      await cdp.send("Page.navigate", { url: mmUrl });
+      await cdp.waitFor("!!document.getElementById('mmName')", 15000, "承载页加载");
+      await cdp.waitFor("/MM Example Gain/.test(document.getElementById('mmName').textContent)", 20000, "承载页读到插件名与参数");
+      // 插件 UI 跑在无 same-origin 的 sandbox iframe 里：父页读不到它的 DOM，
+      // 因此以"骨架消失 + 状态文本"为 ready 证据（正是 sandbox 生效的表现）
+      await cdp.waitFor("document.getElementById('mmSkeleton').hidden === true", 20000, "插件 UI ready（骨架已收起）");
+      const mmState = await cdp.evaluate(`(function(){
+        var rows = document.querySelectorAll("#mmParams .mm-row");
+        var range = document.querySelector("#mmParams input[type=range]");
+        return {
+          name: document.getElementById("mmName").textContent,
+          status: document.getElementById("mmStatus").textContent,
+          rows: rows.length,
+          firstLabel: rows[0] ? rows[0].querySelector(".nm").textContent : "",
+          rangeVal: range ? range.value : "",
+          frameHidden: document.getElementById("plug").hidden,
+          sandbox: document.getElementById("plug").getAttribute("sandbox")
+        };
+      })()`);
+      check("承载页显示插件名与 format", /MM Example Gain/.test(mmState.name) && /mm/.test(mmState.name), mmState);
+      check("参数面板按插件自报参数渲染", mmState.rows >= 1 && mmState.firstLabel === "Gain", mmState);
+      check("插件 UI 载入且沙箱属性生效（无 same-origin）",
+        mmState.frameHidden === false && mmState.sandbox === "allow-scripts", mmState);
+
+      // 宿主侧桥：模拟插件 UI 发来的 mm.setParam（与真实插件 UI 同一条路径）
+      const bridge = await cdp.evaluate(`(function(){
+        window.dispatchEvent(new MessageEvent("message", { data: { type: "mm.setParam", id: "gain", value: 0.3 } }));
+        return true;
+      })()`);
+      await new Promise((r) => setTimeout(r, 700));
+      const after = await api("GET", "/api/engine/plugins/params?track=0&slot=0");
+      const gainParam = ((after.json || {}).params || [])[0] || {};
+      check("插件 → 宿主 setParam 经桥写入引擎（gain≈0.3 归一化）",
+        bridge && Math.abs((gainParam.value === undefined ? -1 : gainParam.value) - 0.3) < 0.05, gainParam);
+
+      // 非法消息必须被丢弃且不影响宿主
+      const junk = await cdp.evaluate(`(function(){
+        window.dispatchEvent(new MessageEvent("message", { data: { type: "mm.setParam", id: 123, value: "x" } }));
+        window.dispatchEvent(new MessageEvent("message", { data: "not-an-object" }));
+        window.dispatchEvent(new MessageEvent("message", { data: { type: "other.thing" } }));
+        return document.getElementById("mmName").textContent;
+      })()`);
+      check("非法消息被丢弃，承载页不受影响", /MM Example Gain/.test(junk), junk);
+
+      // 宿主参数面板滑杆 → 引擎
+      const hostWrite = await cdp.evaluate(`(function(){
+        var r = document.querySelector("#mmParams input[type=range]");
+        r.value = "0.6";
+        r.dispatchEvent(new Event("input", { bubbles: true }));
+        return r.value;
+      })()`);
+      await new Promise((r) => setTimeout(r, 700));
+      const after2 = await api("GET", "/api/engine/plugins/params?track=0&slot=0");
+      const gain2 = ((after2.json || {}).params || [])[0] || {};
+      check("宿主参数面板滑杆写入引擎（gain≈0.6）",
+        hostWrite === "0.6" && Math.abs((gain2.value === undefined ? -1 : gain2.value) - 0.6) < 0.05, gain2);
+
+      // 双主题 + reduced-motion（骨架动画关闭即降级生效）
+      await cdp.evaluate('document.documentElement.dataset.theme = "parchment"');
+      await new Promise((r) => setTimeout(r, 300));
+      const mmWarm = await cdp.screenshot("mm-ui-warm");
+      await cdp.evaluate('document.documentElement.dataset.theme = "dark"');
+      await new Promise((r) => setTimeout(r, 300));
+      const mmDark = await cdp.screenshot("mm-ui-dark");
+      await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+      await new Promise((r) => setTimeout(r, 200));
+      const reduced = await cdp.evaluate(`(function(){
+        var bar = document.querySelector(".sk-bar");
+        var anim = bar ? getComputedStyle(bar).animationName : "none";
+        return { anim: anim, btnTransition: getComputedStyle(document.getElementById("mmReloadBtn")).transitionDuration };
+      })()`);
+      check("reduced-motion 下骨架动画关闭", reduced.anim === "none", reduced);
+      await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+      check("承载页双主题截图产出", fs.existsSync(mmWarm) && fs.existsSync(mmDark));
+
+      await api("POST", "/api/engine/plugins/unload", { track: 0, slot: 0 });
+      // 回到编曲页，避免影响后续段落
+      await cdp.send("Page.navigate", { url: base + "/chat.html" });
+      await cdp.waitFor("window.Arrange && window.Arrange.initialized", 20000, "返回编曲页");
+      await cdp.evaluate(`window.__openProject(${JSON.stringify(projectId)}, "")`);
+      await cdp.waitFor(`window.Arrange.projectId === ${JSON.stringify(projectId)}`, 15000, "重开项目");
+    }
     // 6) AI 热应用：模拟服务端推送（走同一函数）
     const hot = await cdp.evaluate(`(function(){
       var A = window.Arrange;

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"melodymate/internal/config"
 	"melodymate/internal/llm"
@@ -79,6 +80,20 @@ var mmTools = []llm.ToolDefinition{
 	{
 		Type: "function",
 		Function: llm.FunctionSchema{
+			Name:        "mm_build_status",
+			Description: "查看 mm_build_plugin 的编译进度（长编译用）。返回阶段（配置/编译/收集/打包/校验）、已用时与日志尾部。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"job": map[string]any{"type": "string", "description": "mm_build_plugin 返回的作业号"},
+				},
+				"required": []string{"job"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
 			Name:        "mm_install_plugin",
 			Description: "把编译好的 .mm 安装到 <数据根>/Library/plugins/（校验 + 能力授权 fail-closed）。安装后可在机架/混音台里加载。",
 			Parameters: map[string]any{
@@ -95,7 +110,7 @@ var mmTools = []llm.ToolDefinition{
 
 func isMMTool(name string) bool {
 	switch name {
-	case "mm_create_plugin", "mm_write_file", "mm_build_plugin", "mm_install_plugin":
+	case "mm_create_plugin", "mm_write_file", "mm_build_plugin", "mm_build_status", "mm_install_plugin":
 		return true
 	}
 	return false
@@ -236,16 +251,24 @@ func executeMMTool(name string, args map[string]any) (string, error) {
 		if _, statErr := os.Stat(filepath.Join(dir, "manifest.json")); statErr != nil {
 			return "错误：工程不存在（先 mm_create_plugin）: " + dir, nil
 		}
-		sdk := mmSDKRoot()
-		mmArgs := []string{"build", dir}
-		if sdk != "" {
-			mmArgs = append(mmArgs, "--sdk", sdk)
+		/* 后台作业 + 进度报告：快编译直接给结果，慢编译给出进度卡与作业号
+		   （同步等待会让对话长时间空白，直接截断又会丢日志） */
+		job, jerr := startMMBuild(id, dir, mmSDKRoot())
+		if jerr != nil {
+			return "错误：" + jerr.Error(), nil
 		}
-		out, err := runMM(mmArgs...)
-		if err != nil {
-			return "编译失败：\n" + out, nil
+		if waitMMBuild(job, 25*time.Second) {
+			return job.report(), nil
 		}
-		return "编译成功：\n" + out + "\n下一步：mm_install_plugin（需要时先与用户确认能力清单）", nil
+		return job.report() + "\n（编译未在 25 秒内完成，已转为后台作业；用 mm_build_status 继续查看）", nil
+
+	case "mm_build_status":
+		jobID := stringArg(args, "job")
+		job, ok := mmBuildJobByID(jobID)
+		if !ok {
+			return "错误：找不到编译作业 " + jobID + "（作业号由 mm_build_plugin 返回；重启主程序后作业记录会清空）", nil
+		}
+		return job.report(), nil
 
 	case "mm_install_plugin":
 		id := stringArg(args, "id")

@@ -430,7 +430,77 @@ async function main() {
     check("服务端数据为 v2 且含 rack/pianoRoll/mixer",
       srv.json.version === 2 && !!srv.json.rack && !!srv.json.pianoRoll && !!srv.json.mixer, Object.keys(srv.json));
 
-    // 5) AI 热应用：模拟服务端推送（走同一函数）
+    // 5) 「＋ 加载音源」= 只入架不分配（机架 ＋ 与空态大按钮都走这条）
+    const addFlow = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      A.openOutputRack();
+      var before = A.rack.items.length;
+      var trackBefore = A.tracks[0].source.itemId;
+      document.getElementById("arrRackAddSourceBtn").click();
+      await new Promise(function(r){ setTimeout(r, 120); });
+      var opened = window.ArrRack.isPickerOpen();
+      // 选一个"其他音源"候选（合成器波形之一）
+      var rows = window.ArrRack._picker.rows;
+      var idx = -1;
+      for (var i = 0; i < rows.length; i++) {
+        if (!rows[i].inRack && rows[i].cand && rows[i].cand.kind === "synth") { idx = i; break; }
+      }
+      if (idx < 0) return { opened: opened, idx: idx };
+      window.ArrRack._picker.active = idx;
+      var want = rows[idx].cand;
+      var overlay = document.getElementById("sndPickerOverlay");
+      overlay.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      return { opened: opened, idx: idx, wantSource: want.sourceId, wantPreset: want.presetId,
+               before: before, trackBefore: trackBefore };
+    })()`);
+    await cdp.waitFor("!window.ArrRack.isPickerOpen()", 8000, "加载音源后选择器关闭");
+    const addResult = await cdp.evaluate(`(function(){
+      var A = window.Arrange;
+      var last = A.rack.items[A.rack.items.length - 1];
+      return { count: A.rack.items.length, lastSource: last ? last.sourceId : "",
+               lastPreset: last ? last.presetId : "", track: A.tracks[0].source.itemId,
+               inRackSection: !![].slice.call(document.querySelectorAll("#arrRackList .arr-rack-item")).length };
+    })()`);
+    check("「＋ 加载音源」只入架不分配（轨道音源不变）",
+      addFlow.opened && addResult.count === addFlow.before + 1 &&
+      addResult.lastSource === addFlow.wantSource && addResult.lastPreset === addFlow.wantPreset &&
+      addResult.track === addFlow.trackBefore,
+      { ...addFlow, ...addResult });
+
+    // 6) 试听链路：引擎轨 29 的电平非零 = 音源真的发声（无引擎时跳过）
+    const engineReady = await cdp.evaluate(
+      'window.__engineState === "ready" && !!(window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine())');
+    if (!engineReady) {
+      console.log("  skip 试听实测（引擎未就绪或处于 WebAudio 模式）");
+    } else {
+      const previews = await cdp.evaluate(`(async function(){
+        var A = window.Arrange;
+        var out = [];
+        var seen = {};
+        for (var i = 0; i < A.rack.items.length; i++) {
+          var item = A.rack.items[i];
+          if (item.kind !== "synth" && item.kind !== "sf2") continue;
+          var key = item.kind + "|" + (item.presetId || "");
+          if (seen[key]) continue;
+          seen[key] = true;
+          A.previewRackItem(item);
+          var peak = 0, t0 = performance.now();
+          while (performance.now() - t0 < 1200) {
+            await new Promise(function(r){ setTimeout(r, 40); });
+            var lv = (window.__engineLevels || [])[29] || 0;
+            if (lv > peak) peak = lv;
+          }
+          out.push({ kind: item.kind, preset: item.presetId || "", name: item.name, peak: peak });
+        }
+        return out;
+      })()`);
+      const silent = previews.filter((p) => !(p.peak > 0.001));
+      check("机架音源试听实测：引擎试听轨（29）电平非零",
+        previews.length > 0 && silent.length === 0, previews);
+      console.log("       " + previews.map((p) => p.kind + "/" + (p.preset || "-") + " peak=" + p.peak.toFixed(4)).join("  "));
+    }
+
+    // 6) AI 热应用：模拟服务端推送（走同一函数）
     const hot = await cdp.evaluate(`(function(){
       var A = window.Arrange;
       var item = A.rack.items[0];
@@ -447,7 +517,7 @@ async function main() {
       hot.name === "AI 改名" && Math.abs(hot.vol - 0.42) < 1e-6 && hot.preset === "sine" && hot.bpm === 90, hot);
     check("热应用保留本地 clip（不被服务端快照清空）", hot.clips === 1, hot.clips);
 
-    // 6) 双主题截图（暗蓝 + 暖纸）
+    // 7) 双主题截图（暗蓝 + 暖纸）
     console.log("[UI] 双主题截图 + reduced-motion 降级");
     await cdp.evaluate(`(function(){
       localStorage.setItem("melodymate-blueprint-theme", "dark");
@@ -497,7 +567,7 @@ async function main() {
     check("reduced-motion 下 AI 回显脉冲关闭", rm.echo === "none" || rm.echo === "n/a", rm);
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });
 
-    // 7) 控制台零异常
+    // 8) 控制台零异常
     const errs = cdp.errors.slice(errBase);
     check("页面无 JS 异常 / console.error", errs.length === 0, errs.slice(0, 5));
 

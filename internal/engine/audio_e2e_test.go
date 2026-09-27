@@ -27,7 +27,7 @@ func TestMultiTrackIsolation(t *testing.T) {
 
 // 测试 supervisor 默认超时覆盖 listDevices 冷启动
 func TestSupervisorBounceParams(t *testing.T) {
-	sup := NewSupervisor(Config{}, AudioSettings{Backend: "auto"})
+	sup := NewSupervisor(Config{}, AudioSettings{})
 	// 未启动时 Bounce 应返回“未就绪”而非 hang
 	_, err := sup.Bounce(map[string]any{"bpm": 120.0, "beats": 4.0})
 	if err == nil {

@@ -364,7 +364,6 @@ interface Window {
   __openProject?: (projectId: string, taskId: string) => void;
   __engineTimecode?: EngineTimecode;
   __engineLevels?: number[];
-  __engineBackend?: string;
   __engineState?: string;
   marked?: MarkedApi;
   chrome?: { webview?: object };

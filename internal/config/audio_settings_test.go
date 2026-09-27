@@ -1,12 +1,15 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestAudioBackendDefault(t *testing.T) {
+// 音频后端设置项已移除：固定走原生引擎（桌面）/ WebAudio（无引擎桥的
+// 浏览器模式由前端判定），旧配置里的 backend 键被忽略且不再影响行为
+func TestAudioBackendFieldRemoved(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "aimidi_audio_test_*")
 	if err != nil {
 		t.Fatal(err)
@@ -17,51 +20,27 @@ func TestAudioBackendDefault(t *testing.T) {
 	SettingsFile = filepath.Join(tmpDir, "settings.json")
 	defer func() { SettingsFile = orig; settingsCache = nil }()
 
-	// 首次加载无文件时应为 auto
-	s := LoadSettings()
-	if s.Audio.Backend != "auto" {
-		t.Fatalf("default backend = %q, want auto", s.Audio.Backend)
-	}
-	if !s.Audio.EngineEnabled {
+	if !LoadSettings().Audio.EngineEnabled {
 		t.Fatalf("default EngineEnabled should be true")
 	}
-}
 
-func TestAudioBackendPersistence(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "aimidi_audio_test2_*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	orig := SettingsFile
-	SettingsFile = filepath.Join(tmpDir, "settings.json")
-	defer func() { SettingsFile = orig; settingsCache = nil }()
-
-	cases := []string{"auto", "webaudio"}
-	for _, want := range cases {
-		s := LoadSettings()
-		s.Audio.Backend = want
-		if err := SaveSettings(s); err != nil {
-			t.Fatalf("SaveSettings %q failed: %v", want, err)
-		}
-		// 清缓存后重读
-		settingsCache = nil
-		got := LoadSettings()
-		if got.Audio.Backend != want {
-			t.Fatalf("persist backend = %q, want %q", got.Audio.Backend, want)
-		}
-	}
-
-	// 非法值应回退为 auto
-	raw := `{"audio":{"backend":"invalid"}}`
+	// 旧配置（含 backend）仍能加载，不再报错（未知键忽略）
+	raw := `{"audio":{"engine_enabled":false,"backend":"webaudio"}}`
 	if err := os.WriteFile(SettingsFile, []byte(raw), 0644); err != nil {
 		t.Fatal(err)
 	}
 	settingsCache = nil
 	got := LoadSettings()
-	if got.Audio.Backend != "auto" {
-		t.Fatalf("invalid backend should fallback to auto, got %q", got.Audio.Backend)
+	if got.Audio.EngineEnabled {
+		t.Fatalf("engine_enabled=false 应被保留")
+	}
+	// 重新保存后 backend 键应从文件中消失（结构体已无该字段）
+	if err := SaveSettings(got); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(SettingsFile)
+	if bytes.Contains(data, []byte("backend")) {
+		t.Fatalf("保存后不应再有 backend 键: %s", data)
 	}
 }
 

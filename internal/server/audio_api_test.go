@@ -30,11 +30,12 @@ func setupTestRouter(t *testing.T) (*Router, func()) {
 	return NewRouter(nil, nil), cleanup
 }
 
-func TestAudioSettingsBackend(t *testing.T) {
+// 后端设置项已移除：GET 不再返回 backend；POST 带 backend 也不生效
+// （未知字段被忽略，其余字段照常保存）
+func TestAudioSettingsBackendRemoved(t *testing.T) {
 	r, cleanup := setupTestRouter(t)
 	defer cleanup()
 
-	// GET 默认应为 auto
 	req := newLocalRequest("GET", "/api/audio/settings", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -45,36 +46,28 @@ func TestAudioSettingsBackend(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["backend"] != "auto" {
-		t.Fatalf("backend = %v, want auto", got["backend"])
+	if _, has := got["backend"]; has {
+		t.Fatalf("backend 键应已从响应中移除, got %v", got["backend"])
 	}
 
-	// POST webaudio
-	body, _ := json.Marshal(map[string]any{"backend": "webaudio"})
+	// 旧客户端仍可能发 backend：不应报错，且不影响保存
+	body, _ := json.Marshal(map[string]any{"backend": "webaudio", "buffer_size": 256})
 	req = newLocalRequest("POST", "/api/audio/settings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != 200 {
-		t.Fatalf("POST webaudio code %d body %s", w.Code, w.Body.String())
+		t.Fatalf("POST with legacy backend code %d body %s", w.Code, w.Body.String())
 	}
-	// 再次 GET 应持久化
 	req = newLocalRequest("GET", "/api/audio/settings", nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	json.Unmarshal(w.Body.Bytes(), &got)
-	if got["backend"] != "webaudio" {
-		t.Fatalf("after POST backend = %v, want webaudio", got["backend"])
+	if got["buffer_size"] != float64(256) {
+		t.Fatalf("buffer_size 应被保存, got %v", got["buffer_size"])
 	}
-
-	// 非法值应 400
-	body, _ = json.Marshal(map[string]any{"backend": "invalid"})
-	req = newLocalRequest("POST", "/api/audio/settings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != 400 {
-		t.Fatalf("invalid backend should 400, got %d", w.Code)
+	if _, has := got["backend"]; has {
+		t.Fatalf("backend 键不应回来")
 	}
 }
 

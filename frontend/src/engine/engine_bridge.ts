@@ -135,13 +135,14 @@
     }
   } as EngineBridgeApi;
 
-  // 后端模式辅助：统一以 Go settings.audio.backend 为准，localStorage 仅作离线缓存
-  // 引擎未就绪时自动回退 Web（避免有绑定无声的假阳性）
+  /* 路由判定：单一路由源 AudioBackend（后端设置项已移除——桌面版恒为
+     原生引擎，无引擎桥的浏览器模式恒为 WebAudio 兼容层）。
+     getBackend 保留为兼容别名（旧调用方读 "auto"/"webaudio" 语义） */
   EngineBridge.getBackend = function () {
     try {
-      if (window.__engineBackend) return window.__engineBackend;
-      var v = localStorage.getItem("ai_midi_audio_backend");
-      if (v === "webaudio" || v === "auto") return v;
+      if (window.AudioBackend && window.AudioBackend.isEngine) {
+        return window.AudioBackend.isEngine() ? "auto" : "webaudio";
+      }
     } catch (e) {}
     return "auto";
   };
@@ -151,10 +152,7 @@
     if (window.AudioBackend && window.AudioBackend.isNativePreferred) {
       return window.AudioBackend.isNativePreferred();
     }
-    var mode = EngineBridge.getBackend();
-    if (mode === "webaudio") return false;
-    if (window.__engineState && window.__engineState !== "ready") return false;
-    return !!EngineBridge.available;
+    return !!EngineBridge.available && window.__engineState === "ready";
   };
 
   window.EngineBridge = EngineBridge;

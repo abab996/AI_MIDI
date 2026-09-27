@@ -921,47 +921,39 @@
 <script src="/demo/script_data.js" defer></script>
 <script src="/demo/showrunner.js" defer></script>
 <script>
-// 引擎常驻徽章 + 降级提示（满足“默认走JUCE，仅WEBAUDIO走Web”的可观测性要求）
+// 引擎常驻徽章：桌面版固定走原生引擎（不降级），浏览器模式走 WebAudio 兼容层
 (function(){
   var badge = document.getElementById("engineStamp");
   if (!badge) return;
   var lastState = null;
   function updateBadge(){
     var statusOk = true;
-    Promise.all([
-      fetch("/api/audio/status").then(function(r){return r.json();}).catch(function(){statusOk = false; return {};}),
-      fetch("/api/audio/settings").then(function(r){return r.json();}).catch(function(){return {backend:"auto"};})
-    ]).then(function(arr){
-      var st = arr[0] || {};
-      var cfg = arr[1] || {};
-      var backend = (cfg.backend === "webaudio" ? "webaudio" : "auto");
+    fetch("/api/audio/status").then(function(r){return r.json();}).catch(function(){statusOk = false; return {};})
+    .then(function(st){
+      st = st || {};
       /* 取状态失败时保留上一次已知状态：写入 unknown 会让播放中的失联
          判定（isEngineDown）把一次 HTTP 抖动当成引擎掉线，掐断正在播放的
          走带。首次加载即失败时保持未取到（undefined），判定侧同样忽略 */
       var state = statusOk ? (st.state || "unknown") : (window.__engineState || "unknown");
-      /* 浏览器模式（无 Wails 桥）：实际发声恒为 WebAudio——徽章必须
-         如实反映，不得显示引擎就绪（此前只按服务端 backend+引擎状态
-         渲染，浏览器模式下显示 JUCE ● 与实际路由相反，属误导） */
+      /* 浏览器模式（无 Wails 桥）：没有引擎通道，实际发声恒为 WebAudio
+         兼容层——徽章必须如实反映，不得显示引擎就绪 */
       var noBridge = !(window.EngineBridge && window.EngineBridge.available);
-      var isWeAudioForced = backend === "webaudio" || noBridge;
       var text = "";
       var cls = "stamp";
-      if (isWeAudioForced) {
+      if (noBridge) {
         text = "WEB ○";
         cls = "stamp warn";
-        badge.title = noBridge
-          ? "浏览器模式（无引擎桥）· 全部走 Web Audio（设置页可配置后端，桌面应用内生效）"
-          : "已强制 WEBAUDIO（设置页可切回 ENGINE）";
+        badge.title = "浏览器模式（无引擎桥）· 全部走 Web Audio 兼容层（桌面应用内为原生引擎）";
       } else {
         if (state === "ready") {
           text = "ENGINE ●"; cls = "stamp ok";
           var sfNote = (st.soundfont_loaded === false) ? " · 未加载音色（SF2 轨静音）" : "";
-          badge.title = (st.device_summary||"引擎就绪") + sfNote + " · ENGINE 仅引擎";
+          badge.title = (st.device_summary||"引擎就绪") + sfNote + " · 全链路原生引擎";
         }
-        else if (state === "starting" || state === "restarting") { text = "ENGINE …"; cls = "stamp warn"; badge.title = "引擎启动中（ENGINE 模式播放暂不可用）"; }
+        else if (state === "starting" || state === "restarting") { text = "ENGINE …"; cls = "stamp warn"; badge.title = "引擎启动中（播放暂不可用）"; }
         else if (state === "failed" || state === "stopped" || state === "disabled") {
           text = "ENGINE ✗"; cls = "stamp warn";
-          badge.title = "音频引擎不可用（ENGINE 模式不发声）："+(st.last_error||state)+"；可在设置页切 WEBAUDIO";
+          badge.title = "音频引擎不可用（不降级，播放无声）："+(st.last_error||state)+"；请检查声卡设置或重启应用";
         }
         else { text = "ENGINE ?"; cls = "stamp"; badge.title = "引擎状态："+state; }
       }
@@ -969,25 +961,19 @@
       badge.className = cls;
       var prevState = window.__engineState;
       window.__engineState = state;
-      window.__engineBackend = backend;
-      // 引擎模式（不降级路由）下切换/残留的 AudioContext 一律销毁——
-      // 杜绝"切到 ENGINE 还有 Web 音在响"（webaudio 模式由 SharedAudio 惰性重建）
-      if (!isWeAudioForced && window.SharedAudio && window.SharedAudio.dispose) {
-        try { window.SharedAudio.dispose(); } catch (e) {}
-      }
-      // 卡音兜底：后端从原生切走（引擎挂掉/强制 WEBAUDIO）时，之前经
-      // 原生路径发出的音符没有对应的前端 voice 可停——清引擎侧残留
+      // 卡音兜底：引擎从就绪转为不可用时，之前经原生路径发出的音符没有
+      // 对应的前端 voice 可停——清引擎侧残留
       if (prevState === "ready" && state !== "ready" && window.EngineBridge && window.EngineBridge.panic) {
         try { window.EngineBridge.panic().catch(function(){}); } catch (e) {}
       }
-      // 失败转态 toast（仅一次）：严格路由——引擎模式不降级，明确告知。
-      // 浏览器模式（无桥）不弹此提示（WebAudio 从未失效）
-      if (state === "failed" && lastState !== "failed" && !isWeAudioForced && !noBridge) {
-        if (window.UI && window.UI.toast) window.UI.toast("⚠ 音频引擎不可用（ENGINE 模式播放不可用，不降级）。可到设置页切换 WEBAUDIO 或检查声卡", "warn");
+      // 失败转态 toast（仅一次）：严格路由不降级，明确告知。
+      // 浏览器模式（无桥）不弹此提示（WebAudio 兼容层从未失效）
+      if (state === "failed" && lastState !== "failed" && !noBridge) {
+        if (window.UI && window.UI.toast) window.UI.toast("⚠ 音频引擎不可用（不降级，播放无声）。请检查声卡设置或重启应用", "warn");
       }
       // 引擎恢复（starting/restarting → ready）转态提示一次（此前恢复全程静默）
-      if (state === "ready" && (lastState === "starting" || lastState === "restarting" || lastState === "failed") && !isWeAudioForced && !noBridge) {
-        if (window.UI && window.UI.toast) window.UI.toast("✓ 音频引擎已就绪（ENGINE 模式播放可用）", "ok");
+      if (state === "ready" && (lastState === "starting" || lastState === "restarting" || lastState === "failed") && !noBridge) {
+        if (window.UI && window.UI.toast) window.UI.toast("✓ 音频引擎已就绪（播放可用）", "ok");
       }
       lastState = state;
     });
@@ -1005,9 +991,8 @@
       if (!badgeTimer) badgeTimer = setInterval(updateBadge, 15000);
     }
   });
-  // 后端切换后 badge 立即刷新（监听 storage 事件与自定义事件）
-  window.addEventListener("storage", function(e){ if(e.key==="ai_midi_audio_backend") updateBadge(); });
-  // 暴露给 settings.html 调用
+  // 后端设置项已移除（固定原生引擎），storage 跨页同步监听一并去掉
+  // 暴露给设置页调用（音频设置变更后立即刷新徽章）
   window.__refreshEngineBadge = updateBadge;
 })();
 </script>

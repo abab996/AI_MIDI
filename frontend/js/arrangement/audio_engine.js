@@ -34,16 +34,11 @@
 
   function isNativePreferred() {
     try {
-      // 全局后端为准（Go权威）。AudioBackend.isNativePreferred 已收紧为
-      // "引擎模式且就绪"——引擎模式下永不回退 WebAudio（严格路由）
+      /* 单一路由源：AudioBackend.isNativePreferred（引擎模式且就绪——
+         桌面版恒为引擎，无引擎桥时恒为 WebAudio 兼容层）。
+         引擎模式下永不回退 WebAudio（严格路由） */
       if (window.AudioBackend && window.AudioBackend.isNativePreferred) {
         return window.AudioBackend.isNativePreferred();
-      }
-      var backend = (window.__engineBackend || (window.AudioBackend && window.AudioBackend.getMode ? window.AudioBackend.getMode() : "auto"));
-      if (backend === "webaudio") return false;
-      if (window.__engineState && window.__engineState !== "ready") return false;
-      if (window.AudioBackend && window.AudioBackend.getMode) {
-        return window.AudioBackend.getMode() === "auto" && window.EngineBridge && window.EngineBridge.available;
       }
     } catch (e) {}
     return false;

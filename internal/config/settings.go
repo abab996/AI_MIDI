@@ -72,7 +72,7 @@ func DefaultSettings() Settings {
 		Model:            DefaultModel,
 		ReasoningEffort:  "max",
 		ThinkingEnabled:  true,
-		Audio:            AudioSettings{EngineEnabled: true, Backend: "auto"},
+		Audio:            AudioSettings{EngineEnabled: true},
 		Providers:        []Provider{p},
 		ActiveProviderID: p.ID,
 		ActiveModelID:    DefaultModel,
@@ -205,15 +205,6 @@ func parseSettings(data []byte) Settings {
 		}
 		if f, ok := v["buffer_size"].(float64); ok && f > 0 {
 			res.Audio.BufferSize = int(f)
-		}
-		if s, ok := v["backend"].(string); ok {
-			s = strings.TrimSpace(strings.ToLower(s))
-			if s == "webaudio" || s == "auto" {
-				res.Audio.Backend = s
-			}
-		}
-		if res.Audio.Backend == "" {
-			res.Audio.Backend = "auto"
 		}
 	}
 

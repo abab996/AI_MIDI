@@ -267,14 +267,9 @@
         <button class="fn" id="applyAudioBtn" style="margin-top:10px">应用音频设置</button>
         <span id="applyHint" style="font-size:12px;opacity:.7;margin-left:8px"></span>
 
-        <label class="field-label" style="margin-top:12px">演奏合成后端</label>
-        <div class="func-selector" style="grid-template-columns:repeat(2,1fr)" id="backendSelector">
-          <button class="fn" data-backend="auto">ENGINE · 仅音频引擎（不降级）</button>
-          <button class="fn" data-backend="webaudio">WEBAUDIO · 浏览器合成</button>
-        </div>
-        <div style="font-size:12px;opacity:.7;margin-top:6px;line-height:1.6">
-          ENGINE：所有发声只走原生音频引擎；引擎未就绪/失败时播放被阻断并提示，绝不回退浏览器合成。
-          WEBAUDIO：全部走浏览器 Web Audio（无需引擎）。
+        <div style="font-size:12px;opacity:.7;margin-top:12px;line-height:1.6">
+          发声固定走原生音频引擎（JUCE）：引擎未就绪/失败时播放被阻断并提示，
+          绝不回退浏览器合成。浏览器模式（无引擎桥）自动使用 Web Audio 兼容层。
         </div>
 
         <div style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
@@ -599,44 +594,8 @@
       });
   });
 
-  var selector = $("backendSelector");
-  function paintBackend(modeOverride) {
-    var mode = modeOverride || (window.AudioBackend ? window.AudioBackend.getMode() : "auto");
-    Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
-      btn.style.borderColor = btn.dataset.backend === mode ? "var(--accent, #7aa2f7)" : "";
-      btn.style.color = btn.dataset.backend === mode ? "var(--accent, #7aa2f7)" : "";
-    });
-    // 异步以 Go 为准校正（解漂移）
-    try {
-      fetch("/api/audio/settings").then(function (r) { return r.json(); }).then(function (j) {
-        if (j && (j.backend === "auto" || j.backend === "webaudio")) {
-          var gm = j.backend;
-          try { localStorage.setItem("ai_midi_audio_backend", gm); } catch (e) {}
-          Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
-            var on = btn.dataset.backend === gm;
-            btn.style.borderColor = on ? "var(--accent, #7aa2f7)" : "";
-            btn.style.color = on ? "var(--accent, #7aa2f7)" : "";
-          });
-        }
-      }).catch(function () {});
-    } catch (e) {}
-  }
-  Array.prototype.forEach.call(selector.querySelectorAll(".fn"), function (btn) {
-    btn.addEventListener("click", function () {
-      var mode = btn.dataset.backend;
-      var p = window.AudioBackend ? window.AudioBackend.setMode(mode) : Promise.resolve();
-      Promise.resolve(p).then(function (res) {
-        paintBackend(mode);
-        /* setMode 返回 {ok} 状态：本地已生效但服务器保存失败时如实提示
-           （此前无条件 toast 成功，重启后设置回滚且无任何解释） */
-        if (res && res.ok === false) {
-          if (window.UI && window.UI.toast) window.UI.toast("⚠ 已切换为 " + (mode === "auto" ? "ENGINE" : "WEBAUDIO") + "（本页立即生效），但保存到服务器失败，重启后可能恢复原设置", "warn");
-          return;
-        }
-        if (window.UI && window.UI.toast) window.UI.toast(mode === "auto" ? "✅ 已切为 ENGINE·仅音频引擎（不降级，全链路 JUCE）" : "✅ 已切为 WEBAUDIO·浏览器合成（全链路 WebAudio）", "");
-      });
-    });
-  });
+  /* 演奏合成后端选择器已移除：桌面版固定走原生引擎（JUCE），浏览器模式
+     自动落 Web Audio 兼容层，不再是用户可选项 */
 
   $("testToneBtn").addEventListener("click", function () {
     toneOn = !toneOn;

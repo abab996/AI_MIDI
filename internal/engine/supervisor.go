@@ -774,7 +774,6 @@ func (s *Supervisor) runOnce() string {
 			s.mu.Lock()
 			s.audio = AudioSettings{
 				EngineEnabled: s.audio.EngineEnabled,
-				Backend:       s.audio.Backend,
 				// 保留显式引擎路径覆盖：回滚的是设备配置，不该抹掉
 				// engine_path（此前被静默清空并随 OnAudioFallback 落盘）
 				EnginePath: s.audio.EnginePath,

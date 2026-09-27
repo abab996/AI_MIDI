@@ -15,7 +15,7 @@ func TestSupervisorParkSurvivesDisabledWake(t *testing.T) {
 	// exe 指向不存在的路径：启用后 runOnce 走"启动失败（文件缺失）→
 	// StateFailed + parkUntilDone"分支，无需真实引擎二进制
 	missing := filepath.Join(t.TempDir(), "missing-engine.exe")
-	sup := NewSupervisor(Config{EnginePath: missing}, AudioSettings{Backend: "auto"})
+	sup := NewSupervisor(Config{EnginePath: missing}, AudioSettings{})
 
 	// 直接起 loop 而不走 Start()：跳过 cleanupOrphanEngines 对系统内
 	// aimidi-engine.exe 的真实清理（测试不应杀外部进程）

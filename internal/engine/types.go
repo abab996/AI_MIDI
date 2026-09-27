@@ -53,7 +53,6 @@ type AudioSettings struct {
 	Device        string `json:"device,omitempty"`
 	SampleRate    int    `json:"sample_rate,omitempty"`
 	BufferSize    int    `json:"buffer_size,omitempty"`
-	Backend       string `json:"backend,omitempty"` // auto(原生优先) | webaudio(强制WebAudio)，缺省auto
 }
 
 // DeviceType 一个驱动类型及其输出设备列表（listDevices 结果）

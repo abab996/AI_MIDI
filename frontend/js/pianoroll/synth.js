@@ -57,45 +57,17 @@
     return 440 * Math.pow(2, (midiNote - 69) / 12);
   };
 
-  /* ===== 原生音频引擎双后端（M2→M3统一）=====
-     mode："auto"（默认：走 JUCE，失败回退 WebAudio）|"webaudio"（强制 WebAudio）
-     以 Go settings.audio.backend 为权威，localStorage 仅作离线缓存与启动瞬时的同步源。 */
-  var BACKEND_KEY = "ai_midi_audio_backend";
-  var _backendMode = (function () {
-    try { return localStorage.getItem(BACKEND_KEY) || "auto"; } catch (e) { return "auto"; }
-  })();
-
-  // 启动时异步与 Go 同步（Go 为准，失败保持本地值）
-  (function syncBackendFromServer() {
-    try {
-      fetch("/api/audio/settings").then(function (r) { return r.json(); }).then(function (j) {
-        var b = j && j.backend;
-        if (b === "auto" || b === "webaudio") {
-          _backendMode = b;
-          try { localStorage.setItem(BACKEND_KEY, b); } catch (e) {}
-        }
-      }).catch(function () {});
-    } catch (e) {}
-  })();
+  /* ===== 音频路由判定（后端设置项已移除）=====
+     桌面版固定走原生引擎（JUCE），不降级；浏览器模式（无 Wails 桥、无引擎
+     通道）自动落到 WebAudio 兼容层——这是平台能力差异，不是用户可选项。
+     此前用 settings.audio.backend（auto/webaudio）让用户二选一，设置页已
+     取消该项；localStorage 旧键不再读取（残留值无害）。 */
 
   window.AudioBackend = {
-    getMode: function () { return _backendMode; },
-    setMode: function (mode) {
-      if (mode !== "auto" && mode !== "webaudio") return Promise.resolve();
-      _backendMode = mode;
-      try { localStorage.setItem(BACKEND_KEY, mode); } catch (e) {}
-      try { window.__engineBackend = mode; } catch(e) {}
-      // 同步到 Go（权威），失败不影响本地已生效；返回 {ok} 供调用方提示
-      try {
-        return fetch("/api/audio/settings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ backend: mode })
-        }).then(function (r) {
-          if (!r.ok) return { ok: false };
-          return r.json().then(function () { return { ok: true }; }).catch(function () { return { ok: true }; });
-        }).catch(function () { return { ok: false }; });
-      } catch (e) { return Promise.resolve({ ok: false }); }
+    getMode: function () { return AudioBackend.mode(); },
+    /* 兼容旧调用方：设置项已移除，调用即空操作（如实返回 ok=false） */
+    setMode: function () {
+      return Promise.resolve({ ok: false });
     },
     isNativeAvailable: function () {
       return !!(window.EngineBridge && window.EngineBridge.available);
@@ -103,12 +75,10 @@
     /* ══ 全局唯一音频路由判定（严格化） ══
        mode()："engine" | "webaudio"
        - 浏览器模式（无 Wails 桥，EngineBridge.available=false）→ 恒 webaudio
-       - backend="webaudio" → webaudio
-       - backend="auto"（设置页显示为 ENGINE · 仅音频引擎）→ engine，不降级：
-         引擎未就绪/失败/声部设置失败一律不发声 + UI 提示，绝不回退 WebAudio */
+       - 桌面版 → engine，不降级：引擎未就绪/失败/声部设置失败一律不发声 +
+         UI 提示，绝不回退 WebAudio */
     mode: function () {
       if (!(window.EngineBridge && window.EngineBridge.available)) return "webaudio";
-      if (_backendMode === "webaudio") return "webaudio";
       return "engine";
     },
     isEngine: function () { return AudioBackend.mode() === "engine"; },

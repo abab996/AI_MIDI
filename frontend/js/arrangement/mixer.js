@@ -738,9 +738,13 @@
     });
     items.push("-");
     items.push({
-      label: "🔌 装载插件…（P5 VST3 / P6 MM 开放）",
-      disabled: true,
-      action: function () {}
+      label: entry.plugin ? "🔌 更换插件…" : "🔌 装载插件…",
+      action: function () { openPluginPicker(ctrl, idx, slot); }
+    });
+    items.push({
+      label: "🎛 插件界面（原生编辑器）…",
+      disabled: !entry.plugin,
+      action: function () { openPluginEditor(ctrl, idx, slot); }
     });
     items.push({
       label: "🗑 清空槽位",
@@ -748,6 +752,50 @@
       action: function () { commitFx(ctrl, idx, slot, { off: true }); }
     });
     ctrl.showMenu(items, rect.left, rect.top - 8);
+  }
+
+  /** openPluginPicker 拉引擎插件清单（GET /api/engine/plugins）→ 菜单选择装载。
+      浏览器模式没有原生引擎：接口 503，这里给可解释提示而不是空菜单。 */
+  function openPluginPicker(ctrl                   , idx        , slot        ) {
+    var where = (idx === MASTER_TRACK ? "主总线" : "通道 " + (idx + 1)) + " · FX " + (slot + 1);
+    UI.getJSON("/api/engine/plugins").then(function (res     ) {
+      var list = (res && res.plugins) || [];
+      if (!list.length) {
+        toast("还没有扫描到 VST3 插件：请在设置页「声音管理」里扫描插件目录", "warn");
+        return;
+      }
+      var items        = [{ heading: "装载插件到 " + where }];
+      list.slice(0, 60).forEach(function (p     ) {
+        items.push({
+          label: (p.instrument ? "🎹 " : "🔧 ") + p.name + (p.vendor ? "（" + p.vendor + "）" : ""),
+          action: function () {
+            UI.postJSON("/api/engine/plugins/load", {
+              id: p.id, track: idx === MASTER_TRACK ? 0 : idx, slot: slot,
+              master: idx === MASTER_TRACK
+            }).then(function () {
+              commitFx(ctrl, idx, slot, { plugin: p.id, bypass: false });
+              toast("✓ 已装载 " + p.name, "ok");
+            }).catch(function (err     ) {
+              toast("✗ 装载失败: " + (err && err.message ? err.message : "未知错误"), "err");
+            });
+          }
+        });
+      });
+      ctrl.showMenu(items, 240, 180);
+    }).catch(function () {
+      toast("原生引擎未启动：VST3 插件仅在桌面版可用（浏览器模式请用 SF2/采样包音源）", "warn");
+    });
+  }
+
+  /** openPluginEditor 打开插件原生编辑器（参数在插件自己的界面里） */
+  function openPluginEditor(ctrl                   , idx        , slot        ) {
+    UI.postJSON("/api/engine/plugins/editor", {
+      track: idx === MASTER_TRACK ? 0 : idx, slot: slot, master: idx === MASTER_TRACK
+    }).then(function () {
+      toast("已打开插件界面（原生窗口）", "ok");
+    }).catch(function (err     ) {
+      toast("✗ 打开插件界面失败: " + (err && err.message ? err.message : "未知错误"), "err");
+    });
   }
 
   function commitFx(ctrl                   , idx        , slot        , patch     ) {

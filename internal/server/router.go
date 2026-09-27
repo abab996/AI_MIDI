@@ -246,6 +246,10 @@ func (r *Router) registerRoutes() {
 	// Audio 原生音频引擎
 	r.mux.HandleFunc("/api/audio/", r.handleAudioSub)
 
+	// Engine 插件宿主（P5）：浏览器模式与验收脚本走 HTTP，桌面模式另有 Wails 绑定
+	r.mux.HandleFunc("/api/engine/plugins", r.handleEnginePluginsSub)
+	r.mux.HandleFunc("/api/engine/plugins/", r.handleEnginePluginsSub)
+
 	// Sound 音源注册表（声音管理：SF2 / 采样包 / VST3 / MM）
 	r.mux.HandleFunc("/api/sound/", r.handleSoundSub)
 

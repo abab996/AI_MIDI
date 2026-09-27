@@ -89,8 +89,13 @@ check("写入走 ops API（与 AI 同一路径）",
   mixerTs.includes("ctrl.arrangeOps(ops)") && mixerTs.includes('op: "setTrackMix"') &&
   mixerTs.includes('op: "setFxSlot"') && mixerTs.includes('op: "setMaster"'));
 check("失败回退整份 PUT（不静默丢改动）", mixerTs.includes("ctrl.scheduleSave();"));
-check("FX 插件装载如实标注未开放（不做假状态）",
-  mixerTs.includes("P5 VST3 / P6 MM 开放") && mixerTs.includes("装载插件…（P5"));
+check("FX 槽可从引擎清单装载插件（P5）",
+  mixerTs.includes("openPluginPicker") && mixerTs.includes('"/api/engine/plugins"') &&
+  mixerTs.includes('"/api/engine/plugins/load"'));
+check("插件界面走原生编辑器接口", mixerTs.includes('"/api/engine/plugins/editor"'));
+check("引擎未启动/无插件时给可解释提示（不做空菜单）",
+  mixerTs.includes("原生引擎未启动：VST3 插件仅在桌面版可用") &&
+  mixerTs.includes("还没有扫描到 VST3 插件"));
 check("键盘：↑↓ 推子 / ←→ 声像 / Enter 切 M,S",
   mixerTs.includes('k !== "ArrowUp"') && mixerTs.includes('k !== "ArrowLeft"') && mixerTs.includes('k === "Enter"'));
 check("ARIA：推子 role=slider + aria-valuenow/text",

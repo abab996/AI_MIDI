@@ -100,3 +100,5 @@ window-state.json
 # 运行时产物：插件清单缓存与已安装 MM 插件
 Library/vst3-cache.xml
 Library/plugins/
+# MM 插件源码工程（AI/开发者在本机创建，不入库）
+Library/plugin-src/

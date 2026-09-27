@@ -1044,6 +1044,7 @@
     if (paneId === "paneLibrary") loadLibraryFiles();
     if (paneId === "paneSound") loadSoundLibrary();
     if (paneId === "paneSound") bindSoundSyncInstalled();
+    if (paneId === "paneSound") bindMMInstall();
     paneToken++;
     var token = paneToken;
 
@@ -1665,6 +1666,106 @@
     });
   }
 
+  /* ═══════════ MM 插件安装：能力授权（P6 §4/§8）═══════════
+     两步式：预览（/install preview=true，不落盘）→ 展示声明能力与哈希/AI 徽标 →
+     用户勾选授权 → 安装（带 grant）。未勾选的能力由后端 fail-closed 拒绝，
+     界面不做"默认全选"——授权必须是用户的主动动作。 */
+  var sndMmPreviewInfo      = null;
+
+  function bindMMInstall() {
+    var row = $("#sndMmInstallRow");
+    if (!row) return;
+    row.hidden = false;
+    var input = $("#sndMmPkg")                    ;
+    var previewBtn = $("#sndMmPreview");
+    var installBtn = $("#sndMmInstall");
+    var capsBox = $("#sndMmCaps");
+    if (!previewBtn || !installBtn || !capsBox || previewBtn.dataset.bound === "1") return;
+    previewBtn.dataset.bound = "1";
+
+    previewBtn.addEventListener("click", function () {
+      var pkg = (input.value || "").trim();
+      if (!pkg) { UI.toast ("请先填 .mm 包路径", "warn"); return; }
+      previewBtn.setAttribute("disabled", "disabled");
+      UI.postJSON("/api/engine/plugins/install", { pkg: pkg, preview: true }).then(function (r     ) {
+        sndMmPreviewInfo = r.preview || null;
+        renderMMCaps(capsBox, r.preview, installBtn);
+        UI.toast ("已校验：" + (r.preview ? r.preview.name + " " + r.preview.version : ""), "ok");
+      }).catch(function (err     ) {
+        sndMmPreviewInfo = null;
+        capsBox.hidden = true;
+        installBtn.hidden = true;
+        UI.toast ("✗ 校验失败: " + (err && err.message ? err.message : "未知错误"), "err");
+      }).then(function () { previewBtn.removeAttribute("disabled"); });
+    });
+
+    installBtn.addEventListener("click", function () {
+      if (!sndMmPreviewInfo) return;
+      var pkg = (input.value || "").trim();
+      var grant           = [];
+      UI.qsa("#sndMmCaps input[type=checkbox]", capsBox).forEach(function (cb     ) {
+        if (cb.checked) grant.push(cb.value);
+      });
+      installBtn.setAttribute("disabled", "disabled");
+      UI.postJSON("/api/engine/plugins/install", { pkg: pkg, grant: grant }).then(function (r     ) {
+        var info = r.installed || {};
+        UI.toast ("✓ 已安装 " + (info.name || "") + "（新增 " + (r.added || 0) + " / 更新 " + (r.updated || 0) + "）", "ok");
+        capsBox.hidden = true;
+        installBtn.hidden = true;
+        input.value = "";
+        sndMmPreviewInfo = null;
+        loadSoundLibrary();
+      }).catch(function (err     ) {
+        UI.toast ("✗ 安装被拒绝: " + (err && err.message ? err.message : "未知错误"), "err");
+      }).then(function () { installBtn.removeAttribute("disabled"); });
+    });
+  }
+
+  /** renderMMCaps 画能力清单与授权勾选（无特权能力时明确说明并允许直接安装） */
+  function renderMMCaps(box     , info     , installBtn     ) {
+    box.textContent = "";
+    if (!info) { box.hidden = true; installBtn.hidden = true; return; }
+    var head = document.createElement("div");
+    head.className = "snd-caps-head";
+    head.textContent = info.name + " " + info.version + "（" + (info.kind === "instrument" ? "乐器" : "效果器") + "）"
+      + (info.hashVerified ? " · 哈希已校验" : " · 未声明哈希")
+      + (info.ai ? " · ✨AI 生成" : "");
+    box.appendChild(head);
+
+    var caps           = info.capabilities || [];
+    if (caps.length === 0) {
+      var none = document.createElement("div");
+      none.className = "snd-caps-none";
+      none.textContent = "该插件不申请任何特权能力（纯 DSP），可直接安装。";
+      box.appendChild(none);
+    } else {
+      var tip = document.createElement("div");
+      tip.className = "snd-caps-tip";
+      tip.textContent = "该插件申请以下能力，请逐项确认后勾选（未勾选的会被宿主拒绝）：";
+      box.appendChild(tip);
+      caps.forEach(function (cap        ) {
+        var label = document.createElement("label");
+        label.className = "snd-caps-item";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = cap;
+        label.appendChild(cb);
+        var span = document.createElement("span");
+        span.textContent = CAP_LABELS[cap] || cap;
+        label.appendChild(span);
+        box.appendChild(label);
+      });
+    }
+    box.hidden = false;
+    installBtn.hidden = false;
+  }
+
+  var CAP_LABELS                          = {
+    files: "files — 读写自己的插件目录（Library/plugins/<id>@<ver>/data/）",
+    network: "network — 允许出网（默认拒绝）",
+    threads: "threads — 允许自建线程（默认只用宿主音频线程）",
+    midi_out: "midi_out — 允许产生 MIDI 输出（琶音器/和弦器类）"
+  };
   function sndGroupCard(kind        , list     , totalInKind        ) {
     var reg = sndReg();
     var meta = reg.kindMeta(kind);

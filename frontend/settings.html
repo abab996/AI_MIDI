@@ -385,6 +385,15 @@
           SF2 落盘在 <code>Library/soundfonts</code>，把文件拷进去后点「↻ 重新扫描」即可入册；采样包登记的是磁盘上的素材目录。
         </div>
 
+        <div class="snd-install-row" id="sndMmInstallRow" hidden>
+          <span class="snd-install-label">安装 .mm 插件</span>
+          <input type="text" id="sndMmPkg" class="snd-install-input" autocomplete="off"
+                 placeholder="包路径，如 Library/plugin-src/com.example.x/com.example.x-0.1.0.mm" aria-label=".mm 包路径">
+          <button type="button" class="btn btn-secondary btn-sm" id="sndMmPreview">预览能力</button>
+          <button type="button" class="btn btn-primary btn-sm" id="sndMmInstall" hidden>安装</button>
+        </div>
+        <div class="snd-caps" id="sndMmCaps" hidden role="group" aria-label="插件能力授权"></div>
+
         <div class="snd-sync-row" id="sndSyncInstalledBtn" hidden>
           <button type="button" class="btn btn-secondary btn-sm" id="sndSyncInstalled">↻ 同步已安装插件</button>
           <span class="dim">把 <code>Library/plugins/</code> 下已安装的 MM 插件（mm install / AI 创建）登记进音源注册表</span>

@@ -8622,3 +8622,30 @@ html.has-titlebar .top-nav {
   font-size: 11px;
   color: var(--color-hud);
 }
+/* MM 插件安装：能力授权（P6） */
+.snd-install-row {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 0 4px; font-size: 12px;
+}
+.snd-install-row[hidden] { display: none; }
+.snd-install-label { color: var(--color-ink-dim); }
+.snd-install-input {
+  flex: 1; min-width: 0; padding: 4px 8px; font-size: 11.5px;
+  color: var(--color-ink); background: var(--color-bg-console);
+  border: 1px solid var(--color-border); border-radius: 6px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+.snd-install-input:focus-visible {
+  outline: none; border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+.snd-caps {
+  margin: 6px 0 8px; padding: 8px 10px;
+  background: var(--color-bg-soft); border: 1px dashed var(--color-border-dashed);
+  border-radius: 8px; display: flex; flex-direction: column; gap: 4px;
+}
+.snd-caps[hidden] { display: none; }
+.snd-caps-head { font-weight: 600; }
+.snd-caps-tip, .snd-caps-none { color: var(--color-ink-dim); font-size: 11.5px; }
+.snd-caps-item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.snd-caps-item input { accent-color: var(--color-primary); }

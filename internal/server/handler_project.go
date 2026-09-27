@@ -368,6 +368,10 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_, _ = w.Write(data)
 
+	// 定向修改（AI 工具与前端机架操作共用；见 handler_arrangement_ops.go）
+	case sub == "arrangement/ops":
+		r.handleArrangementOps(w, req, projectID)
+
 	// POST 与 PUT 等价：应用退出的 sendBeacon 兜底落盘只能发 POST
 	case sub == "arrangement" && (req.Method == http.MethodPut || req.Method == http.MethodPost):
 		body, err := io.ReadAll(io.LimitReader(req.Body, project.ArrangementMaxBytes+1))
@@ -379,11 +383,14 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusRequestEntityTooLarge, "编排数据超过大小上限")
 			return
 		}
-		if err := project.WriteArrangement(projectID, body); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		// 与定向修改共用项目级写锁：整份 PUT 与 AI 的 ops 并发时不互斥的话，
+		// 后写的一方会整份覆盖先写的一方（AI 刚加的机架条目被前端旧快照抹掉）
+		rev, werr := project.WriteArrangementVersioned(projectID, body)
+		if werr != nil {
+			writeError(w, http.StatusBadRequest, werr.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rev": rev})
 
 	case sub == "files" && req.Method == http.MethodDelete:
 		r.handleProjectDeleteFiles(w, req, projectID)

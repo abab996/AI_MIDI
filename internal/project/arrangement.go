@@ -36,6 +36,39 @@ func ReadArrangement(projectID string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
+// WriteArrangementVersioned 整份写入编排数据（前端保存路径）。
+//
+// 与 ApplyOps 共用项目级写锁，并维护单调递增的 rev：整份 PUT 与 AI 的定向
+// 修改并发时，"后写覆盖先写"不可避免，但有了 rev，前端能判断自己手里这份
+// 是不是最新（SSE 事件带回服务端 rev），从而丢弃过期的本地快照而不是覆盖。
+//
+// 内容以调用方为准：这里只补 rev，不改写结构（迁移由 ApplyOps/前端各自负责）。
+func WriteArrangementVersioned(projectID string, data []byte) (int64, error) {
+	unlock := LockArrangement(projectID)
+	defer unlock()
+
+	var arr map[string]any
+	if err := json.Unmarshal(data, &arr); err != nil || arr == nil {
+		return 0, fmt.Errorf("非法的 JSON 数据")
+	}
+	prev := int64(0)
+	if raw, err := ReadArrangement(projectID); err == nil {
+		if old := decodeArrangement(raw); old != nil {
+			prev = intField(old, "rev")
+		}
+	}
+	rev := prev + 1
+	arr["rev"] = rev
+	out, err := json.Marshal(arr)
+	if err != nil {
+		return 0, fmt.Errorf("序列化编排数据失败: %w", err)
+	}
+	if err := WriteArrangement(projectID, out); err != nil {
+		return 0, err
+	}
+	return rev, nil
+}
+
 // WriteArrangement 校验并原子写入编排数据
 func WriteArrangement(projectID string, data []byte) error {
 	if len(data) == 0 {

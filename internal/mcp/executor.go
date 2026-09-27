@@ -127,6 +127,9 @@ func ExecuteTool(name string, rawArgs map[string]any, baseDir, mirrorDir string)
 
 // ExecuteToolEnv 带上下文的工具执行入口
 func ExecuteToolEnv(env ToolEnv, name string, rawArgs map[string]any) (string, error) {
+	if isMMTool(name) {
+		return executeMMTool(name, rawArgs)
+	}
 	if isArrangeTool(name) {
 		return executeArrangeTool(env, name, rawArgs)
 	}

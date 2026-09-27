@@ -190,9 +190,12 @@ func GetMCPTools(projectID string) []llm.ToolDefinition {
 	if strings.TrimSpace(projectID) == "" {
 		return mcpTools
 	}
-	out := make([]llm.ToolDefinition, 0, len(mcpTools)+len(arrangeTools))
+	out := make([]llm.ToolDefinition, 0, len(mcpTools)+len(arrangeTools)+len(mmTools))
 	out = append(out, mcpTools...)
 	out = append(out, arrangeTools...)
+	/* MM 插件平台闭环（P6）：创建/写文件/编译/安装。它们落到 <数据根>/Library/ 下，
+	   不依赖具体工程，但对话里总是有工程上下文，这里统一追加。 */
+	out = append(out, mmTools...)
 	return out
 }
 

@@ -390,6 +390,39 @@ interface ArrRackApi {
 
 declare const ArrRack: ArrRackApi;
 
+/** 素材库三页签（arrangement/material.ts） */
+interface ArrMaterialApi {
+  TABS: { id: string; label: string }[];
+  TREE_EXPANDED_KEY: string;
+  MAX_CHILDREN: number;
+  state: any;
+  bind(ctrl: any): void;
+  setTab(ctrl: any, tab: string, silent?: boolean): void;
+  render(ctrl: any): void;
+  loadDirs(ctrl: any): Promise<unknown>;
+  refreshOpenNodes(ctrl: any): void;
+  nodeKey(dir: any, sub: any): string;
+  joinAbs(dir: any, sub: any, name: any): string;
+  loadExpanded(): { [key: string]: boolean };
+  saveExpanded(): void;
+  toggleNode(ctrl: any, dir: any, sub: any): void;
+  removeDir(ctrl: any, d: any): void;
+  addFolder(ctrl: any): void;
+  appendNode(ctrl: any, container: any, dir: any, sub: any, depth: number): void;
+  buildSampleRow(ctrl: any, dir: any, sub: any, f: any, depth: number): HTMLElement;
+  renderSamples(ctrl: any, body: any): void;
+  renderSources(ctrl: any, body: any): void;
+  renderEffects(ctrl: any, body: any): void;
+  analyze(absPath: string): Promise<any>;
+  computePeaks(buffer: any): number[];
+  fmtDuration(sec: number): string;
+  packNameFor(dir: string): string;
+  hintFor(tab: string): string;
+  _resetForTest(): void;
+}
+
+declare const ArrMaterial: ArrMaterialApi;
+
 /** 自动更新检查（update.js）：手动触发检查用 */
 interface UpdateApi {
   /** 检查更新；有更新会弹自带通知卡。resolve 值：UpdateInfo 或 { error } */
@@ -409,6 +442,7 @@ interface Window {
   SoundLibrary: SoundLibraryApi;
   SoundRegistry: SoundRegistryApi;
   ArrRack: ArrRackApi;
+  ArrMaterial: ArrMaterialApi;
   EngineBridge: EngineBridgeApi;
   MidiInputRouter: MidiInputRouterApi;
   PianoRollTools: PianoRollToolsApi;

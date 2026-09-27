@@ -355,14 +355,23 @@
           </div>
         </div>
 
-        <!-- 右：素材库（树状浏览器） -->
+        <!-- 右：素材库（P3 三页签：采样 / 音源 / 效果器） -->
         <aside class="arr-side-panel arr-sample-panel">
-          <div class="sec-head">
-            <span class="sec-name">素材库</span>
-            <button type="button" class="btn btn-secondary btn-sm" id="arrAddDirBtn">＋ 文件夹</button>
+          <div class="mat-head">
+            <div class="mat-tabs" id="matTabs" role="tablist" aria-label="素材库分类">
+              <button type="button" class="mat-tab active" data-tab="sample" role="tab" aria-selected="true">采样</button>
+              <button type="button" class="mat-tab" data-tab="source" role="tab" aria-selected="false">音源</button>
+              <button type="button" class="mat-tab" data-tab="fx" role="tab" aria-selected="false">效果器</button>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm mat-add-btn" id="arrAddDirBtn" title="添加本地采样目录">＋</button>
           </div>
-          <div class="arr-file-tree" id="arrFileTree"></div>
-          <div class="arr-panel-hint">⇱ 拖拽音频到轨道创建音频 Clip<br>拖动 Clip 角部手柄调整渐入渐出</div>
+          <div class="mat-search-row">
+            <input type="search" id="matSearch" class="mat-search" placeholder="搜索素材 / 音源…" aria-label="搜索素材">
+          </div>
+          <div class="mat-body" id="matBody" role="tabpanel" aria-label="素材内容">
+            <!-- 三页签内容由 material.ts 渲染 -->
+          </div>
+          <div class="arr-panel-hint" id="matHint">⇱ 拖拽音频到轨道创建音频 Clip · 双击试听</div>
         </aside>
       </div>
     </section>
@@ -926,6 +935,7 @@
 <script src="/js/pianoroll/pianoroll.js" defer></script>
 <script src="/js/arrangement/audio_engine.js" defer></script>
 <script src="/js/arrangement/rack.js" defer></script>
+<script src="/js/arrangement/material.js" defer></script>
 <script src="/js/arrangement/arrange.js" defer></script>
 <script src="/js/chat.js" defer></script>
 <script src="/demo/script_data.js" defer></script>

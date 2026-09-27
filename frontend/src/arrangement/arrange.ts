@@ -76,8 +76,6 @@
 
     this.midiFiles = [];
     this.dirs = [];               // 已注册素材根目录（settings.material_dirs 镜像）
-    this._treeCache = {};         // 素材树各层目录内容缓存
-    this.expandedMap = null;      // 素材树展开态（懒加载自 localStorage）
 
     this.playheadBeat = 0;
     this.playbackOriginBeat = 0;  // 本次播放的起始位置（暂停回退目标）
@@ -130,7 +128,7 @@
       "arrSaveStamp", "arrRackBtn", "arrHudBadge",
       "arrMidiCount", "arrMidiList",
       "arrTracksScroll", "arrInner", "arrRulerCanvas", "arrLanes", "arrAddTrackRow", "arrAddTrackBtn", "arrPlayline",
-      "arrFileTree", "arrAddDirBtn"];
+      "matBody", "matTabs", "matSearch", "arrAddDirBtn"];
     for (var i = 0; i < ids.length; i++) {
       this.el[ids[i]] = document.getElementById(ids[i]);
     }
@@ -3318,9 +3316,22 @@
   Arrange.prototype.replaceTrackSourceFromDrop = function (this: ArrangeController, trackIdx: any, source: any) {
     if (!source) return;
     var ArrRack = window.ArrRack;
+    var self = this;
     var item = ArrRack.find(this.rack.items, source.itemId);
+    if (!item && source.sourceId) {
+      /* 素材库「音源」页签的拖拽：条目可能还没入架——先入架再分配
+         （拖到轨道 = 分配并自动入架，用户不必先手动入架） */
+      this.ensureRackItem(source.sourceId, source.presetId, source.label).then(function (created: any) {
+        if (!created) {
+          UI.toast!("⚠ 该音源无法加入机架", "warn");
+          return;
+        }
+        self.assignRackItem(created, trackIdx, source.presetId);
+      });
+      return;
+    }
     if (!item) {
-      /* 历史载荷（{type,wave,...}）或条目已被删：先尝试迁移/采用，失败即提示 */
+      /* 历史载荷（{type,wave,...}）或条目已被删：尝试迁移，失败即提示 */
       var adopted = source.itemId ? null : ArrRack.migrateV1Source(source);
       if (adopted) {
         ArrRack.upsert(this.rack.items, adopted);
@@ -3331,12 +3342,7 @@
       UI.toast!("⚠ 该音源不在机架中（音色只能来自机架）", "warn");
       return;
     }
-    var track = this.tracks[trackIdx];
-    if (!track) {
-      this.assignRackItem(item, undefined, source.presetId);
-      return;
-    }
-    this.assignRackItem(item, trackIdx, source.presetId);
+    this.assignRackItem(item, trackIdx === undefined || trackIdx === null ? undefined : trackIdx, source.presetId);
   };
 
   /** 拖入 MIDI 文件 → 下载字节 → 前端解析 → 创建 MIDI Clip */
@@ -3480,263 +3486,59 @@
     });
   };
 
-  /* ═══════════ 右栏：素材库（树状浏览器，FL Browser 式多根惰性展开） ═══════════ */
+  /* ═══════════ 右栏：素材库（P3 三页签；实现在 arrangement/material.ts） ═══════════
+     条目渲染、波形缩略、搜索与页签都归 window.ArrMaterial；这里保留同名委托方法，
+     供既有调用点（bindPanels / 项目切换 / 声音管理变更）与类型契约继续可用。 */
 
-  Arrange.prototype.TREE_EXPANDED_KEY = "arr-tree-expanded";
-
-  Arrange.prototype.nodeKey = function (this: ArrangeController, dir: any, sub: any) {
-    return sub ? dir + "/" + sub : dir;
-  };
-
-  Arrange.prototype.loadExpandedMap = function (this: ArrangeController) {
-    try { return JSON.parse(localStorage.getItem(this.TREE_EXPANDED_KEY) || "{}") || {}; }
-    catch (e) { return {}; }
-  };
-
-  Arrange.prototype.saveExpandedMap = function (this: ArrangeController) {
-    try { localStorage.setItem(this.TREE_EXPANDED_KEY, JSON.stringify(this.expandedMap || {})); } catch (e) {}
-  };
-
-  /** 单层目录内容拉取（Go API 即单层语义），成功后写入节点缓存 */
-  Arrange.prototype.fetchTreeNode = function (this: ArrangeController, dir: any, sub: any, cb: any) {
-    var self = this;
-    var url = "/api/arrangement/files?dir=" + encodeURIComponent(dir);
-    if (sub) url += "&sub=" + encodeURIComponent(sub);
-    UI.getJSON(url).then(function (r: any) {
-      self._treeCache[self.nodeKey(dir, sub)] = { dirs: r.dirs || [], files: r.files || [] };
-      cb(null);
-    }).catch(function (err) {
-      cb(err);
-    });
-  };
+  Arrange.prototype.TREE_EXPANDED_KEY = "melody-mate-material-tree";
 
   Arrange.prototype.loadMaterialDirs = function (this: ArrangeController) {
     var self = this;
-    UI.getJSON("/api/arrangement/dirs").then(function (r: any) {
-      self.dirs = r.dirs || [];
-      self.renderMaterialTree();
-      self.refreshOpenTreeNodes();
-    }).catch(function () {});
-  };
-
-  /** 上次会话记住了「已展开」但缺缓存的根目录 → 静默补拉并重绘 */
-  Arrange.prototype.refreshOpenTreeNodes = function (this: ArrangeController) {
-    var self = this;
-    var touched = false;
-    for (var i = 0; i < this.dirs.length; i++) {
-      var d = this.dirs[i];
-      if (this.expandedMap && this.expandedMap[d] && !this._treeCache[d]) {
-        touched = true;
-        this._treeCache[d] = { dirs: [], files: [], _loading: true };
-        /* 捕获当前根，回调里只清理自己的占位 */
-        (function (root) {
-          self.fetchTreeNode(root, "", function () { });
-        })(d);
-      }
-    }
-    if (touched) this.renderMaterialTree();
-  };
-
-  Arrange.prototype.removeMaterialDir = function (this: ArrangeController, d: any) {
-    var self = this;
-    UI.delJSON("/api/arrangement/dirs", { path: d }).then(function (r: any) {
-      self.dirs = r.dirs || [];
-      [self._treeCache, self.expandedMap].forEach(function (m) {
-        Object.keys(m || {}).forEach(function (k) {
-          if (k === d || k.indexOf(d + "/") === 0) delete m![k];
-        });
-      });
-      self.saveExpandedMap();
-      self.renderMaterialTree();
-    }).catch(function (err) {
-      UI.toast!("✗ 移除失败: " + err.message, "err");
-    });
-  };
-
-  Arrange.prototype.toggleTreeNode = function (this: ArrangeController, dir: any, sub: any) {
-    var self = this;
-    if (!this.expandedMap) this.expandedMap = this.loadExpandedMap();
-    var key = this.nodeKey(dir, sub);
-    if (this.expandedMap[key]) {
-      delete this.expandedMap[key];
-      this.saveExpandedMap();
-      this.renderMaterialTree();
-      return;
-    }
-    this.expandedMap[key] = true;
-    this.saveExpandedMap();
-    if (this._treeCache[key]) {
-      this.renderMaterialTree();
-      return;
-    }
-    /* 占位缓存让箭头先转为"加载中"，取回后统一重绘 */
-    this._treeCache[key] = { dirs: [], files: [], _loading: true };
-    this.renderMaterialTree();
-    this.fetchTreeNode(dir, sub, function (err: any) {
-      if (err) {
-        delete self._treeCache[key];
-        delete self.expandedMap![key];
-        self.saveExpandedMap();
-        UI.toast!("✗ 读取目录失败", "err");
-      }
-      self.renderMaterialTree();
+    window.ArrMaterial.loadDirs(this).catch(function () {
+      if (UI.toast) UI.toast!("⚠ 素材目录读取失败", "warn");
     });
   };
 
   Arrange.prototype.renderMaterialTree = function (this: ArrangeController) {
-    var tree = this.el.arrFileTree;
-    if (!tree) return;
-    tree.innerHTML = "";
-    if (!this.expandedMap) this.expandedMap = this.loadExpandedMap();
-
-    if (!this.dirs.length) {
-      var tip = document.createElement("div");
-      tip.className = "arr-empty-tip";
-      tip.innerHTML = "点击「＋ 文件夹」添加本地<br>采样包目录（wav / mp3 / ogg / flac）";
-      tree.appendChild(tip);
-      return;
-    }
-
-    for (var i = 0; i < this.dirs.length; i++) {
-      this.appendTreeNode(tree, this.dirs[i], "", 0);
-    }
+    window.ArrMaterial.render(this);
   };
 
-  /** 一个目录节点行；展开且缓存就绪时在下方递归挂载子节点 */
-  Arrange.prototype.appendTreeNode = function (this: ArrangeController, container: any, dir: any, sub: any, depth: any) {
-    var self = this;
-    var key = this.nodeKey(dir, sub);
-    var expanded = !!this.expandedMap![key];
-    var cached = this._treeCache[key];
-
-    var row = document.createElement("div");
-    row.className = "arr-file-item dir" + (expanded ? " open" : "");
-    row.style.paddingLeft = (8 + depth * 14) + "px";
-    row.title = key;
-
-    var arrow = document.createElement("span");
-    arrow.className = "fi-glyph";
-    arrow.textContent = cached && cached._loading ? "…" : (expanded ? "▾" : "▸");
-    row.appendChild(arrow);
-
-    var nameSpan = document.createElement("span");
-    nameSpan.className = "fi-name";
-    nameSpan.textContent = baseName(sub || dir) || dir;
-    row.appendChild(nameSpan);
-
-    row.addEventListener("click", function () {
-      self.toggleTreeNode(dir, sub);
-    });
-
-    if (depth === 0) {
-      var del = document.createElement("span");
-      del.className = "chip-del";
-      del.textContent = "✕";
-      del.title = "从素材库移除该目录（不删除磁盘文件）";
-      del.addEventListener("click", function (e) {
-        e.stopPropagation();
-        self.removeMaterialDir(dir);
-      });
-      row.appendChild(del);
-    }
-
-    container.appendChild(row);
-    if (!expanded || !cached || cached._loading) return;
-
-    var childWrap = document.createElement("div");
-    childWrap.className = "arr-tree-children";
-    container.appendChild(childWrap);
-
-    if (!cached.dirs.length && !cached.files.length) {
-      var empty = document.createElement("div");
-      empty.className = "arr-empty-tip";
-      empty.style.paddingLeft = (8 + (depth + 1) * 14) + "px";
-      empty.textContent = "空文件夹";
-      childWrap.appendChild(empty);
-    }
-    for (var i = 0; i < cached.dirs.length; i++) {
-      this.appendTreeNode(childWrap, dir, sub ? sub + "/" + cached.dirs[i].name : cached.dirs[i].name, depth + 1);
-    }
-    for (var j = 0; j < cached.files.length; j++) {
-      childWrap.appendChild(this.buildSampleRow(dir, sub, cached.files[j], depth + 1));
-    }
+  Arrange.prototype.refreshOpenTreeNodes = function (this: ArrangeController) {
+    window.ArrMaterial.refreshOpenNodes(this);
   };
 
-  /** 音频叶子行：拖拽入轨 payload 与旧行为完全一致 */
+  Arrange.prototype.removeMaterialDir = function (this: ArrangeController, d: any) {
+    window.ArrMaterial.removeDir(this, d);
+  };
+
+  Arrange.prototype.toggleTreeNode = function (this: ArrangeController, dir: any, sub: any) {
+    window.ArrMaterial.toggleNode(this, dir, sub);
+  };
+
   Arrange.prototype.buildSampleRow = function (this: ArrangeController, dir: any, sub: any, f: any, depth: any) {
-    var self = this;
-    var absPath = this.joinAbs(dir, sub, f.name);
-    var item = document.createElement("div");
-    item.className = "arr-file-item sample";
-    item.draggable = true;
-    item.style.paddingLeft = (8 + depth * 14) + "px";
-    item.title = f.name + "（拖到轨道创建音频 Clip，双击试听）";
-
-    var glyph = document.createElement("span");
-    glyph.className = "fi-glyph";
-    glyph.textContent = "♫";
-    var nameSpan = document.createElement("span");
-    nameSpan.className = "fi-name";
-    nameSpan.textContent = f.name;
-    var sizeSpan = document.createElement("span");
-    sizeSpan.className = "fi-size";
-    sizeSpan.textContent = UI.fmtSize(f.size || 0);
-
-    item.appendChild(glyph);
-    item.appendChild(nameSpan);
-    item.appendChild(sizeSpan);
-
-    item.addEventListener("dragstart", function (e) {
-      var payload = JSON.stringify({ kind: "arr-audio", p: absPath, name: f.name });
-      e.dataTransfer!.setData("application/x-arrange", payload);
-      e.dataTransfer!.setData("text/plain", payload);
-      e.dataTransfer!.effectAllowed = "copy";
-      item.classList.add("dragging");
-      var clear = function () {
-        item.classList.remove("dragging");
-        item.removeEventListener("dragend", clear);
-      };
-      item.addEventListener("dragend", clear);
-    });
-    item.addEventListener("dblclick", function () {
-      self.engine.resume();
-      self.engine.previewSample(absPath).catch(function () {
-        if (UI.toast) UI.toast!("✗ 音频试听失败（文件不存在或格式不支持）", "err");
-      });
-    });
-    return item;
+    return window.ArrMaterial.buildSampleRow(this, dir, sub, f, depth);
   };
 
-  Arrange.prototype.bindPanels = function (this: ArrangeController) {
-    var self = this;
-    if (this.el.arrAddDirBtn) {
-      this.el.arrAddDirBtn.addEventListener("click", function () {
-        UI.postJSON("/api/arrangement/pick-folder", {}).then(function (r: any) {
-          if (!r.path) return; // 用户取消
-          UI.postJSON("/api/arrangement/dirs", { path: r.path }).then(function (r2: any) {
-            self.dirs = r2.dirs || [];
-            if (!self.expandedMap) self.expandedMap = self.loadExpandedMap();
-            self.expandedMap[r.path] = true;
-            self.saveExpandedMap();
-            self.renderMaterialTree();
-            UI.toast!("✓ 已添加素材目录", "ok");
-          }).catch(function (err) {
-            UI.toast!("✗ 添加目录失败: " + err.message, "err");
-          });
-        }).catch(function (err) {
-          UI.toast!("✗ 打开文件夹选择器失败: " + err.message, "err");
-        });
-      });
-    }
-    // 标尺事件绑定（依赖 DOM 就绪）
-    this.initRulerPointer();
+  Arrange.prototype.nodeKey = function (this: ArrangeController, dir: any, sub: any) {
+    return window.ArrMaterial.nodeKey(dir, sub);
   };
 
   Arrange.prototype.joinAbs = function (this: ArrangeController, dir: any, sub: any, name: any) {
-    var parts = [dir];
-    if (sub) parts.push(sub);
-    parts.push(name);
-    return parts.filter(Boolean).join("/");
+    return window.ArrMaterial.joinAbs(dir, sub, name);
+  };
+
+  Arrange.prototype.loadExpandedMap = function (this: ArrangeController) {
+    return window.ArrMaterial.loadExpanded();
+  };
+
+  Arrange.prototype.saveExpandedMap = function (this: ArrangeController) {
+    window.ArrMaterial.saveExpanded();
+  };
+
+  Arrange.prototype.bindPanels = function (this: ArrangeController) {
+    window.ArrMaterial.bind(this);
+    // 标尺事件绑定（依赖 DOM 就绪）
+    this.initRulerPointer();
   };
 
   /* ═══════════ 弹窗（重命名 / 确认 / 快捷键） ═══════════ */

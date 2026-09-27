@@ -7867,3 +7867,345 @@ html.has-titlebar .top-nav {
     transform: none;
   }
 }
+
+/* ═══════════ 编曲窗 · 素材库三页签（P3，4.4 节规格） ═══════════
+   采样 / 音源 / 效果器；segmented 页签 + 跨页签保留关键词的搜索框 +
+   条目六态 + 空态/骨架；波形缩略图随主题取色（画布在 material.ts 里着色）。 */
+
+.mat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 6px;
+}
+
+.mat-tabs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px;
+  background: var(--color-bg-console);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.mat-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--color-ink-dim);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.mat-tab:hover { color: var(--color-ink); background: var(--color-bg-alt); }
+.mat-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+  color: var(--color-ink);
+}
+
+.mat-tab.active {
+  color: var(--color-on-primary);
+  background: var(--color-primary);
+  font-weight: 700;
+}
+
+.mat-tab:active { transform: scale(0.97); }
+
+.mat-add-btn { flex-shrink: 0; }
+
+.mat-search-row { padding: 0 10px 8px; }
+
+.mat-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  color: var(--color-ink);
+  background: var(--color-bg-console);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mat-search::placeholder { color: var(--color-ink-faint); }
+.mat-search:hover { border-color: var(--color-border-strong); }
+
+.mat-search:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.mat-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+/* 页签切换：内容上滑淡入（0.22s Natural Spring） */
+.mat-body.mat-in { animation: mat-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+@keyframes mat-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ── 采样页签：树行 + 波形缩略 ── */
+
+.mat-sample-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  border-radius: 5px;
+  transition: background 0.15s ease;
+}
+
+.mat-sample-row:hover { background: var(--color-bg-alt); }
+
+.mat-sample-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.mat-wave {
+  width: 48px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  background: var(--color-bg-console);
+  border: 1px solid var(--color-grid);
+}
+
+.mat-wave-missing { border-style: dashed; border-color: var(--color-border-dashed); }
+
+.mat-item-info { flex: 1; min-width: 0; }
+
+.mat-item-name {
+  font-size: 12px;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mat-item-meta {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--color-ink-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mat-row-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 20px;
+  font-size: 10px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.mat-sample-row:hover .mat-row-btn,
+.mat-sample-row:focus-within .mat-row-btn,
+.mat-source-card:hover .mat-row-btn,
+.mat-source-card:focus-within .mat-row-btn { opacity: 1; }
+
+.mat-row-btn:hover { border-color: var(--color-primary); }
+.mat-row-btn:active { transform: scale(0.92); }
+
+.mat-row-btn:focus-visible {
+  opacity: 1;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.mat-row-btn.playing { animation: snd-pulse 0.8s ease-in-out infinite; opacity: 1; }
+
+.mat-pack-tag {
+  flex-shrink: 0;
+  max-width: 84px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--color-hud);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mat-more-btn {
+  margin: 4px 0 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.mat-more-btn:hover { border-style: solid; border-color: var(--color-primary); }
+
+/* ── 音源页签：卡片网格 ── */
+
+.mat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  padding: 4px 2px;
+}
+
+.mat-source-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 9px;
+  min-height: 92px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  cursor: grab;
+  animation: mat-card-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: var(--mat-delay, 0s);
+  transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+@keyframes mat-card-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.mat-source-card:hover {
+  border-color: var(--color-primary);
+  background: var(--color-bg-alt);
+  transform: translateY(-1px);
+}
+
+.mat-source-card:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.mat-source-card.dragging { opacity: 0.5; transform: scale(0.98); }
+
+.mat-source-card.in-rack { border-left: 3px solid var(--color-primary); }
+
+.mat-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mat-card-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mat-card-meta {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--color-ink-dim);
+  line-height: 1.5;
+  min-height: 16px;
+}
+
+.mat-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.mat-pill {
+  padding: 2px 8px;
+  font-size: 10.5px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-primary);
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.mat-pill:hover { background: var(--color-primary); color: var(--color-on-primary); }
+.mat-pill:active { transform: scale(0.95); }
+.mat-pill.on { cursor: default; }
+.mat-pill.off { color: var(--color-ink-faint); border-color: var(--color-border); background: transparent; }
+
+/* ── 效果器页签 ── */
+
+.mat-fx-list { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px; }
+
+.mat-fx-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  animation: mat-card-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: var(--mat-delay, 0s);
+}
+
+.mat-fx-card:hover { border-color: var(--color-border-strong); }
+
+/* ── 空态 ── */
+
+.mat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 4px 0;
+  padding: 22px 12px;
+  text-align: center;
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 8px;
+  background: var(--color-bg-soft);
+}
+
+.mat-empty-icon { font-size: 24px; opacity: 0.7; }
+.mat-empty-title { font-size: 12.5px; font-weight: 600; color: var(--color-ink); }
+
+.mat-empty-hint {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--color-ink-dim);
+  max-width: 230px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mat-body.mat-in,
+  .mat-source-card,
+  .mat-fx-card { animation: none; }
+  .mat-row-btn.playing { animation: none; }
+  .mat-source-card:hover { transform: none; }
+}

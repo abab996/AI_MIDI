@@ -1151,9 +1151,10 @@
   PianoRoll.prototype._scheduleTick = function (                         ) {
     if (!this.isPlaying) return;
     /* 引擎模式播放中引擎掉线（崩溃/重启）：自动停止并提示（严格路由，
-       不无声空转——徽章轮询 5s 才翻转，这里每 25ms 即检） */
-    if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
-        && window.__engineState && window.__engineState !== "ready") {
+       不无声空转——徽章轮询 5s 才翻转，这里每 25ms 即检）。
+       判定用 isEngineDown（排除 unknown）：状态轮询一次抖动不算掉线 */
+    if (window.AudioBackend && window.AudioBackend.isEngineDown
+        && window.AudioBackend.isEngineDown()) {
       this.stopPlayback();
       if (window.EngineBridge && window.EngineBridge.panic) { try { window.EngineBridge.panic().catch(function(){}); } catch (e) {} }
       if (window.UI && UI.toast) UI.toast ("⚠ 音频引擎已中断，播放已停止（引擎恢复后可重新播放）", "warn");
@@ -3322,8 +3323,15 @@
     // 引擎模式由原生调音台控制，此处调整不参与（masterGain 不存在时静默）
     var volRange = document.getElementById("prVolRange")                           ;
     if (volRange) {
+      /* 0 是合法音量（静音）：falsy 兜底会把 0 读成 75，按 NaN 判定 */
       var savedVol = 75;
-      try { savedVol = parseInt(localStorage.getItem("prVolume") || "75", 10) || 75; } catch (e) {}
+      try {
+        var raw = localStorage.getItem("prVolume");
+        if (raw !== null) {
+          var n = parseInt(raw, 10);
+          if (!isNaN(n)) savedVol = n;
+        }
+      } catch (e) {}
       volRange.value = String(Math.max(0, Math.min(100, savedVol)));
       self.applyPlaybackVolume(savedVol / 100);
       volRange.addEventListener("input", function () {

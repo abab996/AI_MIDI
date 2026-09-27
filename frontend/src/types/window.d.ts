@@ -95,6 +95,8 @@ interface AudioBackendApi {
   isEngine(): boolean;
   isWebAudio(): boolean;
   isEngineReady(): boolean;
+  /* 引擎是否「明确不可用」（失败/停止/重启中）；unknown 与未取到状态不算 */
+  isEngineDown(): boolean;
   isNativePreferred(): boolean;
 }
 

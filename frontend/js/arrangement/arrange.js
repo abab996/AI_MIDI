@@ -613,8 +613,16 @@
     // 滑块但没有总线输出控制，音量不合适只能调系统音量）
     var volRange = document.getElementById("arrVolRange")                           ;
     if (volRange) {
+      /* 0 是合法音量：`parseInt(x) || 90` 会把 0 读成 90（拉到静音后
+         重启音量自己跳回 90%），按 NaN 判定 */
       var savedVol = 90;
-      try { savedVol = parseInt(localStorage.getItem("arrMasterVolume") || "90", 10) || 90; } catch (e) {}
+      try {
+        var raw = localStorage.getItem("arrMasterVolume");
+        if (raw !== null) {
+          var n = parseInt(raw, 10);
+          if (!isNaN(n)) savedVol = n;
+        }
+      } catch (e) {}
       volRange.value = String(Math.max(0, Math.min(100, savedVol)));
       self.applyMasterVolume(savedVol / 100);
       volRange.addEventListener("input", function () {
@@ -854,16 +862,11 @@
     var useNative = false;
     try { useNative = window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred(); } catch(e) {}
     if (!useNative) {
-      /* 区分两种成因：真 WEBAUDIO 模式 / ENGINE 模式引擎未就绪——
-         后者提示必须如实（此前统一说"当前为 WEBAUDIO…切回 AUTO"，
-         而设置页早已没有 AUTO 一词，用户无从照做） */
-      var isEng = window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine();
+      /* 导出只有引擎离线渲染一条实现（JUCE bounce：按全局采样率渲染 +
+        尾音不截断）。非引擎模式不再承诺"走浏览器导出"——那条路从未存在，
+         用户点了导出却什么都没发生 */
       if (window.UI && window.UI.toast) {
-        if (isEng) {
-          UI.toast ("✗ 音频引擎未就绪，导出需要引擎离线渲染（可在设置页切换 WEBAUDIO 模式后重试）", "err");
-        } else {
-          UI.toast ("⚠ 当前为 WEBAUDIO 模式，导出走浏览器（无离线尾音保障）", "warn");
-        }
+        UI.toast ("✗ WAV 导出需要音频引擎（桌面版）；浏览器模式不支持导出", "err");
       }
       return;
     }
@@ -2238,6 +2241,9 @@
     this.selectedClips = [];
     this.renderTracks();
     this.updateContentWidth();
+    /* 结构变化必须重发调度表：引擎模式的音频剪辑只在播放起点快照 +
+       重发时生效（此前剪切/多选删除只改数据，被删的剪辑会继续按旧表发声） */
+    this.applyMixSafe();
     this.scheduleSave();
   };
 
@@ -2282,6 +2288,7 @@
     this.selectedClips = newIds;
     this.renderTracks();
     this.updateContentWidth();
+    this.applyMixSafe();   // 克隆的音频剪辑需重发调度表才会发声
     this.showHUD("⧉ 原地克隆 (" + newIds.length + ")");
     this.scheduleSave();
   };
@@ -2302,6 +2309,7 @@
     this.selectedClips = newIds;
     this.renderTracks();
     this.updateContentWidth();
+    this.applyMixSafe();   // 顺延复制的新剪辑同样需要重发才会发声
     this.showHUD("⇥ 向右顺延复制");
     this.scheduleSave();
   };
@@ -2465,6 +2473,7 @@
       track.clips = [];
       self.renderTracks();
       self.updateContentWidth();
+      self.applyMixSafe();   // 播放中清空：重发调度表，否则旧表继续发声
       self.scheduleSave();
     });
   };
@@ -2622,6 +2631,7 @@
         self.pushHistory();
         clip.mute = !clip.mute;
         self.refreshClipEl(clipEl, clip);
+        self.applyMixSafe();   // 静音状态属调度表内容：不重发则音频剪辑照响
         self.scheduleSave();
       } },
       { label: "⤺ 清除渐变", disabled: clip.type !== "audio" || (!clip.fadeIn && !clip.fadeOut), action: function () {
@@ -4061,12 +4071,23 @@
   document.addEventListener("DOMContentLoaded", function () {
     window.Arrange.init();
   });
-/* 应用退出兜底：800ms 防抖窗口内或保存请求在途时，用 sendBeacon 落盘
-   （后端 /arrangement 已同时接受 POST），不阻塞卸载。
-   注意不能只看 dirty：doSave 已把 dirty 认领为 false 而请求尚未完成时，
-   直接跳过会丢最后编辑（fetch 在卸载时被浏览器中断） */
-  window.addEventListener("beforeunload", function () {
+  /* 页面卸载：停走带 + 落盘。
+     引擎模式必须显式 stop/clearSamples——引擎走带与采样表由后端进程持有，
+     页面销毁不会让它们停下（此前导航到设置页后工程音频继续播放，且前端
+     noteOff timer 已随页面销毁 → 挂音）。sendBeacon 不阻塞卸载 */
+  function onPageUnload() {
     var a = window.Arrange;
+    if (a) {
+      try {
+        if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()) {
+          if (a.engine && a.engine.stopSchedule) a.engine.stopSchedule();
+          if (window.EngineBridge) {
+            if (window.EngineBridge.stop) { try { window.EngineBridge.stop(); } catch (e) {} }
+            if (window.EngineBridge.clearSamples) { try { window.EngineBridge.clearSamples(); } catch (e) {} }
+          }
+        }
+      } catch (e) {}
+    }
     if (!a || !a.projectId) return;
     if (!a.dirty && !a.saveInFlight) return;
     if (navigator.sendBeacon) {
@@ -4075,6 +4096,7 @@
         new Blob([JSON.stringify(a.serialize())], { type: "application/json" })
       );
     }
-  });
+  }
+  window.addEventListener("beforeunload", onPageUnload);
 
 })(window);

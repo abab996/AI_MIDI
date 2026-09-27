@@ -927,14 +927,18 @@
   if (!badge) return;
   var lastState = null;
   function updateBadge(){
+    var statusOk = true;
     Promise.all([
-      fetch("/api/audio/status").then(function(r){return r.json();}).catch(function(){return {state:"unknown"};}),
+      fetch("/api/audio/status").then(function(r){return r.json();}).catch(function(){statusOk = false; return {};}),
       fetch("/api/audio/settings").then(function(r){return r.json();}).catch(function(){return {backend:"auto"};})
     ]).then(function(arr){
       var st = arr[0] || {};
       var cfg = arr[1] || {};
       var backend = (cfg.backend === "webaudio" ? "webaudio" : "auto");
-      var state = st.state || "unknown";
+      /* 取状态失败时保留上一次已知状态：写入 unknown 会让播放中的失联
+         判定（isEngineDown）把一次 HTTP 抖动当成引擎掉线，掐断正在播放的
+         走带。首次加载即失败时保持未取到（undefined），判定侧同样忽略 */
+      var state = statusOk ? (st.state || "unknown") : (window.__engineState || "unknown");
       /* 浏览器模式（无 Wails 桥）：实际发声恒为 WebAudio——徽章必须
          如实反映，不得显示引擎就绪（此前只按服务端 backend+引擎状态
          渲染，浏览器模式下显示 JUCE ● 与实际路由相反，属误导） */

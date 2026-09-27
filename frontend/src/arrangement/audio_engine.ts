@@ -142,7 +142,19 @@
     this.ctx = (window.SharedAudio && window.SharedAudio.get()) || null;
     if (!this.ctx) return;
     this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.setValueAtTime(0.9, this.ctx.currentTime);
+    /* 总音量初值取用户上次保存值（走带条滑块持久化在 localStorage）。
+       此前硬编码 0.9：bindTransport 在引擎 init 前调用 applyMasterVolume
+       时 masterGain 尚为 null 被丢弃，重启后音量静默回到 90%——滑块显示
+       50% 实际输出 0.9。0 是合法值，必须按 NaN 判定而非 falsy */
+    var savedVol = 90;
+    try {
+      var raw = window.localStorage ? window.localStorage.getItem("arrMasterVolume") : null;
+      if (raw !== null) {
+        var n = parseInt(raw, 10);
+        if (!isNaN(n)) savedVol = Math.max(0, Math.min(100, n));
+      }
+    } catch (e) {}
+    this.masterGain.gain.setValueAtTime(savedVol / 100, this.ctx.currentTime);
     // 主链限幅器：多轨合成超 0dB 时压回可听区间
     this.limiter = this.ctx.createDynamicsCompressor();
     this.limiter.threshold.value = -6;
@@ -334,7 +346,10 @@
       if (isNativePreferred() && window.EngineBridge && window.EngineBridge.loadSoundFont) {
         var tracks = self.getTracks ? self.getTracks() : [];
         var idx = trackIndexOf(track.id, tracks);
-        if (idx < 0) idx = 0;
+        /* 轨已不存在（异步加载期间被删除/切换工程）：直接放弃。
+           此前兜底 idx=0 会把音色装载到引擎 0 号轨并 setTrackPreset，
+           静默改写工程第一轨的音色 */
+        if (idx < 0) return;
         // 服务器落盘的绝对路径优先（上传时由 /api/audio/soundfonts 的
         // saved 字段存入记录）；旧记录无 diskPath 时按 safe 规则推导相对
         // 路径——后者依赖引擎进程 CWD 恰为 exe 目录，CWD 不同则加载失败
@@ -619,7 +634,13 @@
   /** 定位播放接入：起播点落在音频剪辑中段的（起点在起播点之前，
       永远不会经窗口入队），直接生成从起播点切入的实例 */
   ArrangeEngine.prototype._queueSeekClips = function (this: ArrangeEngineInstance, startBeat: any) {
+    // 引擎模式样本由原生 SamplePool 播放（arrange 侧批量调度），Web 队列
+    // 必须跳过——否则每次 seek/播放都对素材发起无效 fetch 并在 null ctx 上
+    // 解码必败（对齐 _queueAudioClip 的同款守卫）
+    if (isNativePreferred()) return;
     var tracks = this.getTracks ? this.getTracks() : [];
+    var lp = this.loop;
+    var loopOn = !!(lp && lp.on && lp.end > lp.start);
     for (var ti = 0; ti < tracks.length; ti++) {
       var track = tracks[ti];
       if (track.mute || (this._anySolo(tracks) && !track.solo)) continue;
@@ -631,12 +652,16 @@
         if (clip.start >= startBeat) continue; // 起点在起播点之后，走正常窗口入队
         var clipEnd = clip.start + clip.length;
         if (startBeat >= clipEnd) continue;     // 剪辑已整体在起播点之前
+        /* 循环开启时按 loop.end 截断：不截断会一路播过回绕点，内容与
+           时间线错位（_queueAudioClip 已修的同款问题，seek 路径此前漏改） */
+        var playEnd = loopOn ? Math.min(clipEnd, lp.end) : clipEnd;
+        if (startBeat >= playEnd) continue;
         this.getSampleEntry(clip.src.p).catch(function () {});
         this._pendingClips.push({
           t: this._anchorCtxTime,
-          tEnd: this._anchorCtxTime + (clipEnd - startBeat) * this.secondsPerBeat(),
+          tEnd: this._anchorCtxTime + (playEnd - startBeat) * this.secondsPerBeat(),
           playFromBeat: startBeat,
-          clipRemain: clipEnd - startBeat,
+          clipRemain: playEnd - startBeat,
           clip: clip,
           track: track,
           nodes: nodes
@@ -782,8 +807,10 @@
   ArrangeEngine.prototype._onHeartbeat = function (this: ArrangeEngineInstance) {
     if (!this.isPlaying) return;
     /* 引擎模式播放中引擎掉线（崩溃/重启/失败）：自动停止走带并提示，
-       避免无声空转——徽章轮询 5s 才翻转，这里每心跳即检（严格路由） */
-    if (isEngineMode() && window.__engineState && window.__engineState !== "ready") {
+       避免无声空转——徽章轮询 5s 才翻转，这里每心跳即检（严格路由）。
+       判定用 isEngineDown（排除 unknown）：一次状态轮询失败不该掐断播放 */
+    if (isEngineMode() && window.AudioBackend && window.AudioBackend.isEngineDown
+        && window.AudioBackend.isEngineDown()) {
       if (this.onEngineLost) { try { this.onEngineLost(); } catch (e) {} }
       return;
     }
@@ -1021,7 +1048,16 @@
       ev = this._pendingClicks[i];
       if (ev.t <= now + TRIGGER_S) {
         if (ev.t >= now - 0.05 && this.isPlaying) {
-          this.click(Math.max(ev.t, now), ev.downbeat);
+          if (engineMode) {
+            /* 原生 click 无 when 语义（IPC 即发即响）：进入触发窗就发会
+               平均提前半个窗（≈75ms），与精确调度的音符/音频轨错位。
+               到点才发，与原生音符同一套 timer（随 stopSchedule 统一撤销） */
+            this._schedNative(Math.max(0, ev.t - now), (function (down: any) {
+              return function () { self.click(0, down); };
+            })(ev.downbeat));
+          } else {
+            this.click(Math.max(ev.t, now), ev.downbeat);
+          }
         }
       } else {
         stillClick.push(ev);

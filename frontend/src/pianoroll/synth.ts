@@ -116,6 +116,14 @@
     isEngineReady: function () {
       return AudioBackend.isEngine() && window.__engineState === "ready";
     },
+    /* 引擎是否处于「明确不可用」状态：供播放中的失联判定使用。
+       unknown / 未取到状态不算掉线——徽章轮询一次 HTTP 抖动就会把状态
+       写成 unknown（fetch catch 兜底），据此停播属误判（此前把 unknown
+       也当掉线，正在进行的播放会被无端掐断并弹「引擎已中断」） */
+    isEngineDown: function () {
+      var st = window.__engineState;
+      return !!st && st !== "ready" && st !== "unknown";
+    },
     isNativePreferred: function () {
       /* 兼容旧调用方语义：仅当引擎模式且就绪才判原生可用——
          不再代表"可降级"，引擎模式下永不回退 WebAudio */

@@ -23,7 +23,8 @@ const (
 // ProtocolVersion 协议版本（握手双向校验）。
 // v2（P4）：fx.setChain / fx.getChain / mixer.setMaster / mixer.get，
 // getLevels 增加 master 字段。
-const ProtocolVersion uint32 = 2
+// v3（P5）：plugin.* 一族（VST3 宿主的扫描/装载/参数/编辑器）。
+const ProtocolVersion uint32 = 3
 
 // MaxFrameSize 单帧上限（防异常长度）
 const MaxFrameSize = 16 * 1024 * 1024

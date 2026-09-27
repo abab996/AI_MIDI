@@ -16,8 +16,10 @@ package mcp
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
+	"melodymate/internal/engine"
 	"melodymate/internal/llm"
 	"melodymate/internal/project"
 	"melodymate/internal/soundlib"
@@ -261,6 +263,52 @@ var arrangeTools = []llm.ToolDefinition{
 			},
 		},
 	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "list_plugins",
+			Description: "列出已扫描到的 VST3 插件（乐器与效果器）。scan=true 时先扫描系统插件目录（首次较慢）。返回的 id 用于 load_plugin。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"scan": map[string]any{
+						"type":        "boolean",
+						"description": "是否先触发扫描（默认 false，只读已知清单）",
+					},
+					"onlyInstrument": map[string]any{
+						"type":        "boolean",
+						"description": "只列乐器插件（给轨道挂音色时用）",
+					},
+				},
+				"additionalProperties": false,
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "load_plugin",
+			Description: "把 VST3 插件装载到轨道（乐器）或 FX 槽（效果器）。track 传 \"master\" 表示主总线 FX 槽。装载乐器会替换该轨原有的 SF2/合成器音色。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "插件 id（list_plugins 返回）",
+					},
+					"track": map[string]any{
+						"type":        "string",
+						"description": "轨道序号（0 起）/ id / 名称；或 \"master\"（主总线）",
+					},
+					"slot": map[string]any{
+						"type":        "integer",
+						"description": "FX 槽序号 0~7；省略 = 作为该轨的乐器装载",
+					},
+				},
+				"required": []string{"id"},
+			},
+		},
+	},
 }
 
 // isArrangeTool 判断是否为编曲/机架/混音类工具
@@ -268,7 +316,8 @@ func isArrangeTool(name string) bool {
 	switch name {
 	case "list_sound_sources", "list_rack", "add_rack_item", "remove_rack_item",
 		"arrange_track", "set_track_instrument", "set_track_mix",
-		"mixer_get", "set_fx_slot", "set_master_gain":
+		"mixer_get", "set_fx_slot", "set_master_gain",
+		"list_plugins", "load_plugin":
 		return true
 	}
 	return false
@@ -289,6 +338,12 @@ func executeArrangeTool(env ToolEnv, name string, args map[string]any) (string, 
 	}
 	if name == "mixer_get" {
 		return mixerText(env.ProjectID), nil
+	}
+	if name == "list_plugins" {
+		return listPluginsText(args), nil
+	}
+	if name == "load_plugin" {
+		return loadPluginText(env, args), nil
 	}
 	if name == "arrange_track" && strings.ToLower(strings.TrimSpace(stringArg(args, "op"))) == "list" {
 		return listTracksText(env.ProjectID), nil
@@ -715,6 +770,163 @@ func dbOf(gain float64) float64 {
 		return -60
 	}
 	return 20 * math.Log10(gain)
+}
+
+// listPluginsText 插件清单文本（引擎未启动时给可解释提示）
+func listPluginsText(args map[string]any) string {
+	sup := engine.Get()
+	if sup == nil {
+		return "引擎未启动：VST3 插件需要在桌面版（原生引擎）下使用。可用 list_sound_sources 查看 SF2/采样包音源。"
+	}
+	var list *engine.PluginList
+	var err error
+	if mapBool(args, "scan") {
+		list, err = sup.ScanPlugins(nil, 0)
+	} else {
+		list, err = sup.ListPlugins()
+	}
+	if err != nil {
+		return "错误：" + err.Error()
+	}
+	if list.Count == 0 {
+		return "已知插件清单为空。用 list_plugins(scan=true) 扫描系统插件目录（" +
+			strings.Join(list.Formats, "/") + " 格式已注册）。"
+	}
+	onlyInstrument := mapBool(args, "onlyInstrument")
+	var b strings.Builder
+	fmt.Fprintf(&b, "VST3 插件（%d 个）：\n", list.Count)
+	for _, p := range list.Plugins {
+		if onlyInstrument && !p.Instrument {
+			continue
+		}
+		kind := "效果器"
+		if p.Instrument {
+			kind = "乐器"
+		}
+		fmt.Fprintf(&b, "- [%s] %s（%s）id=%s\n", kind, p.Name, p.Vendor, p.ID)
+	}
+	return b.String()
+}
+
+// loadPluginText 装载插件 + 落一份槽位状态（AI 不必再查）
+func loadPluginText(env ToolEnv, args map[string]any) string {
+	sup := engine.Get()
+	if sup == nil {
+		return "引擎未启动：VST3 插件需要在桌面版（原生引擎）下使用。"
+	}
+	id := stringArg(args, "id")
+	if id == "" {
+		return "错误：缺少 id（先 list_plugins）"
+	}
+	trackText := strings.ToLower(strings.TrimSpace(stringArg(args, "track")))
+	slot := -1
+	if v, ok := args["slot"]; ok && v != nil {
+		if f, isNum := v.(float64); isNum {
+			slot = int(f)
+		}
+	}
+	engineTrack := 0
+	isMaster := trackText == "master" || trackText == "主总线"
+	if !isMaster {
+		track, err := requireTrack(args)
+		if err != nil {
+			return "错误：" + err.Error()
+		}
+		// AI 用轨道序号/id/名称，引擎用 0~31 的槽位号
+		idx, err := resolveTrackIndex(env.ProjectID, track)
+		if err != nil {
+			return "错误：" + err.Error()
+		}
+		engineTrack = idx
+	}
+	if isMaster {
+		engineTrack = -1
+	}
+	if err := sup.LoadPlugin(engineTrack, slot, id); err != nil {
+		return "错误：" + err.Error()
+	}
+
+	// 槽位状态也写进工程（前端/重启后知道这里该有什么）
+	if slot >= 0 {
+		op := map[string]any{"op": "setFxSlot", "slot": slot, "plugin": id, "bypass": false}
+		if isMaster {
+			op["master"] = true
+		} else {
+			op["track"] = engineTrack
+		}
+		if _, err := project.ApplyOps(env.ProjectID, []map[string]any{op}); err != nil {
+			return "插件已装载，但槽位状态未落到工程：" + err.Error()
+		}
+	}
+	if env.Emit != nil {
+		env.Emit(map[string]any{
+			"type":    "arrangement",
+			"project": env.ProjectID,
+			"changed": []string{"mixer"},
+			"summary": []string{"装载插件 " + id},
+			"source":  "ai",
+			"tool":    "load_plugin",
+		})
+	}
+	where := "轨道 #" + fmt.Sprint(engineTrack+1)
+	if isMaster {
+		where = "主总线"
+	}
+	if slot >= 0 {
+		where += fmt.Sprintf(" FX 槽 %d", slot)
+	} else {
+		where += "（乐器）"
+	}
+	return "已把插件装载到 " + where + "：" + id + "\n" + pluginStateText(sup)
+}
+
+// pluginStateText 宿主机内状态摘要
+func pluginStateText(sup *engine.Supervisor) string {
+	state, err := sup.PluginState()
+	if err != nil {
+		return ""
+	}
+	inst, _ := state["instruments"].([]any)
+	fx, _ := state["effects"].([]any)
+	var b strings.Builder
+	fmt.Fprintf(&b, "当前宿主：%d 个乐器轨 / %d 个效果槽\n", len(inst), len(fx))
+	for _, it := range inst {
+		if m, ok := it.(map[string]any); ok {
+			fmt.Fprintf(&b, "- 轨 #%v ← %v\n", m["track"], m["name"])
+		}
+	}
+	for _, it := range fx {
+		if m, ok := it.(map[string]any); ok {
+			if b2, isBool := m["master"].(bool); isBool && b2 {
+				fmt.Fprintf(&b, "- 主总线 FX %v ← %v\n", m["slot"], m["name"])
+			} else {
+				fmt.Fprintf(&b, "- 轨 #%v FX %v ← %v\n", m["track"], m["slot"], m["name"])
+			}
+		}
+	}
+	return b.String()
+}
+
+// resolveTrackIndex 把轨道引用（序号/id/名称）解析成引擎槽位序号（0 起）
+func resolveTrackIndex(projectID, ref string) (int, error) {
+	arr := loadArrangement(projectID)
+	tracks := arrangementTracks(arr)
+	for i, t := range tracks {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		if mapString(tm, "id") == ref || mapString(tm, "name") == ref {
+			return i, nil
+		}
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(ref)); err == nil {
+		if n >= 0 && n < len(tracks) {
+			return n, nil
+		}
+		return 0, fmt.Errorf("轨道序号超出范围（0 ~ %d）", len(tracks)-1)
+	}
+	return 0, fmt.Errorf("找不到轨道 %q", ref)
 }
 
 // afterText 写操作后的回执：带上最新状态，AI 不必再查一次

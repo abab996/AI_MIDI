@@ -1,6 +1,6 @@
-# MelodyMate 引擎 IPC 协议（v2）
+# MelodyMate 引擎 IPC 协议（v3）
 
-> 版本：2 ｜ 日期：2026-08-23 ｜ 修订：2026-09-27（P4 增加 FX 链与主总线，见 §4.13 与文末修订记录；线格式不变）
+> 版本：3 ｜ 日期：2026-08-23 ｜ 修订：2026-09-27（P4 FX 链与主总线 §4.13；P5 VST3 宿主 §4.14；线格式不变）
 > 适用双方：`MelodyMate.exe`（Go 主进程，客户端）↔ `melodymate-engine.exe`（JUCE 引擎，服务端）
 > 实现镜像：Go 侧 `internal/engine/protocol.go`；C++ 侧 `engine/Source/Ipc/Protocol.h`
 > **本文为协议唯一权威来源**，两侧实现与 engine/README 摘要如有出入，以本文为准。
@@ -257,8 +257,50 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 
 ## 修订记录
 
+- **2026-09-27（P5：VST3 宿主，协议 v2 → v3）**：新增 plugin.* 一族（§4.14：扫描/清单/装载/卸载/参数/编辑器/状态），能力表加 st3。引擎新增 Source/Plugins/（PluginHost / Vst3FxProcessor / PluginWindow），CMake 启用 JUCE_PLUGINHOST_VST3。**同时修掉一个长期存在的编码缺陷**：JUCE 的 String(const char*) 按 ASCII 解释，引擎里所有含中文的字面量经 IPC 发出时都是乱码（实测 plugin.load 错误信息）；新增 Source/Text.h 的 u8() 并修正 40 处字面量。
+
 - **2026-09-27（P4：FX 链与主总线，协议 v1 → v2）**：新增 `fx.setChain` / `fx.getChain` / `mixer.setMaster` / `mixer.get`（§4.13）；`getLevels` result 增加 `master` 字段（§4.7c）。引擎侧新增 `MixerGraph` 插入链（每轨 + 主总线各 8 槽）与延迟释放队列（`FxChain.h`）；主进程新增会话重放 `lastChains` / `lastMasterChain` / `lastMasterGain`（顺序：`loadSoundFont → setTrackPreset → setTrackVoice → fx.setChain → mixer.setMaster`）。插件实例装载仍属 P5/P6：`plugin` 非空时引擎返回可解释错误，槽参数（bypass/wet）可正常下发。握手版本号严格比对，不匹配即拒绝。
 
 - **2026-09-05（v3.0.3）**：线格式不变。行为修订三处——① `bounce` 改消息线程异步执行（对齐 `scheduleSamples`）；② bounce 超时改按渲染时长动态估算（30s–20min）；③ 帧长上限 16 MiB 改为**收发两侧均校验**（此前仅接收侧校验）。另 PipeServer 断开时序改为「先锁内置空句柄再 CloseHandle」（消除对已关闭/复用句柄写入的竞态），不影响协议语义。
 - **2026-09-05（波形声部与 ASIO 修复，随下一版本发布）**：新增 `setTrackVoice`（§4.6a，内置波形声部，与 loadSoundFont 互斥）；`openControlPanel` 改为立即应答 + 后台线程打开（§4.8）；applySetup 超时 15s→60s。主进程新增 `soundfont_loaded` 状态字段（/api/audio/status）。
 - **2026-09-06（音频路线严格化）**：新增 `setTrackPreset`（§4.6b，SF2 预设选择）与 `click`（§4.6c，节拍器木鱼音）；/api/audio/status 新增 `default_soundfont`（音色目录首个 SF2 绝对路径，内置 piano/strings 的原生映射目标）；主进程会话重放顺序扩展为 `loadSoundFont → setTrackPreset → setTrackVoice`（`lastPresets` 每轨记录）；前端轨位约定：0–28 编曲、29 试听/编曲节拍器、30 钢琴窗 SF2/内置、31 钢琴窗波形/实时键盘。
+
+
+### 4.14 VST3 插件宿主（P5）
+
+引擎内嵌 JUCE 8 的 VST3 宿主（`JUCE_PLUGINHOST_VST3=1`，模块 `juce_audio_processors` +
+`juce_gui_basics`）。扫描/实例化/参数/编辑器全部在**消息线程**执行；实例向音频线程
+的发布用原子指针 + 延迟释放队列（沿用 P4 的 `FxTrashQueue`，P5 起它存的是可调用对象，
+用于 shared_ptr 析构）。
+
+**信号链**：`轨乐器（VST3 或 SF2/波形，互斥）→ 轨 FX 链 → 轨条 → 汇总 → 主 FX 链 → 压限`。
+插件乐器的 MIDI 走独立 SPSC 环（`pluginMidi_`），与 SF2 同一投递纪律；MIDI 缓冲在
+`audioDeviceAboutToStart` 预分配，回调内只 clear。
+
+| 方法 | params | result / 错误 |
+|---|---|---|
+| `plugin.scan` | `{"dirs":["<目录>"],"cache":"<xml 路径>"}` | **立即**返回 `{"started":<bool>,"status":{...}}`。扫描异步执行（同步应答会把管道事务与心跳一起拖死，实测扫描期间后续请求全部超时）。`dirs` 为空则扫系统默认目录（Windows：`Common Files\VST3` 与 `%APPDATA%\VST3`） |
+| `plugin.scanStatus` | `{"cache":"<xml 路径>"}` | `{"running","scanned","total","current","dirs","count"}`；`running=false` 时附带 `list`（清单 + 已注册格式），并把缓存写盘 |
+| `plugin.scanCancel` | `{}` | 置取消标志（文件之间生效，已扫到的保留） |
+| `plugin.list` | `{}` | `{"count","plugins":[{id,name,vendor,category,instrument,hasEditor,path}],"formats":["VST3"]}`。`formats` 为空=宿主没启用任何格式 |
+| `plugin.loadCache` | `{"path"}` | `{"loaded":<bool>,"count":<int>}` |
+| `plugin.load` | 乐器：`{"track":0,"id":"<id>"}`；效果：`{"track":0,"slot":0..7,"id"}` 或 `{"master":true,"slot":0..7,"id"}` | 宿主状态；未知 id / 实例化失败给可解释错误 |
+| `plugin.unload` | 同 load（无 id） | 宿主状态 |
+| `plugin.state` | `{}` | `{"instruments":[{track,id,name,hasEditor}],"effects":[{master,track,slot,name,hasEditor}],"trash":<int>}` |
+| `plugin.params` | 目标同上 | `{"name","params":[{index,name,text,value,defaultValue,steps,automatable}]}` |
+| `plugin.setParam` | 目标 + `{"index","value":0..1}` | 更新后的参数表 |
+| `plugin.openEditor` | 目标 | `"editor opened"`；消息线程创建原生编辑器窗口（`PluginWindow`，无编辑器的插件给提示面板） |
+| `plugin.closeEditor` | `{}` | `"editor closed"` |
+
+**验收（`tools/engine_smoke -vst3dir <目录>`，本机实测）**：扫描真实插件（`8-Bit Crusher.vst3`、
+`Krush.vst3`、`Serum.vst3` 三件套）→ 清单 3 个（乐器 1 / 效果 2）→ 效果器入 FX 槽 →
+13 个参数 → setParam 回读 → 原生编辑器开/关 → 卸载 → 乐器装入轨道 → MIDI → 卸载，
+全部通过。
+
+**已知限制（如实记录）**：
+1. 第三方**乐器**插件（Serum / Cymatics Voxity）在本机未授权，装入成功但渲染静音
+   （实测轨道电平 0.0000）——乐器出声口径需要用户用已授权插件在桌面版实测，
+   或后续用自建测试插件补一条无许可依赖的验收；
+2. 插件扫描会把这些 DLL 载入引擎进程，个别插件的加载可能卡住；引擎用
+   JUCE 的 dead-man's-pedal 列表记录并跳过，且扫描是异步 + 可取消的，
+   但无法中断单个卡死的 DLL 调用（真宿主用独立扫描进程解决，列入后续）。

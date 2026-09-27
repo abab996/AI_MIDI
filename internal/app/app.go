@@ -299,6 +299,97 @@ func (a *App) EngineGetLevelsWithMaster() (map[string]any, error) {
 	return map[string]any{"levels": levels, "master": master}, nil
 }
 
+/* ===== P5：VST3 宿主 ===== */
+
+// EngineListPlugins 已知插件清单（不扫描）
+func (a *App) EngineListPlugins() (map[string]any, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return nil, errEngineUnavailable
+	}
+	list, err := sup.ListPlugins()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"count": list.Count, "plugins": list.Plugins, "formats": list.Formats}, nil
+}
+
+// EngineScanPlugins 扫描插件目录（dirs 为空 = 系统默认目录；可能数十秒）
+func (a *App) EngineScanPlugins(dirs []string) (map[string]any, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return nil, errEngineUnavailable
+	}
+	list, err := sup.ScanPlugins(dirs, 0)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"count": list.Count, "plugins": list.Plugins, "formats": list.Formats}, nil
+}
+
+// EngineLoadPlugin 装载插件：slot < 0 = 轨道乐器；否则 track<0 表主链 FX 槽
+func (a *App) EngineLoadPlugin(track, slot int, pluginID string) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.LoadPlugin(track, slot, pluginID)
+}
+
+// EngineUnloadPlugin 卸载插件
+func (a *App) EngineUnloadPlugin(track, slot int) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.UnloadPlugin(track, slot)
+}
+
+// EnginePluginParams 读插件参数表
+func (a *App) EnginePluginParams(track, slot int) (map[string]any, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return nil, errEngineUnavailable
+	}
+	return sup.PluginParams(track, slot)
+}
+
+// EngineSetPluginParam 写插件参数（0~1 归一化）
+func (a *App) EngineSetPluginParam(track, slot, index int, value float64) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.SetPluginParam(track, slot, index, value)
+}
+
+// EngineOpenPluginEditor 打开插件原生编辑器
+func (a *App) EngineOpenPluginEditor(track, slot int) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.OpenPluginEditor(track, slot)
+}
+
+// EngineClosePluginEditor 关闭插件编辑器
+func (a *App) EngineClosePluginEditor() error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.ClosePluginEditor()
+}
+
+// EnginePluginState 宿主状态（哪些轨有乐器 / 哪些槽有效果器）
+func (a *App) EnginePluginState() (map[string]any, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return nil, errEngineUnavailable
+	}
+	return sup.PluginState()
+}
+
 // ===== 聊天流事件桥（桌面模式专用）=====
 //
 // Wails Windows 的 assetserver 用 bytes.Buffer 缓存整个响应体，到

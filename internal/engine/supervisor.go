@@ -580,6 +580,301 @@ func (s *Supervisor) GetChain(track int) (map[string]any, error) {
 	return out, nil
 }
 
+/* ═══════════ P5：VST3 宿主 ═══════════ */
+
+// PluginInfo 插件清单条目（引擎侧 JSON 的原样映射，前端/AI 都读这一份）
+type PluginInfo struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Vendor     string `json:"vendor"`
+	Category   string `json:"category"`
+	Instrument bool   `json:"instrument"`
+	HasEditor  bool   `json:"hasEditor"`
+	Path       string `json:"path"`
+}
+
+// PluginList 清单 + 已注册格式（诊断"为什么扫不到"用）
+type PluginList struct {
+	Count   int          `json:"count"`
+	Plugins []PluginInfo `json:"plugins"`
+	Formats []string     `json:"formats"`
+}
+
+// PluginScanStatus 扫描进度（异步扫描：start 立即返回，轮询这里看进度）
+type PluginScanStatus struct {
+	Running bool   `json:"running"`
+	Scanned int    `json:"scanned"`
+	Total   int    `json:"total"`
+	Current string `json:"current"`
+	Dirs    string `json:"dirs"`
+	Count   int    `json:"count"`
+}
+
+// ScanPlugins 扫描插件目录（dirs 为空 = 系统默认目录）。
+//
+// 引擎侧扫描是异步的（同步应答会把管道拖死），这里启动后轮询到结束，
+// 结束时引擎会把清单一起带回；随后落一份缓存，下次启动可秒开。
+func (s *Supervisor) ScanPlugins(dirs []string, timeout time.Duration) (*PluginList, error) {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	params := map[string]any{"cache": s.pluginCachePath()}
+	if len(dirs) > 0 {
+		params["dirs"] = dirs
+	}
+	resp, err := cli.Request("plugin.scan", params, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if time.Now().After(deadline) {
+			_, _ = cli.TryRequest("plugin.scanCancel", nil, 5*time.Second)
+			return nil, fmt.Errorf("插件扫描超时（%s）", timeout)
+		}
+		time.Sleep(500 * time.Millisecond)
+		st, err := cli.Request("plugin.scanStatus", params, 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if err := st.Err(); err != nil {
+			return nil, err
+		}
+		var status struct {
+			Running bool `json:"running"`
+			List    struct {
+				Count   int          `json:"count"`
+				Plugins []PluginInfo `json:"plugins"`
+				Formats []string     `json:"formats"`
+			} `json:"list"`
+		}
+		if err := json.Unmarshal(st.Result, &status); err != nil {
+			return nil, err
+		}
+		if status.Running {
+			continue
+		}
+		return &PluginList{Count: status.List.Count, Plugins: status.List.Plugins, Formats: status.List.Formats}, nil
+	}
+}
+
+// LoadPluginCache 载入上次的扫描缓存（启动时调用，避免每次重扫）
+func (s *Supervisor) LoadPluginCache() (int, error) {
+	cli, err := s.Ready(3 * time.Second)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := cli.TryRequest("plugin.loadCache", map[string]any{"path": s.pluginCachePath()}, s.cfg.RequestTimeout)
+	if err != nil {
+		return 0, err
+	}
+	if err := resp.Err(); err != nil {
+		return 0, err
+	}
+	var res struct {
+		Loaded bool `json:"loaded"`
+		Count  int  `json:"count"`
+	}
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		return 0, err
+	}
+	if !res.Loaded {
+		return 0, fmt.Errorf("无插件缓存")
+	}
+	return res.Count, nil
+}
+
+// ListPlugins 已知插件清单（不触发扫描）
+func (s *Supervisor) ListPlugins() (*PluginList, error) {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.Request("plugin.list", nil, s.cfg.RequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var out PluginList
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// LoadInstrumentPlugin 把 VST3 乐器装到轨道（track < 0 表示主链 FX 槽）
+func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
+	if strings.TrimSpace(pluginID) == "" {
+		return fmt.Errorf("缺少插件 id")
+	}
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"id": pluginID}
+	if slot >= 0 {
+		params["slot"] = slot
+		if track < 0 {
+			params["master"] = true
+		} else {
+			params["track"] = track
+		}
+	} else {
+		params["track"] = track
+	}
+	// 插件实例化要加载 DLL，给足时间（大插件可能数秒）
+	resp, err := cli.Request("plugin.load", params, 60*time.Second)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// UnloadPlugin 卸载插件（slot < 0 卸乐器）
+func (s *Supervisor) UnloadPlugin(track, slot int) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{}
+	if slot >= 0 {
+		params["slot"] = slot
+		if track < 0 {
+			params["master"] = true
+		} else {
+			params["track"] = track
+		}
+	} else {
+		params["track"] = track
+	}
+	resp, err := cli.Request("plugin.unload", params, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// pluginTarget 组装插件定位参数（乐器 / 轨 FX 槽 / 主链 FX 槽）
+func pluginTarget(track, slot int) map[string]any {
+	params := map[string]any{}
+	if slot >= 0 {
+		params["slot"] = slot
+		if track < 0 {
+			params["master"] = true
+		} else {
+			params["track"] = track
+		}
+	} else {
+		params["track"] = track
+	}
+	return params
+}
+
+// PluginParams 读插件参数表（±1 归一化值 + 显示文本）
+func (s *Supervisor) PluginParams(track, slot int) (map[string]any, error) {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.Request("plugin.params", pluginTarget(track, slot), 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		return nil, err
+	}
+	if e, ok := out["error"].(string); ok && e != "" {
+		return nil, fmt.Errorf("%s", e)
+	}
+	return out, nil
+}
+
+// SetPluginParam 写参数（0~1 归一化）
+func (s *Supervisor) SetPluginParam(track, slot, index int, value float64) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	params := pluginTarget(track, slot)
+	params["index"] = index
+	params["value"] = value
+	resp, err := cli.Request("plugin.setParam", params, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// OpenPluginEditor 打开插件原生编辑器（引擎侧消息线程开窗）
+func (s *Supervisor) OpenPluginEditor(track, slot int) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	resp, err := cli.Request("plugin.openEditor", pluginTarget(track, slot), 30*time.Second)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// ClosePluginEditor 关闭插件编辑器
+func (s *Supervisor) ClosePluginEditor() error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	resp, err := cli.TryRequest("plugin.closeEditor", nil, s.cfg.RequestTimeout)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// PluginState 宿主状态（哪些轨有乐器、哪些槽有效果器）
+func (s *Supervisor) PluginState() (map[string]any, error) {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cli.Request("plugin.state", nil, s.cfg.RequestTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// pluginCachePath 插件清单缓存的落盘位置（与音色目录同级的 Library/ 下）
+func (s *Supervisor) pluginCachePath() string {
+	sfDir, _, _ := s.dirs()
+	if sfDir == "" {
+		return ""
+	}
+	// sfDir 形如 <数据根>/Library/soundfonts；缓存放同级
+	return filepath.Join(filepath.Dir(sfDir), "vst3-cache.xml")
+}
+
 // SetTrackVoice 把引擎轨道切换到内置波形声部（合成波音色的原生渲染路径，
 // 不依赖 SF2）。voice 内容见协议文档 setTrackVoice；崩溃重启后随会话重放
 func (s *Supervisor) SetTrackVoice(track int, voice map[string]any) error {

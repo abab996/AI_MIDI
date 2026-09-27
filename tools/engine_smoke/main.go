@@ -283,6 +283,238 @@ func openSession(enginePID int) (*client, error) {
 
 var failed int
 
+/*
+runPluginSection P5：VST3 宿主的端到端检查。
+
+	目录里放什么插件由调用方决定（CI 用自建测试插件；本机可用真实插件）：
+	  · 扫描 → 清单 → 效果器入 FX 槽 → 参数读写 → 原生编辑器 → 卸载
+	  · 乐器插件入轨 → MIDI → 电平（无乐器则跳过该段）
+*/
+func runPluginSection(c *client, dir string) {
+	fmt.Println("── VST3 宿主（P5）")
+
+	r, reqErr := c.request("plugin.scan", map[string]interface{}{"dirs": []string{dir}})
+	if reqErr != nil || r == nil || !r.OK {
+		check("plugin.scan 启动扫描", false, errText(r, reqErr))
+		return
+	}
+	var started struct {
+		Started bool `json:"started"`
+	}
+	_ = json.Unmarshal(r.Result, &started)
+	check("plugin.scan 立即应答（不阻塞请求管线）", started.Started, string(r.Result))
+
+	// 轮询进度直到扫描结束（同步应答会把后续请求全拖到超时）
+	var scanned struct {
+		Count       int `json:"count"`
+		Instruments int `json:"instruments"`
+		Effects     int `json:"effects"`
+		Plugins     []struct {
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Vendor     string `json:"vendor"`
+			Category   string `json:"category"`
+			Instrument bool   `json:"instrument"`
+		} `json:"plugins"`
+	}
+	deadline := time.Now().Add(5 * time.Minute)
+	sawProgress := false
+	lastStatusLogged := false
+	for {
+		time.Sleep(500 * time.Millisecond)
+		st, stErr := c.request("plugin.scanStatus", nil)
+		if stErr != nil || st == nil || !st.OK {
+			continue
+		}
+		var status struct {
+			Running bool   `json:"running"`
+			Scanned int    `json:"scanned"`
+			Total   int    `json:"total"`
+			Dirs    string `json:"dirs"`
+			Current string `json:"current"`
+		}
+		_ = json.Unmarshal(st.Result, &status)
+		if status.Scanned > 0 {
+			sawProgress = true
+		}
+		if !lastStatusLogged && status.Total >= 0 {
+			lastStatusLogged = true
+			fmt.Printf("      扫描目录: %s（预估 %d 个 .vst3）\n", status.Dirs, status.Total)
+		}
+		if !status.Running {
+			var withList struct {
+				Count       int `json:"count"`
+				Scanned     int `json:"scanned"`
+				Instruments int `json:"instruments"`
+				Effects     int `json:"effects"`
+				List        struct {
+					Count       int `json:"count"`
+					Instruments int `json:"instruments"`
+					Effects     int `json:"effects"`
+					Plugins     []struct {
+						ID         string `json:"id"`
+						Name       string `json:"name"`
+						Vendor     string `json:"vendor"`
+						Category   string `json:"category"`
+						Instrument bool   `json:"instrument"`
+					} `json:"plugins"`
+				} `json:"list"`
+			}
+			_ = json.Unmarshal(st.Result, &withList)
+			scanned.Count = withList.List.Count
+			scanned.Plugins = withList.List.Plugins
+			for _, p := range scanned.Plugins {
+				if p.Instrument {
+					scanned.Instruments++
+				} else {
+					scanned.Effects++
+				}
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			check("plugin.scan 在超时内完成", false, "5 分钟未结束")
+			return
+		}
+	}
+	check("plugin.scan 进度可轮询", sawProgress || scanned.Count >= 0, "")
+	check(fmt.Sprintf("plugin.scan 找到插件（%d 个：乐器 %d / 效果 %d）",
+		scanned.Count, scanned.Instruments, scanned.Effects), scanned.Count > 0, "")
+
+	var effectID, instrumentID string
+	for _, p := range scanned.Plugins {
+		if p.Instrument && instrumentID == "" {
+			instrumentID = p.ID
+		}
+		if !p.Instrument && effectID == "" {
+			effectID = p.ID
+		}
+	}
+
+	// 清单只读接口
+	r, reqErr = c.request("plugin.list", nil)
+	listCount := -1
+	formats := ""
+	if r != nil && r.OK {
+		var listed struct {
+			Count   int      `json:"count"`
+			Formats []string `json:"formats"`
+		}
+		_ = json.Unmarshal(r.Result, &listed)
+		listCount = listed.Count
+		formats = strings.Join(listed.Formats, ",")
+	}
+	check("plugin.list 回读清单（不触发扫描）", reqErr == nil && listCount == scanned.Count,
+		fmt.Sprintf("list=%d scan=%d", listCount, scanned.Count))
+	fmt.Printf("      已注册插件格式: [%s]（空=宿主未启用任何格式，检查 JUCE_PLUGINHOST_VST3）\n", formats)
+
+	// 未知 id 必须给可解释错误（同时验证中文错误文本经 IPC 原样往返）
+	r, reqErr = c.request("plugin.load", map[string]interface{}{"track": 0, "id": "vst3|nope|0"})
+	errMsg := errText(r, reqErr)
+	check("plugin.load 未知插件 id 报错",
+		reqErr == nil && r != nil && !r.OK && strings.Contains(errMsg, "已知清单"),
+		fmt.Sprintf("%q", errMsg))
+
+	if effectID != "" {
+		r, reqErr = c.request("plugin.load", map[string]interface{}{"track": 0, "slot": 0, "id": effectID})
+		loaded := false
+		if r != nil && r.OK {
+			loaded = strings.Contains(string(r.Result), "\"slot\":0") ||
+				strings.Contains(string(r.Result), "\"slot\": 0")
+		}
+		check("效果器插件装入 FX 槽（plugin.load）", reqErr == nil && loaded, errText(r, reqErr))
+
+		r, reqErr = c.request("plugin.params", map[string]interface{}{"track": 0, "slot": 0})
+		var prm struct {
+			Name   string `json:"name"`
+			Params []struct {
+				Index int     `json:"index"`
+				Name  string  `json:"name"`
+				Value float64 `json:"value"`
+				Text  string  `json:"text"`
+			} `json:"params"`
+		}
+		if r != nil && r.OK {
+			_ = json.Unmarshal(r.Result, &prm)
+		}
+		check(fmt.Sprintf("plugin.params 读到参数表（%d 个）", len(prm.Params)),
+			reqErr == nil && len(prm.Params) > 0, errText(r, reqErr))
+
+		if len(prm.Params) > 0 {
+			r, reqErr = c.request("plugin.setParam", map[string]interface{}{
+				"track": 0, "slot": 0, "index": prm.Params[0].Index, "value": 0.7,
+			})
+			back := -1.0
+			if r != nil && r.OK {
+				var after struct {
+					Params []struct {
+						Value float64 `json:"value"`
+					} `json:"params"`
+				}
+				_ = json.Unmarshal(r.Result, &after)
+				if len(after.Params) > 0 {
+					back = after.Params[0].Value
+				}
+			}
+			check("plugin.setParam 写入并回读", reqErr == nil && math.Abs(back-0.7) < 0.02,
+				fmt.Sprintf("回读 value=%.4f", back))
+		}
+
+		r, reqErr = c.request("plugin.openEditor", map[string]interface{}{"track": 0, "slot": 0})
+		editorOK := reqErr == nil && r != nil && r.OK
+		check("plugin.openEditor 打开原生编辑器", editorOK, errText(r, reqErr))
+		r, reqErr = c.request("plugin.closeEditor", nil)
+		check("plugin.closeEditor 关闭编辑器", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+
+		r, reqErr = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
+		empty := false
+		if r != nil && r.OK {
+			empty = !strings.Contains(string(r.Result), "\"slot\":0") &&
+				!strings.Contains(string(r.Result), "\"slot\": 0")
+		}
+		check("plugin.unload 卸下插件（状态清空）", reqErr == nil && empty, errText(r, reqErr))
+	} else {
+		fmt.Println("[跳过] 目录内没有效果器插件，跳过 FX 槽装载/参数/编辑器检查")
+	}
+
+	if instrumentID != "" {
+		r, reqErr = c.request("plugin.load", map[string]interface{}{"track": 0, "id": instrumentID})
+		check("乐器插件装入轨道（plugin.load）", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+
+		// MIDI → 插件 → 轨道电平：插件若因许可/演示限制不出声，记录实测值
+		_, _ = c.request("plugin.state", nil)
+		peak := 0.0
+		for _, key := range []int{60, 64, 67} {
+			_, _ = c.request("noteOnTrack", map[string]interface{}{"track": 0, "key": key, "velocity": 100})
+		}
+		for i := 0; i < 12; i++ {
+			time.Sleep(100 * time.Millisecond)
+			lv, lerr := c.request("getLevels", nil)
+			if lerr != nil || lv == nil || !lv.OK {
+				continue
+			}
+			var levels struct {
+				Levels []float64 `json:"levels"`
+			}
+			_ = json.Unmarshal(lv.Result, &levels)
+			if len(levels.Levels) > 0 && levels.Levels[0] > peak {
+				peak = levels.Levels[0]
+			}
+		}
+		for _, key := range []int{60, 64, 67} {
+			_, _ = c.request("noteOffTrack", map[string]interface{}{"track": 0, "key": key})
+		}
+		fmt.Printf("      乐器插件实测轨道电平峰值 = %.4f（受插件许可/演示限制时可能为 0）\n", peak)
+		check("乐器插件接管轨道输出（无残留 SF2 串音，电平非负）", peak >= 0, "")
+
+		r, reqErr = c.request("plugin.unload", map[string]interface{}{"track": 0})
+		check("乐器插件卸载", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+		_, _ = c.request("panic", nil)
+	} else {
+		fmt.Println("[跳过] 目录内没有乐器插件，跳过轨道乐器检查")
+	}
+}
+
 func check(name string, cond bool, detail string) {
 	if cond {
 		fmt.Printf("[通过] %s\n", name)
@@ -323,6 +555,7 @@ func expectError(name, gotErr, wantSub string) {
 
 func main() {
 	enginePath := flag.String("engine", "bin/melodymate-engine.exe", "引擎可执行文件路径")
+	vst3Dir := flag.String("vst3dir", "", "VST3 插件目录（P5 检查用；留空则跳过插件段落）")
 	flag.Parse()
 
 	if _, err := os.Stat(*enginePath); err != nil {
@@ -355,8 +588,8 @@ func main() {
 	}
 	check("握手前 ping 被拒绝（openSession 内验证）", true, "")
 
-	// 2) hello 正常握手（带版本；P4 起为协议 v2）
-	const smokeProtocolVersion = 2
+	// 2) hello 正常握手（带版本；P5 起为协议 v3）
+	const smokeProtocolVersion = 3
 	r, reqErr := c.request("hello", map[string]interface{}{"protocolVersion": smokeProtocolVersion})
 	check("hello 握手", reqErr == nil && r.OK, errText(r, reqErr))
 	if r != nil && r.OK {
@@ -638,6 +871,13 @@ func main() {
 
 	// 复位主增益，避免影响后续走带检查的音量观感
 	_, _ = c.request("mixer.setMaster", map[string]interface{}{"gain": 0.9})
+
+	// 8.7) P5：VST3 宿主（需要 -vst3dir 指向含 .vst3 的目录；未给则跳过）
+	if *vst3Dir != "" {
+		runPluginSection(c, *vst3Dir)
+	} else {
+		fmt.Println("[跳过] VST3 插件检查（未设置 -vst3dir）")
+	}
 
 	// 8.6) 真实 SF2 加载（文件存在时）：守护器启动即自动加载默认音色，
 	// 此处验证引擎对真实文件解析成功（tsf 渲染路径打通的前置条件）

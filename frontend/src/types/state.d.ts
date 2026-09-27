@@ -651,6 +651,10 @@ interface ArrangeEngineInstance {
   _nativeOnPush(idx: any, midi: any, trackId: any): void;
   _nativeOnRemove(idx: any, midi: any): void;
   _nativeOnFlush(): void;
+  _pruneBufferCache(): void;
+  clearPendingClicks(): void;
+  _segLimitWarnAt?: number;
+  maxCachedBytes?: number;
   _now(): number;
   _onHeartbeat(): void;
   _pendingClicks: PendingClick[];

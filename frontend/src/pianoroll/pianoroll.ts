@@ -1051,6 +1051,14 @@
     this.synth.resume();
     this.soundfont.resume();
     this.synth.init();
+    /* 与编曲窗互斥：两个窗口各自持有独立走带，同时播放会叠加发声
+       （引擎模式下卷帘轨 30/31 与编曲轨 0-28 同时响），且节拍基准不同 */
+    try {
+      if (window.Arrange && window.Arrange.isPlaying && window.Arrange.stopPlayback) {
+        window.Arrange.stopPlayback(true);
+        if (window.UI && UI.toast) UI.toast!("编曲窗播放已停止（钢琴卷帘接管）", "warn");
+      }
+    } catch (e) {}
     // 记录本次播放起点（「暂停后恢复光标位置」回退目标；循环跳转在前）
     this.playbackOriginBeat = Math.max(0, this.playheadBeat);
     this.isPlaying = true;
@@ -1209,9 +1217,17 @@
             var w = this.soundSource.replace("synth_", "");
             if (this.synth.waveform !== w) this.synth.setWaveform(w);
           }
-          useNative = !!(window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred()
-            && this.soundSource && this.soundSource.indexOf("synth_") === 0
-            && this.synth && this.synth._ensureNativeVoice && this.synth._ensureNativeVoice());
+          /* 引擎模式：synth 轨与 sf2 同款「pending 也直发」——_ensureNativeVoice
+             是异步确认（首次/改参数后返回 false），若拿它当放行条件，确认
+             落地前的首批音符（约 0.1s）会落到 Web 路径，而引擎模式下 ctx 为
+             null → 静默丢弃（每次打开卷帘后首次播放开头的音不响）。
+             这里只作预热调用，不参与判定；引擎未就绪由播放门控拦截 */
+          if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
+              && this.soundSource && this.soundSource.indexOf("synth_") === 0
+              && this.synth && this.synth._ensureNativeVoice) {
+            this.synth._ensureNativeVoice();
+            useNative = window.AudioBackend.isNativePreferred();
+          }
           // 引擎模式：SF2/内置音色走引擎轨 30（pending 也直发，首音瞬态
           // 可接受；failed 静音不回退——严格路由）
           if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()

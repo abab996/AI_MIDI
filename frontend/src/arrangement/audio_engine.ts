@@ -106,12 +106,22 @@
     try {
       var src = "setInterval(function(){postMessage(0)}," + HEARTBEAT_MS + ");";
       var blob = new Blob([src], { type: "application/javascript" });
-      var w = new Worker(URL.createObjectURL(blob));
+      var url = URL.createObjectURL(blob);
+      var w = new Worker(url);
+      /* blob URL 用完即撤（worker 已在运行）：不撤销会一直占着内存，
+         每次 createHeartbeat 都泄漏一个对象 URL */
+      try { URL.revokeObjectURL(url); } catch (e) {}
       return {
         worker: w,
         start: function (cb: any) { w.onmessage = cb; },
-        stop: function () { w.onmessage = null; },
-        dispose: function () { w.terminate(); }
+        /* stop 彻底终止：此前只置 onmessage=null，worker 内 setInterval
+           仍每 25ms postMessage（消息被丢弃但定时器与线程常驻），
+           停止播放后依然持续唤醒。下次 start 由 _startHeartbeat 重建 */
+        stop: function () {
+          w.onmessage = null;
+          try { w.terminate(); } catch (e) {}
+        },
+        dispose: function () { try { w.terminate(); } catch (e) {} }
       };
     } catch (e) {
       return null;
@@ -121,6 +131,9 @@
   ArrangeEngine.prototype._startHeartbeat = function (this: ArrangeEngineInstance) {
     var self = this;
     this._stopHeartbeat();
+    /* 每次起播重建 heartbeat：_stopHeartbeat 会 terminate worker（不再
+       空转），终止后的实例无法复用。构造开销只在起播时付一次 */
+    this._heartbeat = createHeartbeat();
     if (this._heartbeat) {
       this._heartbeat.start(function () { self._onHeartbeat(); });
     } else {
@@ -164,7 +177,8 @@
     this.limiter.release.value = 0.12;
     this.masterGain.connect(this.limiter);
     this.limiter.connect(this.ctx.destination);
-    this._heartbeat = this._heartbeat || createHeartbeat();
+    /* heartbeat 由 _startHeartbeat 每次起播时创建（worker 在停止时被
+       terminate，不能跨播放复用） */
   };
 
   /* 统一时间基准：WebAudio 时钟（webaudio 模式）或 performance.now
@@ -472,17 +486,45 @@
         }
         throw err;
       });
-    entry = { promise: promise, buffer: null, peaks: null, lastUse: Date.now() };
+    entry = { promise: promise, buffer: null, peaks: null, lastUse: Date.now(), bytes: 0 };
     this.bufferCache.set(absPath, entry);
+    // 解码完成后登记字节数（用于按内存上限淘汰而非按条数）
+    promise.then(function (e: any) {
+      if (e && e.buffer) e.bytes = estimateBufferBytes(e.buffer);
+      self._pruneBufferCache();
+    }).catch(function () {});
 
-    if (this.bufferCache.size > this.maxCachedBuffers) {
-      var keys = Array.from(this.bufferCache.keys());
-      keys.sort(function (a, b) { return self.bufferCache.get(a)!.lastUse - self.bufferCache.get(b)!.lastUse; });
-      while (this.bufferCache.size > this.maxCachedBuffers) {
-        this.bufferCache.delete(keys.shift()!);
-      }
-    }
+    this._pruneBufferCache();
     return promise;
+  };
+
+  /** 解码缓存占用的近似字节数（采样数 × 声道数 × 4） */
+  function estimateBufferBytes(buffer: any) {
+    try {
+      return (buffer.length || 0) * (buffer.numberOfChannels || 1) * 4;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /* 按内存上限 + 条数上限双约束淘汰（LRU）。此前只按条数（48 条）——
+     长采样（数分钟 wav，单条数十 MB）可累积数百 MB 内存 */
+  ArrangeEngine.prototype._pruneBufferCache = function (this: ArrangeEngineInstance) {
+    var maxBytes = this.maxCachedBytes || (192 * 1024 * 1024);
+    var total = 0;
+    var self = this;
+    this.bufferCache.forEach(function (e: any) { total += (e && e.bytes) || 0; });
+    if (this.bufferCache.size <= this.maxCachedBuffers && total <= maxBytes) return;
+    var keys = Array.from(this.bufferCache.keys());
+    keys.sort(function (a, b) {
+      return (self.bufferCache.get(a)!.lastUse || 0) - (self.bufferCache.get(b)!.lastUse || 0);
+    });
+    while (keys.length && (this.bufferCache.size > this.maxCachedBuffers || total > maxBytes)) {
+      var k = keys.shift()!;
+      var e = this.bufferCache.get(k);
+      total -= (e && e.bytes) || 0;
+      this.bufferCache.delete(k);
+    }
   };
 
   ArrangeEngine.prototype.computePeaks = function (this: ArrangeEngineInstance, buffer: any, buckets: any) {
@@ -569,7 +611,11 @@
     }
     var segLen = lp.end - lp.start;
     var pos = from;
-    while (pos < to && out.length <= 64) {
+    /* 段数上限：极小循环区间（如 0.01 拍）× 0.45s 窗口在高 BPM 下会超过
+       上限，超出部分事件整段丢失。提高到 256 并在触顶时告警一次（静默
+       截断此前完全无提示，表现为"某些音符不响"却无从排查） */
+    var limit = 256;
+    while (pos < to && out.length <= limit) {
       if (this._playStartBeat < lp.start) {
         var lead = lp.start - this._playStartBeat;
         if (pos < lead) {
@@ -590,6 +636,16 @@
       var chunk = Math.min(segLen - off, to - pos);
       push(lp.start + off, chunk, pos);
       pos += chunk;
+    }
+    if (pos < to) {
+      // 触顶告警（1s 去重）：循环区间过小导致单窗口段数超限，其余事件被截断
+      var nowMs = Date.now();
+      if (!this._segLimitWarnAt || nowMs - this._segLimitWarnAt > 1000) {
+        this._segLimitWarnAt = nowMs;
+        if (window.UI && window.UI.toast) {
+          UI.toast!("⚠ 循环区间过短（" + segLen.toFixed(3) + " 拍），部分事件已截断；建议放大循环范围或降低 BPM", "warn");
+        }
+      }
     }
     return out;
   };
@@ -740,6 +796,13 @@
     var rec: any = { fired: false };
     rec.timer = setTimeout(function () {
       rec.fired = true;
+      /* 已触发即从登记表移除：长播放（密集 MIDI）下此前会累积数万条
+         死记录（触发后仅置 fired，只在 stopSchedule 才清空）。移除后
+         _clearNativeTimers 依然只撤销未触发的 timer，语义不变 */
+      if (self._nativeTimers) {
+        var i = self._nativeTimers.indexOf(rec);
+        if (i >= 0) self._nativeTimers.splice(i, 1);
+      }
       if (!self.isPlaying) return; // 停止后不再触发
       try { fn(); } catch (e) {}
     }, Math.max(0, delaySec * 1000));
@@ -771,6 +834,13 @@
       this._releaseSource(this.activeSources[i], now);
     }
     this.activeSources = [];
+    /* 素材库试听源不受走带管理：此前播放/停止/seek 都停不掉它，会叠在
+       编曲播放上直到自然结束 */
+    if (this._previewSrc) {
+      try { this._previewSrc.stop(now); } catch (e) {}
+      try { this._previewSrc.disconnect(); } catch (e) {}
+      this._previewSrc = null;
+    }
   };
 
   /** 淡出并释放一个音频源（短包络 + 延迟断开，避免爆音与节点泄漏） */
@@ -1121,15 +1191,21 @@
       var clipGain = clip.gain !== undefined ? clip.gain : 1;
       var t0 = when2;
       var tEnd = when2 + durSec;
+      /* 渐变长于实际播放时长时按比例缩放（循环截短/裁剪后常见）：
+         此前 fadeOut 不满足 durSec > fadeOut 就完全不排收尾，声音在
+         tEnd 被 src.stop 硬切 → 爆音；fadeIn 覆盖整段时同理无收尾 */
+      var fadeInEff = Math.min(fadeIn, durSec * 0.5);
+      var fadeOutEff = Math.min(fadeOut, durSec * 0.5);
       gain.gain.setValueAtTime(0.0001, t0);
-      if (fadeIn > 0.005) {
-        gain.gain.linearRampToValueAtTime(clipGain, t0 + Math.min(fadeIn, durSec));
-        if (durSec > fadeIn) gain.gain.setValueAtTime(clipGain, t0 + fadeIn);
+      if (fadeInEff > 0.005) {
+        gain.gain.linearRampToValueAtTime(clipGain, t0 + fadeInEff);
+        if (durSec > fadeInEff * 2) gain.gain.setValueAtTime(clipGain, t0 + fadeInEff);
       } else {
         gain.gain.linearRampToValueAtTime(clipGain, t0 + 0.01);
       }
-      if (fadeOut > 0.005 && durSec > fadeOut) {
-        gain.gain.setValueAtTime(clipGain, tEnd - fadeOut);
+      if (fadeOutEff > 0.005) {
+        var fadeOutStart = Math.max(t0 + fadeInEff, tEnd - fadeOutEff);
+        gain.gain.setValueAtTime(clipGain, fadeOutStart);
         gain.gain.linearRampToValueAtTime(0.0001, tEnd);
       }
 
@@ -1166,6 +1242,11 @@
     gain.connect(this.masterGain!);
     osc.start(when);
     osc.stop(when + 0.06);
+  };
+
+  /** 清空已入队的节拍器事件（关闭开关时立即生效，不等触发窗耗尽） */
+  ArrangeEngine.prototype.clearPendingClicks = function (this: ArrangeEngineInstance) {
+    this._pendingClicks = [];
   };
 
   /** 更新音轨混音属性并同步原生引擎（M3 混音图） */

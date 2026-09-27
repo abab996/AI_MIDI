@@ -228,6 +228,8 @@ interface SampleCacheEntry {
   buffer: AudioBuffer | null;
   peaks: Float32Array | null;
   lastUse: number;
+  /* 解码后占用字节估算（按内存上限淘汰用；解码完成前为 0） */
+  bytes?: number;
 }
 
 interface ArrangeTrackNodes {

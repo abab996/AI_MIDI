@@ -586,7 +586,7 @@
       if (b) b.addEventListener("click", function () { fn(); b.blur(); });
     }.bind(this);
 
-    on("arrHomeBtn", function () { self.seekTo(0, false); self.showHUD("⏮ 回到开头 (Home)"); });
+    on("arrHomeBtn", function () { self.seekTo(0, true); self.showHUD("⏮ 回到开头 (Home)"); });
     on("arrPlayBtn", function () { self.togglePlay(); });
     on("arrStopBtn", function () { self.stopPlayback(true); });
     on("arrLoopBtn", function () { self.toggleLoop(); });
@@ -676,6 +676,15 @@
     this.engine.resume().catch(function (e: any) {
       console.warn("[Arrange] AudioContext 恢复失败:", e);
     });
+    /* 与钢琴卷帘互斥：两个窗口各自持有独立走带，同时播放会叠加发声
+       （引擎模式下轨 0-28 与卷帘轨 30/31 同时响，WEBAUDIO 下共享
+       AudioContext 叠加），且两边节拍基准不同 */
+    try {
+      if (window.PianoRoll && window.PianoRoll.isPlaying && window.PianoRoll.stopPlayback) {
+        window.PianoRoll.stopPlayback();
+        if (window.UI && window.UI.toast) UI.toast!("钢琴卷帘播放已停止（编曲窗接管）", "warn");
+      }
+    } catch (e) {}
     this.engine.metronome = this.metronome;
     this.engine.loop = this.loop;
     this.engine.bpm = this.bpm;
@@ -780,6 +789,9 @@
   Arrange.prototype.toggleMetro = function (this: ArrangeController) {
     this.metronome = !this.metronome;
     this.engine.metronome = this.metronome;
+    /* 关闭时清掉已展开的 click 队列：触发窗内（≤0.45s）已入队的事件否则
+       会继续响，关掉开关还能听到半秒节拍 */
+    if (!this.metronome) this.engine.clearPendingClicks && this.engine.clearPendingClicks();
     this.syncTransportUI();
     this.showHUD(this.metronome ? "节拍器: 开启" : "节拍器: 关闭");
   };
@@ -1178,7 +1190,10 @@
         self.loop.on = true;
         self.loop.start = self.loop.anchor = self.rulerDrag.anchor!;
         self.loop.end = self.rulerDrag.anchor! + BAR_BEATS;
-        self.engine.loop = self.loop;
+        /* 拖拽期间给引擎一份快照而非实时引用：否则引擎心跳每 25ms 读到
+           正在变化的边界，回绕点随拖拽漂移（播放头/调度映射抖动）。
+           finishRulerDrag 恢复实时引用 */
+        self.engine.loop = { on: true, start: self.loop.start, end: self.loop.end };
         self.syncTransportUI();
         self.renderRuler();
       } else {
@@ -3498,16 +3513,18 @@
         return;
       }
 
-      if (K && K.matches(e, "arrange.home")) { e.preventDefault(); self.seekTo(0, false); self.updatePlayButton(); return; }
-      if (K && K.matches(e, "arrange.end")) { e.preventDefault(); self.seekTo(self.contentEndBeat(), false); return; }
+      /* 播放中 seek 必须重锚（restartIfPlaying=true）：只改 playheadBeat
+         不通知引擎，下一帧 RAF 就被引擎时钟写回原位——只有一帧闪动 */
+      if (K && K.matches(e, "arrange.home")) { e.preventDefault(); self.seekTo(0, true); self.updatePlayButton(); return; }
+      if (K && K.matches(e, "arrange.end")) { e.preventDefault(); self.seekTo(self.contentEndBeat(), true); return; }
       if (K && K.matches(e, "arrange.nudgeLeft")) {
         e.preventDefault();
-        self.seekTo(Math.max(0, self.playheadBeat - (self.snap || 0.25)), false);
+        self.seekTo(Math.max(0, self.playheadBeat - (self.snap || 0.25)), true);
         return;
       }
       if (K && K.matches(e, "arrange.nudgeRight")) {
         e.preventDefault();
-        self.seekTo(Math.max(0, self.playheadBeat + (self.snap || 0.25)), false);
+        self.seekTo(Math.max(0, self.playheadBeat + (self.snap || 0.25)), true);
         return;
       }
       if (K && K.matches(e, "arrange.nudgeBarLeft")) {

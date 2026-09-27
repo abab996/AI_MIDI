@@ -75,22 +75,28 @@
       }
       return Promise.resolve();
     },
-    /* ===== 走带控制（M3 阶段一）===== */
+    /* ===== 走带控制（M3 阶段一）=====
+       无引擎（浏览器模式 available=false）时一律 resolve 而非 reject：
+       这些是即发即忘的走带/调度调用，浏览器模式下本就没有引擎可控制，
+       其调用点也未按 Promise 结果分支——reject 只会产生无人处理的
+       unhandledrejection（每次暂停/停止都刷一条，污染控制台与错误上报）。
+       需要感知失败的调用（loadSoundFont/setTrackVoice/bounce 等）保持
+       reject，其调用方按 .catch 分支处理 */
     play: function () {
       if (app) { return app.EnginePlay(); }
-      return Promise.reject(new Error("engine unavailable"));
+      return Promise.resolve();
     },
     stop: function () {
       if (app) { return app.EngineStop(); }
-      return Promise.reject(new Error("engine unavailable"));
+      return Promise.resolve();
     },
     locate: function (beat: number) {
       if (app) { return app.EngineLocate(beat); }
-      return Promise.reject(new Error("engine unavailable"));
+      return Promise.resolve();
     },
     setTempo: function (bpm: number) {
       if (app) { return app.EngineSetTempo(bpm); }
-      return Promise.reject(new Error("engine unavailable"));
+      return Promise.resolve();
     },
     getTimecode: function () {
       if (app) { return app.EngineGetTimecode(); }
@@ -98,11 +104,11 @@
     },
     scheduleSamples: function (clips: Array<Record<string, unknown>>, bpm: number) {
       if (app && app.EngineScheduleSamples) { return app.EngineScheduleSamples(clips, bpm); }
-      return Promise.reject(new Error("engine unavailable"));
+      return Promise.resolve();
     },
     clearSamples: function () {
       if (app && app.EngineClearSamples) { return app.EngineClearSamples(); }
-      return Promise.reject(new Error("engine unavailable"));
+      return Promise.resolve();
     },
     scheduleNotes: function (notes: Array<Record<string, unknown>>, bpm: number) {
       if (app && app.EngineScheduleNotes) { return app.EngineScheduleNotes(notes, bpm); }

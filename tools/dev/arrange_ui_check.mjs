@@ -1,11 +1,12 @@
-/* 乐器箱（机架 P2）浏览器级验收：CDP 驱动无头 Chrome/Edge。
+/* 编曲窗浏览器级验收：CDP 驱动无头 Chrome/Edge。
  *
- * 跑真实页面的真实交互：v1 老工程迁移 → 机架条目渲染 → 分类/搜索/空态 →
- * 音源选择器（键盘 ↑↓/Enter/Esc、预设二级视图）→ 分配落到服务端 →
- * 双主题截图 → prefers-reduced-motion 降级 → 控制台零异常。
+ * P2（乐器箱 / 机架 / 音源选择器）与 P3（素材库三页签）都在这里跑真实页面交互：
+ * v1 老工程迁移 → 机架条目渲染 → 分类/搜索/空态 → 音源选择器（键盘 ↑↓/Enter/Esc、
+ * 预设二级视图）→ 分配落到服务端 → 素材库三页签（采样树 + 波形缩略 + 音源卡片 +
+ * 效果器空态 + 跨页签搜索）→ 双主题截图 → prefers-reduced-motion 降级 → 零异常。
  *
  * 用法（需服务在跑，且本机有 Chrome 或 Edge）：
- *   MM_BASE=http://127.0.0.1:7912 node tools/dev/rack_ui_check.mjs
+ *   MM_BASE=http://127.0.0.1:7912 node tools/dev/arrange_ui_check.mjs
  *   MM_BROWSER="C:\path\to\chrome.exe" ...   # 指定浏览器
  *
  * 截图输出到 output/ui_check/（不入库）。
@@ -34,10 +35,16 @@ function check(name, ok, extra) {
 function httpFetch(url, opts = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
+    /* 显式 Content-Length：Node 默认 chunked，而 Go 侧 handler 在 chunked
+       DELETE 时读不到请求体（浏览器 fetch 发字符串 body 时带 Content-Length） */
+    const headers = { Connection: "close", ...(opts.headers || {}) };
+    if (opts.body !== undefined && opts.body !== null) {
+      headers["Content-Length"] = Buffer.byteLength(opts.body);
+    }
     const req = httpRequest(
       { hostname: u.hostname, port: u.port, path: u.pathname + u.search,
         method: (opts.method || "GET").toUpperCase(),
-        headers: { Connection: "close", ...(opts.headers || {}) } },
+        headers: headers },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
@@ -60,6 +67,31 @@ const api = async (method, p, body) => {
   });
   return { status: r.status, json: await r.json().catch(() => ({})) };
 };
+
+/* 造一个可解码的最小 WAV（16bit PCM 单声道正弦）：素材页签的波形缩略图要真解码 */
+function makeWav(seconds, freq) {
+  const rate = 44100;
+  const n = Math.floor(rate * seconds);
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + n * 2, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write("data", 36);
+  buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    const v = Math.sin((2 * Math.PI * freq * i) / rate) * 0.6 * (1 - i / n);
+    buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v * 32767))), 44 + i * 2);
+  }
+  return buf;
+}
 
 /* ── 找浏览器 ── */
 function findBrowser() {
@@ -226,9 +258,22 @@ async function main() {
     /* 静态路由是文件名形式（/chat.html），/chat 会 404 */
     await cdp.send("Page.navigate", { url: base + "/chat.html" });
     await cdp.waitFor("window.Arrange && window.ArrRack && window.Arrange.initialized", 20000, "Arrange 初始化");
+    await cdp.waitFor("!!window.ArrMaterial", 10000, "素材库模块加载");
     await cdp.evaluate(`window.__openProject(${JSON.stringify(projectId)}, "")`);
     await cdp.waitFor(`window.Arrange.projectId === ${JSON.stringify(projectId)}`, 15000, "打开项目");
     await cdp.waitFor("window.Arrange.tracks.length > 0", 10000, "轨道载入");
+    // 首启声明 / Star 弹窗会盖住界面：先关掉（否则截图全是遮罩）
+    await cdp.evaluate(`(function(){
+      ["disclaimerOk", "starLaterBtn"].forEach(function(id){
+        var b = document.getElementById(id);
+        if (b && b.offsetParent !== null) { try { b.click(); } catch (e) {} }
+      });
+      ["disclaimerOverlay", "starOverlay"].forEach(function(id){
+        var o = document.getElementById(id);
+        if (o) o.hidden = true;
+      });
+      return true;
+    })()`);
     await new Promise((r) => setTimeout(r, 600)); // 等首帧渲染与防抖保存
 
     // 1) 状态与 v1→v2 迁移（页面内完成）
@@ -499,6 +544,173 @@ async function main() {
         previews.length > 0 && silent.length === 0, previews);
       console.log("       " + previews.map((p) => p.kind + "/" + (p.preset || "-") + " peak=" + p.peak.toFixed(4)).join("  "));
     }
+
+    // 6) 素材库三页签（P3）
+    console.log("[UI] 素材库：三页签 / 采样树与波形 / 音源卡片 / 效果器空态");
+    /* 素材库在编曲窗内：先打开编曲窗（否则右栏 display:none，截图与尺寸都不对） */
+    await cdp.evaluate("window.Arrange.open()");
+    await cdp.waitFor("!!document.querySelector('#arrangeWorkspace') && !document.querySelector('#arrangeWorkspace').hidden",
+      8000, "编曲窗打开");
+    /* 编曲窗首开 500ms 后弹 Beta 提示（sessionStorage 记忆）：先按键记档再关掉 */
+    await new Promise((r) => setTimeout(r, 700));
+    await cdp.evaluate(`(function(){
+      try { sessionStorage.setItem("melodymate_arr_beta_v1", "1"); } catch (e) {}
+      var ok = document.getElementById("arrBetaOk");
+      if (ok) { try { ok.click(); } catch (e) {} }
+      var m = document.getElementById("arrBetaModal");
+      if (m) { m.hidden = true; m.classList.remove("modal-in"); }
+      return true;
+    })()`);
+    await new Promise((r) => setTimeout(r, 300));
+    // 先造一个真实的采样目录（含可解码的 wav），并登记成采样包
+    const sampleDir = fs.mkdtempSync(path.join(os.tmpdir(), "mm-mat-"));
+    fs.writeFileSync(path.join(sampleDir, "kick_808.wav"), makeWav(0.25, 220));
+    fs.writeFileSync(path.join(sampleDir, "snare_top.wav"), makeWav(0.18, 880));
+    const addDir = await api("POST", "/api/arrangement/dirs", { path: sampleDir });
+    check("登记素材目录", addDir.status === 200, addDir.json);
+    const packAdd = await api("POST", "/api/sound/sources", {
+      kind: "samplepack", name: "UI 检查采样包", dirs: [sampleDir],
+    });
+    check("同名目录登记为采样包（供分组标签）", packAdd.status === 200, packAdd.json);
+
+    const tabs = await cdp.evaluate(`(function(){
+      var t = document.querySelectorAll("#matTabs .mat-tab");
+      return { count: t.length, ids: [].map.call(t, function(b){ return b.dataset.tab; }),
+               active: (document.querySelector("#matTabs .mat-tab.active")||{}).dataset
+                 ? document.querySelector("#matTabs .mat-tab.active").dataset.tab : "" };
+    })()`);
+    check("素材库三页签 = 采样/音源/效果器",
+      JSON.stringify(tabs.ids) === JSON.stringify(["sample", "source", "fx"]), tabs);
+
+    // 采样页签：拉目录 → 展开根节点 → 波形与元信息
+    await cdp.evaluate("window.ArrMaterial.loadDirs(window.Arrange)");
+    await cdp.waitFor("document.querySelectorAll('#matBody .arr-file-item.dir').length > 0", 8000, "素材根目录行");
+    const sampleTab = await cdp.evaluate(`(function(){
+      var rows = document.querySelectorAll("#matBody .arr-file-item.dir");
+      var root = null;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].title === ${JSON.stringify(sampleDir)}) { root = rows[i]; break; }
+      }
+      if (!root) return { root: "", found: false };
+      root.click();
+      return { root: root.textContent.trim(), found: true };
+    })()`);
+    check("展开目标素材根目录", sampleTab.found, sampleTab);
+    await cdp.waitFor("document.querySelectorAll('#matBody .mat-sample-row').length > 0", 8000, "采样文件行");
+    await cdp.waitFor(
+      "!!document.querySelector('#matBody .mat-sample-row .mat-item-meta') && /kHz/.test(document.querySelector('#matBody .mat-sample-row .mat-item-meta').textContent)",
+      10000, "波形分析完成（元信息含采样率）");
+    const rows = await cdp.evaluate(`(function(){
+      var r = document.querySelectorAll("#matBody .mat-sample-row");
+      var first = r[0];
+      var canvas = first.querySelector("canvas.mat-wave");
+      var painted = false;
+      try {
+        var ctx = canvas.getContext("2d");
+        var d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (var i = 3; i < d.length; i += 4) { if (d[i] > 0) { painted = true; break; } }
+      } catch (e) {}
+      return { count: r.length, painted: painted,
+               meta: first.querySelector(".mat-item-meta").textContent,
+               title: first.title,
+               draggable: first.draggable,
+               packTag: (document.querySelector("#matBody .mat-pack-tag")||{}).textContent || "" };
+    })()`);
+    check("采样页签渲染文件行（含拖拽语义）", rows.count >= 2 && rows.draggable, rows);
+    check("波形缩略图已绘制（canvas 有像素）", rows.painted, rows);
+    check("元信息含时长/采样率/大小", /kHz/.test(rows.meta) && /:/.test(rows.meta), rows.meta);
+    check("根目录显示所属采样包标签", rows.packTag === "UI 检查采样包", rows);
+    console.log("       " + sampleTab.root.replace(/\\s+/g, " ").slice(0, 60) + " | " + rows.meta);
+
+    // 音源页签：卡片 + 状态胶囊 + AI 徽标
+    const sourceTab = await cdp.evaluate(`(async function(){
+      window.ArrMaterial.setTab(window.Arrange, "source");
+      await new Promise(function(r){ setTimeout(r, 200); });
+      var cards = document.querySelectorAll("#matBody .mat-source-card");
+      var pills = [].map.call(document.querySelectorAll("#matBody .mat-pill"), function(p){ return p.textContent; });
+      return { cards: cards.length, on: pills.filter(function(t){ return t === "已在架"; }).length,
+               add: pills.filter(function(t){ return t === "＋ 入架"; }).length,
+               grid: !!document.querySelector("#matBody .mat-grid") };
+    })()`);
+    check("音源页签渲染注册表卡片网格", sourceTab.grid && sourceTab.cards >= 2, sourceTab);
+    check("卡片带 [已在架]/[＋ 入架] 状态胶囊", sourceTab.on >= 1 && sourceTab.add >= 1, sourceTab);
+
+    // 跨页签搜索：关键词保留 + 过滤生效
+    const search = await cdp.evaluate(`(async function(){
+      var input = document.getElementById("matSearch");
+      input.value = "Pianoteq";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(function(r){ setTimeout(r, 260); });
+      var srcFiltered = document.querySelectorAll("#matBody .mat-source-card").length;
+      window.ArrMaterial.setTab(window.Arrange, "sample");
+      await new Promise(function(r){ setTimeout(r, 200); });
+      var kept = document.getElementById("matSearch").value;
+      var sampleFiltered = document.querySelectorAll("#matBody .arr-file-item.dir").length;
+      input.value = "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(function(r){ setTimeout(r, 260); });
+      var restored = document.querySelectorAll("#matBody .arr-file-item.dir").length;
+      return { srcFiltered: srcFiltered, kept: kept, sampleFiltered: sampleFiltered, restored: restored };
+    })()`);
+    check("搜索框跨页签保留关键词", search.kept === "Pianoteq" && search.srcFiltered >= 1, search);
+    check("搜索在采样页签同样生效（清空后恢复）",
+      search.sampleFiltered === 0 && search.restored >= 1, search);
+
+    // 效果器页签：引导空态（P4/P5 前）
+    const fxTab = await cdp.evaluate(`(async function(){
+      window.ArrMaterial.setTab(window.Arrange, "fx");
+      await new Promise(function(r){ setTimeout(r, 200); });
+      var empty = document.querySelector("#matBody .mat-empty");
+      return { hasEmpty: !!empty, text: empty ? empty.textContent : "",
+               hint: (document.getElementById("matHint")||{}).textContent || "" };
+    })()`);
+    check("效果器页签给出引导空态（未接入前）",
+      fxTab.hasEmpty && /效果器/.test(fxTab.text), fxTab);
+    check("页签提示语随页签切换", /FX/.test(fxTab.hint) || /效果器/.test(fxTab.hint), fxTab.hint);
+
+    // 音源卡片「＋ 入架」→ 分配
+    const cardAssign = await cdp.evaluate(`(async function(){
+      var A = window.Arrange;
+      window.ArrMaterial.setTab(A, "source");
+      await new Promise(function(r){ setTimeout(r, 200); });
+      var before = A.tracks[0].source.itemId;
+      var pill = null;
+      var pills = document.querySelectorAll("#matBody .mat-pill");
+      for (var i = 0; i < pills.length; i++) {
+        if (pills[i].textContent.indexOf("入架") >= 0) { pill = pills[i]; break; }
+      }
+      if (!pill) return { ok: false };
+      pill.click();
+      await new Promise(function(r){ setTimeout(r, 800); });
+      return { ok: true, before: before, after: A.tracks[0].source.itemId, name: pill.textContent };
+    })()`);
+    check("音源卡片「＋ 入架」= 入架并分配给选中轨",
+      cardAssign.ok && cardAssign.after && cardAssign.after !== cardAssign.before, cardAssign);
+
+    // 素材库双主题截图（关掉机架浮窗与任何遗留遮罩，整页截）
+    await cdp.evaluate(`(function(){
+      var w = document.getElementById("arrRackWindow");
+      if (w) w.hidden = true;
+      document.querySelectorAll(".modal-overlay").forEach(function(o){
+        if (o.id !== "sndPickerOverlay") o.hidden = true;
+      });
+      return true;
+    })()`);
+    await cdp.evaluate('document.documentElement.dataset.theme = "parchment"');
+    await cdp.evaluate("window.ArrMaterial.setTab(window.Arrange, 'sample')");
+    await new Promise((r) => setTimeout(r, 600));
+    let matShot = await cdp.screenshot("material-warm");
+    await cdp.evaluate('document.documentElement.dataset.theme = "dark"');
+    await cdp.evaluate("window.ArrMaterial.setTab(window.Arrange, 'source')");
+    await new Promise((r) => setTimeout(r, 600));
+    let srcShot = await cdp.screenshot("material-source-dark");
+    check("素材库双主题截图产出", fs.existsSync(matShot) && fs.existsSync(srcShot));
+
+    // 清理：注销目录与采样包
+    await api("DELETE", "/api/arrangement/dirs", { path: sampleDir });
+    if (packAdd.json && packAdd.json.source) await api("DELETE", `/api/sound/sources/${packAdd.json.source.id}`);
+    try { fs.rmSync(sampleDir, { recursive: true, force: true }); } catch {}
+
 
     // 6) AI 热应用：模拟服务端推送（走同一函数）
     const hot = await cdp.evaluate(`(function(){

@@ -1256,10 +1256,35 @@ func rackItemFromV1Source(src map[string]any) RackItem {
 		if sourceID == "" {
 			sourceID = stringField(src, "libId")
 		}
-		if sourceID == "" {
-			return RackItem{}
-		}
 		presetID := stringField(src, "presetId")
+		if sourceID == "" {
+			/* 老工程里常见"只有 path/bank/program"的音源（历史 IndexedDB 记录已丢）。
+			   **不能**因此不给 itemId：那样这条轨就没有机架归属，违反"音源只能来自
+			   机架"，界面也无法显示为"音源缺失"。这里按老路径造一个**缺失条目**
+			   （sourceId 用 legacy: 前缀，注册表里必然查不到 → 前端 resolve 得到
+			   missing，显示「♪ ⚠ 音源缺失」并零增益出声），用户重新选源即可修好。 */
+			path := stringField(src, "path")
+			if path == "" {
+				return RackItem{}
+			}
+			base := path
+			if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
+				base = base[i+1:]
+			}
+			if presetID == "" {
+				bank := intField(src, "bank")
+				program := intField(src, "program")
+				presetID = fmt.Sprintf("%d:%d", bank, program)
+			}
+			sourceID = "legacy:" + strings.ToLower(base)
+			return RackItem{
+				ID:       rackItemID(RackKindSF2, sourceID, presetID, path),
+				Kind:     RackKindSF2,
+				SourceID: sourceID,
+				PresetID: presetID,
+				Name:     "♪ ⚠ 音源缺失 · " + base,
+			}
+		}
 		if presetID == "" {
 			presetID = "0:0"
 		}

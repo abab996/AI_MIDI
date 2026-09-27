@@ -294,6 +294,8 @@ interface PianoRollController {
   openFile(projectId: string, fileName: string, filePath: string): void;
   closeModalAnimated(modalEl: HTMLElement): void;
   refreshSoundLibraryList(): void;
+  /** 机架变化后刷新音色按钮显示（P2：钢琴窗音源也来自机架） */
+  syncRackSource?(): void;
 }
 
 interface MarkedHtmlToken {
@@ -333,6 +335,61 @@ declare const AudioBackend: AudioBackendApi;
 declare const Tasks: TasksApi;
 declare const BrandIcons: BrandIconsApi;
 
+/** 输出机架（乐器箱）与音源选择器（arrangement/rack.ts） */
+interface ArrRackApi {
+  KIND_META: { [kind: string]: { label: string; short: string; badge: string; cls: string; icon: string } };
+  RACK_FILTERS: { id: string; label: string }[];
+  SYNTH_WAVES: { id: string; name: string }[];
+  GM_PRESETS: { id: string; name: string; bank: number; program: number }[];
+  BUILTIN_SYNTH: string;
+  BUILTIN_GM: string;
+  MAX_ITEMS: number;
+  kindMeta(kind: string): { label: string; short: string; badge: string; cls: string; icon: string };
+  kindLabel(kind: string): string;
+  waveName(wave: string): string;
+  gmPresetName(presetId: string): string;
+  isBuiltinSourceId(sourceId: string): boolean;
+  utf8Bytes(str: string): number[];
+  fnv1a64(str: string): string;
+  rackItemId(kind: string, sourceId: string, presetId: string, path: string): string;
+  makeItem(kind: string, sourceId: string, presetId: string, name: string, path?: string): RackItem;
+  synthItem(wave: string, name?: string): RackItem;
+  gmItem(presetId: string, name?: string): RackItem;
+  sampleItem(path: string, name?: string): RackItem;
+  registryItem(src: any, presetId: string, name: string): RackItem;
+  registryKindToRackKind(kind: string): string;
+  rackKindToRegistryKind(kind: string): string;
+  defaultPresetFor(kind: string): string;
+  itemFromSourceId(sourceId: string, presetId: string, name: string): RackItem | null;
+  migrateV1Source(src: any): RackItem | null;
+  generalUserSourceId(): string;
+  find(items: RackItem[] | any, itemId: string): RackItem | null;
+  upsert(items: RackItem[] | any, item: RackItem): { item: RackItem | null; created: boolean };
+  cloneItem(item: RackItem): RackItem;
+  resolve(items: RackItem[] | any, source: TrackSource | null | undefined): ResolvedVoice;
+  resolveSource(source: TrackSource | null | undefined): ResolvedVoice;
+  presetList(item: RackItem | null): Promise<{ id: string; name: string }[]>;
+  itemMetaText(item: RackItem | null): string;
+  isAIItem(item: RackItem | null): boolean;
+  isBuiltinItem(item: RackItem | null): boolean;
+  voiceDetail(kind: string, item: RackItem, presetId: string): string;
+  setItems(items: RackItem[] | any): void;
+  items(): RackItem[];
+  render(ctrl: any): void;
+  visibleRows(ctrl: any, filter: string, query: string): { item: RackItem; derived: boolean }[];
+  derivedSamples(ctrl: any): RackItem[];
+  openPicker(opts: any): void;
+  closePicker(): void;
+  isPickerOpen(): boolean;
+  refreshPicker(): void;
+  openPickerFor(ctrl: any, opts: any): void;
+  openPresetPane(item: RackItem): void;
+  _picker: any;
+  _pickerEls(): any;
+}
+
+declare const ArrRack: ArrRackApi;
+
 /** 自动更新检查（update.js）：手动触发检查用 */
 interface UpdateApi {
   /** 检查更新；有更新会弹自带通知卡。resolve 值：UpdateInfo 或 { error } */
@@ -351,6 +408,7 @@ interface Window {
   SoundFontPlayer: SoundFontPlayerConstructor;
   SoundLibrary: SoundLibraryApi;
   SoundRegistry: SoundRegistryApi;
+  ArrRack: ArrRackApi;
   EngineBridge: EngineBridgeApi;
   MidiInputRouter: MidiInputRouterApi;
   PianoRollTools: PianoRollToolsApi;

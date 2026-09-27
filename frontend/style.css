@@ -7405,3 +7405,465 @@ html.has-titlebar .top-nav {
     transition: none;
   }
 }
+
+/* ═══════════ 编曲窗 · 乐器箱（机架 P2）与音源选择器 ═══════════
+   规格见《架构升级实施计划》4.3：分类页签 / 搜索 / 条目六态 / 拖把手 / 空态，
+   以及三处共用的 .snd-picker（机架 ＋ / 轨道头 / 钢琴窗）。
+   约束：颜色全部取自令牌（VST 紫用 primary×accent 混色，不新增色板）；
+   动效只用 transform/opacity；双主题与 reduced-motion 都有覆盖。 */
+
+.rack-search-row { margin-bottom: 8px; }
+
+.rack-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--color-ink);
+  background: var(--color-bg-console);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rack-search::placeholder { color: var(--color-ink-faint); }
+.rack-search:hover { border-color: var(--color-border-strong); }
+
+.rack-search:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+/* ── 条目徽标配色（kind） ── */
+
+.arr-rack-item-badge.rk-kind-synth {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary);
+}
+
+.arr-rack-item-badge.rk-kind-sf2 {
+  background: var(--color-primary-soft);
+  color: var(--color-hud);
+  border: 1px solid var(--color-hud);
+}
+
+.arr-rack-item-badge.rk-kind-pack {
+  background: var(--color-bg-soft);
+  color: var(--color-hud);
+  border: 1px solid var(--color-border-strong);
+}
+
+.arr-rack-item-badge.rk-kind-vst {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  color: color-mix(in srgb, var(--color-primary) 45%, var(--color-accent));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 45%, var(--color-accent));
+}
+
+.arr-rack-item-badge.rk-kind-mm {
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent);
+}
+
+.arr-rack-item-badge.rk-kind-sample {
+  background: var(--color-bg-soft);
+  color: var(--color-ink-dim);
+  border: 1px dashed var(--color-border-dashed);
+}
+
+/* ── 条目六态：hover / focus-visible / active / disabled / loading / empty ── */
+
+.arr-rack-item {
+  position: relative;
+  outline: none;
+  animation: rk-in 0.40s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: var(--rk-delay, 0s);
+}
+
+.arr-rack-item:focus-visible {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.arr-rack-item.selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.arr-rack-item.dragging {
+  opacity: 0.5;
+  transform: scale(0.98);
+}
+
+.arr-rack-item.leaving {
+  animation: rk-leave 0.18s cubic-bezier(0.4, 0, 0.6, 1) both;
+}
+
+.arr-rack-item.is-missing .arr-rack-item-desc { color: var(--color-danger); }
+
+@keyframes rk-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes rk-leave {
+  from { opacity: 1; transform: scaleY(1); }
+  to { opacity: 0; transform: scaleY(0.6); }
+}
+
+/* 试听脉冲态（复用 snd-pulse 的呼吸节奏） */
+.arr-rack-preview-btn.playing {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  animation: snd-pulse 0.8s ease-in-out infinite;
+}
+
+.arr-rack-more-btn {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-ink-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.arr-rack-more-btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.arr-rack-more-btn:active { transform: scale(0.92); }
+
+.arr-rack-more-btn:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+/* ── 空态 ── */
+
+.arr-rack-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 26px 12px;
+  text-align: center;
+  border: 1px dashed var(--color-border-dashed);
+  border-radius: 8px;
+  background: var(--color-bg-soft);
+  animation: rk-in 0.40s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.arr-rack-empty-icon { font-size: 26px; opacity: 0.7; }
+.arr-rack-empty-title { font-size: 13px; font-weight: 600; color: var(--color-ink); }
+
+.arr-rack-empty-hint {
+  font-size: 11.5px;
+  color: var(--color-ink-dim);
+  max-width: 260px;
+  line-height: 1.6;
+}
+
+.arr-rack-empty-btn { margin-top: 6px; }
+
+/* ── 拖影（HTML5 setDragImage 承载节点） ── */
+
+.arr-rack-dragghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  color: var(--color-on-primary);
+  background: var(--color-primary);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px var(--color-shadow);
+  pointer-events: none;
+  z-index: 99999;
+}
+
+.arr-rack-dragghost .arr-rack-item-badge {
+  background: transparent;
+  border-color: currentColor;
+  color: inherit;
+}
+
+/* ═══════════ 音源选择器 .snd-picker（机架 ＋ / 轨道头 / 钢琴窗共用） ═══════════ */
+
+.snd-picker {
+  width: min(620px, 94vw);
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+}
+
+.snd-picker-overlay { z-index: 960; }
+
+.snd-picker-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 6px;
+}
+
+.snd-picker-search { width: 100%; box-sizing: border-box; }
+
+.snd-picker-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  background: var(--color-bg-console);
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+}
+
+.snd-picker-tab { font-size: 11px; }
+
+.snd-picker-body {
+  position: relative;
+  display: flex;
+  min-height: 220px;
+  max-height: 52vh;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-console);
+}
+
+.snd-picker-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.snd-picker-presets {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 8px;
+  background: var(--color-bg-card);
+  border-left: 1px solid var(--color-border);
+}
+
+.snd-picker-presets.sc-in-right {
+  animation: sc-in-right 0.24s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes sc-in-right {
+  from { opacity: 0; transform: translateX(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+.snd-picker-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-dim);
+  border-bottom: 1px dashed var(--color-grid);
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.snd-picker-count { color: var(--color-primary); font-weight: 700; }
+
+.snd-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.snd-picker-row:hover,
+.snd-picker-row.active {
+  background: var(--color-bg-alt);
+  border-color: var(--color-border-strong);
+}
+
+.snd-picker-row:focus-visible {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-soft);
+}
+
+.snd-picker-dot {
+  font-size: 9px;
+  color: var(--color-ink-faint);
+  width: 10px;
+  text-align: center;
+}
+
+.snd-picker-dot.on { color: var(--color-primary); }
+
+.snd-picker-info { flex: 1; min-width: 0; }
+
+.snd-picker-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snd-picker-meta {
+  font-size: 11px;
+  color: var(--color-ink-dim);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snd-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.snd-picker-pill {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  color: var(--color-ink-dim);
+  white-space: nowrap;
+}
+
+.snd-picker-pill.on {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.snd-picker-preset-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.snd-picker-crumb {
+  font-size: 12px;
+  color: var(--color-ink-dim);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snd-picker-preset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-ink);
+}
+
+.snd-picker-preset-row:hover,
+.snd-picker-preset-row.active {
+  background: var(--color-bg-alt);
+}
+
+.snd-picker-pid {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-ink-dim);
+}
+
+.snd-picker-empty,
+.snd-picker-loading {
+  padding: 22px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-ink-dim);
+}
+
+.snd-picker-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.snd-picker-skel {
+  height: 22px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--color-bg-alt) 0%, var(--color-bg-soft) 50%, var(--color-bg-alt) 100%);
+  animation: snd-skel 1.2s ease-in-out infinite;
+}
+
+@keyframes snd-skel {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+.snd-picker-foot {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arr-rack-item,
+  .arr-rack-empty { animation: none; }
+  .arr-rack-item.leaving { animation-duration: 0.01s; }
+  .arr-rack-preview-btn.playing { animation: none; }
+  .snd-picker-presets.sc-in-right { animation: none; }
+  .snd-picker-skel { animation: none; }
+  .arr-rack-dragghost { display: none; }
+}
+
+/* AI 改动回显：仅用 opacity/transform 的描边脉冲（4.8 / 4.10） */
+.ai-echo { position: relative; }
+
+.ai-echo::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--color-accent);
+  border-radius: 6px;
+  pointer-events: none;
+  animation: ai-echo 0.6s ease-out both;
+}
+
+@keyframes ai-echo {
+  from { opacity: 0.95; transform: scale(0.98); }
+  to { opacity: 0; transform: scale(1.02); }
+}
+
+/* AI 回显在 reduced-motion 下：不脉冲，改为静态描边（保留"哪里变了"的信息） */
+@media (prefers-reduced-motion: reduce) {
+  .ai-echo::after {
+    animation: none;
+    opacity: 0.9;
+    transform: none;
+  }
+}

@@ -240,6 +240,8 @@ interface TreeCacheNode {
 interface ArrangeController {
   _confirmFn: (() => void) | null;
   _currentRackFilter: string;
+  /* 机架窗口内的搜索关键词（P2） */
+  _rackQuery: string;
   /* 已尝试拉过预设的音源 id：拉取失败后不再重试，避免重绘死循环 */
   _presetTried?: { [sourceId: string]: boolean };
   _exporting: boolean;
@@ -363,8 +365,31 @@ interface ArrangeController {
   playheadBeat: number;
   positionClipEl(el: any, clip: any): void;
   ppb: number;
+  previewRackItem(item: any, btn?: any, presetId?: any): void;
   previewRackSample(path: any): void;
-  previewRackSource(source: any): unknown;
+  previewRackSource(source: any, btn?: any): unknown;
+  /* ===== P2 机架（乐器箱）与编排 ops ===== */
+  /* 项目乐器箱：轨道与钢琴窗的音源只能来自这里 */
+  rack: { items: RackItem[] };
+  /* 钢琴窗音源选择（持久化到 arrangement.pianoRoll） */
+  pianoRollSource: { itemId: string; presetId: string };
+  /* 混音台状态（P4；P2 起登记 gain/pan/mute/solo） */
+  mixer: { channels: { [trackId: string]: MixerChannel }; master?: { gain?: number } };
+  /* 服务端修订号（SSE/保存回执带回） */
+  rev: number;
+  /* 定向修改与 AI 工具共用同一服务端实现（POST /arrangement/ops） */
+  arrangeOps(ops: any[]): Promise<any>;
+  ensureRackItem(sourceId: any, presetId: any, name: any): Promise<RackItem | null>;
+  assignRackItem(item: any, trackIdx?: any, presetId?: any): void;
+  removeRackItem(itemId: any, force?: any): Promise<void> | void;
+  normalizeRack(): boolean;
+  notifyRackChanged(): void;
+  /* 本次载入发生了 v1→v2 迁移/引用修复，setProject 据此立即回写磁盘 */
+  _needsMigrationSave?: boolean;
+  /* 把服务端编排数据热应用（只覆盖 changed 点名的部分，不动本地未保存编辑） */
+  applyRemoteArrangement(data: any, changed: any): void;
+  /* 钢琴窗音源变化（PianoRoll 调用）：落盘 arrangement.pianoRoll */
+  setPianoRollSource(itemId: any, presetId: any): void;
   /* SF2 音源解析：注册表优先，回退 IndexedDB 记录 */
   resolveSf2DiskPath(source: any): Promise<string>;
   loadSf2BufferForWebAudio(source: any): Promise<unknown>;
@@ -617,6 +642,16 @@ interface PianoRollController {
   snapGrid: number;
   soundDropdown: PrDropdown | null;
   soundSource: string;
+  /* ===== P2：钢琴窗音源同样来自机架（选择器三处共用） ===== */
+  pianoRollSource: { itemId: string; presetId: string };
+  bindSoundPicker(): void;
+  setSoundLabel(text: any): void;
+  openRackPicker(): void;
+  setRackVoice(item: any, presetId?: any): boolean;
+  loadBrowserSf2Into(item: any, bank: any, program: any): void;
+  persistSource(itemId: any, presetId: any): void;
+  syncRackSource(): void;
+  applyRegistrySoundFontToRack(src: any, pick: any): Promise<boolean>;
   startPlayback(): void;
   startRecording(): unknown;
   stopAllSounds(): void;

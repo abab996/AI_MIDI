@@ -51,10 +51,64 @@ interface TrackVoice {
 }
 
 interface TrackSource {
+  /** v2：机架条目引用（音源只能来自机架） */
+  itemId?: string;
+  /** v2：该轨使用的预设（bank:program / 波形名 / 插件预设名） */
+  presetId?: string;
+  /* v1 遗留字段（迁移后不再写入，兼容读取老工程） */
   type?: string;
   wave?: string;
+  tone?: string;
+  libId?: string;
   label?: string;
   [key: string]: unknown;
+}
+
+/** 机架条目（乐器箱，arrangement.rack.items[i]） */
+interface RackItem {
+  id: string;
+  kind: "synth" | "sf2" | "pack" | "vst3" | "mm" | "sample" | string;
+  sourceId: string;
+  presetId?: string;
+  name: string;
+  /** sample 专用：采样文件绝对路径 */
+  path?: string;
+  pinned?: boolean;
+  /** 运行时标记：由工程内音频 clip 派生，未持久化 */
+  derived?: boolean;
+}
+
+/** 机架音源解析结果（ArrRack.resolve） */
+interface ResolvedVoice {
+  ok: boolean;
+  missing: boolean;
+  item: RackItem | null;
+  itemId: string;
+  presetId: string;
+  kind: string;
+  label: string;
+  detail: string;
+  /** 发声链重建判据：itemId + presetId */
+  key: string;
+  voice: {
+    type: "synth" | "sf2" | "builtin" | "sample" | "plugin" | "pack" | "none" | string;
+    wave?: string;
+    tone?: string;
+    sourceId?: string;
+    presetId?: string;
+    path?: string;
+    pluginKind?: string;
+    missing?: boolean;
+  };
+}
+
+/** arrangement.mixer 的通道（P4 混音台消费；P2 先落 pan/gain/mute/solo） */
+interface MixerChannel {
+  gain?: number;
+  pan?: number;
+  mute?: boolean;
+  solo?: boolean;
+  fx?: { slot: number; plugin: string; bypass?: boolean; wet?: number }[];
 }
 
 interface ArrangeLoop {
@@ -109,14 +163,22 @@ interface ArrangeTrack {
   clips: ArrangeClip[];
 }
 
-/** Arrange.prototype.cleanState 的返回值。 */
+/** Arrange.prototype.cleanState 的返回值（arrangement v2）。 */
 interface ArrangeState {
   version: number;
+  /** 服务端单调推进的修订号（SSE/保存回执带回，用于判断新鲜度） */
+  rev?: number;
   bpm: number;
   snap: number;
   ppb: number;
   loop: ArrangeLoop;
   tracks: ArrangeTrack[];
+  /** 项目乐器箱：轨道与钢琴窗的音源只能取自这里 */
+  rack?: { items: RackItem[] };
+  /** 钢琴窗音源选择（跨会话保持） */
+  pianoRoll?: { itemId: string; presetId?: string };
+  /** 混音台状态（P4；P2 起登记 gain/pan/mute/solo） */
+  mixer?: { channels: { [trackId: string]: MixerChannel }; master?: { gain?: number } };
 }
 
 interface BackgroundTask {

@@ -882,6 +882,70 @@
     if (window.Arrange && window.Arrange.syncFiles) window.Arrange.syncFiles(files);
   }
 
+  /* ═══════════ AI 编排改动回显（SSE arrangement，P2） ═══════════
+     AI 经 MCP 工具改了编排数据（机架音源 / 轨道音源 / 混音 / 走带）后，
+     服务端推送 arrangement 事件。这里重新拉取并热应用：
+       · 事件只带 rev/changed/summary，不带整份编排（工程可能很大）；
+       · applyRemoteArrangement 只覆盖 changed 点名的部分，
+         正在编辑的 clip 不会被服务端快照覆盖，播放也不中断；
+       · 对应控件做 hud-pop 式高亮脉冲，让用户看见"AI 动了哪里"（4.8）。 */
+
+  var arrangementPullTimer      = null;
+
+  function applyArrangementEvent(ev     ) {
+    if (!ev || !ev.project || ev.project !== currentProjectId) return;
+    var arrange = (window       ).Arrange;
+    if (!arrange || !arrange.projectId) return;
+    /* 旧事件（前端已经应用过更新的 rev）：忽略，避免把状态倒回去 */
+    if (typeof ev.rev === "number" && ev.rev > 0 && arrange.rev && ev.rev <= arrange.rev) return;
+
+    var summary = (ev.summary && ev.summary.length) ? ev.summary.join("；") : "编排已更新";
+    appendSysLine("🎛 AI 调整了编排：" + summary);
+    if (UI.toast) UI.toast ("🎛 " + summary, "ok");
+
+    /* 同一轮对话里 AI 可能连改好几次：合并成一次拉取 */
+    clearTimeout(arrangementPullTimer);
+    arrangementPullTimer = setTimeout(function () {
+      pullArrangementRemote(ev.changed || []);
+    }, 220);
+  }
+
+  function pullArrangementRemote(changed     ) {
+    var arrange = (window       ).Arrange;
+    if (!arrange || !arrange.projectId || !currentProjectId) return;
+    fetch("/api/projects/" + encodeURIComponent(currentProjectId) + "/arrangement")
+      .then(function (r) { return r.json(); })
+      .then(function (data     ) {
+        if (!data || data.exists === false) return;
+        arrange.applyRemoteArrangement(data, changed && changed.length ? changed : null);
+        echoArrangementChange(changed);
+      })
+      .catch(function () { /* 拉取失败：本轮不应用，用户下次保存时会带上服务端状态 */ });
+  }
+
+  /* echoArrangementChange AI 改动高亮：机架条目 / 轨道头 / 走带条 0.6s 脉冲 */
+  function echoArrangementChange(changed     ) {
+    var kinds      = {};
+    (changed || []).forEach(function (k     ) { kinds[String(k)] = true; });
+    var targets        = [];
+    if (!changed || !changed.length || kinds["rack"]) {
+      UI.qsa("#arrRackList .arr-rack-item").forEach(function (el     ) { targets.push(el); });
+    }
+    if (!changed || !changed.length || kinds["tracks"]) {
+      UI.qsa("#arrLanes .arr-track-head").forEach(function (el     ) { targets.push(el); });
+    }
+    if (!changed || !changed.length || kinds["transport"]) {
+      var pos = document.getElementById("arrPosDisplay");
+      if (pos) targets.push(pos);
+    }
+    targets.slice(0, 40).forEach(function (el     ) {
+      el.classList.remove("ai-echo");
+      void el.offsetWidth;
+      el.classList.add("ai-echo");
+      setTimeout(function () { el.classList.remove("ai-echo"); }, 700);
+    });
+  }
+
   /* 记录当前选中的文件夹层级（新建文件夹的目标位置）并高亮；
      path="" 时高亮固定的根目录行（无行参数表示点击空白区域回到根层级） */
   function selectDir(path     , row     ) {
@@ -2197,6 +2261,8 @@
         applyStreamDeltaEvent(ev);
       } else if (ev.type === "files") {
         applyFiles(ev.files, ev.dirs);
+      } else if (ev.type === "arrangement") {
+        applyArrangementEvent(ev);
       } else if (ev.type === "download") {
         var link = $("#newMidiLink");
         link.href = ev.url;
@@ -3392,6 +3458,8 @@
         applyStreamDeltaEvent(ev);
       } else if (ev.type === "files") {
         applyFiles(ev.files, ev.dirs);
+      } else if (ev.type === "arrangement") {
+        applyArrangementEvent(ev);
       } else if (ev.type === "download") {
         var link = $("#newMidiLink");
         link.href = ev.url;

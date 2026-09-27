@@ -239,47 +239,57 @@
       created = true;
     }
 
-    var src = track.source || { type: "synth", wave: "sawtooth" };
-    var key;
-    if (src.type === "sf2") {
-      /* 注册表 id 优先（新数据），回退 IndexedDB 记录 id（历史工程）。
-         两者都取不到会退化成 "sf2::0:0" 之类的键——两家音色库都用预设 0:0
-         时同轨切换就不会重载音源，因此源标识不能省。 */
-      key = "sf2:" + (src.sourceId || src.libId || "") + ":" + (src.presetId || "");
-    } else if (src.type === "builtin") {
-      key = "builtin:" + (src.tone || "piano");
-    } else {
-      key = "synth:" + (src.wave || "sawtooth");
-    }
+    /* 音源解析（v2）：track.source 是机架条目引用 {itemId,presetId}，
+       解析统一交给 ArrRack（条目模型的单一出口，见 arrangement/rack.ts）。
+       sourceKey 用「条目 id + 预设 + 发声类型」：两家音色库都用预设 0:0 时
+       同轨切换也不会漏重建发声链。 */
+    var resolved = window.ArrRack.resolveSource(track.source);
+    var v = resolved.voice;
+    var key = resolved.key + "|" + v.type;
 
     if (nodes.sourceKey !== key) {
       nodes.sourceKey = key;
       if (nodes.synth) { nodes.synth.stopAll(); nodes.synth = null; }
       if (nodes.soundfont) { nodes.soundfont.stopAll(); nodes.soundfont = null; }
       nodes.sfLoading = false;
+      nodes._isNativeSynth = false;
+      nodes._silentVoice = false;
+      nodes._wave = "";
 
-      if (src.type === "sf2") {
+      if (v.type === "sf2") {
         if (this.ctx) {
           nodes.soundfont = new window.SoundFontPlayer(this.ctx, nodes.gain);
           nodes.soundfont.init();
         }
-        this.loadTrackSoundFont(track, nodes, src);
-      } else if (src.type === "builtin") {
+        this.loadTrackSoundFont(track, nodes, {
+          sourceId: v.sourceId,
+          presetId: v.presetId,
+          name: resolved.label
+        });
+      } else if (v.type === "builtin") {
         if (this.ctx) {
           nodes.soundfont = new window.SoundFontPlayer(this.ctx, nodes.gain);
           nodes.soundfont.init();
-          nodes.soundfont.setPreset(src.tone || "piano");
+          nodes.soundfont.setPreset(v.tone || "piano");
         }
         /* 引擎模式：builtin 轨映射随包 GeneralUser GS 预设（原生轨 idx） */
-        this._ensureTrackBuiltinPreset(track, src);
-      } else {
+        this._ensureTrackBuiltinPreset(track, { tone: v.tone || "piano" });
+      } else if (v.type === "synth") {
         if (this.ctx) {
           nodes.synth = new window.SynthEngine(this.ctx, nodes.gain);
           nodes.synth.init();
-          nodes.synth.setWaveform(src.wave || "sawtooth");
+          nodes.synth.setWaveform(v.wave || "sawtooth");
         }
         // 引擎模式：该轨经引擎内置波形声部（setTrackVoice）；WEBAUDIO 留 Web
+        nodes._wave = v.wave || "sawtooth";
         nodes._isNativeSynth = isEngineMode();
+      } else {
+        /* 缺音源 / 插件（P5/P6）/ 采样包 / 纯采样：该轨不发声。
+           引擎模式必须显式把声部压到零增益——否则引擎 29 轨槽里上一版
+           音色会继续响（界面上音源已经换了，声音却是旧的）。 */
+        nodes._isNativeSynth = isEngineMode();
+        nodes._silentVoice = true;
+        nodes._wave = "sine";
       }
     }
     // synth 轨原生直通：把引擎同 idx 轨切到内置波形声部（不依赖 SF2；
@@ -339,17 +349,18 @@
     var idx = trackIndexOf(track.id, this.getTracks ? this.getTracks() : null);
     if (idx < 0) return;
     /* 声部参数：webaudio 模式下读 SynthEngine 实例（setter 已应用）；
-       引擎模式无实例，用默认值 + 轨道波形 */
+       引擎模式无实例，用默认值 + 解析出的轨道波形。
+       零增益声部（缺音源/插件/采样包轨）走同一条路径，保证该轨静音 */
     var s = nodes.synth;
     var p = {
-      wave: (s && s.waveform) || (track.source && track.source.wave) || "sawtooth",
+      wave: (s && s.waveform) || nodes._wave || "sawtooth",
       attack: s ? s.attack : 0.01,
       decay: s ? s.decay : 0.15,
       sustain: s ? s.sustain : 0.6,
       release: s ? s.release : 0.25,
       cutoff: s ? s.cutoff : 8000,
       resonance: s ? s.resonance : 1.0,
-      gain: s ? s.volume : 0.7
+      gain: nodes._silentVoice ? 0 : (s ? s.volume : 0.7)
     };
     var sig = [idx, p.wave, p.attack, p.decay, p.sustain, p.release, p.cutoff, p.resonance, p.gain].join("|");
     if (nodes._voiceSig === sig) return;

@@ -53,6 +53,10 @@
     this.synth = new window.SynthEngine(window.SharedAudio && window.SharedAudio.get());
     this.soundfont = new window.SoundFontPlayer(window.SharedAudio && window.SharedAudio.get());
     this.soundSource = "synth_sawtooth";
+    /* P2：钢琴窗音色同样来自机架条目（arrangement.pianoRoll 持久化）。
+       soundSource 仍是内部的发声键（synth_/sf2_ 前缀驱动引擎轨 30/31 与
+       WebAudio 两条路径），由 setRackVoice 从机架条目推导。 */
+    this.pianoRollSource = { itemId: "", presetId: "" };
 
     this.isPlaying = false;
     this.playheadBeat = 0;
@@ -3451,39 +3455,8 @@
       }
     );
 
-    // 5. 音源选择自定义下拉菜单
-    this.soundDropdown = this.setupCustomDropdown(
-      "prSoundDropdown", "prSoundBtn", "prSoundMenu",
-      [
-        { value: "synth_sawtooth", label: "合成器: 锯齿波 (Sawtooth)" },
-        { value: "synth_square", label: "合成器: 方波 (Square)" },
-        { value: "synth_triangle", label: "合成器: 三角波 (Triangle)" },
-        { value: "synth_sine", label: "合成器: 正弦波 (Sine)" },
-        { value: "sf2_piano", label: "SF2: 温暖钢琴 (Piano)" },
-        { value: "sf2_strings", label: "SF2: 弦乐群 (Strings)" }
-      ],
-      "synth_sawtooth",
-      function (val     , label     ) {
-        self.soundSource = val;
-        // 同步合成器波形：切 synth 音色后立即更新 synth.waveform——
-        // 原生回放路径不经 playNoteSound，只改 soundSource 会让引擎轨
-        // 一直用旧波形（锯齿→方波等切换无效）
-        if (val.indexOf("synth_") === 0 && self.synth) {
-          self.synth.setWaveform(val.replace("synth_", ""));
-        }
-        // 引擎模式：SF2 音源切换后旧轨 30 状态作废，下次音符重新加载+选预设
-        if (val.indexOf("sf2_") === 0) {
-          self._sf2EngineKey = null;
-          self._sf2EngineReady = false;
-          self._sf2EnginePending = false;
-          self._sf2EngineFailed = false;
-          self._sf2EngineFailAt = 0;
-          self._sf2EngineLoadNotified = false;   // 切换音源：重新允许"加载中"提示
-          self._sf2EngineFailNotified = false;
-        }
-        self.showHUD("音源: " + label);
-      }
-    );
+    // 5. 音源选择（P2：与机架/轨道头共用同一个音源选择器；音色只能来自机架）
+    this.bindSoundPicker();
 
     var typingMidiBtn = document.getElementById("prTypingMidiBtn");
     if (typingMidiBtn) {
@@ -3667,42 +3640,190 @@
         if (window.UI && window.UI.toast) window.UI.toast ("✗ 该音色库没有可用预设，音源未切换", "err");
         return false;
       }
-      self.updateSoundSelectOptions({ name: src.name, presets: presets }, src, presetId);
-      /* 引擎模式 SF2 轨加载所需：磁盘绝对路径 + 音色库名 */
-      self._sf2DiskPath = window.SoundRegistry.diskPathOf(src) || null;
-      self._sf2LibName = src.name || "";
-      return true;
+      /* P2：音源库弹窗的"加载使用"同样走机架——先把条目入架，再应用为
+         钢琴窗音色（音色只能来自机架，这条规则没有例外通道） */
+      return self.applyRegistrySoundFontToRack(src, presetId || presets[0].id);
     });
   };
 
-  /** 刷新音色下拉。parsed 为 { name, presets }；meta 为注册表条目（可选，
-      用于在标签上标明来源音色库）；preferId 指定选中哪个预设（默认首个）。
-      空预设列表时保持当前音源，避免取 [0] 崩溃。 */
-  PianoRoll.prototype.updateSoundSelectOptions = function (                           parsed     , meta      , preferId         ) {
-    if (!parsed || !parsed.presets) return;
-    var baseOpts = [
-      { value: "synth_sawtooth", label: "合成器: 锯齿波 (Sawtooth)" },
-      { value: "synth_square", label: "合成器: 方波 (Square)" },
-      { value: "synth_triangle", label: "合成器: 三角波 (Triangle)" },
-      { value: "synth_sine", label: "合成器: 正弦波 (Sine)" },
-      { value: "sf2_piano", label: "SF2: 温暖钢琴 (Piano)" },
-      { value: "sf2_strings", label: "SF2: 弦乐群 (Strings)" }
-    ];
-    var libLabel = meta && meta.name ? meta.name : parsed.name;
-    parsed.presets.forEach(function (p     ) {
-      baseOpts.push({ value: p.id, label: "SF2: " + (p.name || libLabel) });
+  /* ═══════════ 音源（P2：机架条目，三处共用同一个选择器） ═══════════ */
+
+  /** bindSoundPicker 音色按钮改为打开共用音源选择器（原来的自定义下拉只有
+      6 条硬编码音色，与机架/轨道头各说各话） */
+  PianoRoll.prototype.bindSoundPicker = function (                         ) {
+    var self = this;
+    var btn = document.getElementById("prSoundBtn");
+    if (!btn) return;
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      self.openRackPicker();
     });
-    if (!parsed.presets.length) return;
-    var pick = parsed.presets[0].id;
-    if (preferId) {
-      for (var i = 0; i < parsed.presets.length; i++) {
-        if (parsed.presets[i].id === preferId) { pick = preferId; break; }
+  };
+
+  /** setSoundLabel 更新音色按钮标签（选择器取代下拉菜单后只改文本） */
+  PianoRoll.prototype.setSoundLabel = function (                           text     ) {
+    var btn = document.getElementById("prSoundBtn");
+    if (!btn) return;
+    var label = btn.querySelector(".pr-dropdown-label");
+    if (label) label.textContent = String(text || "");
+    btn.title = "音源（来自乐器箱）: " + String(text || "");
+  };
+
+  /** openRackPicker 打开机架音源选择器；选中（或其二级预设）后应用到钢琴窗 */
+  PianoRoll.prototype.openRackPicker = function (                         ) {
+    var self = this;
+    var arrange = window.Arrange;
+    if (!arrange || !window.ArrRack) return;
+    window.ArrRack.openPicker({
+      title: "钢琴窗音源",
+      items: function () { return (arrange.rack && arrange.rack.items) || []; },
+      ensureItem: function (sourceId        , presetId        , name        ) {
+        return arrange.ensureRackItem(sourceId, presetId, name);
+      },
+      onPick: function (item     , presetId        ) {
+        self.setRackVoice(item, presetId);
+      },
+      onPreview: function (item     , presetId        , btn2     ) {
+        if (arrange.previewRackItem) arrange.previewRackItem(item, btn2, presetId);
       }
+    });
+  };
+
+  /** setRackVoice 把机架条目应用为钢琴窗音色。
+      返回是否切换成功（插件/采样包等钢琴窗不支持的音源返回 false 并提示）。 */
+  PianoRoll.prototype.setRackVoice = function (                           item     , presetId     ) {
+    if (!item || !window.ArrRack) return false;
+    var ArrRack = window.ArrRack;
+    var resolved = ArrRack.resolve([item], {
+      itemId: item.id,
+      presetId: (presetId === undefined || presetId === null || presetId === "") ? (item.presetId || "") : presetId
+    });
+    var v = resolved.voice;
+    var engineMode = !!(window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine());
+
+    if (v.type !== "synth" && v.type !== "sf2" && v.type !== "builtin") {
+      if (window.UI && UI.toast) UI.toast ("⚠ 该音源不能用于钢琴窗（当前支持合成器与 SF2 音色库）", "warn");
+      return false;
     }
-    if (this.soundDropdown) {
-      this.soundDropdown.updateOptions(baseOpts, pick);
+
+    // 引擎轨 30 状态作废：切音源后下次音符重新加载 + 选预设
+    this._sf2EngineKey = null;
+    this._sf2EngineReady = false;
+    this._sf2EnginePending = false;
+    this._sf2EngineFailed = false;
+    this._sf2EngineFailAt = 0;
+    this._sf2EngineLoadNotified = false;
+    this._sf2EngineFailNotified = false;
+
+    if (v.type === "synth") {
+      var wave = v.wave || "sawtooth";
+      this.soundSource = "synth_" + wave;
+      if (this.synth) this.synth.setWaveform(wave);
+      this._sf2DiskPath = null;
+      this.setSoundLabel("合成器: " + ArrRack.waveName(wave));
+    } else if (v.type === "builtin") {
+      var strings = v.tone === "strings";
+      this.soundSource = strings ? "sf2_strings" : "sf2_piano";
+      this._sf2DiskPath = null;   // 内置：随包 GeneralUser GS，由引擎准备流程取路径
+      this._sf2LibName = "GeneralUser GS";
+      this.setSoundLabel("SF2: " + (strings ? "弦乐群 (Strings)" : "温暖钢琴 (Piano)"));
+      if (!engineMode && this.soundfont) {
+        try { this.soundfont.setPreset(this.soundSource); } catch (e) {}
+      }
+    } else {
+      var bank = 0, program = 0;
+      if (window.SoundRegistry && window.SoundRegistry.parsePresetId) {
+        var p = window.SoundRegistry.parsePresetId(resolved.presetId || "0:0");
+        bank = p.bank; program = p.program;
+      }
+      // 内部键：sf2_bank_program —— _engineSf2PrepareAsync 的 parsePresetId
+      // 与 WebAudio 路径都认这个形状（完整预设 id 由解析后回填）
+      this.soundSource = "sf2_" + bank + "_" + program;
+      this._sf2DiskPath = v.path || null;
+      this._sf2LibName = item.name || "";
+      this.setSoundLabel((item.name || "SF2") + " › " + (resolved.presetId || "0:0"));
+      if (!engineMode) this.loadBrowserSf2Into(item, bank, program);
     }
-    this.soundSource = pick;
+
+    this.pianoRollSource = { itemId: item.id, presetId: resolved.presetId || "" };
+    this.persistSource(item.id, resolved.presetId || "");
+    this.showHUD("音源: " + resolved.label);
+    return true;
+  };
+
+  /** loadBrowserSf2Into 浏览器模式（WebAudio）下把 SF2 采样数据装进播放器：
+      注册表的本地解码缓存（IndexedDB）优先，按 bank/program 选中对应预设。
+      引擎模式不走这里（发声全在原生引擎，不需要浏览器解码）。 */
+  PianoRoll.prototype.loadBrowserSf2Into = function (                           item     , bank     , program     ) {
+    var self = this;
+    if (!window.SoundLibrary || !window.SoundRegistry) return;
+    var src = window.SoundRegistry.get(item.sourceId);
+    if (!src) return;
+    window.SoundRegistry.browserRecord(src).then(function (hit     ) {
+      if (!hit || !hit.id) return null;
+      return window.SoundLibrary.getSoundFont(hit.id);
+    }).then(function (rec     ) {
+      if (!rec || !rec.data || !self.soundfont) return;
+      var parsed = self.soundfont.parseSF2(rec.data);
+      var presets = (parsed && parsed.presets) || [];
+      for (var i = 0; i < presets.length; i++) {
+        if ((presets[i].bank || 0) === bank && (presets[i].program || 0) === program) {
+          self.soundSource = presets[i].id;   // 完整 id（含 idx 后缀）才能命中
+          break;
+        }
+      }
+      self.soundfont.setPreset(self.soundSource);
+    }).catch(function () { /* 浏览器模式没有缓存数据：静默（引擎模式不受影响） */ });
+  };
+
+  /** persistSource 把钢琴窗音源写回工程（arrangement.pianoRoll） */
+  PianoRoll.prototype.persistSource = function (                           itemId     , presetId     ) {
+    var arrange = window.Arrange;
+    if (!arrange || !arrange.setPianoRollSource) return;
+    arrange.setPianoRollSource(itemId, presetId);
+  };
+
+  /** syncRackSource 机架/工程变化后重新应用已持久化的音色（ArrRack 回调） */
+  PianoRoll.prototype.syncRackSource = function (                         ) {
+    var arrange = window.Arrange;
+    if (!arrange || !arrange.rack || !window.ArrRack) return;
+    var src = arrange.pianoRollSource || { itemId: "", presetId: "" };
+    var item = window.ArrRack.find(arrange.rack.items, src.itemId);
+    if (!item) {
+      this.setSoundLabel("⚠ 音源缺失");
+      return;
+    }
+    if (this.pianoRollSource && this.pianoRollSource.itemId === item.id &&
+        this.pianoRollSource.presetId === (src.presetId || "")) {
+      return; // 已是当前音色：不重复应用（每次机架重绘都重置引擎轨没有意义）
+    }
+    this.setRackVoice(item, src.presetId || "");
+  };
+
+  /** 注册表音源 → 钢琴窗音色（P2 起经机架：先入架再应用） */
+  PianoRoll.prototype.applyRegistrySoundFontToRack = function (                           src     , pick     ) {
+    var self = this;
+    var arrange = window.Arrange;
+    var ensure = (arrange && arrange.ensureRackItem)
+      ? arrange.ensureRackItem(src.id, pick, src.name)
+      : Promise.resolve(window.ArrRack.itemFromSourceId(src.id, pick, src.name));
+    return ensure.then(function (item     ) {
+      if (!item) return false;
+      return self.setRackVoice(item, pick) ? true : false;
+    });
+  };
+
+  /** 刷新音色按钮显示（P2 起由机架选择器驱动，不再维护硬编码的选项列表）。
+      parsed 为 { name, presets }；meta 为注册表条目；preferId 指定选中哪个预设。 */
+  PianoRoll.prototype.updateSoundSelectOptions = function (                           parsed     , meta      , preferId         ) {
+    if (!parsed || !parsed.presets || !parsed.presets.length) return;
+    var libLabel = (meta && meta.name) ? meta.name : parsed.name;
+    var pick = preferId || parsed.presets[0].id;
+    var name = pick;
+    for (var i = 0; i < parsed.presets.length; i++) {
+      if (parsed.presets[i].id === pick) { name = parsed.presets[i].name || pick; break; }
+    }
+    this.setSoundLabel((libLabel || "SF2") + " › " + name);
   };
 
   window.PianoRoll = new (PianoRoll       )();

@@ -676,13 +676,14 @@
 </div>
 
 
-<!-- 输出机架 (Channel / Output Rack) 独立浮动窗口：FL Studio 通道机架设计，支持自由拖动与直接拖拽音源/采样到轨道 -->
+<!-- 输出机架 / 乐器箱（INSTRUMENT RACK）：条目 = 项目机架条目（arrangement.rack.items），
+     候选来自音源注册表（设置页「声音管理」）；支持自由拖动与直接拖拽音源/采样到轨道 -->
 <div class="rack-window" id="arrRackWindow" hidden>
   <div class="rack-win-titlebar" id="arrRackTitlebar">
     <div class="rack-win-title">
       <span class="rack-status-dot"></span>
-      <span class="rack-win-name">OUTPUT RACK</span>
-      <span class="rack-win-sub">通道与输出机架</span>
+      <span class="rack-win-name">INSTRUMENT RACK</span>
+      <span class="rack-win-sub">乐器箱</span>
     </div>
     <div class="rack-win-controls">
       <button type="button" class="rack-win-btn rack-win-collapse" id="arrRackCollapseBtn" title="折叠/展开">―</button>
@@ -692,28 +693,30 @@
 
   <div class="rack-win-body" id="arrRackBody">
     <div class="rack-toolbar">
-      <div class="rack-filter-group">
-        <button type="button" class="rack-filter-btn active" data-tab="all">全部 (ALL)</button>
-        <button type="button" class="rack-filter-btn" data-tab="synth">🎹 虚拟音源</button>
-        <button type="button" class="rack-filter-btn" data-tab="sf2">📦 SOUNDFONT</button>
-        <button type="button" class="rack-filter-btn" data-tab="samples">🌊 采样素材</button>
+      <div class="rack-filter-group" id="arrRackFilters" role="tablist" aria-label="机架分类">
+        <button type="button" class="rack-filter-btn active" data-tab="all" role="tab" aria-selected="true">全部</button>
+        <button type="button" class="rack-filter-btn" data-tab="synth" role="tab" aria-selected="false">合成器</button>
+        <button type="button" class="rack-filter-btn" data-tab="sf2" role="tab" aria-selected="false">SF2</button>
+        <button type="button" class="rack-filter-btn" data-tab="vst3" role="tab" aria-selected="false">VST</button>
+        <button type="button" class="rack-filter-btn" data-tab="mm" role="tab" aria-selected="false">MM</button>
+        <button type="button" class="rack-filter-btn" data-tab="sample" role="tab" aria-selected="false">采样</button>
       </div>
       <div class="rack-toolbar-actions">
-        <button type="button" class="rack-action-btn" id="arrRackAddSf2Btn" title="导入自定义 SF2 音源文件">＋ 导入 SF2</button>
+        <button type="button" class="rack-action-btn" id="arrRackAddSourceBtn" title="从声音管理挑选音源加入机架">＋ 加载音源</button>
       </div>
     </div>
 
-    <div class="rack-hint-bar">
-      <span>💡 按住通道条直接拖拽到编曲窗轨道头，即可替换音源或放置采样</span>
+    <div class="rack-search-row">
+      <input type="search" id="arrRackSearch" class="rack-search" placeholder="搜索机架内音源…" aria-label="搜索机架内音源">
     </div>
 
-    <div class="rack-channel-list" id="arrRackList">
-      <!-- 动态渲染 FL 通道条目 -->
+    <div class="rack-channel-list" id="arrRackList" role="listbox" aria-label="机架音源">
+      <!-- 条目由 rack.ts 渲染 -->
     </div>
 
     <div class="rack-statusbar">
-      <span id="arrRackStatusText">已挂载 0 个通道</span>
-      <span class="rack-indicator">CHANNEL RACK READY</span>
+      <span id="arrRackStatusText">已挂载 0 个音源</span>
+      <span class="rack-indicator">RACK READY</span>
     </div>
   </div>
 </div>
@@ -922,6 +925,7 @@
 <script src="/js/arrangement/midi_parse.js" defer></script>
 <script src="/js/pianoroll/pianoroll.js" defer></script>
 <script src="/js/arrangement/audio_engine.js" defer></script>
+<script src="/js/arrangement/rack.js" defer></script>
 <script src="/js/arrangement/arrange.js" defer></script>
 <script src="/js/chat.js" defer></script>
 <script src="/demo/script_data.js" defer></script>

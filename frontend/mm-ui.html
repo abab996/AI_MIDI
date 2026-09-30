@@ -292,10 +292,17 @@
     return;
   }
 
-  /* 走带：1.5s 拉一次（宿主节流；插件 UI 只读展示） */
-  setInterval(function () {
-    fetch("/api/engine/plugins/state").catch(function () {});
-  }, 1500);
+  /* 走带（规范 mm.transport）：由**宿主窗口**推给本页，本页转发给插件 iframe。
+     这里不轮询任何 HTTP：走带状态在宿主（编曲页）手里，不是引擎查询接口。
+     宿主未接走带时插件也不会收到该消息，插件界面必须自行降级（不依赖它）。 */
+  window.addEventListener("message", function (ev) {
+    var d = ev.data;
+    if (!d || d.type !== "mm.transport") return;
+    if (typeof d.bpm !== "number") return;
+    window.__mmTransport = { bpm: d.bpm, playing: !!d.playing, beat: typeof d.beat === "number" ? d.beat : 0 };
+    elStatus.textContent = "BPM " + Math.round(d.bpm) + (d.playing ? " · ▶ 走带中" : " · ⏸ 停止");
+    post({ type: "mm.transport", bpm: d.bpm, playing: !!d.playing, beat: window.__mmTransport.beat });
+  });
 
   loadFrame();
 })();

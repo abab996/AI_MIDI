@@ -800,7 +800,22 @@
       var theme = document.documentElement.dataset.theme;
       if (theme) qs += "&theme=" + encodeURIComponent(theme);
       var win = window.open("/mm-ui.html" + qs, "mmui_" + id + "_" + slot, "width=760,height=560");
-      if (!win) toast("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn");
+      if (!win) { toast("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn"); return; }
+      /* 走带推送（规范 mm.transport）：承载窗不轮询 HTTP，走带在宿主手里。
+         每秒推一次即可（插件界面只做只读展示）；窗口关闭后自动停。 */
+      var pushTransport = function () {
+        if (!win || win.closed) { if (timer) { clearInterval(timer); timer = 0; } return; }
+        try {
+          win.postMessage({
+            type: "mm.transport",
+            bpm: Number(ctrl.bpm) || 120,
+            playing: !!ctrl.isPlaying,
+            beat: Number(ctrl.playheadBeat) || 0
+          }, "*");
+        } catch (e) { /* 弹窗跨源/已关闭：忽略 */ }
+      };
+      var timer = window.setInterval(pushTransport, 1000);
+      pushTransport();
       return;
     }
     UI.postJSON("/api/engine/plugins/editor", {

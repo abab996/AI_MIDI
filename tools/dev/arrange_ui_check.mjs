@@ -984,6 +984,28 @@ async function main() {
       check("插件 → 宿主 setParam 经桥写入引擎（gain≈0.3 归一化）",
         bridge && Math.abs((gainParam.value === undefined ? -1 : gainParam.value) - 0.3) < 0.05, gainParam);
 
+      // mm.transport（规范）：宿主推送 → 承载页显示并转发给插件 iframe
+      const transport = await cdp.evaluate(`(async function(){
+        window.dispatchEvent(new MessageEvent("message", { data: { type: "mm.transport", bpm: 124, playing: true, beat: 8.5 } }));
+        await new Promise(function(r){ setTimeout(r, 150); });
+        return { status: document.getElementById("mmStatus").textContent,
+                 got: window.__mmTransport || null };
+      })()`);
+      check("承载页接收 mm.transport 并更新状态（BPM 124 · 走带中）",
+        transport.got && transport.got.bpm === 124 && transport.got.playing === true && /124/.test(transport.status), transport);
+
+      // mm.resize（规范）：插件上报尺寸 → 承载页调整 iframe 高度
+      const resized = await cdp.evaluate(`(async function(){
+        var before = document.getElementById("plug").style.height || "";
+        window.dispatchEvent(new MessageEvent("message", { data: { type: "mm.resize", width: 360, height: 240 } }));
+        await new Promise(function(r){ setTimeout(r, 150); });
+        var after = document.getElementById("plug").style.height;
+        window.dispatchEvent(new MessageEvent("message", { data: { type: "mm.resize", width: 99, height: 99999 } }));
+        await new Promise(function(r){ setTimeout(r, 100); });
+        return { before: before, after: after, clamped: document.getElementById("plug").style.height };
+      })()`);
+      check("承载页按 mm.resize 调整 iframe 高度", resized.after === "240px", resized);
+      check("越界尺寸被拒绝（>4096 不生效）", resized.clamped === "240px", resized);
       // 非法消息必须被丢弃且不影响宿主
       const junk = await cdp.evaluate(`(function(){
         window.dispatchEvent(new MessageEvent("message", { data: { type: "mm.setParam", id: 123, value: "x" } }));

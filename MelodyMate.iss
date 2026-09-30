@@ -106,12 +106,26 @@ Source: "Library\soundfonts\GeneralUser GS LICENSE.txt"; DestDir: "{app}\Library
 ; 查找顺序 = 主程序同目录 → tools\ → output\ → PATH（发行包里就是这里的主程序同目录）。
 Source: "mm.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; MM 插件 SDK：编译插件必须（mm build 默认在 <主程序目录>\engine\mm-sdk 下找）。
-; 只带 include 与 CMake 脚手架 + 两个示例（示例也能作为"照着改"的起点）。
+; 带 include + 顶层 CMakeLists + 脚手架模板 + 三个示例（示例也是"照着改"的起点）。
+; **排除示例目录里的构建产物**：build/ 里有 CMake 缓存与 .obj、bin/ 里有中间 DLL，
+; 它们对插件作者无用，只会把安装包撑大（曾把 46MB 的包里塞进十几 MB 中间产物）。
 Source: "engine\mm-sdk\include\mm\mm.h"; DestDir: "{app}\engine\mm-sdk\include\mm"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "engine\mm-sdk\include\*"; DestDir: "{app}\engine\mm-sdk\include"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-Source: "engine\mm-sdk\examples\*"; DestDir: "{app}\engine\mm-sdk\examples"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "engine\mm-sdk\CMakeLists.txt"; DestDir: "{app}\engine\mm-sdk"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "engine\mm-sdk\README.md"; DestDir: "{app}\engine\mm-sdk"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "engine\mm-sdk\template\*"; DestDir: "{app}\engine\mm-sdk\template"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "engine\mm-sdk\examples\*"; DestDir: "{app}\engine\mm-sdk\examples"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Excludes: "build,bin,*.obj,*.pdb,*.ilk,*.lib,*.exp,*.a,CMakeCache.txt,CMakeFiles"
 ; 插件安装目录（AI/用户安装的 .mm 落这里；引擎启动时从这里加载）
 Source: "Library\plugins\README.txt"; DestDir: "{app}\Library\plugins"; Flags: ignoreversion skipifsourcedoesntexist
+
+[InstallDelete]
+; 改名升级（P0）：删掉旧版遗留的程序文件。实测覆盖安装 AI_MIDI 3.1.2 之后
+; AI_MIDI.exe（约 20MB）仍在同目录：① 用户可能双击到旧程序，而旧程序会按
+; 同名数据根打开同一份 settings/projects/Library，"设置改了没生效"极难排查；
+; ② 白占空间。**只删程序文件**——用户数据（settings.json / projects\ /
+; Library\ / output\）不在删除之列，发布清单的"卸载/升级保留用户数据"仍成立。
+Type: files; Name: "{app}\AI_MIDI.exe"
+Type: files; Name: "{app}\bin\aimidi-engine.exe"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

@@ -460,9 +460,9 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			writeError(w, http.StatusBadRequest, "缺少 project（工程 ID）")
 			return
 		}
-		dir, derr := project.ProjectDir(projectID)
+		dir, derr := stateProjectDir(projectID)
 		if derr != nil {
-			writeError(w, http.StatusBadRequest, "工程不存在或不可读："+derr.Error())
+			writeError(w, http.StatusBadRequest, derr.Error())
 			return
 		}
 		list, lerr := plugins.NewStore(dir).List()
@@ -673,11 +673,26 @@ func (in pluginStateRequest) target() (plugins.Target, string, error) {
 	if err := target.Valid(); err != nil {
 		return plugins.Target{}, "", err
 	}
-	dir, err := project.ProjectDir(projectID)
+	dir, err := stateProjectDir(projectID)
 	if err != nil {
-		return plugins.Target{}, "", fmt.Errorf("工程不存在或不可读：%w", err)
+		return plugins.Target{}, "", err
 	}
 	return target, dir, nil
+}
+
+// stateProjectDir 解析工程数据目录并确认它真的存在。
+// ProjectDir 只做 ID 校验与路径拼接，不保证目录存在：不补这一步，
+// 对不存在的工程会返回"0 个状态文件"这种看起来成功的结果
+// （save/load/list 三个端点共用本函数，避免只有一处校验）。
+func stateProjectDir(projectID string) (string, error) {
+	dir, err := project.ProjectDir(projectID)
+	if err != nil {
+		return "", fmt.Errorf("工程不存在或不可读：%w", err)
+	}
+	if st, serr := os.Stat(dir); serr != nil || !st.IsDir() {
+		return "", fmt.Errorf("工程不存在：%s", projectID)
+	}
+	return dir, nil
 }
 
 // pluginSlotOf 判断请求里是否**显式**给了 slot（区分"乐器"与"槽 0"）

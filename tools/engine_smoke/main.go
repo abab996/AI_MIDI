@@ -1116,6 +1116,15 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 				_, _ = c.request("panic", nil)
 				return last
 			}
+			/* 前置：本段前面的 fx 段落给 track0/slot0 设过 **wet=0.5**（干湿各半），
+			   那个状态会一直留着 —— 于是后面所有"参数把输出压下去"的测量都会看到
+			   一半的干信号混进来（20Hz 截止只降到一半、增益 0 也不归零）。
+			   这正是本轮排查绕远路的原因：**测试残留状态污染了后续测量**。
+			   这里先把槽位复位为全湿，保证 A/B 反映的是插件输出本身。 */
+			_, _ = c.request("fx.setChain", map[string]interface{}{
+				"track": 0,
+				"slots": []map[string]interface{}{{"slot": 0, "bypass": false, "wet": 1.0}},
+			})
 			measure := measureSteady
 
 			/* 先验"静场"：panic 之后不弹任何音，电平必须归零。
@@ -1208,7 +1217,9 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 				   关系（仿射模型解不出自洽系数）。留给下一步：
 				   在 FxChain::process 里记录每块的输入/输出峰值（日志），必要时
 				   先跑一个"恒等插件"（不改样本）确认链路本身是否引入量化。 */
-				_ = lowCut
+				check("低通真的在音频路径上起作用（截止 20Hz 后后级峰值塌下去）",
+					base > 0.001 && lowCut < base*0.1,
+					fmt.Sprintf("base=%.4f low=%.4f", base, lowCut))
 				check("拉回 18kHz 后后级峰值恢复（是滤波而非静音/增益问题）",
 					highCut > base*0.8,
 					fmt.Sprintf("base=%.4f high=%.4f", base, highCut))
@@ -1243,8 +1254,12 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 					/* 同上：后级原始峰值也呈 2:1:3（0.3937 / 0.1968 / 0.5906），
 					   暂作参考。注意"回升"方向是对的、且 g=1 时比基线高 —— 这两点
 					   说明插件确实在链路上，但幅度关系还没弄懂，不能拿它当判据。 */
-					_ = gZero
-					_ = gFull
+					check("MM 参数真的送达插件（增益 0 → 后级峰值归零）",
+						gBase > 0.001 && gZero < gBase*0.05,
+						fmt.Sprintf("base=%.4f zero=%.4f", gBase, gZero))
+					check("增益拉回 1.0 后后级峰值回升",
+						gFull > gBase*0.8,
+						fmt.Sprintf("base=%.4f full=%.4f", gBase, gFull))
 					_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
 				}
 			}

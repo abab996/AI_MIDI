@@ -29,6 +29,11 @@ type mmManifest struct {
 	Author       *struct {
 		Type string `json:"type"`
 	} `json:"author"`
+	UI *struct {
+		Entry  string `json:"entry"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+	} `json:"ui"`
 	Hash *struct {
 		Algorithm string            `json:"algorithm"`
 		Files     map[string]string `json:"files"`
@@ -185,6 +190,8 @@ func InstalledMMInfo(installDir string) (map[string]any, error) {
 		"kind":         mf.Kind,
 		"capabilities": mf.Capabilities,
 		"hashVerified": mf.Hash != nil && len(mf.Hash.Files) > 0,
+		"uiWidth":      mmUIWidth(mf),
+		"uiHeight":     mmUIHeight(mf),
 		"ai":           mmIsAI(mf),
 		"dir":          filepath.ToSlash(installDir),
 	}, nil
@@ -207,4 +214,19 @@ func ListInstalledMM() []map[string]any {
 		}
 	}
 	return out
+}
+
+// mmUIWidth / mmUIHeight：界面声明的尺寸（0 表示未声明 → 前端用默认窗口尺寸）
+func mmUIWidth(mf mmManifest) int {
+	if mf.UI == nil || mf.UI.Width < 0 {
+		return 0
+	}
+	return mf.UI.Width
+}
+
+func mmUIHeight(mf mmManifest) int {
+	if mf.UI == nil || mf.UI.Height < 0 {
+		return 0
+	}
+	return mf.UI.Height
 }

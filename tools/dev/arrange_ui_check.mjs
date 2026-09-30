@@ -1059,8 +1059,9 @@ async function main() {
         await new Promise(function(r){ setTimeout(r, 300); });
         var slot = document.querySelector('#mxrLanes .mxr-strip[data-idx="0"] .mxr-fx-slot[data-slot="1"]');
         var captured = null;
+        var capturedFeatures = "";
         var origOpen = window.open;
-        window.open = function(url){ captured = url; return { focus: function(){} }; };
+        window.open = function(url, name, features){ captured = url; capturedFeatures = features || ""; return { focus: function(){} }; };
         slot.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
         await new Promise(function(r){ setTimeout(r, 200); });
         var all = document.querySelectorAll(".ctx-item, .arr-menu-item, .ctx-menu button");
@@ -1069,12 +1070,16 @@ async function main() {
         if (mmItem) mmItem.click();
         await new Promise(function(r){ setTimeout(r, 200); });
         window.open = origOpen;
-        return { hasMmEntry: !!mmItem, url: captured, count: all.length };
+        return { hasMmEntry: !!mmItem, url: captured, features: capturedFeatures, count: all.length };
       })()`);
       check("MM 槽的 FX 菜单提供「插件界面（MM 承载窗）」入口", mmEntry.hasMmEntry, mmEntry);
       check("点击入口打开 /mm-ui.html 且带 plugin/track/slot/theme",
         !!mmEntry.url && mmEntry.url.indexOf("/mm-ui.html?plugin=com.melodymate.example.gain") === 0 &&
         /[?&]slot=1/.test(mmEntry.url) && /[?&]track=0/.test(mmEntry.url) && /[?&]theme=/.test(mmEntry.url), mmEntry.url);
+      // 窗口尺寸取插件 manifest 声明的 ui 尺寸（gain 示例声明 360x180），
+      // 拿不到清单时兜底 760x560 —— 两种都可接受，但必须不是空
+      check("承载窗尺寸来自插件 manifest 或兜底值",
+        /width=\d+/.test(mmEntry.features || "") && /height=\d+/.test(mmEntry.features || ""), mmEntry.features);
       await api("POST", "/api/engine/plugins/unload", { track: 0, slot: 0 });
       // 回到编曲页，避免影响后续段落
       await cdp.send("Page.navigate", { url: base + "/chat.html" });

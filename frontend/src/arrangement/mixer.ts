@@ -38,6 +38,22 @@
 
   var state: MixerUiState = { open: false, raf: 0, ids: [], peakHold: {} };
 
+  /* MM 插件界面尺寸缓存（manifest 的 ui.width/height）。
+     为什么预取：window.open 必须在用户手势的同步路径里调用，点菜单时再发请求
+     会丢掉手势 → 被浏览器拦弹窗。因此在打开混音台面板时就拉一次清单缓存起来。 */
+  var mmSizes: { [id: string]: { w: number; h: number } } = {};
+
+  function prefetchMMSizes() {
+    UI.getJSON("/api/engine/plugins/installed").then(function (r: any) {
+      var list = (r && r.plugins) || [];
+      list.forEach(function (p: any) {
+        if (p && p.id && p.uiWidth > 0 && p.uiHeight > 0) {
+          mmSizes[String(p.id)] = { w: Number(p.uiWidth), h: Number(p.uiHeight) };
+        }
+      });
+    }).catch(function () { /* 拿不到就用默认尺寸 */ });
+  }
+
   /* ═══════════ 数值换算 ═══════════ */
 
   /** 增益(0~1 线性) → dB 文本 */
@@ -120,6 +136,7 @@
     panel.classList.remove("mxr-in");
     void panel.offsetWidth;
     panel.classList.add("mxr-in");
+    prefetchMMSizes();
     var btn = document.getElementById("mxrBtn");
     if (btn) {
       btn.classList.add("active");
@@ -799,7 +816,10 @@
       else qs += "&track=" + idx;
       var theme = document.documentElement.dataset.theme;
       if (theme) qs += "&theme=" + encodeURIComponent(theme);
-      var win = window.open("/mm-ui.html" + qs, "mmui_" + id + "_" + slot, "width=760,height=560");
+      /* 尺寸取插件 manifest 声明的 ui 尺寸（缓存于面板打开时），拿不到再兜底 */
+      var size = mmSizes[id] || { w: 760, h: 560 };
+      var win = window.open("/mm-ui.html" + qs, "mmui_" + id + "_" + slot,
+        "width=" + size.w + ",height=" + size.h);
       if (!win) { toast("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn"); return; }
       /* 走带推送（规范 mm.transport）：承载窗不轮询 HTTP，走带在宿主手里。
          每秒推一次即可（插件界面只做只读展示）；窗口关闭后自动停。 */

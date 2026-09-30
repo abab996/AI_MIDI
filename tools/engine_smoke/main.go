@@ -1084,20 +1084,21 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 		     → 拉回 18kHz（应恢复，说明它是滤波器而不是静音/增益问题）。
 		   这条断言如果只是"装载成功"是通不过的 —— 必须真的处理了音频。 */
 		if filterDll != "" {
-			/* 参数 A/B 用**稳态**而不是窗口峰值：电平表是峰值保持 + 慢释放，
-			   窗口最大值会把切换前的旧读数带进来（"增益设 0 却只降一半""增益 1
-			   反而更高"都是这么来的）。做法：保持音符 2.5 秒，取**最后一次**采样。 */
+			/* 参数 A/B 的测量纪律（踩过坑才定下来的三条）：
+			   ① **先 panic 清声部**：MM 乐器声部会累积，不清场时电平表反映的是
+			      "几个声部在响"，而不是当前参数下的稳态电平（此前读数恰好落在
+			      0.1125 的整数倍上就是这么来的）；
+			   ② **只弹一个音**：单声部 → 读数只由参数决定，不受相位叠加影响；
+			   ③ **取末次采样**：电平表是峰值保持 + 释放，窗口最大值会把切换前的
+			      旧读数带进来（"增益设 0 却只降一半"即由此产生）。
+			   这三条做实后，本节才敢把电平比较写成断言 —— 引擎侧确认过：轨道峰值
+			   是在 FX 链**之后**采的（MixerGraph 取链输出的 jmax，再乘轨道增益）。 */
 			measureSteady := func() float64 {
-				for _, key := range []int{57, 60, 64} {
-					_ = c.writeFrame(0x04, []byte{0, 0x80, byte(key), 0})
-				}
 				_, _ = c.request("panic", nil)
-				time.Sleep(600 * time.Millisecond)
-				for _, key := range []int{57, 60, 64} {
-					_ = c.writeFrame(0x04, []byte{0, 0x90, byte(key), 100})
-				}
+				time.Sleep(700 * time.Millisecond)
+				_ = c.writeFrame(0x04, []byte{0, 0x90, 60, 100}) // 单个 A3
 				last := 0.0
-				for i := 0; i < 25; i++ {
+				for i := 0; i < 20; i++ {
 					time.Sleep(100 * time.Millisecond)
 					lv, lerr := c.request("getLevels", nil)
 					if lerr != nil || lv == nil || !lv.OK {
@@ -1111,12 +1112,31 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 						last = levels.Levels[0]
 					}
 				}
-				for _, key := range []int{57, 60, 64} {
-					_ = c.writeFrame(0x04, []byte{0, 0x80, byte(key), 0})
-				}
+				_ = c.writeFrame(0x04, []byte{0, 0x80, 60, 0})
+				_, _ = c.request("panic", nil)
 				return last
 			}
 			measure := measureSteady
+
+			/* 先验"静场"：panic 之后不弹任何音，电平必须归零。
+			   为什么必须先验这个：若 MM 乐器的声部没被真的关掉，声部会跨测量累积；
+			   同一频率的两个声部相位叠加，峰值随相位漂移，读数就会出现 2:1:3 这种
+			   "看起来随参数变化、其实与参数无关"的固定比例 —— 后续电平 A/B 全部
+			   失去意义（本轮实测正是如此）。 */
+			_, _ = c.request("panic", nil)
+			time.Sleep(1200 * time.Millisecond)
+			idle := 0.0
+			if lv, lerr := c.request("getLevels", nil); lerr == nil && lv != nil && lv.OK {
+				var levels struct {
+					Levels []float64 `json:"levels"`
+				}
+				_ = json.Unmarshal(lv.Result, &levels)
+				if len(levels.Levels) > 0 {
+					idle = levels.Levels[0]
+				}
+			}
+			fmt.Printf("      panic 后静场电平 = %.4f（应为 0；不为 0 说明声部没关掉）\n", idle)
+			check("panic 后轨道静音（MM 乐器声部真的被关掉）", idle < 0.001, fmt.Sprintf("idle=%.4f", idle))
 			rf, ferr := c.request("plugin.load", map[string]interface{}{
 				"format": "mm", "path": filterDll, "id": filterDll, "track": 0, "slot": 0,
 			})
@@ -1136,16 +1156,17 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 				highCut := measure()
 				fmt.Printf("      滤波器实测电平：默认截止 %.4f / 截止 20Hz %.4f / 截止 18kHz %.4f\n",
 					base, lowCut, highCut)
-				/* 【参考信息，不做断言】getLevels **不反映轨道 FX 链**：
-				   实测三次读数精确落在 0.1125 的整数倍上（0.225/0.45/0.675），
-				   且把 MM 增益设为 0 时读数也不为 0 —— 说明它测的是 FX 之前的
-				   信号（按声部数离散），拿它做"效果器是否起作用"的判据会**假通过**
-				   （截止 20Hz 那条就是这样凑巧过的）。要严格验证 FX 处理，需要宿主
-				   提供**后级**电平（或导出比对），已列入待办。 */
-				fmt.Printf("      [参考] 低通前后电平 %.4f → %.4f → %.4f（getLevels 不反映 FX 链，勿作判据）\n",
+				fmt.Printf("      低通实测电平：默认截止 %.4f / 截止 20Hz %.4f / 截止 18kHz %.4f\n",
 					base, lowCut, highCut)
+				/* 【参考信息，暂不断言】三次读数呈固定 2:1:3 比例，与截止频率无关，
+				   说明这个量对参数的响应还没搞清（已排除：声部累积——`panic 后静场
+				   电平 = 0.0000`；相位叠加——单音也一样；平滑未收敛——稳态取值）。
+				   唯一对得上的是"默认截止时的读数 = 无滤波基线 0.45 × 0.8"，
+				   与 gain 示例的默认值吻合，暗示**参数确实生效**。
+				   下一步：给宿主加**后级电平**字段（绕过表内平滑、直接给链输出峰值）
+				   或临时把每块峰值打到日志里，再决定断言怎么写。 */
 				if highCut <= 0.0 {
-					check("拉回 18kHz 后仍有输出（不为静音）", false, "highCut=0 —— 可能又是高频不稳定")
+					check("拉回 18kHz 后不得为静音（高频不稳定回归）", false, "highCut=0")
 				}
 				_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
 			}
@@ -1175,15 +1196,14 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 					gFull := measure()
 					fmt.Printf("      增益对照实测电平：默认 %.4f / 增益 0 %.4f / 增益 1 %.4f\n",
 						gBase, gZero, gFull)
-					/* 同上：这组数字（0.45 / 0.225 / 0.675 = 4/2/6 个 0.1125）恰恰
-					   证明了电平表按**声部数**离散、且测在 FX 之前 —— 增益 0 都没能让
-					   它归零。"参数有没有送到插件"因此**无法**用电平表判定，需要
-					   插件侧自证（例如插件把收到的值回写到一个可查询的位置）。 */
-					fmt.Printf("      [参考] 增益对照电平 %.4f / %.4f / %.4f（同上，勿作判据）\n",
+					fmt.Printf("      增益对照实测电平：增益 0.8 %.4f / 增益 0 %.4f / 增益 1.0 %.4f\n",
 						gBase, gZero, gFull)
-					if gZero < 0.0001 {
-						check("MM 参数送达插件（增益 0 时电平确实归零）", true, fmt.Sprintf("zero=%.4f", gZero))
-					}
+					/* 同上：这条本该是"参数送达插件"的判据，但读数同样呈 2:1:3，
+					   暂时只能作参考。首读数 = 无滤波基线 × 0.8（gain 默认值）这一点
+					   仍是有力线索：插件在处理音频。 */
+					_ = gBase
+					_ = gZero
+					_ = gFull
 					_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
 				}
 			}

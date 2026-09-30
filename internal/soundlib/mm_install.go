@@ -34,6 +34,13 @@ type mmManifest struct {
 		Width  int    `json:"width"`
 		Height int    `json:"height"`
 	} `json:"ui"`
+	/* dsp.entry：原生库相对 bin/ 的路径（规范 §3）。装载 MM 插件需要它换算成
+	   绝对路径——引擎按路径 LoadLibrary，不做目录推导。 */
+	DSP *struct {
+		Core  string `json:"core"`
+		ABI   string `json:"abi"`
+		Entry string `json:"entry"`
+	} `json:"dsp"`
 	Hash *struct {
 		Algorithm string            `json:"algorithm"`
 		Files     map[string]string `json:"files"`
@@ -194,7 +201,28 @@ func InstalledMMInfo(installDir string) (map[string]any, error) {
 		"uiHeight":     mmUIHeight(mf),
 		"ai":           mmIsAI(mf),
 		"dir":          filepath.ToSlash(installDir),
+		/* libPath：原生库绝对路径。装载入口（前端 / AI 工具）需要它——
+		   引擎按路径装载，不替调用方推导目录。库缺失时为空串。 */
+		"libPath": mmLibPath(installDir, mf),
 	}, nil
+}
+
+// mmLibPath 把 manifest 的 dsp.entry（相对 bin/）换算成安装目录下的绝对路径。
+// 返回空串表示该包没有声明或文件不存在（调用方据此给可解释错误）。
+func mmLibPath(installDir string, mf mmManifest) string {
+	if mf.DSP == nil {
+		return ""
+	}
+	clean := strings.ReplaceAll(strings.TrimSpace(mf.DSP.Entry), "\\", "/")
+	clean = strings.TrimPrefix(clean, "/")
+	if clean == "" || strings.Contains(clean, "..") {
+		return ""
+	}
+	full := filepath.Join(installDir, "bin", filepath.FromSlash(clean))
+	if st, err := os.Stat(full); err != nil || st.IsDir() {
+		return ""
+	}
+	return full
 }
 
 // ListInstalledMM 全部已安装 MM 插件摘要

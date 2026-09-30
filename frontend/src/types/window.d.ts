@@ -429,6 +429,18 @@ interface ArrMaterialApi {
 
 declare const ArrMaterial: ArrMaterialApi;
 
+/** 通用插件参数面板 + 插件状态随工程保存（arrangement/plugin_panel.ts，P5） */
+interface PluginPanelApi {
+  /** 打开面板：target = { track, slot, master?, ref?, name? }；slot<0 表示该轨乐器 */
+  open(ctrl: unknown, target: unknown): void;
+  close(): void;
+  /** 工程载入后把记录的插件装回引擎并恢复状态（浏览器模式静默跳过） */
+  restoreAll(ctrl: unknown): void;
+  isOpen(): boolean;
+}
+
+declare const PluginPanel: PluginPanelApi;
+
 /** 混音台 v1（arrangement/mixer.ts，P4） */
 interface ArrMixerApi {
   MAX_SLOTS: number;
@@ -485,6 +497,7 @@ interface Window {
   ArrRack: ArrRackApi;
   ArrMaterial: ArrMaterialApi;
   ArrMixer: ArrMixerApi;
+  PluginPanel: PluginPanelApi;
   EngineBridge: EngineBridgeApi;
   MidiInputRouter: MidiInputRouterApi;
   PianoRollTools: PianoRollToolsApi;

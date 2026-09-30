@@ -253,10 +253,22 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 - 主进程对每个请求应设超时（实测默认：Request 30s、applySetup 60s（此前 15s 会把 ASIO Link Pro 等 10–20s+ 的慢首开误判为卡死）、loadSoundFont 30s、setTrackVoice/setTrackPreset 10s、握手 20s；ping 走 TryPing 5s；click 走 Request 默认 30s）。**bounce 例外**：按渲染时长动态估算（音频时长×2 + 60s，下限 30s、上限 20min——固定 30s 会把长工程导出误判为会话失效并杀掉渲染中的引擎，v3.0.3 修复）；
 - 引擎对畸形 JSON 不回复（请求方靠超时兜底），后续版本可在 Response 中引入显式 parse error；
 - 心跳由**主进程侧**负责：TryPing 每 2s 一次（会话事务忙时跳过），连续失败 15 次（最坏 30–105s）判会话失效重建——阈值刻意宽松以容忍 ASIO 慢驱动首开（10–20s）；真崩溃由进程退出通道秒级检测，不走心跳；
-- 本协议不含鉴权。本地信任边界收紧（客户端 PID 校验/DACL）列入 M5 前加固项。
+- **启动令牌鉴权（引擎 0.1.2）**：管道不再是"同用户即可用"。主程序每次启动生成
+  32 字节随机令牌（十六进制），经环境变量 `MelodyMate_ENGINE_TOKEN` 注入引擎进程；
+  `hello` 的 params 必须带 `token`，引擎侧**常量时间**比对。校验通过前，除 `hello`
+  外的**全部方法**一律拒绝（返回 `ok=false`），因此"不发 hello 直接调 plugin.load /
+  plugin.scan / shutdown"不再可行。
+  - 未设置该环境变量（手工直跑引擎调试）时鉴权整体关闭，行为与旧版一致；
+  - 令牌只在内存与子进程环境中流转，不写日志、不落盘；握手失败不计入崩溃熔断。
 
 ## 修订记录
 
+- **2026-09-30（引擎 0.1.1 → 0.1.2）**：① 管道加启动令牌鉴权（`hello` 带 `token`，
+  常量时间比对，校验通过前拒绝全部业务方法；§6 有详情）；② 新增 `plugin.getState` /
+  `plugin.setState`（§4.14 表尾）：插件二进制状态可随工程保存与恢复，VST3 与 MM 共用
+  同一对方法，MM 的宿主记账参数值一起打包。主程序侧对应 `<工程>/plugins/*.state`
+  （`internal/plugins`）与 `/api/engine/plugins/state/{save,load,list}`；引擎崩溃重启后
+  由守护器重放 FX 链并推回状态（`restorePluginStates`）。
 - **2026-09-27（P5：VST3 宿主，协议 v2 → v3）**：新增 plugin.* 一族（§4.14：扫描/清单/装载/卸载/参数/编辑器/状态），能力表加 st3。引擎新增 Source/Plugins/（PluginHost / Vst3FxProcessor / PluginWindow），CMake 启用 JUCE_PLUGINHOST_VST3。**同时修掉一个长期存在的编码缺陷**：JUCE 的 String(const char*) 按 ASCII 解释，引擎里所有含中文的字面量经 IPC 发出时都是乱码（实测 plugin.load 错误信息）；新增 Source/Text.h 的 u8() 并修正 40 处字面量。
 
 - **2026-09-27（P4：FX 链与主总线，协议 v1 → v2）**：新增 `fx.setChain` / `fx.getChain` / `mixer.setMaster` / `mixer.get`（§4.13）；`getLevels` result 增加 `master` 字段（§4.7c）。引擎侧新增 `MixerGraph` 插入链（每轨 + 主总线各 8 槽）与延迟释放队列（`FxChain.h`）；主进程新增会话重放 `lastChains` / `lastMasterChain` / `lastMasterGain`（顺序：`loadSoundFont → setTrackPreset → setTrackVoice → fx.setChain → mixer.setMaster`）。插件实例装载仍属 P5/P6：`plugin` 非空时引擎返回可解释错误，槽参数（bypass/wet）可正常下发。握手版本号严格比对，不匹配即拒绝。
@@ -291,6 +303,8 @@ applySetup 的 driver 参数须与之精确匹配；此方法在 JUCE 消息线�
 | `plugin.setParam` | 目标 + `{"index","value":0..1}` | 更新后的参数表 |
 | `plugin.openEditor` | 目标 | `"editor opened"`；消息线程创建原生编辑器窗口（`PluginWindow`，无编辑器的插件给提示面板） |
 | `plugin.closeEditor` | `{}` | `"editor closed"` |
+| `plugin.getState` | 目标（`{track}` 乐器 / `{track,slot}` 或 `{master,slot}` 槽位） | `{"encoding":"base64","data":"<base64>"}`——插件二进制状态（VST3 走 `getStateInformation`，MM 走 ABI `getState`，并把宿主记账的参数当前值一并打包）。空状态或插件不支持时给可解释错误。消息线程执行 |
+| `plugin.setState` | 目标 + `{"data":"<base64>"}` | `"state restored"`。VST3 走 `setStateInformation`；MM 先按打包的参数值写回宿主记账再交插件 `setState`。格式不符时拒绝而不是硬塞 |
 
 **验收（`tools/engine_smoke -vst3dir <目录>`，本机实测）**：扫描真实插件（`8-Bit Crusher.vst3`、
 `Krush.vst3`、`Serum.vst3` 三件套）→ 清单 3 个（乐器 1 / 效果 2）→ 效果器入 FX 槽 →

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"melodymate/internal/plugins"
 )
 
 // engineTokenEnv 引擎 IPC 启动令牌的环境变量名。
@@ -81,13 +84,17 @@ type Supervisor struct {
 	lastChains      map[int][]map[string]any
 	lastMasterChain []map[string]any
 	lastMasterGain  float64
-	hasSoundfont    bool // 当前会话是否已加载任何音色（/api/audio/status 透出）
-	exePath         string
-	token           string    // IPC 启动令牌：随进程生成，注入引擎环境并用于握手
-	lastReadyAt     time.Time // 最近一次进入 StateReady 的时间（秒崩判定用）
-	stopOnce        sync.Once
-	doneCh          chan struct{} // 关闭表示主循环退出
-	wakeCh          chan struct{} // StateDisabled 驻留时由 ApplySettings 启用引擎唤醒
+	/* P5：插件二进制状态缓存（工程级）。引擎崩溃重启会把 FX 链重放回来，
+	   但插件自己的参数/状态回到默认值——重放完成后用这份缓存把状态推回去，
+	   用户才不会感知到"崩溃后音色变了"。默认取进程级单例（与 HTTP 层同一份）。 */
+	pluginStates *plugins.Cache
+	hasSoundfont bool // 当前会话是否已加载任何音色（/api/audio/status 透出）
+	exePath      string
+	token        string    // IPC 启动令牌：随进程生成，注入引擎环境并用于握手
+	lastReadyAt  time.Time // 最近一次进入 StateReady 的时间（秒崩判定用）
+	stopOnce     sync.Once
+	doneCh       chan struct{} // 关闭表示主循环退出
+	wakeCh       chan struct{} // StateDisabled 驻留时由 ApplySettings 启用引擎唤醒
 }
 
 // NewSupervisor 创建守护器（不启动；调用 Start）
@@ -105,7 +112,9 @@ func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 	if cfg.PingInterval <= 0 {
 		cfg.PingInterval = 2 * time.Second
 	}
-	sup := &Supervisor{cfg: cfg, audio: audio, lastGood: audio, lastSoundFonts: make(map[int]string), wakeCh: make(chan struct{}, 1)}
+	sup := &Supervisor{cfg: cfg, audio: audio, lastGood: audio, lastSoundFonts: make(map[int]string), wakeCh: make(chan struct{}, 1),
+		// 插件状态缓存与 HTTP 层共用进程级单例：保存/恢复与崩溃重放必须看到同一份
+		pluginStates: plugins.Default()}
 	sup.exePath = ResolveEnginePath(audio.EnginePath)
 	sup.startedEnabled = audio.EngineEnabled
 	/* 鉴权令牌：优先取环境变量（tools/engine_smoke 等外部驱动方需要
@@ -994,6 +1003,84 @@ func (s *Supervisor) ClosePluginEditor() error {
 	return resp.Err()
 }
 
+// SetPluginStateCache 注入插件状态缓存（装配层创建；nil 表示该能力降级）。
+func (s *Supervisor) SetPluginStateCache(c *plugins.Cache) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pluginStates = c
+}
+
+// PluginGetState 导出插件二进制状态（base64 文本）。
+// track=-1 表示主总线 FX 槽；slot=-1 表示该轨的乐器。
+func (s *Supervisor) PluginGetState(track, slot int) (string, error) {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return "", err
+	}
+	resp, err := cli.Request("plugin.getState", pluginTarget(track, slot), 60*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if err := resp.Err(); err != nil {
+		return "", err
+	}
+	var out struct {
+		Encoding string `json:"encoding"`
+		Data     string `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		return "", err
+	}
+	if out.Data == "" {
+		return "", fmt.Errorf("引擎未返回插件状态")
+	}
+	return out.Data, nil
+}
+
+// PluginSetState 把 base64 状态写回插件。
+func (s *Supervisor) PluginSetState(track, slot int, data string) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	params := pluginTarget(track, slot)
+	params["data"] = data
+	resp, err := cli.Request("plugin.setState", params, 60*time.Second)
+	if err != nil {
+		return err
+	}
+	return resp.Err()
+}
+
+// restorePluginStates 引擎重启重放完成后，把当前工程的插件状态推回去。
+// 尽力而为：单个插件恢复失败只记日志（重放时插件可能因崩溃被跳过），
+// 绝不让它把会话判成失败——否则一次坏状态会引发无限重启循环。
+func (s *Supervisor) restorePluginStates(cli *Client) {
+	s.mu.RLock()
+	cache := s.pluginStates
+	s.mu.RUnlock()
+	if cache == nil {
+		return
+	}
+	states := cache.ActiveStates()
+	if len(states) == 0 {
+		return
+	}
+	restored, failed := 0, 0
+	for _, st := range states {
+		params := pluginTarget(st.Target.Track, st.Target.Slot)
+		params["data"] = base64.StdEncoding.EncodeToString(st.Payload)
+		if _, err := cli.Request("plugin.setState", params, 60*time.Second); err != nil {
+			failed++
+			slog.Debug("[engine] 恢复插件状态失败（槽位可能为空）",
+				"track", st.Target.Track, "slot", st.Target.Slot, "err", err)
+			continue
+		}
+		restored++
+	}
+	slog.Info("[engine] 引擎重启后恢复插件状态", "restored", restored, "failed", failed)
+}
+
 // PluginState 宿主状态（哪些轨有乐器、哪些槽有效果器）
 func (s *Supervisor) PluginState() (map[string]any, error) {
 	cli, err := s.Ready(5 * time.Second)
@@ -1606,6 +1693,12 @@ func (s *Supervisor) runOnce() string {
 				slog.Warn("[engine] 重放主总线增益失败", "err", err)
 			}
 		}
+	}
+
+	/* P5：FX 链重放只把插件装回来，插件自身的参数/状态是默认值。
+	   这里把当前工程的插件状态推回去（尽力而为，失败不影响会话）。 */
+	if failReason == "" {
+		s.restorePluginStates(cli)
 	}
 
 	// 心跳 + 进程退出 + IPC 失联三通道监控

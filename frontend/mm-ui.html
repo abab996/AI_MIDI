@@ -190,11 +190,15 @@
       nm.className = "nm"; nm.textContent = p.name; nm.title = id;
       var range = document.createElement("input");
       range.type = "range";
-      // 归一化 0~1（宿主按 min/max 换算；插件 UI 也走同一约定）
-      var span = (p.max - p.min) || 1;
-      var norm = (p.value - p.min) / span;
+      /* 引擎返回的 p.value **已经是 0~1 归一化值**（宿主按参数曲线算好，
+         见 MmInstance::paramsToVar / PluginHost::paramsToVar）；写入方向
+         setParam(index, normalized) 也是归一化值。所以这里直接当滑杆位置，
+         不能再用 (value-min)/(max-min) 二次换算——那样对量程不是 0~1 的
+         参数（如 20~20000 的截止频率）滑杆位置会与真实值不符。 */
+      var norm = Math.max(0, Math.min(1, Number(p.value) || 0));
       range.min = "0"; range.max = "1"; range.step = "0.001"; range.value = String(norm);
       range.setAttribute("aria-label", p.name);
+      range.setAttribute("aria-valuenow", String(norm));
       var vl = document.createElement("span");
       vl.className = "vl"; vl.textContent = p.value.toFixed(2);
       range.addEventListener("input", function () {

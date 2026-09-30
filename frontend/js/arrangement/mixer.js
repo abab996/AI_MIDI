@@ -531,6 +531,28 @@
       return;
     }
     if (act === "rename" && idx >= 0) renameTrack(ctrl, idx, t);
+    if (act === "fx" && idx >= 0) {
+      /* 双击已占用的 FX 槽 = 打开参数面板（§4.5/§4.6：空槽双击没有面板可开） */
+      var slot = Number(t.dataset ? t.dataset.slot : -1);
+      var ch = idx === MASTER_TRACK ? masterOf(ctrl) : channelOf(ctrl, ctrl.tracks[idx].id);
+      var entry = (ch.fx || [])[slot];
+      if (entry && entry.plugin) openParamPanel(ctrl, idx, slot);
+    }
+  }
+
+  /** openParamPanel 通用参数面板（§4.6）：轨道乐器与 FX 槽共用同一份实现 */
+  function openParamPanel(ctrl                   , idx        , slot        ) {
+    if (!window.PluginPanel) return;
+    var ch = idx === MASTER_TRACK ? masterOf(ctrl) : channelOf(ctrl, ctrl.tracks[idx].id);
+    var entry = ((ch.fx || [])[slot]) || null;
+    var ref = (entry && entry.plugin) ? String(entry.plugin) : "";
+    window.PluginPanel.open(ctrl, {
+      track: idx === MASTER_TRACK ? -1 : idx,
+      slot: slot,
+      master: idx === MASTER_TRACK,
+      ref: ref,
+      name: ref ? shortPluginName(ref) : "插件"
+    });
   }
 
   function onPanelWheel(e     ) {
@@ -765,6 +787,12 @@
       label: isMm ? "🎛 插件界面（MM 承载窗）…" : "🎛 插件界面（原生编辑器）…",
       disabled: !entry.plugin,
       action: function () { openPluginEditor(ctrl, idx, slot, isMm, entry.plugin || ""); }
+    });
+    items.push({
+      /* §4.6：通用参数面板（VST3 与 MM 共用；空槽置灰） */
+      label: "🎛 参数面板…",
+      disabled: !entry.plugin,
+      action: function () { openParamPanel(ctrl, idx, slot); }
     });
     items.push({
       label: "🗑 清空槽位",

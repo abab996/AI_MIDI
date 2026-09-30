@@ -307,6 +307,9 @@
         }
         self.syncTransportUI();
         if (self.isOpen) self.renderAll();
+        /* P5 §4：把工程里记录的插件装回引擎并恢复状态（FX 槽 + 插件乐器）。
+           浏览器模式没有原生引擎，restoreAll 内部逐个失败也不抛（静默跳过）。 */
+        if (window.PluginPanel) window.PluginPanel.restoreAll(self);
       })
       .catch(function (e) {
         /* 读取失败不再静默回退空白（用户会以为编排数据丢了） */
@@ -2761,6 +2764,22 @@
     }, 0);
   };
 
+  /** rackItemOfTrack 轨道音源引用的机架条目（没有则 null） */
+  function rackItemOfTrack(ctrl: any, track: any): any {
+    if (!track || !track.source || !track.source.itemId) return null;
+    var items = (ctrl.rack && ctrl.rack.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && items[i].id === track.source.itemId) return items[i];
+    }
+    return null;
+  }
+
+  /** trackIsPluginSource 该轨音源是否为插件（VST3 / MM）——决定参数面板入口是否可用 */
+  function trackIsPluginSource(ctrl: any, track: any): boolean {
+    var item = rackItemOfTrack(ctrl, track);
+    return !!item && (item.kind === "vst3" || item.kind === "mm");
+  }
+
   /** 轨道头右键菜单 */
   Arrange.prototype.openTrackMenu = function (this: ArrangeController, e: any, idx: any) {
     var self = this;
@@ -2770,6 +2789,22 @@
       { label: "✎ 重命名 (F2)", action: function () { self.openRenameModal(idx); } },
       { label: "🎨 更换颜色 ▸", action: function () { self.openColorMenu(e.clientX, e.clientY, idx); } },
       { label: "🎹 加载音源 ▸", action: function () { self.openSourceMenu(track, e.clientX, e.clientY); } },
+      {
+        /* P5 §4.6：轨道乐器（VST3 / MM）的参数面板入口。
+           非插件音色（合成波/SF2/采样）没有参数面板，菜单项置灰并说明原因。 */
+        label: "🎛 插件参数面板…",
+        disabled: !trackIsPluginSource(self, track),
+        action: function () {
+          var item = rackItemOfTrack(self, track);
+          if (window.PluginPanel) {
+            window.PluginPanel.open(self, {
+              track: idx, slot: -1, master: false,
+              ref: (item && (item.path || item.sourceId)) || "",
+              name: (item && item.name) || "插件乐器"
+            });
+          }
+        }
+      },
       "-",
       { label: "⧉ 复制轨道", action: function () { self.duplicateTrack(idx); } },
       { label: "↑ 上移轨道", disabled: idx === 0, action: function () { self.moveTrack(idx, -1); } },

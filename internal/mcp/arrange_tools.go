@@ -16,9 +16,11 @@ package mcp
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"melodymate/internal/config"
 	"melodymate/internal/engine"
 	"melodymate/internal/llm"
 	"melodymate/internal/project"
@@ -288,13 +290,21 @@ var arrangeTools = []llm.ToolDefinition{
 		Type: "function",
 		Function: llm.FunctionSchema{
 			Name:        "load_plugin",
-			Description: "把 VST3 插件装载到轨道（乐器）或 FX 槽（效果器）。track 传 \"master\" 表示主总线 FX 槽。装载乐器会替换该轨原有的 SF2/合成器音色。",
+			Description: "把插件装载到轨道（乐器）或 FX 槽（效果器）。track 传 \"master\" 表示主总线 FX 槽。装载乐器会替换该轨原有的 SF2/合成器音色。VST3 用 id（list_plugins 返回）；MM 插件要额外给 format=\"mm\" 与 path（mm_list 返回的 libPath，因为引擎按路径装载原生库）。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"id": map[string]any{
 						"type":        "string",
-						"description": "插件 id（list_plugins 返回）",
+						"description": "插件 id（VST3 用 list_plugins；MM 用 mm_list 的 id）",
+					},
+					"format": map[string]any{
+						"type":        "string",
+						"description": "插件格式：省略 = VST3；\"mm\" = MM 插件（需同时给 path）",
+					},
+					"path": map[string]any{
+						"type":        "string",
+						"description": "MM 插件的原生库路径（mm_list 的 libPath）；VST3 不需要",
 					},
 					"track": map[string]any{
 						"type":        "string",
@@ -309,6 +319,66 @@ var arrangeTools = []llm.ToolDefinition{
 			},
 		},
 	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "plugin_list_params",
+			Description: "列出某个插件实例的参数表（VST3 与 MM 共用）。目标用 track/slot 指定：给 slot = FX 槽上的效果器；不给 slot = 该轨的乐器；track 传 \"master\" 表示主总线 FX 槽。参数 value 为 0~1 归一化值。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"track": map[string]any{
+						"type":        "string",
+						"description": "轨道序号（0 起）/ id / 名称；或 \"master\"（主总线）",
+					},
+					"slot": map[string]any{
+						"type":        "integer",
+						"description": "FX 槽序号 0~7；省略 = 该轨的乐器",
+					},
+				},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "plugin_set_param",
+			Description: "设置插件参数（VST3 与 MM 共用）。param 可传参数名或序号；value 为 0~1 归一化值（0=最小、1=最大，与界面上滑杆一致）。改完返回该参数的新值与文本。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"track": map[string]any{
+						"type":        "string",
+						"description": "轨道序号（0 起）/ id / 名称；或 \"master\"（主总线）",
+					},
+					"slot": map[string]any{
+						"type":        "integer",
+						"description": "FX 槽序号 0~7；省略 = 该轨的乐器",
+					},
+					"param": map[string]any{
+						"type":        "string",
+						"description": "参数名（如 \"Cutoff\"）或参数序号（0 起，先 plugin_list_params 查）",
+					},
+					"value": map[string]any{
+						"type":        "number",
+						"description": "0~1 归一化目标值",
+					},
+				},
+				"required": []string{"param", "value"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "mm_list",
+			Description: "列出本机已安装的 MM 插件（Library/plugins 下，含版本、能力清单、作者是否为 AI、以及装载用的 libPath）。装载用 load_plugin(id=<插件 id>, format=\"mm\", path=<libPath>)：给 slot 就是 FX 槽效果器，不给 slot 就是该轨乐器。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+	},
 }
 
 // isArrangeTool 判断是否为编曲/机架/混音类工具
@@ -317,7 +387,8 @@ func isArrangeTool(name string) bool {
 	case "list_sound_sources", "list_rack", "add_rack_item", "remove_rack_item",
 		"arrange_track", "set_track_instrument", "set_track_mix",
 		"mixer_get", "set_fx_slot", "set_master_gain",
-		"list_plugins", "load_plugin":
+		"list_plugins", "load_plugin",
+		"plugin_list_params", "plugin_set_param", "mm_list":
 		return true
 	}
 	return false
@@ -344,6 +415,15 @@ func executeArrangeTool(env ToolEnv, name string, args map[string]any) (string, 
 	}
 	if name == "load_plugin" {
 		return loadPluginText(env, args), nil
+	}
+	if name == "plugin_list_params" {
+		return pluginListParamsText(env, args), nil
+	}
+	if name == "plugin_set_param" {
+		return pluginSetParamText(env, args), nil
+	}
+	if name == "mm_list" {
+		return mmListText(), nil
 	}
 	if name == "arrange_track" && strings.ToLower(strings.TrimSpace(stringArg(args, "op"))) == "list" {
 		return listTracksText(env.ProjectID), nil
@@ -842,7 +922,20 @@ func loadPluginText(env ToolEnv, args map[string]any) string {
 	if isMaster {
 		engineTrack = -1
 	}
-	if err := sup.LoadPlugin(engineTrack, slot, id); err != nil {
+	/* P6：MM 插件是 .mm 包解包后的原生库：引擎按**路径**装载（format=mm）。
+	   id 仍是插件 id（com.x.y），写进工程用于识别与打开承载窗。 */
+	if strings.EqualFold(strings.TrimSpace(stringArg(args, "format")), "mm") {
+		libPath := strings.TrimSpace(stringArg(args, "path"))
+		if libPath == "" {
+			return "错误：装载 MM 插件需要 path（用 mm_list 取 libPath）"
+		}
+		if verr := engine.ValidateMmPluginPath(filepath.Join(config.LibraryDir, "plugins"), libPath); verr != nil {
+			return "错误：" + verr.Error()
+		}
+		if _, err := sup.LoadMmPlugin(engineTrack, slot, libPath); err != nil {
+			return "错误：" + err.Error()
+		}
+	} else if err := sup.LoadPlugin(engineTrack, slot, id); err != nil {
 		return "错误：" + err.Error()
 	}
 
@@ -927,6 +1020,247 @@ func resolveTrackIndex(projectID, ref string) (int, error) {
 		return 0, fmt.Errorf("轨道序号超出范围（0 ~ %d）", len(tracks)-1)
 	}
 	return 0, fmt.Errorf("找不到轨道 %q", ref)
+}
+
+// pluginRefFromArgs 解析工具参数里的插件目标 {track|master, slot} → 引擎 (track, slot)。
+// track = -1 表示主总线；slot = -1 表示该轨乐器。
+func pluginRefFromArgs(env ToolEnv, args map[string]any) (int, int, error) {
+	slot := -1
+	if v, ok := args["slot"]; ok && v != nil {
+		if f, isNum := v.(float64); isNum {
+			slot = int(f)
+		}
+	}
+	if slot >= 8 || slot < -1 {
+		return 0, 0, fmt.Errorf("槽位序号超出范围（0 ~ 7）")
+	}
+	trackText := strings.ToLower(strings.TrimSpace(stringArg(args, "track")))
+	if trackText == "master" || trackText == "主总线" {
+		if slot < 0 {
+			return 0, 0, fmt.Errorf("主总线是 FX 链，必须给 slot（0~7）")
+		}
+		return -1, slot, nil
+	}
+	track, err := requireTrack(args)
+	if err != nil {
+		return 0, 0, err
+	}
+	idx, err := resolveTrackIndex(env.ProjectID, track)
+	if err != nil {
+		return 0, 0, err
+	}
+	return idx, slot, nil
+}
+
+// pluginWhereText 目标的中文描述（回执里用，避免 AI 猜"改的是哪个"）
+func pluginWhereText(track, slot int) string {
+	where := "轨道 #" + fmt.Sprint(track+1)
+	if track < 0 {
+		where = "主总线"
+	}
+	if slot >= 0 {
+		return fmt.Sprintf("%s FX 槽 %d", where, slot)
+	}
+	return where + "（乐器）"
+}
+
+// pluginParamsText 列出插件参数表（VST3 与 MM 共用一条路径）
+func pluginListParamsText(env ToolEnv, args map[string]any) string {
+	sup := engine.Get()
+	if sup == nil {
+		return "引擎未启动：插件参数需要在桌面版（原生引擎）下读取。"
+	}
+	track, slot, err := pluginRefFromArgs(env, args)
+	if err != nil {
+		return "错误：" + err.Error()
+	}
+	out, err := sup.PluginParams(track, slot)
+	if err != nil {
+		return "错误：" + err.Error()
+	}
+	params, _ := out["params"].([]any)
+	if len(params) == 0 {
+		return pluginWhereText(track, slot) + " 上还没有插件（先用 load_plugin 装载）。"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s 的插件参数（value 为 0~1 归一化值）：\n", pluginWhereText(track, slot))
+	for _, raw := range params {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := mapString(m, "name")
+		id := mapString(m, "id")
+		label := name
+		if label == "" {
+			label = id
+		}
+		line := fmt.Sprintf("  [%v] %s = %.4f", m["index"], label, numOf(m, "value"))
+		if t := mapString(m, "text"); t != "" {
+			line += "（" + t + "）"
+		}
+		if id != "" && id != label {
+			line += " id=" + id
+		}
+		// 非归一化参数（MM 给的是实际范围）把范围也带上，避免 AI 误判量纲
+		if mn, ok := m["min"].(float64); ok {
+			if mx, ok2 := m["max"].(float64); ok2 {
+				line += fmt.Sprintf(" 范围 %.3f~%.3f", mn, mx)
+			}
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("改值：plugin_set_param(param=\"名称或序号\", value=0~1)")
+	return b.String()
+}
+
+// pluginSetParamText 写插件参数：param 支持名称（精确/忽略大小写）或序号
+func pluginSetParamText(env ToolEnv, args map[string]any) string {
+	sup := engine.Get()
+	if sup == nil {
+		return "引擎未启动：插件参数需要在桌面版（原生引擎）下设置。"
+	}
+	ref := strings.TrimSpace(stringArg(args, "param"))
+	if ref == "" {
+		return "错误：缺少 param（参数名或序号，先 plugin_list_params 查）"
+	}
+	raw, ok := args["value"]
+	if !ok || raw == nil {
+		return "错误：缺少 value（0~1 归一化值）"
+	}
+	value, ok := raw.(float64)
+	if !ok {
+		return "错误：value 必须是数字（0~1）"
+	}
+	if value < 0 {
+		value = 0
+	}
+	if value > 1 {
+		value = 1
+	}
+
+	track, slot, err := pluginRefFromArgs(env, args)
+	if err != nil {
+		return "错误：" + err.Error()
+	}
+	before, err := sup.PluginParams(track, slot)
+	if err != nil {
+		return "错误：" + err.Error()
+	}
+	params, _ := before["params"].([]any)
+	if len(params) == 0 {
+		return pluginWhereText(track, slot) + " 上还没有插件（先用 load_plugin 装载）。"
+	}
+
+	/* 先按名称匹配（忽略大小写），再按序号：AI 通常只知道参数名 */
+	index := -1
+	want := strings.ToLower(ref)
+	for _, p := range params {
+		m, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.ToLower(mapString(m, "name")) == want || strings.ToLower(mapString(m, "id")) == want {
+			if f, isNum := m["index"].(float64); isNum {
+				index = int(f)
+			}
+			break
+		}
+	}
+	if index < 0 {
+		if n, aerr := strconv.Atoi(ref); aerr == nil {
+			if n >= 0 && n < len(params) {
+				index = n
+			} else {
+				return fmt.Sprintf("错误：参数序号超出范围（0 ~ %d）", len(params)-1)
+			}
+		}
+	}
+	if index < 0 {
+		return fmt.Sprintf("错误：找不到参数 %q（先 plugin_list_params 取名称/序号）", ref)
+	}
+
+	if err := sup.SetPluginParam(track, slot, index, value); err != nil {
+		return "错误：" + err.Error()
+	}
+	/* 回读引擎的权威值：界面与插件可能对步进做量化，回读才知道"实际生效值" */
+	after, err := sup.PluginParams(track, slot)
+	if err != nil {
+		return fmt.Sprintf("已写入 %s 的参数 %q（无法回读校验：%v）", pluginWhereText(track, slot), ref, err)
+	}
+	for _, p := range arrOf(after["params"]) {
+		m, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		if f, isNum := m["index"].(float64); isNum && int(f) == index {
+			line := fmt.Sprintf("已把 %s 的参数 %q 设为 %.4f（回读 %.4f）",
+				pluginWhereText(track, slot), mapString(m, "name"), value, numOf(m, "value"))
+			if t := mapString(m, "text"); t != "" {
+				line += "，显示为 " + t
+			}
+			return line
+		}
+	}
+	return fmt.Sprintf("已把 %s 的参数 %q 设为 %.4f", pluginWhereText(track, slot), ref, value)
+}
+
+// mmListText 列出已安装的 MM 插件（注册表视角：含能力与 AI 标记）
+func mmListText() string {
+	list := soundlib.ListInstalledMM()
+	if len(list) == 0 {
+		return "本机还没有安装 MM 插件（Library/plugins 为空）。可以先用 mm_create_plugin → mm_build_plugin → mm_install_plugin 做一个。"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "已安装 %d 个 MM 插件：\n", len(list))
+	for _, item := range list {
+		id := mapString(item, "id")
+		line := "  · " + id
+		if name := mapString(item, "name"); name != "" {
+			line += "（" + name + "）"
+		}
+		if v := mapString(item, "version"); v != "" {
+			line += " v" + v
+		}
+		if caps, ok := item["capabilities"].([]any); ok && len(caps) > 0 {
+			parts := make([]string, 0, len(caps))
+			for _, c := range caps {
+				parts = append(parts, fmt.Sprint(c))
+			}
+			line += " 能力=" + strings.Join(parts, ",")
+		}
+		if origin := mapString(item, "origin"); origin == "ai" {
+			line += " ✨AI 生成"
+		}
+		if cat := mapString(item, "category"); cat != "" {
+			line += " 类别=" + cat
+		}
+		if lib := mapString(item, "libPath"); lib != "" {
+			line += "\n      libPath=" + lib
+		} else {
+			line += "\n      （未找到原生库：包可能不完整，需重新安装）"
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("装载：效果器 load_plugin(id=<插件 id>, format=\"mm\", path=<libPath>, slot=0~7)；")
+	b.WriteString("乐器 load_plugin(id=<插件 id>, format=\"mm\", path=<libPath>) 不带 slot。")
+	return b.String()
+}
+
+// arrOf 把 any 安全转成 []any（缺字段/类型不符时给空切片）
+func arrOf(v any) []any {
+	if list, ok := v.([]any); ok {
+		return list
+	}
+	return nil
+}
+
+// numOf 安全读数值字段（缺字段或类型不符给 0）
+func numOf(m map[string]any, key string) float64 {
+	if f, ok := m[key].(float64); ok {
+		return f
+	}
+	return 0
 }
 
 // afterText 写操作后的回执：带上最新状态，AI 不必再查一次

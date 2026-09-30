@@ -8707,3 +8707,102 @@ html.has-titlebar .top-nav {
 .snd-caps-tip, .snd-caps-none { color: var(--color-ink-dim); font-size: 11.5px; }
 .snd-caps-item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
 .snd-caps-item input { accent-color: var(--color-primary); }
+
+/* ═══════════ 通用插件参数面板（计划 §4.6，P5 交付）═══════════
+   轨道乐器与 FX 槽共用一份实现（frontend/src/arrangement/plugin_panel.ts）。
+   口径：只用既有令牌（不新增色板）、动画只用 transform/opacity、
+   reduced-motion 下降级为直接显示。 */
+.plg-win {
+  position: fixed; z-index: 60; width: 560px; max-width: 92vw;
+  max-height: 74vh; display: flex; flex-direction: column;
+  background: var(--color-bg-card); border: 1px solid var(--color-border);
+  border-radius: 10px; box-shadow: 0 18px 48px var(--color-shadow);
+  transform-origin: top center;
+  animation: plg-in 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.plg-win.plg-out { animation: plg-out 0.18s ease-in forwards; }
+@keyframes plg-in {
+  from { transform: scaleY(0.90); opacity: 0; }
+  to   { transform: scaleY(1); opacity: 1; }
+}
+@keyframes plg-out {
+  from { transform: scaleY(1); opacity: 1; }
+  to   { transform: scaleY(0.94); opacity: 0; }
+}
+.plg-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-alt); cursor: grab; border-radius: 10px 10px 0 0;
+}
+.plg-head:active { cursor: grabbing; }
+.plg-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--color-primary); box-shadow: 0 0 6px var(--color-glow);
+  flex: 0 0 auto;
+}
+.plg-title {
+  font-weight: 600; color: var(--color-ink); font-size: 12.5px;
+  max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plg-badge-ai {
+  margin-left: 6px; padding: 1px 6px; border-radius: 9px;
+  border: 1px solid var(--color-accent); color: var(--color-accent);
+  font-size: 10px; font-family: "Cascadia Mono", Consolas, monospace;
+}
+.plg-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.plg-btn {
+  font: inherit; font-size: 11.5px; padding: 3px 8px; cursor: pointer;
+  color: var(--color-ink); background: var(--color-bg-soft);
+  border: 1px solid var(--color-border); border-radius: 6px;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.plg-btn:hover { background: var(--color-primary-soft); }
+.plg-btn:active { transform: translateY(1px); }
+.plg-btn:focus-visible { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 2px var(--color-primary-soft); }
+.plg-close { color: var(--color-ink-dim); }
+.plg-close:hover { color: var(--color-danger); border-color: var(--color-danger); }
+.plg-body { overflow: auto; padding: 6px 10px 10px; flex: 1 1 auto; }
+.plg-foot {
+  padding: 6px 10px; border-top: 1px solid var(--color-border);
+  color: var(--color-ink-faint); font-size: 10.5px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+.plg-group { margin-top: 6px; }
+.plg-group-head {
+  width: 100%; text-align: left; font: inherit; font-size: 11.5px; cursor: pointer;
+  color: var(--color-ink-dim); background: none; border: none; padding: 4px 2px;
+}
+.plg-group-head:hover { color: var(--color-ink); }
+.plg-group-body { display: flex; flex-direction: column; gap: 2px; }
+.plg-param-row {
+  display: grid; grid-template-columns: 132px 1fr 138px;
+  align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px;
+  min-height: 30px;
+}
+.plg-param-row:hover { background: var(--color-bg-alt); }
+.plg-param-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--color-ink); font-size: 12px;
+}
+.plg-param-slider { width: 100%; accent-color: var(--color-primary); cursor: pointer; }
+.plg-param-slider:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--color-primary-soft); border-radius: 4px; }
+.plg-param-value {
+  font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px;
+  color: var(--color-ink-dim); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 外部改动回显：0.6s 脉冲（§4.6「引擎回读值 0.2s 高亮回显」） */
+.plg-param-row.plg-echo { animation: plg-echo 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes plg-echo {
+  0%   { background: var(--color-primary-soft); transform: translateX(0); }
+  40%  { background: var(--color-primary-soft); transform: translateX(2px); }
+  100% { background: transparent; transform: translateX(0); }
+}
+.plg-empty {
+  padding: 18px 6px; text-align: center; color: var(--color-ink-dim); font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .plg-win, .plg-win.plg-out { animation: none; }
+  .plg-btn { transition: none; }
+  .plg-param-row.plg-echo { animation: none; background: var(--color-primary-soft); }
+}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"melodymate/internal/config"
 	"melodymate/internal/engine"
 	"melodymate/internal/mm"
+	"melodymate/internal/plugins"
+	"melodymate/internal/project"
 	"melodymate/internal/soundlib"
 )
 
@@ -363,6 +366,118 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		}
 		writeJSON(w, http.StatusOK, state)
 
+	/* ── P5：插件二进制状态随工程保存 ──
+	   状态不进 arrangement.json（可达数 MB），按槽位落在
+	   <工程目录>/plugins/*.state；引擎重启重放后由守护器推回。 */
+	case "/state/save":
+		if req.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var in pluginStateRequest
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		target, dir, terr := in.target()
+		if terr != nil {
+			writeError(w, http.StatusBadRequest, terr.Error())
+			return
+		}
+		blob, gerr := sup.PluginGetState(target.Track, target.Slot)
+		if gerr != nil {
+			writeError(w, http.StatusBadRequest, "导出插件状态失败："+gerr.Error())
+			return
+		}
+		payload, derr := base64.StdEncoding.DecodeString(blob)
+		if derr != nil {
+			writeError(w, http.StatusInternalServerError, "引擎返回的状态不是合法 base64")
+			return
+		}
+		store := plugins.NewStore(dir)
+		if serr := store.Save(target, in.Ref, in.Format, payload); serr != nil {
+			writeError(w, http.StatusBadRequest, serr.Error())
+			return
+		}
+		/* 同时进内存缓存：引擎崩溃重启后守护器用它推回（详见 plugins 包注释） */
+		plugins.Default().Put(target, in.Ref, in.Format, payload)
+		plugins.Default().SetActiveProject(target.ProjectID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "file": target.FileName(), "bytes": len(payload),
+		})
+
+	case "/state/load":
+		if req.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var in pluginStateRequest
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		target, dir, terr := in.target()
+		if terr != nil {
+			writeError(w, http.StatusBadRequest, terr.Error())
+			return
+		}
+		store := plugins.NewStore(dir)
+		env, lerr := store.Load(target)
+		if lerr != nil {
+			if os.IsNotExist(lerr) {
+				writeError(w, http.StatusNotFound, "该槽位还没有保存过插件状态")
+				return
+			}
+			writeError(w, http.StatusBadRequest, lerr.Error())
+			return
+		}
+		/* 引用不一致时拒绝恢复：把 A 插件的状态灌进 B 插件轻则报错、重则崩溃 */
+		if !env.Matches(in.Ref) {
+			writeError(w, http.StatusConflict,
+				"保存的状态属于另一个插件（"+env.Ref+"），拒绝恢复到当前插件")
+			return
+		}
+		if serr := sup.PluginSetState(target.Track, target.Slot, env.Data); serr != nil {
+			writeError(w, http.StatusBadRequest, "恢复插件状态失败："+serr.Error())
+			return
+		}
+		payload, _ := env.Payload()
+		plugins.Default().Put(target, env.Ref, env.Format, payload)
+		plugins.Default().SetActiveProject(target.ProjectID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "file": target.FileName(), "ref": env.Ref,
+			"savedAt": env.SavedAt, "bytes": env.Bytes,
+		})
+
+	case "/state/list":
+		projectID := strings.TrimSpace(req.URL.Query().Get("project"))
+		if projectID == "" && req.Method == http.MethodPost {
+			var in pluginStateRequest
+			_ = json.NewDecoder(req.Body).Decode(&in)
+			projectID = strings.TrimSpace(in.Project)
+		}
+		if projectID == "" {
+			writeError(w, http.StatusBadRequest, "缺少 project（工程 ID）")
+			return
+		}
+		dir, derr := project.ProjectDir(projectID)
+		if derr != nil {
+			writeError(w, http.StatusBadRequest, "工程不存在或不可读："+derr.Error())
+			return
+		}
+		list, lerr := plugins.NewStore(dir).List()
+		if lerr != nil {
+			writeError(w, http.StatusInternalServerError, lerr.Error())
+			return
+		}
+		files := make([]map[string]any, 0, len(list))
+		for _, t := range list {
+			files = append(files, map[string]any{
+				"file": t.FileName(), "track": t.Track, "slot": t.Slot,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"count": len(files), "states": files})
+
 	case "/load":
 		if req.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -528,6 +643,41 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 	default:
 		writeError(w, http.StatusNotFound, "unknown plugin endpoint")
 	}
+}
+
+// pluginStateRequest 插件状态读写请求体（/state/save、/state/load 共用）。
+type pluginStateRequest struct {
+	Project string `json:"project"` // 工程 ID（状态按工程存放）
+	Track   int    `json:"track"`
+	Slot    *int   `json:"slot"` // nil = 该轨乐器（与 /load 同一约定）
+	Master  bool   `json:"master"`
+	Ref     string `json:"ref"`    // 插件引用（校验"这份状态属于这个插件"）
+	Format  string `json:"format"` // vst3 | mm（诊断用）
+}
+
+// target 解析成 plugins.Target 并返回该工程的数据目录。
+func (in pluginStateRequest) target() (plugins.Target, string, error) {
+	projectID := strings.TrimSpace(in.Project)
+	if projectID == "" {
+		return plugins.Target{}, "", fmt.Errorf("缺少 project（工程 ID）")
+	}
+	track := in.Track
+	if in.Master {
+		track = -1
+	}
+	slot := -1
+	if in.Slot != nil {
+		slot = *in.Slot
+	}
+	target := plugins.Target{ProjectID: projectID, Track: track, Slot: slot}
+	if err := target.Valid(); err != nil {
+		return plugins.Target{}, "", err
+	}
+	dir, err := project.ProjectDir(projectID)
+	if err != nil {
+		return plugins.Target{}, "", fmt.Errorf("工程不存在或不可读：%w", err)
+	}
+	return target, dir, nil
 }
 
 // pluginSlotOf 判断请求里是否**显式**给了 slot（区分"乐器"与"槽 0"）

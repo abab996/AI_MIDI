@@ -91,6 +91,7 @@ func startMMBuild(pluginID, dir, sdk string) (*mmBuildJob, error) {
 		Dir:      dir,
 		Started:  time.Now(),
 	}
+	pruneMMBuildJobs()
 	mmBuildJobs.Store(job.ID, job)
 
 	args := []string{"build", dir}
@@ -198,6 +199,54 @@ func (j *mmBuildJob) report() string {
 }
 
 var mmBuildJobs sync.Map // id -> *mmBuildJob
+
+/*
+作业表清理：长会话里反复编译会只增不减。规则——
+① 超过 TTL 的作业一律删（运行中的超长作业也删，日志已无参考价值）；
+② 其余按**启动时间**保留最近 mmBuildJobKeep 个（最旧的最先删）。
+
+规则刻意做得简单可预期：不做"正在跑的优先保留"那种加权——运行中的作业必然是
+最新的，TTL 已经覆盖了"跑太久"的情形，加权只会让删除顺序难以解释。
+*/
+const (
+	mmBuildJobKeep = 20
+	mmBuildJobTTL  = 30 * time.Minute
+)
+
+func pruneMMBuildJobs() {
+	type entry struct {
+		id      string
+		started time.Time
+	}
+	var all []entry
+	mmBuildJobs.Range(func(k, v any) bool {
+		job, ok := v.(*mmBuildJob)
+		if !ok {
+			mmBuildJobs.Delete(k) // 类型异常的残留
+			return true
+		}
+		if time.Since(job.Started) > mmBuildJobTTL {
+			mmBuildJobs.Delete(k)
+			return true
+		}
+		all = append(all, entry{id: job.ID, started: job.Started})
+		return true
+	})
+	if len(all) <= mmBuildJobKeep {
+		return
+	}
+	/* 从旧到新排序（选择排序，规模很小） */
+	for i := 0; i < len(all); i++ {
+		for j := i + 1; j < len(all); j++ {
+			if all[j].started.Before(all[i].started) {
+				all[i], all[j] = all[j], all[i]
+			}
+		}
+	}
+	for _, e := range all[:len(all)-mmBuildJobKeep] {
+		mmBuildJobs.Delete(e.id)
+	}
+}
 
 func mmBuildJobByID(id string) (*mmBuildJob, bool) {
 	v, ok := mmBuildJobs.Load(strings.TrimSpace(id))

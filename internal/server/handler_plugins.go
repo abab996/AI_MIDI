@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"melodymate/internal/config"
 	"melodymate/internal/engine"
@@ -166,6 +168,87 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			"ok": true, "installed": preview, "added": added, "updated": updated, "failed": failed,
 		})
 
+	case "/uninstall":
+		/* 卸载已安装的 MM 插件（设置页 MM 分组用）。顺序很重要：
+		   ① 先把引擎里占用它的槽位卸掉 —— Windows 上已加载的 DLL 被文件锁占用，
+		      直接删会失败（这正是"卸载点了没反应"的常见成因）；
+		   ② 再删安装目录（mm.Uninstall 只允许删 plugins/ 下的路径）；
+		   ③ 最后清注册表条目，避免留下"幽灵条目"。 */
+		if req.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var in struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		pluginID := strings.TrimSpace(in.ID)
+		if pluginID == "" || strings.ContainsAny(pluginID, "/\\") || strings.Contains(pluginID, "..") {
+			writeError(w, http.StatusBadRequest, "插件 id 非法")
+			return
+		}
+		unloaded := []string{}
+		if state, serr := sup.PluginState(); serr == nil {
+			for _, key := range []string{"effects", "instruments"} {
+				list, _ := state[key].([]any)
+				for _, raw := range list {
+					m, _ := raw.(map[string]any)
+					if m == nil || fmt.Sprint(m["id"]) != pluginID {
+						continue
+					}
+					track, slot := 0, -1
+					if v, ok := m["track"].(float64); ok {
+						track = int(v)
+					}
+					if v, ok := m["slot"].(float64); ok {
+						slot = int(v)
+					}
+					if uerr := sup.UnloadPlugin(track, slot); uerr == nil {
+						unloaded = append(unloaded, fmt.Sprintf("track=%d slot=%d", track, slot))
+					}
+				}
+			}
+		}
+		dest := filepath.Join(config.LibraryDir, "plugins")
+		entries, _ := os.ReadDir(dest)
+		removed := []string{}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if e.Name() != pluginID && !strings.HasPrefix(e.Name(), pluginID+"@") {
+				continue
+			}
+			dir := filepath.Join(dest, e.Name())
+			/* 引擎里卸载是**延迟释放**的（槽位换下来后由释放队列在消息线程销毁，
+			   约 500ms），所以文件锁不会立刻消失 —— 直接删会 Access is denied。
+			   这里对"占用类"错误做短重试（最多约 4 秒），其余错误立刻上报。 */
+			var derr error
+			for attempt := 0; attempt < 14; attempt++ {
+				derr = mm.Uninstall(dir)
+				if derr == nil || !looksLikeFileBusy(derr) {
+					break
+				}
+				time.Sleep(300 * time.Millisecond)
+			}
+			if derr != nil {
+				writeError(w, http.StatusConflict, "删除失败（插件可能仍被引擎占用，请先在混音台卸载并稍后重试）："+derr.Error())
+				return
+			}
+			removed = append(removed, e.Name())
+		}
+		if len(removed) == 0 {
+			writeError(w, http.StatusNotFound, "未找到已安装的插件："+pluginID)
+			return
+		}
+		if rerr := soundlib.UninstallMMSource(pluginID); rerr != nil {
+			writeError(w, http.StatusInternalServerError, "目录已删除，但注册表清理失败："+rerr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": pluginID, "removed": removed, "unloaded": unloaded})
 	case "/sync":
 		/* 把 Library/plugins/ 下已安装的 MM 插件同步进音源注册表：
 		   命令行 mm install 或手工拷贝之后，插件要能在「声音管理」与素材库
@@ -383,4 +466,26 @@ func pluginTargetOf(req *http.Request) (int, int, bool) {
 		slot = n
 	}
 	return track, slot, true
+}
+
+// looksLikeFileBusy 判断"文件被占用"类错误（Windows 上表现为 Access is denied /
+// being used by another process）。只有这类错误值得重试；路径不存在等应立即上报。
+func looksLikeFileBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	/* 只认"文件/目录被占用"的措辞：泛化的 permission denied 属于 ACL 问题，重试无意义 */
+	for _, marker := range []string{
+		"access is denied",
+		"being used by another process",
+		"sharing violation",
+		"另一个程序正在使用此文件",
+		"拒绝访问",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }

@@ -1644,6 +1644,30 @@
     actions.appendChild(toggleBtn);
 
     var delBtn = sndIconBtn("action-del danger", "🗑", "删除");
+    if (src.kind === "mm") {
+      /* MM 插件走**安装/卸载**语义，而不是"从注册表删条目"：
+         后端会先卸掉引擎里占用它的槽位（Windows 文件锁），再删目录，最后清注册表。 */
+      delBtn.title = "卸载插件（删除安装目录并清理注册表）";
+      delBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var pid = src.classUid || String(src.id || "").split("@")[0];
+        UI.confirm ({
+          title: "卸载 MM 插件",
+          text: "将删除「" + (src.name || pid) + "」的安装目录，并把它从引擎与音源注册表里移除。"
+            + (function () { return "若它正在混音台的 FX 槽里使用，会先自动卸载该槽位。"; })(),
+          okText: "卸载",
+          danger: true
+        }).then(function (yes     ) {
+          if (!yes) return;
+          UI.postJSON("/api/engine/plugins/uninstall", { id: pid }).then(function (r     ) {
+            UI.toast ("✓ 已卸载 " + (src.name || pid) + "（目录 " + (r.removed || []).length + " 个，槽位 " + (r.unloaded || []).length + " 个）", "ok");
+            loadSoundLibrary();
+          }).catch(function (err     ) {
+            UI.toast ("✗ 卸载失败: " + (err && err.message ? err.message : "未知错误"), "err");
+          });
+        });
+      });
+    }
     actions.appendChild(delBtn);
 
     row.appendChild(actions);

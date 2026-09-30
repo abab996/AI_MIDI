@@ -81,3 +81,33 @@ func (r *Router) handleAnswer(w http.ResponseWriter, req *http.Request) {
 		_ = callback(map[string]any{"type": "done"})
 	}
 }
+
+// handleApproval POST /api/approval：MM 编译/安装的批准卡回执。
+// 与提问卡同规：这是"用户点过按钮"的唯一凭据来源，模型无法自行产生。
+// 本身不产生对话流（批准后由模型带 approval_id 重试工具调用）。
+func (r *Router) handleApproval(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var in struct {
+		ProjectID  string `json:"project_id"`
+		ApprovalID string `json:"approval_id"`
+		Allow      bool   `json:"allow"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.ProjectID == "" || in.ApprovalID == "" {
+		writeError(w, http.StatusBadRequest, "缺少参数或无效请求")
+		return
+	}
+
+	if !in.Allow {
+		chat.RejectBuildApproval(in.ProjectID, in.ApprovalID)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "approved": false})
+		return
+	}
+	if !chat.ApproveBuildApproval(in.ProjectID, in.ApprovalID) {
+		writeError(w, http.StatusNotFound, "确认请求不存在或已过期，请让 AI 重新发起")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "approved": true})
+}

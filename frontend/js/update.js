@@ -43,11 +43,13 @@
     '  <div class="force-text">必须更新到 <b>v<span data-f="ver"></span></b> 才能继续使用' +
     "（当前版本 v<span data-f=\"cur\"></span>）。" +
     "点击「立即更新」开始升级，完成后请重新打开软件。</div>" +
-    '  <div class="update-body" data-f="body"></div>' +
-    '  <div class="update-actions" data-f="actions">' +
-    '    <button class="btn btn-primary act-apply">立即更新</button>' +
-    '    <button class="btn act-log">更新日志</button>' +
-    "  </div>" +
+    '<div class="update-body" data-f="body"></div>' +
+    '<div class="update-error" data-f="err" hidden></div>' +
+    '<div class="update-actions" data-f="actions">' +
+    '  <button class="btn btn-primary act-apply">立即更新</button>' +
+    '  <button class="btn act-log">更新日志</button>' +
+    '  <button class="btn act-browser">浏览器下载</button>' +
+    "</div>" +
     "</div>";
 
   var LOG_HTML =
@@ -92,6 +94,9 @@
     qs(els.force , ".act-apply").onclick = applyUpdate;
     qs(els.notice , ".act-log").onclick = showLog;
     qs(els.force , ".act-log").onclick = showLog;
+    /* 强制更新遮罩里的浏览器下载出口：自动安装被拒绝（清单缺 sha256 /
+       主机不在白名单）时，用户仍要有可执行的下一步，不能被锁死 */
+    qs(els.force , ".act-browser").onclick = openBrowserDownload;
     qs(els.notice , ".act-close").onclick = function () { els.notice .hidden = true; };
     /* 跳过此版本：持久记忆（此前「关闭」不持久，每次导航都重新弹出） */
     qs(els.notice , ".act-skip").onclick = function () {
@@ -169,6 +174,9 @@
 
   function applyUpdate() {
     buildOnce();
+    /* 清掉上一次的失败行，避免旧错误与新尝试混淆 */
+    var errNode = els.force .querySelector("[data-f=err]")                      ;
+    if (errNode) { errNode.hidden = true; errNode.textContent = ""; }
     UI.postJSON                   ("/api/update/apply").then(function (res) {
       if (res.mode === "browser") {
         UI.toast ("已在浏览器中打开下载链接", "ok");
@@ -181,8 +189,22 @@
       pollTimer = setInterval(pollProgress, 600);
       pollProgress();
     }).catch(function (e     ) {
-      UI.toast ("✗ " + e.message, "err");
+      var msg = e && e.message ? e.message : String(e);
+      showApplyError(msg);
+      UI.toast ("✗ " + msg, "err");
     });
+  }
+
+  /* showApplyError 把自动安装失败的原因显示在强制更新遮罩里（该遮罩平时
+     没有可关闭出口，失败时若只弹 toast，用户无法判断下一步该做什么）。
+     用 textContent 写入，消息含清单内容时不构成注入面。 */
+  function showApplyError(msg        ) {
+    buildOnce();
+    if (els.force .hidden) return; /* 非强制更新场景：toast 已足够 */
+    var errNode = qs(els.force , "[data-f=err]");
+    if (!errNode) return;
+    errNode.textContent = msg + "（可重试，或用「浏览器下载」手动安装）";
+    errNode.hidden = false;
   }
 
   function pollProgress() {
@@ -215,6 +237,12 @@
   function applyCheck(r                   , respectSkip          ) {
     if (!r || !r.available) return r;
     info = r;
+    /* 清单没有合法 sha256：自动安装与强制更新都已被服务端停用（fail-closed）。
+       此时不能弹强制遮罩（会把用户锁在无法更新的界面里），只给一次可解释提示。 */
+    if (r.sha256_ok === false) {
+      UI.toast ("ℹ " + (r.notice || "更新清单缺少 sha256 校验值，已停用自动安装（可继续当前工作）"), "warn");
+      return r;
+    }
     if (respectSkip && !r.mandatory) {
       var skipped = "";
       try { skipped = localStorage.getItem(SKIP_KEY) || ""; } catch (e) {}

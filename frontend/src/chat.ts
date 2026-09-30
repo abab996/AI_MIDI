@@ -298,6 +298,7 @@
     lastMessages = [];
     streamSysLines = [];
     lastErrorView = null;      /* 切项目/切任务后不显示上一上下文的错误行 */
+    pendingApprovalView = null; /* 批准卡同样属于上一上下文，切换后作废 */
     stopBgPoll();          /* 后台轮询绑定旧上下文，随视图切换一并停止 */
     bgHint = null;
     bgLastTasksJson = "";
@@ -1395,6 +1396,9 @@
     /* 最近一次失败的分类错误行：任何整表重建（载荷刷新/收尾重建/后台
        轮询）都补渲染，修复"报错闪一下就消失" */
     if (lastErrorView) renderErrorLineDom(lastErrorView);
+    /* 待确认的 MM 编译/安装批准卡：同样在任何整表重建后补渲染（否则
+       "待确认"会在流式重建里闪一下消失，用户根本点不到） */
+    if (pendingApprovalView) renderApprovalCardDom();
     /* 恢复上一帧的展开态：details 的 open 属性 + body 的 .open 类都要恢复，
        否则重渲染后 sync 会把每个展开块误判为"刚展开"而重播动画 */
     restoreOpenDetails(chat, openDetails);
@@ -1961,7 +1965,6 @@
   }
 
   /* ═══════════ AI 提问卡片（ask_user_question） ═══════════ */
-
   /* 已出现过的提问卡片 id 集合：入场动画只在首次出现时播放，
      整表重建（流式帧/chatDone 重渲染）不重播 */
   var seenQuestionIds: { [key: string]: any } = {};
@@ -2272,6 +2275,10 @@
         void link.offsetWidth;
         link.classList.add("pop");
         UI.toast!("✓ AI 生成了新的 MIDI 文件，点上方「↓ 新生成的 MIDI」下载", "ok");
+      } else if (ev.type === "approval_request") {
+        /* 回答流里也可能请求编译/安装确认（用户答完问题后 AI 继续编排） */
+        pendingApprovalView = ev.approval || null;
+        renderApprovalCardDom();
       } else if (ev.type === "error") {
         appendErrorLine(ev);
         chatDone();
@@ -2718,8 +2725,102 @@
     clear: clearNoteChips,
   };
 
-  function appendSysLine(text: any) {
-    /* 流期间的系统行先登记：chatDone 最终整表重建会清空聊天区，随后按序恢复 */
+  /* ═══════════ MM 编译/安装 批准卡（用户确认闸门） ═══════════
+
+     mm_build_plugin 会在本机执行 C++ 构建（cmake 配置阶段即可执行命令）。
+     授权必须来自用户真实点按，而不是模型在工具参数里填的 confirm——
+     后端只认 /api/approval 签发的一次性令牌。
+     卡片只挂 DOM 会被整表重建抹掉，因此状态存 pendingApprovalView，
+     由 renderMessages 末尾统一补渲染（与错误行同规）。 */
+  var pendingApprovalView: any = null;
+
+  function renderApprovalCardDom() {
+    var ap = pendingApprovalView;
+    if (!ap) return;
+    var chat = $("#chat");
+    if (!chat) return;
+
+    var card = document.createElement("div");
+    card.className = "sys-line chat-approval-card";
+    card.dataset.approvalId = ap.approval_id || "";
+
+    var title = document.createElement("div");
+    title.className = "approval-title";
+    title.textContent = ap.tool === "mm_install_plugin"
+      ? "🔐 安装插件需要你确认"
+      : "🔐 编译插件需要你确认";
+    card.appendChild(title);
+
+    if (ap.reason) {
+      var reason = document.createElement("div");
+      reason.className = "approval-reason";
+      reason.textContent = String(ap.reason);
+      card.appendChild(reason);
+    }
+
+    if (ap.command) {
+      var cmd = document.createElement("div");
+      cmd.className = "approval-command";
+      cmd.textContent = "将执行：" + String(ap.command);
+      card.appendChild(cmd);
+    }
+
+    if (ap.files && ap.files.length) {
+      var files = document.createElement("details");
+      files.className = "approval-files";
+      var sum = document.createElement("summary");
+      sum.textContent = "将编译的文件（" + ap.files.length + "）";
+      files.appendChild(sum);
+      var list = document.createElement("div");
+      list.className = "approval-file-list";
+      list.textContent = ap.files.join("\n");
+      files.appendChild(list);
+      card.appendChild(files);
+    }
+
+    var actions = document.createElement("div");
+    actions.className = "approval-actions";
+    var allow = document.createElement("button");
+    allow.className = "btn btn-primary btn-sm act-approve";
+    allow.textContent = "允许一次";
+    var deny = document.createElement("button");
+    deny.className = "btn btn-sm act-reject";
+    deny.textContent = "拒绝";
+    actions.appendChild(allow);
+    actions.appendChild(deny);
+    card.appendChild(actions);
+
+    var busy = false;
+    var decide = function (isAllow: boolean) {
+      if (busy) return;
+      busy = true;
+      allow.disabled = true;
+      deny.disabled = true;
+      UI.postJSON("/api/approval", {
+        project_id: currentProjectId,
+        approval_id: ap.approval_id,
+        allow: isAllow
+      }).then(function () {
+        pendingApprovalView = null;
+        card.remove();
+        appendSysLine(isAllow
+          ? "✓ 已允许一次：" + (ap.tool === "mm_install_plugin" ? "安装插件" : "编译插件")
+          : "↷ 已拒绝：" + (ap.tool === "mm_install_plugin" ? "安装插件" : "编译插件"));
+      }).catch(function (e: any) {
+        busy = false;
+        allow.disabled = false;
+        deny.disabled = false;
+        appendSysLine("⚠ 确认失败：" + (e && e.message ? e.message : "请重试"));
+      });
+    };
+    allow.onclick = function () { decide(true); };
+    deny.onclick = function () { decide(false); };
+
+    chat.appendChild(card);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function appendSysLine(text: any) {    /* 流期间的系统行先登记：chatDone 最终整表重建会清空聊天区，随后按序恢复 */
     if (chatBusy) streamSysLines.push(text);
     var chat = $("#chat");
     var line = document.createElement("div");
@@ -3407,6 +3508,7 @@
     lastMessages = [];
     streamSysLines = [];
     lastErrorView = null;      /* 新一次发送前清掉上一轮的错误行 */
+    pendingApprovalView = null; /* 上一轮遗留的批准卡不再可用（令牌与上下文已过期） */
     lastSentPrompt = message;   /* 失败重试按钮的数据源 */
 
     var messages = [];
@@ -3472,6 +3574,11 @@
       } else if (ev.type === "status") {
         /* 排队提示等无后果状态：以普通系统行展示 */
         if (ev.message) appendSysLine(ev.message);
+      } else if (ev.type === "approval_request") {
+        /* MM 编译/安装的用户确认请求：渲染批准卡（用户点按后才会签发
+           一次性批准令牌，模型无法自行授权） */
+        pendingApprovalView = ev.approval || null;
+        renderApprovalCardDom();
       } else if (ev.type === "error") {
         removeTyping();
         appendErrorLine(ev);

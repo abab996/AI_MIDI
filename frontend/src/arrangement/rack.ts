@@ -767,7 +767,7 @@
       menu.push({
         label: "🎛 打开插件界面",
         disabled: item.kind !== "vst3" && item.kind !== "mm",
-        action: function () { ctrl.showHUD("插件界面将在 P5/P6 里程碑开放"); }
+        action: function () { ctrl.showHUD("请在混音台点空 FX 槽 →「装载插件」，或在该轨的插件槽打开界面"); }
       });
       menu.push({
         label: "🔎 在声音管理中查看",

@@ -170,6 +170,61 @@ func TestDownloaderSHAMismatch(t *testing.T) {
 	}
 }
 
+// TestDownloaderRejectsMissingSHA 缺 sha256 → 直接拒绝，不发起下载。
+// fail-closed：没有哈希就没有来源校验，安装包不允许落到本机。
+func TestDownloaderRejectsMissingSHA(t *testing.T) {
+	requested := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer srv.Close()
+
+	d := NewDownloader(func(string) error { return nil })
+	dest := filepath.Join(t.TempDir(), "setup.exe")
+
+	for _, bad := range []string{"", "   ", "abc", strings.Repeat("z", 64), strings.Repeat("0", 63)} {
+		if err := d.Start(context.Background(), srv.URL, dest, bad); err != ErrSHARequired {
+			t.Fatalf("sha=%q 应返回 ErrSHARequired, got %v", bad, err)
+		}
+	}
+	if requested {
+		t.Fatalf("缺少 sha256 时不应发起任何下载请求")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("缺少 sha256 时不应落位文件")
+	}
+}
+
+// TestDownloaderRejectsRedirect 下载禁止跟随重定向：302 指向他处时按失败
+// 处理，不允许把安装包来源交给清单作者指定的第三方主机。
+func TestDownloaderRejectsRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("evil-payload"))
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/setup.exe", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	launched := false
+	d := NewDownloader(func(string) error { launched = true; return nil })
+	dest := filepath.Join(t.TempDir(), "setup.exe")
+
+	if err := d.Start(context.Background(), srv.URL, dest, validSHAFor("evil-payload")); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	waitState(t, d, StateFailed, 3*time.Second)
+	if launched {
+		t.Fatalf("重定向后不应启动安装包")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("重定向不应落位安装包")
+	}
+}
+
 // TestDownloaderHTTPError 源站 500 → Failed
 func TestDownloaderHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +234,7 @@ func TestDownloaderHTTPError(t *testing.T) {
 
 	d := NewDownloader(nil)
 	dest := filepath.Join(t.TempDir(), "setup.exe")
-	_ = d.Start(context.Background(), srv.URL, dest, "")
+	_ = d.Start(context.Background(), srv.URL, dest, validSHAFor("payload"))
 	waitState(t, d, StateFailed, 3*time.Second)
 }
 
@@ -193,7 +248,7 @@ func TestDownloaderSizeLimit(t *testing.T) {
 	d := NewDownloader(nil)
 	d.maxBytes = 1024
 	dest := filepath.Join(t.TempDir(), "setup.exe")
-	_ = d.Start(context.Background(), srv.URL, dest, "")
+	_ = d.Start(context.Background(), srv.URL, dest, validSHAFor(strings.Repeat("x", 4096)))
 	waitState(t, d, StateFailed, 3*time.Second)
 	if !strings.Contains(d.Snapshot().Error, "体积上限") {
 		t.Fatalf("应报体积超限: %q", d.Snapshot().Error)
@@ -211,10 +266,11 @@ func TestDownloaderSingleFlight(t *testing.T) {
 
 	d := NewDownloader(nil)
 	dest := filepath.Join(t.TempDir(), "setup.exe")
-	if err := d.Start(context.Background(), srv.URL, dest, ""); err != nil {
+	sha := validSHAFor("payload")
+	if err := d.Start(context.Background(), srv.URL, dest, sha); err != nil {
 		t.Fatalf("首次 Start 失败: %v", err)
 	}
-	if err := d.Start(context.Background(), srv.URL, dest, ""); err != ErrInProgress {
+	if err := d.Start(context.Background(), srv.URL, dest, sha); err != ErrInProgress {
 		t.Fatalf("进行中重复 Start 应返回 ErrInProgress, got %v", err)
 	}
 	close(release)                                 // 放行下载，让首个请求完成
@@ -236,6 +292,13 @@ func waitState(t *testing.T, d *Downloader, want State, timeout time.Duration) {
 	t.Fatalf("等待状态 %s 超时，当前 %s (%+v)", want, d.Snapshot().State, d.Snapshot())
 }
 
+// validSHAFor 返回 payload 的真实 sha256：Start 现在强制要求合法哈希
+// （fail-closed），测试必须提供真值或一个合法格式的占位值。
+func validSHAFor(payload string) string {
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
+
 // TestDownloaderTotalDuringDownload 下载过程中 Total 必须已可用（响应头
 // 到手即公布）：此前 Total 在 io.Copy 结束后才设置，进度条全程 0%。
 func TestDownloaderTotalDuringDownload(t *testing.T) {
@@ -254,7 +317,7 @@ func TestDownloaderTotalDuringDownload(t *testing.T) {
 
 	d := NewDownloader(nil)
 	dest := filepath.Join(t.TempDir(), "setup.exe")
-	if err := d.Start(context.Background(), srv.URL, dest, ""); err != nil {
+	if err := d.Start(context.Background(), srv.URL, dest, validSHAFor(strings.Repeat(payload, 3))); err != nil {
 		t.Fatalf("Start 失败: %v", err)
 	}
 
@@ -286,7 +349,7 @@ func TestDownloaderStallWatchdog(t *testing.T) {
 	d := NewDownloader(nil)
 	d.stallTimeout = 200 * time.Millisecond // 注入短超时加速测试
 	dest := filepath.Join(t.TempDir(), "setup.exe")
-	_ = d.Start(context.Background(), srv.URL, dest, "")
+	_ = d.Start(context.Background(), srv.URL, dest, validSHAFor("unused"))
 	waitState(t, d, StateFailed, 3*time.Second)
 	if !strings.Contains(d.Snapshot().Error, "停滞") {
 		t.Fatalf("应报停滞超时: %q", d.Snapshot().Error)
@@ -306,5 +369,74 @@ func TestIsValidVersionString(t *testing.T) {
 		if IsValidVersionString(v) {
 			t.Errorf("%q 应为非法版本号", v)
 		}
+	}
+}
+
+// TestIsValidSHA256 fail-closed 的哈希格式判定
+func TestIsValidSHA256(t *testing.T) {
+	good := validSHAFor("x")
+	if !IsValidSHA256(good) {
+		t.Fatalf("%q 应为合法 sha256", good)
+	}
+	if !IsValidSHA256(strings.ToUpper(good)) {
+		t.Fatalf("大写十六进制应被接受")
+	}
+	if !IsValidSHA256("  " + good + "  ") {
+		t.Fatalf("首尾空白应被容忍")
+	}
+	bad := []string{"", "   ", "abc", strings.Repeat("0", 63), strings.Repeat("0", 65), strings.Repeat("z", 64)}
+	for _, s := range bad {
+		if IsValidSHA256(s) {
+			t.Errorf("%q 应为非法 sha256", s)
+		}
+	}
+}
+
+// TestIsTrustedDownloadURL 下载地址必须落在自有主机白名单内
+func TestIsTrustedDownloadURL(t *testing.T) {
+	good := []string{
+		"https://aimidi-r2.baimoo.top/release/MelodyMate_Setup_3.1.2_windows_amd64.exe",
+		"https://melodymate-r2.baimoo.top/x.exe",
+		"https://AIMIDI-R2.BAIMOO.TOP/x.exe",
+		"https://aimidi-r2.baimoo.top:443/x.exe",
+	}
+	for _, u := range good {
+		if !IsTrustedDownloadURL(u) {
+			t.Errorf("%q 应被信任", u)
+		}
+	}
+	bad := []string{
+		"",
+		"http://aimidi-r2.baimoo.top/x.exe", // 非 https
+		"https://evil.example.com/x.exe",    // 白名单外主机
+		"https://aimidi-r2.baimoo.top.evil.com/x.exe",  // 域名后缀混淆
+		"https://user:pass@aimidi-r2.baimoo.top/x.exe", // 带用户信息
+		"https://aimidi-r2.baimoo.top:8443/x.exe",      // 非 443 端口
+		"file:///C:/evil.exe",                          // 非网络协议
+		"https://198.18.0.59/x.exe",                    // 裸 IP
+		"//aimidi-r2.baimoo.top/x.exe",                 // 协议相对
+	}
+	for _, u := range bad {
+		if IsTrustedDownloadURL(u) {
+			t.Errorf("%q 不应被信任", u)
+		}
+	}
+}
+
+// TestManifestFetchRejectsRedirect 清单请求禁止跟随重定向
+func TestManifestFetchRejectsRedirect(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":"9.9.9"}`))
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/update.json", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	if _, err := c.Fetch(context.Background()); err == nil {
+		t.Fatalf("清单重定向应被拒绝（302 不是 200，必须报错）")
 	}
 }

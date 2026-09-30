@@ -42,6 +42,10 @@
      window.go 无绑定，仍走 SSE，行为不变。 -->
 <script src="/wails/ipc.js" defer></script>
 <script src="/wails/runtime.js" defer></script>
+<!-- 启动令牌引导：必须最先加载。它在其它脚本之前包裹 window.fetch，
+     给同源 /api/ 请求附加 X-MM-Token（此前任何先运行的脚本都可能
+     抢先在令牌写入前劫持 fetch）。-browser/桌面两种模式路径一致。 -->
+<script src="/js/authfetch.js"></script>
 </head>
 <body class="app-shell">
 
@@ -914,14 +918,15 @@
   </div>
 </div>
 
-<!-- 编曲窗早期测试版提示（sessionStorage 记忆，每次启动首次打开时弹出） -->
+<!-- 编曲窗测试版提示（sessionStorage 记忆，每次启动首次打开时弹出） -->
 <div class="modal-overlay" id="arrBetaModal" hidden role="dialog" aria-modal="true" aria-label="编曲窗测试版提示">
   <div class="modal card brackets" style="max-width:480px">
     <div class="modal-title">🧪 编曲窗 · 早期测试版</div>
     <div class="confirm-text" style="text-align:left; line-height:1.9; font-size:12.5px">
       编曲窗口目前处于<b>早期测试版（Beta）</b>，可能存在不稳定、表现异常等问题，仅供体验使用。<br><br>
-      · 暂不支持 <b>VST 插件</b>加载；<br>
-      · 暂不支持与 <b>AI 对话联动</b>（AI 生成的 MIDI 文件可从左栏拖入轨道使用）；<br><br>
+      · <b>VST3 插件</b>：在混音台点空 FX 槽 →「装载插件」即可选（需先在设置页扫描插件目录）；<br>
+      · <b>AI 对话联动</b>：可以让 AI 直接改编排（增删轨道/片段、设音源、调混音），改动会即时同步到本窗；<br>
+      · AI 生成的 MIDI 也可从左栏拖入轨道使用。<br><br>
       编排数据会自动保存，重要工程仍建议留存备份。
     </div>
     <div class="modal-actions">

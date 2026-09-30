@@ -419,7 +419,7 @@
             <div class="select-menu snd-add-menu" id="sndAddMenu" role="menu" hidden>
               <div class="select-option" data-act="sf2" role="menuitem" tabindex="-1">🎹 上传 SF2 音色库</div>
               <div class="select-option" data-act="pack" role="menuitem" tabindex="-1">📁 添加采样包文件夹</div>
-              <div class="select-option snd-option-soon" data-act="vst" role="menuitem" aria-disabled="true">🎛 扫描 VST3（P5 开放）</div>
+              <div class="select-option" data-act="vst" role="menuitem" tabindex="-1">🎛 扫描 VST3 插件目录</div>
               <div class="select-option snd-option-soon" data-act="mm" role="menuitem" aria-disabled="true">🧩 安装 .mm 插件（P6 开放）</div>
             </div>
           </div>
@@ -486,6 +486,8 @@
   </div>
 </div>
 
+<!-- 启动令牌引导：必须最先加载（在其它脚本之前包裹 fetch，附加 X-MM-Token） -->
+<script src="/js/authfetch.js"></script>
 <script src="/js/app.js"></script>
 <script src="/js/soundlib.js"></script>
 <script src="/js/brand-icons.js"></script>

@@ -32,12 +32,18 @@ function check(name, ok, extra) {
 }
 
 /* ── HTTP 小工具（避免 undici keep-alive 退出噪音） ── */
+/* 启动令牌：/api/ 非豁免路径要求 X-MM-Token（页面由 authfetch.js 注入）。
+   脚本先取令牌，之后所有 /api/ 请求自动带上——与浏览器同一条路径。 */
+let authToken = "";
 function httpFetch(url, opts = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     /* 显式 Content-Length：Node 默认 chunked，而 Go 侧 handler 在 chunked
        DELETE 时读不到请求体（浏览器 fetch 发字符串 body 时带 Content-Length） */
     const headers = { Connection: "close", ...(opts.headers || {}) };
+    if (authToken && u.pathname.startsWith("/api/") && !("X-MM-Token" in headers)) {
+      headers["X-MM-Token"] = authToken;
+    }
     if (opts.body !== undefined && opts.body !== null) {
       headers["Content-Length"] = Buffer.byteLength(opts.body);
     }
@@ -67,6 +73,14 @@ const api = async (method, p, body) => {
   });
   return { status: r.status, json: await r.json().catch(() => ({})) };
 };
+
+/* 取启动令牌：/api/bootstrap.js 免令牌，其余 /api/ 路径需要 X-MM-Token
+   （浏览器页面由 authfetch.js 注入，验收脚本走同一条路径） */
+async function loadAuthToken() {
+  const r = await httpFetch(base + "/api/bootstrap.js", { method: "GET" });
+  const j = await r.json().catch(() => ({}));
+  authToken = (j && j.token) || "";
+}
 
 /* 造一个可解码的最小 WAV（16bit PCM 单声道正弦）：素材页签的波形缩略图要真解码 */
 function makeWav(seconds, freq) {
@@ -193,6 +207,9 @@ async function main() {
     console.log("服务不可用（" + base + "）：请先启动服务或用 MM_BASE 指定地址");
     process.exit(1);
   }
+  /* 取启动令牌（/api/bootstrap.js 免令牌）：后续 /api/ 请求自动带上，
+     与浏览器页面的 authfetch.js 同一条路径 */
+  await loadAuthToken();
 
   const port = 9300 + Math.floor(Math.random() * 300);
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "mm-ui-check-"));

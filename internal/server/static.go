@@ -47,6 +47,15 @@ func (g *gzipResponseWriter) WriteHeader(code int) {
 	g.ResponseWriter.WriteHeader(code)
 }
 
+// isUnversionedAsset 报告该路径是否为"必须与页面同代"的界面代码。
+// 这三类不做客户端强缓存：HTML 定义结构，JS/CSS 与之耦合，
+// 版本错配会导致界面异常（如新增的引导脚本缺席 → 整个应用 401）。
+func isUnversionedAsset(p string) bool {
+	return strings.HasSuffix(p, ".html") ||
+		strings.HasSuffix(p, ".js") ||
+		strings.HasSuffix(p, ".css")
+}
+
 func (r *Router) registerStaticRoutes() {
 	var fileServer http.Handler
 
@@ -75,9 +84,11 @@ func (r *Router) registerStaticRoutes() {
 	}
 
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// HTML/开发目录资源禁用强缓存，确保改动立即生效；
-		// 内嵌版本化资源走指纹文件名，可安全长缓存
-		if os.Getenv("AIMIDI_FRONTEND_DIR") != "" || strings.HasSuffix(req.URL.Path, ".html") {
+		/* HTML/JS/CSS 禁用强缓存：这三类是本机应用的界面代码，页面与脚本
+		   必须同代——此前 JS 可缓存 60s，而 HTML 不缓存，会出现"新页面
+		   + 旧脚本"的错配（例如新增的 authfetch.js 拿不到则整个界面
+		   401）。开发目录同理一律不缓存。 */
+		if os.Getenv("AIMIDI_FRONTEND_DIR") != "" || isUnversionedAsset(req.URL.Path) {
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Header().Set("Pragma", "no-cache")
 			w.Header().Set("Expires", "0")

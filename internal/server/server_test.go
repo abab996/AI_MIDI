@@ -36,6 +36,28 @@ func setupTestServer(t *testing.T) (*httptest.Server, func()) {
 	return ts, cleanup
 }
 
+// testToken 固定测试令牌：TestMain 里预置，使既有请求自动带头通过校验
+const testToken = "test-token-for-unit-tests"
+
+func TestMain(m *testing.M) {
+	testAuthToken = testToken
+	// 既有测试大量使用包级 http.Get/Post：默认客户端无法带自定义头，
+	// 这里包装 DefaultTransport，让所有测试请求自动附加启动令牌。
+	// 令牌校验本身的行为由不带头部的专用测试覆盖。
+	base := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(req.URL.Path, "/api/") {
+			req.Header.Set("X-MM-Token", testToken)
+		}
+		return base.RoundTrip(req)
+	})
+	os.Exit(m.Run())
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestHealthEndpoint(t *testing.T) {
 	ts, cleanup := setupTestServer(t)
 	defer cleanup()

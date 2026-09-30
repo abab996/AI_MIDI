@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- TMP-CSP-DISABLED
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'">
+-->
 <title>MM 插件界面</title>
 <!--
   MM 插件 UI 承载页（P6 / 规格 4.7）
@@ -102,6 +105,9 @@
 </main>
 <div class="mm-params" id="mmParams" hidden></div>
 
+<!-- 启动令牌引导：本页要调 /api/engine/plugins/{ui,param}，必须先拿到
+     X-MM-Token（与其它页面同一条路径）。放在内联脚本之前同步执行。 -->
+<script src="/js/authfetch.js"></script>
 <script>
 (function () {
   "use strict";
@@ -213,7 +219,10 @@
     }).catch(function () { elStatus.textContent = "参数写入失败"; });
   }
 
-  /** 只接受字段类型合法的消息；其余丢弃并计数（插件 UI 不得影响承载页） */
+  /** 只接受字段类型合法的消息；其余丢弃并计数（插件 UI 不得影响承载页）。
+      来源必须就是那个 sandbox iframe：插件文档是不透明源（无
+      allow-same-origin），ev.origin 为空串无法作为判据，因此核对消息源
+      窗口对象——同源顶层页面无法伪造 ev.source。 */
   var dropped = 0;
   function onPluginMessage(ev) {
     var d = ev.data;
@@ -242,13 +251,30 @@
 
   function post(msg) {
     if (!frame.contentWindow) return;
-    try { frame.contentWindow.postMessage(msg, "*"); } catch (e) {}
+    try {
+      /* 目标源必须是 "*"：插件 iframe 带 sandbox（无 allow-same-origin），
+         其文档是不透明源——父页无法算出它的源，指定具体 origin 会导致
+         消息被静默丢弃（插件收不到 ready/参数推送）。插件代码本身已在
+         沙箱内，无法借这条通道提权。 */
+      frame.contentWindow.postMessage(msg, "*");
+    } catch (e) {}
+  }
+
+  /** 宿主消息来源判定：必须是打开本页的窗口。
+      实际关系视打开方式而定——混音台用 window.open 打开本页时，发送方
+      是父窗口同时也可能是 opener；两种都要接受，否则走带/主题推送失效。
+      插件 iframe 无法冒充（它的 source 是 frame.contentWindow）。 */
+  function fromHost(ev) {
+    if (ev.source !== window.parent && ev.source !== window.opener) return false;
+    if (ev.origin && ev.origin !== "null" && ev.origin !== location.origin) return false;
+    return true;
   }
 
   /* 主题：跟随系统/宿主 query（?theme=parchment），并推给插件 UI */
   var theme = q.get("theme") || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "parchment" : "dark");
   document.documentElement.dataset.theme = theme;
   window.addEventListener("message", function (ev) {
+    if (!fromHost(ev)) return;
     var d = ev.data;
     if (d && d.type === "mm.theme" && (d.theme === "dark" || d.theme === "parchment")) {
       theme = d.theme;
@@ -267,22 +293,28 @@
   function loadFrame() {
     elSkeleton.hidden = false;
     elStatus.textContent = "载入插件界面…";
-    var src = "/api/engine/plugins/ui?plugin=" + encodeURIComponent(pluginId);
-    frame.src = src;
-    /* 插件未提供 UI 时（manifest 无 ui）给可读提示：路由会 404，
-       我们无法从 iframe 内读状态，因此并行探测一次 */
-    fetch(src, { method: "GET" }).then(function (r) {
-      if (!r.ok) {
-        elStatus.textContent = "该插件没有自带界面（可用「参数」面板调参）";
-        elSkeleton.hidden = true;
-        frame.hidden = true;
-        elParams.hidden = false;
-        loadParams().catch(function () {});
-      } else {
+    /* iframe 是浏览器导航，带不了 X-MM-Token 头：先换取一次性 ui_ticket
+       再拼进 URL。/api/engine/plugins/ui-ticket 本身受启动令牌保护。
+
+       注意：票是一次性的，只能被 iframe 消费一次——这里不得再对同一 URL
+       做探测请求，否则会把票用掉导致 iframe 拿到 401。 */
+    fetch("/api/engine/plugins/ui-ticket", { method: "POST" })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
+      .then(function (t) {
         frame.hidden = false;
-        post({ type: "mm.theme", theme: theme });
-      }
-    }).catch(function () {});
+        frame.src = "/api/engine/plugins/ui?plugin=" + encodeURIComponent(pluginId) +
+          "&ticket=" + encodeURIComponent(t.ticket || "");
+        return loadParams().then(function () {
+          post({ type: "mm.theme", theme: theme });
+        }).catch(function () {
+          /* 参数读取失败不阻断界面：插件 UI 仍可能可用 */
+          post({ type: "mm.theme", theme: theme });
+        });
+      })
+      .catch(function (e) {
+        elStatus.textContent = "插件界面加载失败：" + (e && e.message ? e.message : "未知错误");
+        elSkeleton.hidden = true;
+      });
   }
 
   if (!pluginId) {
@@ -296,6 +328,7 @@
      这里不轮询任何 HTTP：走带状态在宿主（编曲页）手里，不是引擎查询接口。
      宿主未接走带时插件也不会收到该消息，插件界面必须自行降级（不依赖它）。 */
   window.addEventListener("message", function (ev) {
+    if (!fromHost(ev)) return;
     var d = ev.data;
     if (!d || d.type !== "mm.transport") return;
     if (typeof d.bpm !== "number") return;

@@ -1517,7 +1517,7 @@
     var map: { [k: string]: string } = {
       sf2: "还没有 SF2 音色库：用「＋ 添加」上传，或把 .sf2 文件拷入 Library/soundfonts 后点「↻ 重新扫描」。",
       samplepack: "还没有采样包：「＋ 添加 → 采样包文件夹」选择磁盘上的素材目录即可。",
-      vst3: "还没有扫描到 VST3 插件：到「引擎」分区扫描系统插件目录（Common Files\\VST3）。",
+      vst3: "还没有扫描到 VST3 插件：点上方「＋ 添加 ▾ → 扫描 VST3 插件目录」，或到混音台 FX 槽装载。",
       mm: "还没有 MM 插件：用 mm new/build/install 安装 .mm 包（或让 AI 在对话里创建），装好后点下方「↻ 同步已安装插件」。"
     };
     var el = document.createElement("div");
@@ -2199,6 +2199,7 @@
       closeAddMenu();
       if (act === "sf2") $("#sndSf2Input").click();
       else if (act === "pack") sndAddPack();
+      else if (act === "vst") sndScanVst3();
     });
 
     $("#sndSf2Input").addEventListener("change", function () {
@@ -2206,8 +2207,24 @@
       (this as any).value = "";
     });
 
-    $("#sndRescanBtn").addEventListener("click", function () {
-      var btn = this as HTMLButtonElement;
+    /* 扫描 VST3：走引擎的插件扫描（POST /api/engine/plugins/scan，dirs 留空
+       = 系统默认插件目录）。结果存在引擎侧，混音台的「装载插件」菜单直接
+       读 GET /api/engine/plugins——因此这里不往音源注册表里塞条目。 */
+    function sndScanVst3() {
+      UI.toast!("⟳ 正在扫描系统插件目录，首次可能较慢…", "");
+      UI.postJSON("/api/engine/plugins/scan", {}).then(function (res: any) {
+        var n = (res && res.count) || 0;
+        UI.toast!(n > 0
+          ? "✓ 扫描到 " + n + " 个插件：到编曲窗混音台点空 FX 槽 →「装载插件」选择"
+          : "✓ 扫描完成，但没有发现插件：请确认已安装 VST3 到系统插件目录", n > 0 ? "ok" : "warn");
+      }).catch(function (e: any) {
+        var msg = e && e.message ? e.message : "未知错误";
+        UI.toast!("✗ 扫描失败：" + msg +
+          "（VST3 扫描需要桌面版本机引擎；浏览器模式不可用）", "err");
+      });
+    }
+
+    $("#sndRescanBtn").addEventListener("click", function () {      var btn = this as HTMLButtonElement;
       if (btn.disabled) return;
       btn.disabled = true;
       var label = btn.textContent;

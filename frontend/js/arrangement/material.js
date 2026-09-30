@@ -244,7 +244,7 @@
 
   function hintFor(tab        ) {
     if (tab === "source") return "⇱ 拖拽音源到轨道即分配（自动加入乐器箱）· 双击试听";
-    if (tab === "fx") return "效果器装载到混音台 FX 槽（P4/P5 就绪后可用）";
+    if (tab === "fx") return "效果器装载到混音台 FX 槽：混音台点空槽 →「装载插件」选择";
     return "⇱ 拖拽音频到轨道创建音频 Clip · 双击试听";
   }
 
@@ -833,7 +833,7 @@
         kw ? "没有匹配的效果器" : "还没有效果器",
         kw
           ? "换个关键词试试"
-          : "效果器将装载到混音台 FX 槽（P4 混音台 / P5 VST3 宿主就绪后可用）"));
+          : "效果器装载到混音台 FX 槽：在混音台点空槽 →「装载插件」选择"));
       return;
     }
     var wrap = el("div", "mat-fx-list");
@@ -848,12 +848,12 @@
       if (src.vendor) bits.push(src.vendor);
       info.appendChild(el("div", "mat-item-meta", bits.join(" · ")));
       card.appendChild(info);
-      card.appendChild(el("span", "mat-pill off", "待接入"));
-      card.title = "拖到混音台 FX 槽（P4/P5 就绪后可用）";
+      card.appendChild(el("span", "mat-pill on", "可装载"));
+      card.title = "在混音台点空 FX 槽 →「装载插件」选择该效果器";
       wrap.appendChild(card);
     });
     body.appendChild(wrap);
-    var note = el("div", "arr-panel-hint", "效果器装载到混音台 FX 槽：P4 混音台 / P5 VST3 宿主就绪后可直接拖拽");
+    var note = el("div", "arr-panel-hint", "效果器装载到混音台 FX 槽：在混音台点空槽 →「装载插件」选择（需先在设置页扫描插件目录）");
     body.appendChild(note);
   }
 

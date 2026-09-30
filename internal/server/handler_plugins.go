@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"melodymate/internal/config"
@@ -15,6 +18,76 @@ import (
 	"melodymate/internal/mm"
 	"melodymate/internal/soundlib"
 )
+
+// ── 插件界面一次性凭据（ui_ticket）─────────────────────────────
+//
+// 为什么需要：插件 UI 由 <iframe src="/api/engine/plugins/ui?..."> 加载，
+// 浏览器导航带不了 X-MM-Token 自定义头。若为了放行 iframe 而整体豁免
+// 该端点，本机任意进程/页面就能拉取插件资源；若要求自定义头，iframe
+// 会拿到 401 渲染成错误页。
+//
+// 折中：由已在令牌保护下的 /api/engine/plugins/ui-ticket 签发短时效、
+// 一次性票，作为查询参数拼在 iframe URL 上。票只能用于 /ui 端点，
+// 用完即废，且随进程重启清空。
+
+const uiTicketTTL = 60 * time.Second
+
+var (
+	uiTicketsMu sync.Mutex
+	uiTickets   = map[string]time.Time{} // ticket -> 过期时刻
+)
+
+// issueUITicket 签发一次性插件界面凭据
+func issueUITicket() string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return ""
+	}
+	ticket := hex.EncodeToString(buf)
+	now := time.Now()
+	uiTicketsMu.Lock()
+	defer uiTicketsMu.Unlock()
+	// 顺手清理过期票，避免无界增长
+	for k, exp := range uiTickets {
+		if now.After(exp) {
+			delete(uiTickets, k)
+		}
+	}
+	uiTickets[ticket] = now.Add(uiTicketTTL)
+	return ticket
+}
+
+// consumeUITicket 校验并消费一次性凭据（成功即作废）
+func consumeUITicket(ticket string) bool {
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return false
+	}
+	now := time.Now()
+	uiTicketsMu.Lock()
+	defer uiTicketsMu.Unlock()
+	exp, ok := uiTickets[ticket]
+	if !ok {
+		return false
+	}
+	delete(uiTickets, ticket) // 一次性：无论是否过期都移除
+	return now.Before(exp)
+}
+
+// handleUITicket POST /api/engine/plugins/ui-ticket：为 iframe 签发一次性凭据。
+// 该端点本身受启动令牌保护（非豁免），因此只有应用界面能拿到票。
+func (r *Router) handleUITicket(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	ticket := issueUITicket()
+	if ticket == "" {
+		writeError(w, http.StatusInternalServerError, "签发插件界面凭据失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "expires_in": int(uiTicketTTL.Seconds())})
+}
 
 // handleEnginePluginsSub /api/engine/plugins*：VST3 宿主的 HTTP 入口。
 //
@@ -31,6 +104,9 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 	}
 
 	switch sub {
+	case "/ui-ticket":
+		r.handleUITicket(w, req)
+
 	case "", "/":
 		list, err := sup.ListPlugins()
 		if err != nil {
@@ -62,8 +138,16 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 	case "/ui":
 		/* P6：MM 插件 UI 的静态承载（前端 mm-ui.html 用 sandbox iframe 加载它）。
 		   路径必须落在 Library/plugins/<id>@<ver>/ 内：逐条校验，拒绝任何穿越。
-		   query：plugin=<插件 id>、asset=<包内相对路径，默认取 manifest 的 ui.entry> */
+		   query：plugin=<插件 id>、asset=<包内相对路径，默认取 manifest 的 ui.entry>
+
+		   鉴权说明：本端点被 <iframe src> 直接加载，浏览器导航无法携带
+		   X-MM-Token 自定义头，因此走一次性的 ui_ticket（由已在令牌保护下
+		   的 /api/engine/plugins/ui-ticket 换取，仅限本端点、短时效）。 */
 		q := req.URL.Query()
+		if !consumeUITicket(q.Get("ticket")) {
+			writeError(w, http.StatusUnauthorized, "插件界面访问凭据缺失或已失效：请从混音台重新打开插件界面")
+			return
+		}
 		pluginID := strings.TrimSpace(q.Get("plugin"))
 		if pluginID == "" || strings.ContainsAny(pluginID, "/\\") || strings.Contains(pluginID, "..") {
 			writeError(w, http.StatusBadRequest, "plugin 参数非法")
@@ -112,6 +196,12 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			writeError(w, http.StatusForbidden, "不允许的资源类型")
 			return
 		}
+		/* 安全响应头：该文档与应用同源。正常路径下它只被 mm-ui.html 的
+		   sandbox iframe 加载；但对话里的链接可能把它当顶层文档打开——
+		   sandbox 指令让浏览器对它强制启用沙箱（与 iframe 同等限制），
+		   使其脚本拿不到主界面权限（cookie/同源 API 调用）。 */
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		http.ServeFile(w, req, full)
 
 	case "/install":
@@ -290,8 +380,14 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			writeError(w, http.StatusBadRequest, "请求格式错误")
 			return
 		}
-		/* P6：format=mm 走 MM 运行时（path 是 .mm 包解包后的原生库路径） */
+		/* P6：format=mm 走 MM 运行时（path 是 .mm 包解包后的原生库路径）。
+		   路径必须先落在已安装插件目录内：引擎对该路径直接 LoadLibrary，
+		   不做目录约束，因此这里与 supervisor 各校验一次（双端防护）。 */
 		if in.Format == "mm" {
+			if err := engine.ValidateMmPluginPath(filepath.Join(config.LibraryDir, "plugins"), in.Path); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			track := in.Track
 			if in.Master {
 				track = -1

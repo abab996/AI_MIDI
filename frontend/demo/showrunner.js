@@ -19,6 +19,30 @@
   "use strict";
   if (!/[?&]demo=1/.test(location.search)) return;
 
+  /* 演示模式固定角标：本页会拦截 /api/chat 播放预录剧本（不调用真实模型）。
+     没有这个标识时，用户经相对链接打开 /chat.html?demo=1 会误以为
+     看到的是真实回复。 */
+  (function mountDemoBadge() {
+    const add = () => {
+      if (document.getElementById("demoModeBadge")) return;
+      const el = document.createElement("div");
+      el.id = "demoModeBadge";
+      el.textContent = "▶ 演示模式（预录回放，非真实模型输出）";
+      el.style.cssText = [
+        "position:fixed", "right:12px", "bottom:12px", "z-index:99999",
+        "padding:6px 10px", "border-radius:4px", "font-size:12px",
+        "font-family:system-ui,sans-serif", "pointer-events:none",
+        "background:rgba(255,140,0,.92)", "color:#1a1a1a", "font-weight:600",
+      ].join(";");
+      (document.body || document.documentElement).appendChild(el);
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", add);
+    } else {
+      add();
+    }
+  })();
+
   const S = window.DEMO_SCRIPT;
   const PR = () => window.PianoRoll;
   const Demo = (window.__DEMO__ = {

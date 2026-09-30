@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -373,6 +374,12 @@ func (r *Router) handleDownloadFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fi.Name()))
+	/* 文件名进入响应头：用 mime.FormatMediaType 而不是裸拼接——文件名
+	   含引号/反斜杠时裸拼接会破坏响应头结构；非 ASCII 自动走 RFC 5987。 */
+	cd := mime.FormatMediaType("attachment", map[string]string{"filename": fi.Name()})
+	if cd == "" {
+		cd = "attachment"
+	}
+	w.Header().Set("Content-Disposition", cd)
 	http.ServeFile(w, req, targetClean)
 }

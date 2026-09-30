@@ -77,8 +77,8 @@
     },
     /* ===== P4：FX 链与主总线 =====
        slots 元素 {slot, plugin?, bypass, wet, off?}；track < 0 表示主总线。
-       插件装载（plugin 非空）在 P4 会被引擎拒绝——调用方按 Promise reject
-       的 message 提示用户（P5/P6 开放后同一调用即可装载）。 */
+       插件装载（plugin 非空）需要引擎侧有对应实例：调用方按 Promise reject
+       的 message 提示用户（可先用 /api/engine/plugins/load 装载再写槽位）。 */
     setFxChain: function (track        , slots       ) {
       if (app && app.EngineSetFxChain) { return app.EngineSetFxChain(track, slots || []); }
       return Promise.resolve();

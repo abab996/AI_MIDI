@@ -36,13 +36,14 @@ const DefaultStallTimeout = 60 * time.Second
 // ErrInProgress 已有下载在进行中（Start 单飞）
 var ErrInProgress = errors.New("下载已在进行中")
 
-// Snapshot 下载进度快照（JSON 直接返回给前端轮询）
+// Snapshot 下载进度快照（JSON 直接返回给前端轮询）。
+// Path 不外发：本机安装包落位路径属主机内部信息，前端只需要状态与进度。
 type Snapshot struct {
 	State      State  `json:"state"`
 	Downloaded int64  `json:"downloaded"`
 	Total      int64  `json:"total"`
 	Error      string `json:"error,omitempty"`
-	Path       string `json:"path,omitempty"`
+	Path       string `json:"-"`
 	Launched   bool   `json:"launched"`
 }
 
@@ -69,7 +70,9 @@ type Downloader struct {
 // NewDownloader 创建下载器；onLaunch 为 nil 时下载完成后仅置 Completed。
 func NewDownloader(onLaunch func(path string) error) *Downloader {
 	return &Downloader{
-		http:         &http.Client{Timeout: 0}, // 大文件无整体超时；停滞由看门狗兜底
+		// 大文件无整体超时（停滞由看门狗兜底）；禁止跟随重定向：
+		// 安装包必须来自调用方已校验过的自有主机，302 会把来源交给第三方
+		http:         &http.Client{Timeout: 0, CheckRedirect: noRedirectPolicy},
 		maxBytes:     DefaultMaxBytes,
 		stallTimeout: DefaultStallTimeout,
 		onLaunch:     onLaunch,
@@ -77,10 +80,18 @@ func NewDownloader(onLaunch func(path string) error) *Downloader {
 	}
 }
 
+// ErrSHARequired 缺少或畸形 sha256：下载链路 fail-closed，拒绝启动下载。
+// 安装包下载后会在本机以静默参数运行，没有哈希就等于没有来源校验。
+var ErrSHARequired = errors.New("缺少有效的 sha256，已拒绝下载安装包")
+
 // Start 启动下载（单飞：进行中重复调用返回 ErrInProgress）。
 // destPath 为最终落位路径；下载中写 destPath+".part"，成功后原子改名。
-// wantSHA 非空（32 字节 hex）时校验文件 sha256，不匹配按失败处理。
+// wantSHA 必须是合法的 64 位 sha256 十六进制串：缺失或畸形直接返回
+// ErrSHARequired，不发起任何请求（校验通过后才允许落位与启动安装程序）。
 func (d *Downloader) Start(parent context.Context, url, destPath, wantSHA string) error {
+	if !IsValidSHA256(wantSHA) {
+		return ErrSHARequired
+	}
 	d.mu.Lock()
 	if d.state == StateDownloading {
 		d.mu.Unlock()
@@ -212,6 +223,8 @@ func (d *Downloader) run(ctx context.Context, url, destPath, wantSHA string) {
 		return
 	}
 
+	// wantSHA 已在 Start 处强制校验过（fail-closed），这里恒定执行比对；
+	// 保留空值分支仅为防御性写法，正常路径不会走到
 	if wantSHA != "" {
 		got := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(got, strings.TrimSpace(wantSHA)) {

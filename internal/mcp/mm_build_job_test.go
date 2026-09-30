@@ -40,7 +40,7 @@ func TestMMBuildJobReport(t *testing.T) {
 
 func TestMMBuildStatusTool(t *testing.T) {
 	// 未知作业号要给可解释错误（不 panic）
-	out, err := executeMMTool("mm_build_status", map[string]any{"job": "mmb_nope"})
+	out, err := executeMMTool(ToolEnv{}, "mm_build_status", map[string]any{"job": "mmb_nope"})
 	if err != nil {
 		t.Fatalf("不应返回 error: %v", err)
 	}

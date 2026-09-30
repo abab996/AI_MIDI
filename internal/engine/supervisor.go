@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,10 +18,28 @@ import (
 	"time"
 )
 
+// engineTokenEnv 引擎 IPC 启动令牌的环境变量名。
+// 引擎进程创建管道时要求 hello 携带该令牌，阻止同机其他进程（同用户
+// 的其他程序）直连管道调用 plugin.load / plugin.scan / shutdown 等能力。
+// 用环境变量而非命令行参数：命令行对同机进程可见，环境块不可读。
+const engineTokenEnv = "MelodyMate_ENGINE_TOKEN"
+
+// newEngineToken 生成 32 字节随机令牌的十六进制串。
+// 失败时返回空串（引擎退化为不鉴权，行为与旧版一致，不阻断启动）。
+func newEngineToken() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		slog.Warn("[engine] 生成 IPC 令牌失败，本次会话不启用鉴权", "err", err)
+		return ""
+	}
+	return hex.EncodeToString(buf)
+}
+
 // Config 守护器配置
 type Config struct {
 	EnginePath       string // 引擎 exe 路径（已解析为绝对路径）
 	SoundFontDir     string // 默认音色目录（Library/soundfonts）；由 main 注入，避免 config↔engine 循环导入
+	PluginsDir       string // 已安装 MM 插件根目录（Library/plugins）；MM 原生库加载路径的包含性校验基准
 	DialTimeout      time.Duration
 	HandshakeTimeout time.Duration
 	RequestTimeout   time.Duration
@@ -63,6 +83,7 @@ type Supervisor struct {
 	lastMasterGain  float64
 	hasSoundfont    bool // 当前会话是否已加载任何音色（/api/audio/status 透出）
 	exePath         string
+	token           string    // IPC 启动令牌：随进程生成，注入引擎环境并用于握手
 	lastReadyAt     time.Time // 最近一次进入 StateReady 的时间（秒崩判定用）
 	stopOnce        sync.Once
 	doneCh          chan struct{} // 关闭表示主循环退出
@@ -87,6 +108,13 @@ func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 	sup := &Supervisor{cfg: cfg, audio: audio, lastGood: audio, lastSoundFonts: make(map[int]string), wakeCh: make(chan struct{}, 1)}
 	sup.exePath = ResolveEnginePath(audio.EnginePath)
 	sup.startedEnabled = audio.EngineEnabled
+	/* 鉴权令牌：优先取环境变量（tools/engine_smoke 等外部驱动方需要
+	   预置同一令牌），否则每次启动新生成。令牌只在内存与子进程环境中
+	   流转，绝不写日志、不落盘。 */
+	sup.token = strings.TrimSpace(os.Getenv(engineTokenEnv))
+	if sup.token == "" {
+		sup.token = newEngineToken()
+	}
 	return sup
 }
 
@@ -99,6 +127,13 @@ const applySetupTimeout = 60 * time.Second
 // StartedWithEnabled 当前守护会话启动时的启用状态（判断设置变更是否需重启）
 func (s *Supervisor) StartedWithEnabled() bool {
 	return s.startedEnabled
+}
+
+// currentToken 读取 IPC 启动令牌（持锁：与守护循环并发读写安全）
+func (s *Supervisor) currentToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.token
 }
 
 // ResolveEnginePath 解析引擎可执行文件路径：
@@ -610,11 +645,39 @@ type PluginScanStatus struct {
 	Count   int    `json:"count"`
 }
 
+// validateScanDirs 校验调用方给出的扫描目录：必须是存在的绝对目录。
+// dirs 为空表示"用系统默认插件目录"（合法）。扫描会让宿主加载/解析
+// 目录内的模块，因此不接受相对路径或不存在的路径——避免拼写错误被
+// 静默忽略，也避免把扫描范围交给不明确的相对基准。真正的信任边界是
+// IPC 启动令牌：只有持有令牌的调用方（本应用）能走到这里。
+func validateScanDirs(dirs []string) error {
+	for _, d := range dirs {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		if !filepath.IsAbs(d) {
+			return fmt.Errorf("扫描目录必须是绝对路径: %s", d)
+		}
+		st, err := os.Stat(d)
+		if err != nil {
+			return fmt.Errorf("扫描目录不存在: %s", d)
+		}
+		if !st.IsDir() {
+			return fmt.Errorf("扫描目录不是文件夹: %s", d)
+		}
+	}
+	return nil
+}
+
 // ScanPlugins 扫描插件目录（dirs 为空 = 系统默认目录）。
 //
 // 引擎侧扫描是异步的（同步应答会把管道拖死），这里启动后轮询到结束，
 // 结束时引擎会把清单一起带回；随后落一份缓存，下次启动可秒开。
 func (s *Supervisor) ScanPlugins(dirs []string, timeout time.Duration) (*PluginList, error) {
+	if err := validateScanDirs(dirs); err != nil {
+		return nil, err
+	}
 	cli, err := s.Ready(5 * time.Second)
 	if err != nil {
 		return nil, err
@@ -740,11 +803,64 @@ func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
 	return resp.Err()
 }
 
+// ValidateMmPluginPath 导出的 MM 插件原生库路径校验：必须位于 pluginsDir
+// 内（含符号链接解析后的复核）。供 HTTP 入口在调用前先行拒绝，形成双端校验。
+func ValidateMmPluginPath(pluginsDir, dllPath string) error {
+	return validateMmPluginPath(pluginsDir, dllPath)
+}
+
+// validateMmPluginPath 校验 MM 插件原生库路径必须位于已安装插件目录内。
+// fail-closed：未配置 PluginsDir 时一律拒绝（宁可报错也不加载来路不明的
+// 原生库）。先按词法包含性判定，再解析符号链接/目录联接后复核一次，
+// 避免经由联接指向目录之外。
+func validateMmPluginPath(pluginsDir, dllPath string) error {
+	root := strings.TrimSpace(pluginsDir)
+	if root == "" {
+		return fmt.Errorf("未配置 MM 插件目录，拒绝加载原生库")
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("插件目录无效: %w", err)
+	}
+	full, err := filepath.Abs(dllPath)
+	if err != nil {
+		return fmt.Errorf("插件库路径无效: %w", err)
+	}
+	contained := func(base, target string) bool {
+		rel, rerr := filepath.Rel(base, target)
+		return rerr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	if !contained(rootAbs, full) {
+		return fmt.Errorf("插件库必须位于已安装插件目录内（%s）", rootAbs)
+	}
+	// 解析真实路径后复核：目录联接/符号链接不能把加载带到目录之外。
+	// 目标不存在时 EvalSymlinks 会失败，此时按词法结果拒绝（fail-closed）。
+	realRoot, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return fmt.Errorf("插件目录不可解析: %w", err)
+	}
+	realFull, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return fmt.Errorf("插件库不存在或不可解析: %w", err)
+	}
+	if !contained(realRoot, realFull) {
+		return fmt.Errorf("插件库真实路径越出插件目录（%s）", realRoot)
+	}
+	return nil
+}
+
 // LoadMmPlugin 装载 MM 插件（.mm 包解包后的原生库）到 FX 槽。
 // 引擎侧按 format=mm 分流：path 是库文件路径，不走 VST3 清单。
+//
+// 路径必须位于已安装插件目录（Config.PluginsDir）内：引擎对该路径直接
+// 走 LoadLibrary，不做目录约束，因此包含性校验必须在信任方（本进程）完成。
 func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]any, error) {
-	if strings.TrimSpace(dllPath) == "" {
+	dllPath = strings.TrimSpace(dllPath)
+	if dllPath == "" {
 		return nil, fmt.Errorf("缺少 MM 插件库路径")
+	}
+	if err := validateMmPluginPath(s.cfg.PluginsDir, dllPath); err != nil {
+		return nil, err
 	}
 	cli, err := s.Ready(5 * time.Second)
 	if err != nil {
@@ -1170,6 +1286,12 @@ func (s *Supervisor) runOnce() string {
 	s.setState(StateStarting, "")
 
 	cmd := exec.Command(s.exePath, "--parent", strconv.Itoa(os.Getpid()))
+	/* 把启动令牌注入子进程环境：引擎要求 hello 携带同一令牌，
+	   未持有令牌的本机进程无法直连管道调用业务方法。 */
+	token := s.currentToken()
+	if token != "" {
+		cmd.Env = append(os.Environ(), engineTokenEnv+"="+token)
+	}
 	if outF := s.openEngineLog(); outF != nil {
 		cmd.Stdout = outF
 		cmd.Stderr = outF
@@ -1203,7 +1325,7 @@ func (s *Supervisor) runOnce() string {
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 
-	cli, err := Dial(cmd.Process.Pid, s.cfg.DialTimeout, s.cfg.HandshakeTimeout)
+	cli, err := DialWithToken(cmd.Process.Pid, s.currentToken(), s.cfg.DialTimeout, s.cfg.HandshakeTimeout)
 	if err != nil {
 		reason := "连接失败: " + err.Error()
 		s.setState(StateFailed, reason)

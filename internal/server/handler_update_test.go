@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +15,16 @@ import (
 
 	"melodymate/internal/update"
 )
+
+// mustHost 从 URL 取主机名（测试注入白名单用）
+func mustHost(t *testing.T, rawURL string) string {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("解析测试服务器地址失败: %v", err)
+	}
+	return u.Hostname()
+}
 
 // installTestManifest 把 Router 的清单客户端指向测试服务器并预填缓存
 func installTestManifest(t *testing.T, r *Router, body string) {
@@ -160,8 +173,14 @@ func TestUpdateApplyDownloadSurvivesRequestReturn(t *testing.T) {
 	}))
 	defer dl.Close()
 
+	// 下载地址必须落在白名单内：把 httptest 主机注入为受信主机
+	dlHost := mustHost(t, dl.URL)
+	defer update.SetTrustedHostsForTest([]string{dlHost})()
+	sum := sha256.Sum256([]byte(strings.Repeat(payload, 3)))
+
 	r := NewRouter(nil, nil)
 	installTestManifest(t, r, `{"version":"99.0.0","mandatory":false,`+
+		`"sha256_windows":"`+hex.EncodeToString(sum[:])+`",`+
 		`"downloads":{"windows":"`+dl.URL+`/e.exe","linux":"`+dl.URL+`/t.gz"}}`)
 
 	// 下载落盘与执行均注入测试替身（不真跑安装包、不写用户缓存目录）
@@ -256,5 +275,112 @@ func TestUpdateApplyRejectsBadVersionBeforePlatformCheck(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("平台无链接时非法版本号仍应先被拒绝(502), got %d", resp.StatusCode)
+	}
+}
+
+// TestUpdateApplyRejectsMissingSHA 清单缺 sha256 → 拒绝自动安装（fail-closed）。
+// 真实安装包路径回归由 TestUpdateApplyRejectsMissingSHAOnWindows 覆盖。
+func TestUpdateApplyRejectsMissingSHA(t *testing.T) {
+	dl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {}))
+	defer dl.Close()
+
+	body := `{"version":"99.0.0","mandatory":true,"downloads":{"windows":"` + dl.URL + `/e.exe"}}`
+	r := NewRouter(nil, nil)
+	installTestManifest(t, r, body)
+	r.updater.downloader = update.NewDownloader(func(string) error {
+		t.Fatalf("缺少 sha256 时不应启动安装程序")
+		return nil
+	})
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/update/apply", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("apply 请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("缺少 sha256 应被拒绝(502), got %d", resp.StatusCode)
+	}
+}
+
+// TestUpdateApplyRejectsUntrustedDownloadHost 下载地址不在白名单 → 拒绝自动安装
+func TestUpdateApplyRejectsUntrustedDownloadHost(t *testing.T) {
+	body := `{"version":"99.0.0","mandatory":true,"sha256_windows":"` + strings.Repeat("a", 64) + `",` +
+		`"downloads":{"windows":"https://evil.example.com/e.exe"}}`
+	r := NewRouter(nil, nil)
+	installTestManifest(t, r, body)
+	r.updater.downloader = update.NewDownloader(func(string) error {
+		t.Fatalf("不可信主机时不应启动安装程序")
+		return nil
+	})
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/update/apply", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("apply 请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("白名单外主机应被拒绝(502), got %d", resp.StatusCode)
+	}
+}
+
+// TestUpdateCheckUnverifiableNotMandatory 清单标记强制更新但没有合法 sha256 时：
+// 不得启用强制更新（否则"清单不可验证"直接变成"用户不能工作"），
+// 同时明确告知原因。fail-open 只用于网络失败，不用于校验缺失。
+func TestUpdateCheckUnverifiableNotMandatory(t *testing.T) {
+	r := NewRouter(nil, nil)
+	installTestManifest(t, r, `{"version":"99.0.0","mandatory":true,"notes":"x"}`)
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/update/check")
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Available bool   `json:"available"`
+		Mandatory bool   `json:"mandatory"`
+		SHA256OK  bool   `json:"sha256_ok"`
+		Notice    string `json:"notice"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if !out.Available {
+		t.Fatalf("应报告有新版本: %+v", out)
+	}
+	if out.SHA256OK {
+		t.Fatalf("缺 sha256 时 sha256_ok 应为 false: %+v", out)
+	}
+	if out.Mandatory {
+		t.Fatalf("缺 sha256 时不应启用强制更新: %+v", out)
+	}
+	if out.Notice == "" {
+		t.Fatalf("缺 sha256 时应给出可解释的提示")
+	}
+
+	// 补齐合法 sha256 后强制更新重新生效
+	installTestManifest(t, r, `{"version":"99.0.0","mandatory":true,"sha256_windows":"`+strings.Repeat("a", 64)+`"}`)
+	resp2, err := http.Get(ts.URL + "/api/update/check")
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	defer resp2.Body.Close()
+	var out2 struct {
+		Mandatory bool `json:"mandatory"`
+		SHA256OK  bool `json:"sha256_ok"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&out2); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if !out2.SHA256OK || !out2.Mandatory {
+		t.Fatalf("sha256 合法后应恢复强制更新: %+v", out2)
 	}
 }

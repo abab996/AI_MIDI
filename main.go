@@ -121,6 +121,14 @@ func main() {
 
 	appInstance := app.NewApp()
 	router := server.NewRouter(subFS, appInstance.SelectFolderDialog)
+	/* 允许的浏览器来源收窄到实际监听来源：此前本机任意端口的页面都在
+	   白名单里，同机其他服务可借助用户浏览器调用本机 API。 */
+	router.AllowOrigins([]string{
+		fmt.Sprintf("http://127.0.0.1:%d", *port),
+		fmt.Sprintf("http://localhost:%d", *port),
+		"http://wails.localhost",
+		"https://wails.localhost",
+	})
 	// 后台预取更新清单：让前端启动时的 /api/update/check 即时返回
 	go router.PrefetchUpdate()
 
@@ -129,6 +137,8 @@ func main() {
 	audioSettings := config.LoadSettings().Audio
 	engineSup := engine.NewSupervisor(engine.Config{
 		SoundFontDir: filepath.Join(config.LibraryDir, "soundfonts"),
+		// MM 原生库加载的包含性校验基准：路径不在此目录内一律拒绝
+		PluginsDir: filepath.Join(config.LibraryDir, "plugins"),
 		// 路径白名单目录（engine 不反向依赖 config，见 engine.Config.Dirs 注释）
 		Dirs: func() (string, string, []string) {
 			return filepath.Join(config.LibraryDir, "soundfonts"),

@@ -50,11 +50,23 @@ type Client struct {
 	tcMu   sync.Mutex
 	lastTc Timecode // 最近一次收到的走带时间码（0x05 帧锁存）
 	hasTc  bool     // 是否收到过至少一帧
+
+	// token 引擎 IPC 启动令牌（与引擎进程共享的共享秘密）。
+	// 为空表示未启用鉴权（手动调试直跑引擎）。
+	token string
 }
 
 // Dial 连接引擎管道并完成协议握手（hello + 版本校验）。
 // 管道在引擎进程创建后数百毫秒内才出现，dialPipe 负责等待。
+// 无令牌版本：引擎未启用鉴权（手动调试）时使用。
 func Dial(pid int, dialTimeout, handshakeTimeout time.Duration) (*Client, error) {
+	return DialWithToken(pid, "", dialTimeout, handshakeTimeout)
+}
+
+// DialWithToken 连接引擎管道并携带启动令牌完成握手。
+// token 由 supervisor 生成并注入引擎进程环境，未持有令牌的本机进程
+// 无法通过 hello（引擎侧拒绝其后的所有业务方法）。
+func DialWithToken(pid int, token string, dialTimeout, handshakeTimeout time.Duration) (*Client, error) {
 	name := fmt.Sprintf(`\\.\pipe\MelodyMate_ENGINE_%d`, pid)
 	conn, err := dialPipe(name, dialTimeout)
 	if err != nil {
@@ -65,6 +77,7 @@ func Dial(pid int, dialTimeout, handshakeTimeout time.Duration) (*Client, error)
 		conn:   conn,
 		dead:   make(chan struct{}),
 		events: make(chan Event, 16),
+		token:  token,
 	}
 
 	if err := c.handshake(handshakeTimeout); err != nil {
@@ -429,6 +442,9 @@ func (c *Client) handshake(timeout time.Duration) error {
 	params := map[string]any{
 		"protocolVersion": ProtocolVersion,
 		"client":          "melodymate_supervisor",
+	}
+	if c.token != "" {
+		params["token"] = c.token
 	}
 
 	resp, err := c.Request("hello", params, timeout)

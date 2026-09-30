@@ -122,6 +122,10 @@ interface ParseResult {
 interface UpdateInfo {
   available?: boolean;
   mandatory?: boolean;
+  /** 清单是否提供了有效的 sha256 校验值；false 时禁用自动安装与强制更新 */
+  sha256_ok?: boolean;
+  /** 后端给出的人工可读提示（如"清单未提供 sha256，已停用自动安装"） */
+  notice?: string;
   latest: string;
   current: string;
   date?: string;

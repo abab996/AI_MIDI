@@ -2,6 +2,9 @@ package server
 
 import (
 	"bufio"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,18 +25,88 @@ type Router struct {
 	assetsFS fs.FS
 	dialogFn func() (string, error)
 	updater  *updater
+
+	/* 启动令牌：桌面壳与页面之间的共享秘密，由 NewRouter 生成。
+	   Host/Origin 校验挡跨站请求，令牌挡"同机其他程序直连 HTTP API"
+	   （curl/脚本没有 Origin，此前会被放行）。 */
+	authToken     string
+	originChecker func(origin string) bool
 }
 
 // NewRouter 创建路由器实例
 func NewRouter(assetsFS fs.FS, dialogFn func() (string, error)) *Router {
 	r := &Router{
-		mux:      http.NewServeMux(),
-		assetsFS: assetsFS,
-		dialogFn: dialogFn,
-		updater:  newUpdater(),
+		mux:           http.NewServeMux(),
+		assetsFS:      assetsFS,
+		dialogFn:      dialogFn,
+		updater:       newUpdater(),
+		authToken:     newAuthToken(),
+		originChecker: isAllowedOrigin,
 	}
 	r.registerRoutes()
 	return r
+}
+
+// testAuthToken 由测试在调用 NewRouter 前设置：使用固定令牌，
+// 让既有测试用固定请求头通过校验（令牌拒绝路径由专用测试在不设它时覆盖）。
+var testAuthToken string
+
+// newAuthToken 生成 32 字节启动令牌的十六进制串。
+// 随机源失败时返回空串：此时令牌校验整体停用（不阻断应用启动），
+// 但 Host/Origin 校验与 CORS 收紧仍然生效。
+func newAuthToken() string {
+	if testAuthToken != "" {
+		return testAuthToken
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		slog.Warn("[server] 生成启动令牌失败，本次会话不启用令牌校验", "err", err)
+		return ""
+	}
+	return hex.EncodeToString(buf)
+}
+
+// AllowOrigins 收窄允许的浏览器来源到实际监听来源。
+// 未调用时退化为 localOriginRe（任意本机端口）——单测与旧行为兼容。
+// 生产路径（main.go）必须调用，否则同机其他端口的页面仍被当成可信来源。
+func (r *Router) AllowOrigins(origins []string) {
+	clean := make([]string, 0, len(origins))
+	for _, o := range origins {
+		if o = strings.TrimSpace(o); o != "" {
+			clean = append(clean, strings.TrimRight(o, "/"))
+		}
+	}
+	if len(clean) == 0 {
+		return
+	}
+	r.originChecker = func(origin string) bool {
+		if origin == "" {
+			return true // 非浏览器客户端：由令牌把关
+		}
+		candidate := strings.TrimRight(origin, "/")
+		for _, allowed := range clean {
+			if strings.EqualFold(candidate, allowed) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// AuthToken 返回本次会话的启动令牌（main 注入 bootstrap 脚本用）
+func (r *Router) AuthToken() string { return r.authToken }
+
+// tokenExemptPath 免令牌路径：这几条各自用别的方式把关，不能走 X-MM-Token。
+//   - bootstrap.js：页面靠它拿到令牌，本身校验 Origin
+//   - health/version：无副作用的只读端点
+//   - /api/engine/plugins/ui：由 <iframe src> 直接加载，浏览器导航带不了
+//     自定义头；改由一次性 ui_ticket 校验（见 handler_plugins.go 的 /ui 分支）
+func tokenExemptPath(path string) bool {
+	switch path {
+	case "/api/bootstrap.js", "/api/health", "/api/version", "/api/engine/plugins/ui":
+		return true
+	}
+	return false
 }
 
 // localOriginRe 本地回环来源（保留本地多端口开发调试的跨域能力，
@@ -140,12 +213,24 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusForbidden, "非法 Host")
 		return
 	}
-	if !isAllowedOrigin(req.Header.Get("Origin")) {
+	if !r.originChecker(req.Header.Get("Origin")) {
 		writeError(w, http.StatusForbidden, "非法来源")
 		return
 	}
 
-	if origin := req.Header.Get("Origin"); origin != "" && localOriginRe.MatchString(origin) {
+	/* 启动令牌：拦"同机其他程序直连 HTTP API"（脚本请求不带 Origin，
+	   此前被当作非浏览器客户端放行）。OPTIONS 预检免令牌——预检本身
+	   没有副作用，且浏览器预检不会带自定义头。 */
+	if req.Method != http.MethodOptions && r.authToken != "" &&
+		strings.HasPrefix(req.URL.Path, "/api/") && !tokenExemptPath(req.URL.Path) {
+		got := req.Header.Get("X-MM-Token")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(r.authToken)) != 1 {
+			writeError(w, http.StatusUnauthorized, "缺少或无效的启动令牌：请通过应用界面操作")
+			return
+		}
+	}
+
+	if origin := req.Header.Get("Origin"); origin != "" && r.originChecker(origin) && localOriginRe.MatchString(origin) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -207,6 +292,9 @@ func (r *Router) registerRoutes() {
 
 	// 版本信息（设置页 About 卡片）
 	r.mux.HandleFunc("/api/version", r.handleVersion)
+	// 启动令牌引导脚本：页面在其它脚本之前同步加载它，由它给同源
+	// /api/ 请求附加 X-MM-Token。响应校验 Origin，跨站页面拿不到令牌。
+	r.mux.HandleFunc("/api/bootstrap.js", r.handleBootstrapJS)
 	// 从 AI_MIDI 迁移后的一次性提示
 	r.mux.HandleFunc("/api/migration", r.handleMigration)
 
@@ -223,6 +311,7 @@ func (r *Router) registerRoutes() {
 	// Chat & Answer
 	r.mux.HandleFunc("/api/chat", r.handleChat)
 	r.mux.HandleFunc("/api/answer", r.handleAnswer)
+	r.mux.HandleFunc("/api/approval", r.handleApproval)
 
 	// Update 自动更新（清单拉取/比较、应用内下载、进度、浏览器降级）
 	r.mux.HandleFunc("/api/update/check", r.handleUpdateCheck)
@@ -323,6 +412,19 @@ func (r *Router) handleClientError(w http.ResponseWriter, req *http.Request) {
 		"page", in.Page, "source", in.Source,
 		"line", in.Line, "col", in.Column, "message", in.Message)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleBootstrapJS GET /api/bootstrap.js：把启动令牌交给同源页面。
+// 返回 JSON 而非可执行 JS：前端用同步 XHR 取回后 JSON.parse，
+// 避免 eval 语义。只对同源（或非浏览器）请求返回：跨站页面带的是
+// 攻击者 Origin，会被这里拒掉。
+func (r *Router) handleBootstrapJS(w http.ResponseWriter, req *http.Request) {
+	if !r.originChecker(req.Header.Get("Origin")) {
+		writeError(w, http.StatusForbidden, "非法来源")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"token": r.authToken})
 }
 
 // handleVersion 设置页 About 卡片数据源（版本由 main 从 wails.json 注入）

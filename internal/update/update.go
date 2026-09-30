@@ -9,11 +9,103 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"melodymate/internal/config"
 )
+
+// noRedirectPolicy 禁止跟随重定向：更新链路的每一跳都必须是自有主机。
+// 清单与安装包都是远程数据，跟随 302 会把请求（以及安装包的来源）
+// 交给清单作者指定的任意站点。
+func noRedirectPolicy(req *http.Request, via []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+// 允许承载更新清单与安装包的主机白名单：默认取 config 的清单域名。
+// injectableHosts 非空表示这是测试注入的环境（httptest 是明文 HTTP），
+// 此时放宽 scheme 校验——生产路径永远走上面的 config 名单，不受影响。
+var (
+	trustedHosts    = config.UpdateManifestHosts
+	injectableHosts []string
+)
+
+// SetTrustedHostsForTest 覆盖允许的下载主机白名单并放宽 scheme 校验
+// （httptest 服务器是 http）。返回恢复函数。仅供测试使用。
+func SetTrustedHostsForTest(hosts []string) func() {
+	prevHosts, prevInjected := trustedHosts, injectableHosts
+	trustedHosts = append([]string(nil), hosts...)
+	injectableHosts = append([]string(nil), hosts...)
+	return func() { trustedHosts, injectableHosts = prevHosts, prevInjected }
+}
+
+// isInjectedHost 报告 host 是否来自测试注入的白名单
+func isInjectedHost(host string) bool {
+	for _, h := range injectableHosts {
+		if strings.EqualFold(host, strings.TrimSpace(h)) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidSHA256 报告 s 是否是可用的 sha256 十六进制串（64 位，大小写不敏感）。
+// 更新链路的策略是 fail-closed：清单没带合法 sha256 就不允许自动下载安装，
+// 而不是"跳过校验继续装"。
+func IsValidSHA256(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// IsTrustedDownloadURL 报告下载地址是否位于自有主机白名单内。
+// 要求：https、主机在白名单内（大小写不敏感）、不带用户信息、
+// 端口为空或 443。清单里的 downloads 是远程数据，必须整条校验。
+// 测试注入的主机额外允许 http（httptest 无 TLS）。
+func IsTrustedDownloadURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	injected := isInjectedHost(host)
+	if !strings.EqualFold(u.Scheme, "https") && !(injected && strings.EqualFold(u.Scheme, "http")) {
+		return false
+	}
+	if u.User != nil {
+		return false
+	}
+	if p := u.Port(); p != "" && p != "443" && !injected {
+		return false
+	}
+	for _, allowed := range trustedHosts {
+		if host == strings.ToLower(strings.TrimSpace(allowed)) {
+			return true
+		}
+	}
+	return false
+}
 
 // Manifest 更新清单（桶根 update.json）
 type Manifest struct {
@@ -122,7 +214,7 @@ func NewClient(urls ...string) *Client {
 	}
 	return &Client{
 		urls: clean,
-		http: &http.Client{Timeout: 5 * time.Second},
+		http: &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirectPolicy},
 		ttl:  10 * time.Minute,
 	}
 }

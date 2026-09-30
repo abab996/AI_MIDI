@@ -65,9 +65,20 @@ func (r *Router) handleUpdateCheck(w http.ResponseWriter, req *http.Request) {
 	}
 
 	available := update.CompareVersions(mani.Version, config.AppVersion) > 0
+	shaOK := update.IsValidSHA256(mani.SHA256Windows)
+	/* 强制更新的资格门槛（fail-closed）：清单没带合法 sha256 时不允许
+	   把用户锁在全屏遮罩里——否则"清单不可验证"会直接变成"不能工作"。
+	   注意这不是放行安装：handleUpdateApply 仍然拒绝自动安装。 */
+	mandatory := available && mani.Mandatory && shaOK
+	notice := ""
+	if available && !shaOK {
+		notice = "发现新版本，但更新清单未提供有效的 sha256 校验值，已停用自动安装与强制更新。可继续当前工作，或稍后重试。"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"available":    available,
-		"mandatory":    available && mani.Mandatory,
+		"mandatory":    mandatory,
+		"sha256_ok":    shaOK,
+		"notice":       notice,
 		"current":      config.AppVersion,
 		"latest":       mani.Version,
 		"date":         mani.Date,
@@ -101,6 +112,21 @@ func (r *Router) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
 	dlURL := mani.DownloadURLFor(runtime.GOOS)
 	if dlURL == "" {
 		writeError(w, http.StatusNotFound, "清单中没有当前平台的下载链接")
+		return
+	}
+
+	/* 安装包来源与完整性校验（fail-closed）：清单是远程数据，缺 sha256
+	   或下载地址不在自有主机白名单内时一律拒绝自动下载安装，绝不"跳过
+	   校验继续装"——安装包下载后会在本机以静默参数运行。校验排在平台
+	   分支之前，保证各平台判定一致。 */
+	if !update.IsValidSHA256(mani.SHA256Windows) {
+		writeError(w, http.StatusBadGateway,
+			"更新清单缺少有效的 sha256 校验值，已拒绝自动安装；请稍后重试或手动下载")
+		return
+	}
+	if !update.IsTrustedDownloadURL(dlURL) {
+		writeError(w, http.StatusBadGateway,
+			"更新清单中的下载地址不在允许的主机内，已拒绝自动安装")
 		return
 	}
 

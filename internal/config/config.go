@@ -48,6 +48,16 @@ var UpdateManifestURLs = []string{
 	"https://aimidi-r2.baimoo.top/update.json",
 }
 
+// UpdateManifestHosts 允许承载更新清单与安装包的主机白名单。
+// 清单里的 downloads.windows 是远程数据，若不校验主机，清单被改写（或
+// 占位域名落入他人之手）就能把安装包指向任意地址；下载后会以静默参数
+// 在本机运行，因此主机必须收敛到自有域名。
+// 维护约束：新增/更换清单域名时，UpdateManifestURLs 与这里必须同时更新。
+var UpdateManifestHosts = []string{
+	"melodymate-r2.baimoo.top",
+	"aimidi-r2.baimoo.top",
+}
+
 // AppVersion 应用版本：main 启动时从 wails.json 注入（与打包配置同源，
 // 避免双份维护）；未注入时（单测/浏览器降级）显示 dev。
 var AppVersion = "dev"

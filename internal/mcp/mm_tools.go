@@ -12,6 +12,8 @@ package mcp
 //   · 安装走能力授权 fail-closed（声明未授权即拒绝，不允许多授权）。
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,15 +67,31 @@ var mmTools = []llm.ToolDefinition{
 	{
 		Type: "function",
 		Function: llm.FunctionSchema{
-			Name:        "mm_build_plugin",
-			Description: "编译 MM 插件工程并打包 .mm（调 mm build：配置+编译+收集+写哈希+打包+校验）。**首次编译必须先把要做的改动告诉用户并获得确认**，然后带 confirm=true 调用；返回编译日志尾部。",
+			Name:        "mm_request_build_approval",
+			Description: "在编译或安装 MM 插件前，向用户发起界面确认（批准卡）。必须先用本工具取得 approval_id，用户点击允许后，再把该 approval_id 传给 mm_build_plugin / mm_install_plugin。**模型自己无法代替用户授权**：不调用本工具就直接编译/安装会被拒绝。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"id":      map[string]any{"type": "string", "description": "插件 id"},
-					"confirm": map[string]any{"type": "boolean", "description": "用户已确认本次编译（首次必须为 true）"},
+					"id":     map[string]any{"type": "string", "description": "插件 id"},
+					"tool":   map[string]any{"type": "string", "enum": []string{"mm_build_plugin", "mm_install_plugin"}, "description": "要为哪个操作请求确认"},
+					"reason": map[string]any{"type": "string", "description": "向用户说明这次编译/安装要做什么（会显示在批准卡上）"},
 				},
-				"required": []string{"id", "confirm"},
+				"required": []string{"id", "tool", "reason"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: llm.FunctionSchema{
+			Name:        "mm_build_plugin",
+			Description: "编译 MM 插件工程并打包 .mm（调 mm build：配置+编译+收集+写哈希+打包+校验）。**必须先调用 mm_request_build_approval 取得用户确认**，再带返回的 approval_id 调用本工具；没有有效 approval_id 会被拒绝。返回编译日志尾部。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":          map[string]any{"type": "string", "description": "插件 id"},
+					"approval_id": map[string]any{"type": "string", "description": "mm_request_build_approval 返回的批准编号（用户点击允许后有效）"},
+				},
+				"required": []string{"id", "approval_id"},
 			},
 		},
 	},
@@ -95,14 +113,15 @@ var mmTools = []llm.ToolDefinition{
 		Type: "function",
 		Function: llm.FunctionSchema{
 			Name:        "mm_install_plugin",
-			Description: "把编译好的 .mm 安装到 <数据根>/Library/plugins/（校验 + 能力授权 fail-closed）。安装后可在机架/混音台里加载。",
+			Description: "把编译好的 .mm 安装到 <数据根>/Library/plugins/（校验 + 能力授权 fail-closed）。**必须先调用 mm_request_build_approval（tool=mm_install_plugin）取得用户确认**，再带 approval_id 调用本工具。安装后可在机架/混音台里加载。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"id":    map[string]any{"type": "string", "description": "插件 id"},
-					"grant": map[string]any{"type": "string", "description": "用户授权的能力，逗号分隔（如 files,network）；插件没声明而这里给了会被拒绝"},
+					"id":          map[string]any{"type": "string", "description": "插件 id"},
+					"grant":       map[string]any{"type": "string", "description": "用户授权的能力，逗号分隔（如 files,network）；插件没声明而这里给了会被拒绝"},
+					"approval_id": map[string]any{"type": "string", "description": "mm_request_build_approval 返回的批准编号"},
 				},
-				"required": []string{"id"},
+				"required": []string{"id", "approval_id"},
 			},
 		},
 	},
@@ -110,7 +129,8 @@ var mmTools = []llm.ToolDefinition{
 
 func isMMTool(name string) bool {
 	switch name {
-	case "mm_create_plugin", "mm_write_file", "mm_build_plugin", "mm_build_status", "mm_install_plugin":
+	case "mm_create_plugin", "mm_write_file", "mm_build_plugin", "mm_build_status",
+		"mm_install_plugin", "mm_request_build_approval":
 		return true
 	}
 	return false
@@ -178,7 +198,7 @@ func runMM(args ...string) (string, error) {
 	return text, nil
 }
 
-func executeMMTool(name string, args map[string]any) (string, error) {
+func executeMMTool(env ToolEnv, name string, args map[string]any) (string, error) {
 	switch name {
 	case "mm_create_plugin":
 		id := stringArg(args, "id")
@@ -239,10 +259,12 @@ func executeMMTool(name string, args map[string]any) (string, error) {
 		}
 		return fmt.Sprintf("已写入 %s（%d 字节）", filepath.ToSlash(filepath.Join(id, clean)), len(content)), nil
 
-	case "mm_build_plugin":
+	case "mm_request_build_approval":
 		id := stringArg(args, "id")
-		if !mapBool(args, "confirm") {
-			return "需要用户确认后才能编译（首次编译会在本机执行 C++ 构建）：请先把要创建的插件作用与参数告诉用户，得到同意后再带 confirm=true 调用 mm_build_plugin。", nil
+		/* 确认的是"编译"还是"安装"：两者的参数摘要不同，令牌不可混用 */
+		tool := strings.TrimSpace(stringArg(args, "tool"))
+		if tool != "mm_build_plugin" && tool != "mm_install_plugin" {
+			return "错误：tool 必须是 mm_build_plugin 或 mm_install_plugin", nil
 		}
 		dir, err := mmSourceDir(id)
 		if err != nil {
@@ -250,6 +272,51 @@ func executeMMTool(name string, args map[string]any) (string, error) {
 		}
 		if _, statErr := os.Stat(filepath.Join(dir, "manifest.json")); statErr != nil {
 			return "错误：工程不存在（先 mm_create_plugin）: " + dir, nil
+		}
+		/* 汇总将被编译的文件清单与实际执行的命令——批准卡要让人看清
+		   "允许的到底是什么"，而不是只给一句"允许编译吗"。 */
+		files := collectPluginFiles(dir)
+		approvalID := newApprovalID()
+		approvedArgs := map[string]any{"id": id}
+		if tool == "mm_install_plugin" {
+			approvedArgs["grant"] = strings.TrimSpace(stringArg(args, "grant"))
+		}
+		req := ApprovalRequest{
+			Tool:       tool,
+			ArgsDigest: ArgsDigest(tool, approvedArgs),
+			Files:      files,
+			Command:    mmBuildCommand(dir),
+			Reason:     stringArg(args, "reason"),
+		}
+		if err := issueApproval(env, approvalID, req); err != nil {
+			return "错误：无法请求用户确认（" + err.Error() + "）", nil
+		}
+		emitApprovalCard(env, approvalID, req)
+		target := "mm_build_plugin"
+		action := "编译"
+		if tool == "mm_install_plugin" {
+			target = "mm_install_plugin"
+			action = "安装"
+		}
+		return fmt.Sprintf("已向用户请求%s确认（approval_id=%s）。**请结束本轮回复、等待用户在界面上点按允许**，"+
+			"然后在下一轮带该 approval_id 调用 %s；在用户确认前调用会被拒绝。\n"+
+			"工程：%s\n文件：%s\n命令：%s", action, approvalID, target, dir, strings.Join(files, "、"), req.Command), nil
+
+	case "mm_build_plugin":
+		id := stringArg(args, "id")
+		dir, err := mmSourceDir(id)
+		if err != nil {
+			return "错误：" + err.Error(), nil
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, "manifest.json")); statErr != nil {
+			return "错误：工程不存在（先 mm_create_plugin）: " + dir, nil
+		}
+		/* 授权来自用户点过的那一次确认，而不是模型传的 confirm。
+		   参数摘要绑定"批准的就是这份工程"，换参数不能复用。 */
+		digest := ArgsDigest("mm_build_plugin", map[string]any{"id": id})
+		if err := consumeApproval(env, stringArg(args, "approval_id"), "mm_build_plugin", digest); err != nil {
+			return "需要用户确认后才能编译（首次编译会在本机执行 C++ 构建）：" + err.Error() +
+				"。请先调用 mm_request_build_approval 发起确认，用户允许后再带 approval_id 重试。", nil
 		}
 		/* 后台作业 + 进度报告：快编译直接给结果，慢编译给出进度卡与作业号
 		   （同步等待会让对话长时间空白，直接截断又会丢日志） */
@@ -280,6 +347,13 @@ func executeMMTool(name string, args map[string]any) (string, error) {
 		matches, _ := filepath.Glob(filepath.Join(dir, "*.mm"))
 		if len(matches) == 0 {
 			return "错误：没有找到 .mm 包（先 mm_build_plugin）: " + dir, nil
+		}
+		/* 安装同样需要用户确认：安装会把原生库写进 Library/plugins 并在
+		   下次加载时执行其代码，授权不能由模型自己声明。 */
+		installArgs := map[string]any{"id": id, "grant": grant}
+		if err := consumeApproval(env, stringArg(args, "approval_id"), "mm_install_plugin", ArgsDigest("mm_install_plugin", installArgs)); err != nil {
+			return "需要用户确认后才能安装：" + err.Error() +
+				"。请先调用 mm_request_build_approval（tool=mm_install_plugin）发起确认，用户允许后再带 approval_id 重试。", nil
 		}
 		dest := filepath.Join(config.LibraryDir, "plugins")
 		args2 := []string{"install", matches[len(matches)-1], "--dest", dest}
@@ -354,4 +428,86 @@ func stringField(args map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+/* ═══════════ 用户确认闸门（编译/安装的授权来源） ═══════════ */
+
+// newApprovalID 生成一次性批准令牌编号
+func newApprovalID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		// 随机源不可用时退化为时间戳（仍是一次性、仍绑定参数摘要）
+		return fmt.Sprintf("appr-%d", time.Now().UnixNano())
+	}
+	return "appr-" + hex.EncodeToString(buf)
+}
+
+// issueApproval 登记待批准请求。enforceApproval 为 false（未接入界面确认
+// 通道，如 stdio MCP）时返回错误——宁可不执行，也不退回"模型自证"。
+func issueApproval(env ToolEnv, id string, req ApprovalRequest) error {
+	if env.Approval == nil {
+		return fmt.Errorf("当前没有可用的用户确认通道")
+	}
+	if issuer, ok := env.Approval.(interface {
+		Issue(string, ApprovalRequest)
+	}); ok {
+		issuer.Issue(id, req)
+		return nil
+	}
+	return fmt.Errorf("当前确认通道不支持签发批准令牌")
+}
+
+// consumeApproval 校验并消费一次性批准令牌
+func consumeApproval(env ToolEnv, approvalID, tool, digest string) error {
+	if env.Approval == nil {
+		return fmt.Errorf("当前没有可用的用户确认通道")
+	}
+	return env.Approval.Consume(approvalID, tool, digest)
+}
+
+// emitApprovalCard 把批准卡推给前端（复用对话流的 chat 事件通道）
+func emitApprovalCard(env ToolEnv, approvalID string, req ApprovalRequest) {
+	if env.Emit == nil {
+		return
+	}
+	env.Emit(map[string]any{
+		"type": "approval_request",
+		"approval": map[string]any{
+			"approval_id": approvalID,
+			"tool":        req.Tool,
+			"files":       req.Files,
+			"command":     req.Command,
+			"reason":      req.Reason,
+		},
+	})
+}
+
+// collectPluginFiles 列出工程内将被编译的文件（批准卡展示用，相对工程根）
+func collectPluginFiles(dir string) []string {
+	var files []string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		// 构建产物不入清单
+		if strings.HasPrefix(rel, "build/") || strings.HasPrefix(rel, "bin/") {
+			return nil
+		}
+		files = append(files, rel)
+		return nil
+	})
+	if len(files) > 40 {
+		files = append(files[:40], fmt.Sprintf("…（共 %d 个文件）", len(files)))
+	}
+	return files
+}
+
+// mmBuildCommand 批准卡上展示的实际命令（与 mm_build_job 保持一致）
+func mmBuildCommand(dir string) string {
+	return "mm build " + dir + "（配置阶段执行工程内 CMakeLists.txt）"
 }

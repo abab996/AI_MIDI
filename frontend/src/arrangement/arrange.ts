@@ -2972,7 +2972,7 @@
       return;
     }
     if (probe.voice.type === "plugin") {
-      UI.toast!("⚠ 插件音源将在 P5/P6 里程碑开放", "warn");
+      UI.toast!("⚠ 插件音源请在混音台点空 FX 槽 →「装载插件」选择（AI 也可用 load_plugin 直接装载）", "warn");
       return;
     }
     var idx = (trackIdx === undefined || trackIdx === null) ? this.selectedTrackIdx : Number(trackIdx);
@@ -4050,7 +4050,7 @@
           this.previewRackSample(v.path || "");
         } else if (v.type === "plugin") {
           done();
-          UI.toast!("插件试听将在 P5/P6 里程碑开放", "warn");
+          UI.toast!("插件不支持此处试听：请先在混音台 FX 槽装载，再播放试听", "warn");
         } else if (v.type === "pack") {
           done();
           UI.toast!("采样包在素材库中挑选采样（P3 里程碑接入）", "warn");

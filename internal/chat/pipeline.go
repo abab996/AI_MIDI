@@ -38,6 +38,9 @@ func toolEnv(projectID, baseDir, mirrorDir string, onEvent StreamCallback) mcp.T
 		ProjectID: projectID,
 		BaseDir:   baseDir,
 		MirrorDir: mirrorDir,
+		/* 用户确认闸门：MM 编译/安装凭这里签发的一次性批准令牌执行，
+		   模型参数里的 confirm 不再构成授权。 */
+		Approval: ApprovalGateFor(projectID),
 		Emit: func(event map[string]any) {
 			if onEvent == nil || event == nil {
 				return

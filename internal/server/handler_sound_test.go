@@ -439,6 +439,9 @@ func TestSoundRoutesThroughFullRouter(t *testing.T) {
 		req := httptest.NewRequest(method, target, bytes.NewReader(body))
 		req.Host = "127.0.0.1:7860"
 		req.Header.Set("Origin", "http://127.0.0.1:7860")
+		if testAuthToken != "" {
+			req.Header.Set("X-MM-Token", testAuthToken)
+		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}

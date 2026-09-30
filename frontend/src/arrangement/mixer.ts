@@ -429,7 +429,7 @@
     btn.textContent = plugin ? shortPluginName(plugin) : String(slot + 1);
     btn.title = plugin
       ? "FX " + (slot + 1) + "：" + plugin + (bypass ? "（旁通）" : "")
-      : "FX " + (slot + 1) + "：空槽（P5 起可装载插件）";
+      : "FX " + (slot + 1) + "：空槽（点击可装载插件）";
     btn.setAttribute("aria-label", btn.title);
     return btn;
   }
@@ -888,8 +888,8 @@
       try {
         setChain.call(bridge, idx === MASTER_TRACK ? -1 : idx, [payload]).catch(function (err: any) {
           var msg = err && err.message ? err.message : String(err);
-          if (msg.indexOf("P5") >= 0 || msg.indexOf("P6") >= 0) {
-            toast("ℹ 插件装载将在 P5（VST3）/ P6（MM）开放，槽位参数已保存", "warn");
+          if (msg.indexOf("P5") >= 0 || msg.indexOf("P6") >= 0 || msg.indexOf("未启动") >= 0) {
+            toast("ℹ 原生引擎未启动：插件装载需要桌面版；槽位参数已保存", "warn");
           } else {
             toast("⚠ FX 链下发失败: " + msg, "err");
           }

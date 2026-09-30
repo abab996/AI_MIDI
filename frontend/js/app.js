@@ -449,8 +449,11 @@
     var h = String(href == null ? "" : href).replace(/[\t\n\r]/g, "").trim();
     var lower = h.toLowerCase();
     if (lower === "" || lower.charAt(0) === "#") return true;
-    if (/^(https?:|mailto:)/.test(lower)) return true;
-    return lower.indexOf(":") === -1; /* 无 scheme 的相对路径放行，其余（javascript:/vbscript:/data: 等）拒绝 */
+    if (/^https:/.test(lower) || /^mailto:/.test(lower)) return true;
+    /* 相对/绝对路径链接一律拒绝：它们会把同源页面（如插件 UI 承载页
+       /api/engine/plugins/ui、demo 回放页）当普通文档在新标签打开，
+       从而绕开插件 iframe 的 sandbox 隔离。外链请用完整 https URL。 */
+    return false;
   }
 
   if (window.marked && window.marked.use && window.marked.Renderer) {

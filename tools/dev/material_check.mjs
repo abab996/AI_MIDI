@@ -82,7 +82,9 @@ check("展开态用 localStorage 记忆", materialTs.includes("melodymate-materi
 check("超量文件折叠（>100 条给显示更多）", materialTs.includes("MAX_CHILDREN = 100") && materialTs.includes("显示更多"));
 check("音源卡片带 [已在架]/[＋ 入架] 胶囊", materialTs.includes('"已在架" : "＋ 入架"'));
 check("音源页签接机架分配", materialTs.includes("assignRackItem"));
-check("效果器页签 P4/P5 前给引导空态", materialTs.includes("效果器将装载到混音台 FX 槽"));
+check("效果器页签引导到混音台装载（不再是 P4/P5 占位文案）",
+  materialTs.includes("效果器装载到混音台 FX 槽") &&
+  !materialTs.includes("P5 VST3 宿主就绪后可用"));
 check("拖到轨道=分配并自动入架（载荷带 sourceId）", materialTs.includes("sourceId: src.id") &&
   arrangeTs.includes("先入架再分配"));
 

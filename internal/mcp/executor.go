@@ -117,6 +117,10 @@ type ToolEnv struct {
 	BaseDir   string
 	MirrorDir string
 	Emit      func(event map[string]any)
+	/* Approval 是"用户已确认"的权威来源：由对话层注入，模型无法伪造。
+	   MM 编译/安装必须凭这里签发的一次性批准令牌才能执行——工具参数里的
+	   confirm/grant 只是模型的自我声明，不构成授权。 */
+	Approval ApprovalGate
 }
 
 // ExecuteTool 执行指定的 MCP 工具调用并返回结果文本。
@@ -128,7 +132,7 @@ func ExecuteTool(name string, rawArgs map[string]any, baseDir, mirrorDir string)
 // ExecuteToolEnv 带上下文的工具执行入口
 func ExecuteToolEnv(env ToolEnv, name string, rawArgs map[string]any) (string, error) {
 	if isMMTool(name) {
-		return executeMMTool(name, rawArgs)
+		return executeMMTool(env, name, rawArgs)
 	}
 	if isArrangeTool(name) {
 		return executeArrangeTool(env, name, rawArgs)

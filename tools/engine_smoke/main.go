@@ -1137,6 +1137,26 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 			}
 			fmt.Printf("      panic 后静场电平 = %.4f（应为 0；不为 0 说明声部没关掉）\n", idle)
 			check("panic 后轨道静音（MM 乐器声部真的被关掉）", idle < 0.001, fmt.Sprintf("idle=%.4f", idle))
+
+			/* 对照实验（判定电平表本身是否可信）：用**引擎自己的轨道增益**做 A/B。
+			   增益由宿主直接相乘，与插件无关。若这一步都不能让电平归零，那么问题
+			   在"电平表这个量"，而不是"插件参数有没有送达"——两者必须分开定性。 */
+			setTrackGain := func(v float64) {
+				_, _ = c.request("setTrackMix", map[string]interface{}{"track": 0, "gain": v})
+				time.Sleep(400 * time.Millisecond)
+			}
+			tg1 := measure()
+			setTrackGain(0.0)
+			tg0 := measure()
+			setTrackGain(1.0)
+			tg2 := measure()
+			fmt.Printf("      轨道增益对照：增益1.0 %.4f / 增益0.0 %.4f / 增益1.0 %.4f\n", tg1, tg0, tg2)
+			check("电平表跟随引擎轨道增益（增益 0 → 静音）",
+				tg1 > 0.001 && tg0 < tg1*0.05,
+				fmt.Sprintf("g1=%.4f g0=%.4f", tg1, tg0))
+			check("轨道增益拉回 1.0 后电平恢复",
+				tg2 > tg1*0.8,
+				fmt.Sprintf("g1=%.4f g2=%.4f", tg1, tg2))
 			rf, ferr := c.request("plugin.load", map[string]interface{}{
 				"format": "mm", "path": filterDll, "id": filterDll, "track": 0, "slot": 0,
 			})
@@ -1158,13 +1178,17 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 					base, lowCut, highCut)
 				fmt.Printf("      低通实测电平：默认截止 %.4f / 截止 20Hz %.4f / 截止 18kHz %.4f\n",
 					base, lowCut, highCut)
-				/* 【参考信息，暂不断言】三次读数呈固定 2:1:3 比例，与截止频率无关，
-				   说明这个量对参数的响应还没搞清（已排除：声部累积——`panic 后静场
-				   电平 = 0.0000`；相位叠加——单音也一样；平滑未收敛——稳态取值）。
-				   唯一对得上的是"默认截止时的读数 = 无滤波基线 0.45 × 0.8"，
-				   与 gain 示例的默认值吻合，暗示**参数确实生效**。
-				   下一步：给宿主加**后级电平**字段（绕过表内平滑、直接给链输出峰值）
-				   或临时把每块峰值打到日志里，再决定断言怎么写。 */
+				/* 【参考信息，暂不断言】插件参数下的读数呈固定 2:1:3 比例，与参数值
+				   无关。已排除的假设（每一步都是实测）：
+				     · 电平表本身不可信 —— **排除**：轨道增益对照
+				       1.0→0.3543 / 0.0→0.0000 / 1.0→0.3543，精确复现；
+				     · 声部累积 —— 排除：panic 后静场 0.0000；
+				     · 相位叠加 —— 排除：单音 + 先 panic 仍同比例；
+				     · 平滑未收敛 —— 排除：取末次采样（保持 2 秒）；
+				     · 线性/仿射模型 out = x(a+b·g) —— 排除：三点解不出自洽的 a、b。
+				   下一步（明确）：在引擎侧记录 FX 链**每块的输入/输出峰值**（临时日志
+				   或新增后级电平字段），把"插件 DSP 输出"与"电平表读数"分开，
+				   再决定断言怎么写。仅凭现有读数写断言只会得到时对时错的套件。 */
 				if highCut <= 0.0 {
 					check("拉回 18kHz 后不得为静音（高频不稳定回归）", false, "highCut=0")
 				}

@@ -1945,6 +1945,34 @@
     var textWithoutDetails = content.replace(/<details>[\s\S]*?<\/details>/g, "").trim();
     var isPureToolCall = (content.indexOf("<details>") === 0) && !isThink && (textWithoutDetails === "");
 
+    /* P6 §4.8：一键编译进度卡（mm_build_plugin / mm_build_status 的报告）。
+       命中时把报告渲染成卡片，其余内容照旧渲染，避免"编译中"只是一行文本。 */
+    var buildReport = parseMMBuildReport(content);
+    if (buildReport) {
+      if (buildReport.state === "running") {
+        var hudCtrl: any = window.Arrange;
+        if (hudCtrl && typeof hudCtrl.showHUD === "function") hudCtrl.showHUD("编译中…");
+      }
+      var wrap = document.createElement("div");
+      /* 报告本来就在 <details> 工具块里：抽掉报告后若只剩空的折叠壳，
+         就整条消息只渲染卡片（避免留下一个空的"工具执行"折叠块）。 */
+      var restText = buildReport.rest.trim();
+      var restPlain = restText.replace(/<details>[\s\S]*?<\/details>/g, "").trim();
+      var cardOnly = restText.indexOf("<details>") === 0 && restPlain === "";
+      wrap.className = cardOnly ? "tool-call" : "msg ai";
+      if (!cardOnly) {
+        wrap.innerHTML = '<div class="msg-label">AI · 乐理专家</div>';
+      }
+      wrap.appendChild(buildMMBuildCard(buildReport));
+      if (!cardOnly && restText) {
+        var restEl = document.createElement("div");
+        restEl.className = "mmbuild-rest";
+        restEl.innerHTML = (restText.indexOf("<details>") !== -1) ? renderDetailsContent(restText) : UI.md(restText);
+        wrap.appendChild(restEl);
+      }
+      return wrap;
+    }
+
     if (isPureToolCall) {
       var tool = document.createElement("div");
       tool.className = "tool-call";
@@ -1962,6 +1990,109 @@
       '<button class="msg-action" data-action="copy" title="复制消息">⧉ 复制</button>' +
       "</div>";
     return a;
+  }
+
+  /* ═══════════ P6 §4.8 一键编译进度卡 ═══════════
+     后端把编译做成可轮询后台作业（internal/mcp/mm_build_job.go），工具结果是一段
+     文本报告。这里把它渲染成计划要求的卡片：阶段步骤条（配置→编译→收集→打包→
+     校验）+ 可折叠日志 + 失败一键复制；进行中时在 HUD 提示"编译中"。
+     报告格式（report()）：
+       ⏳ 编译进行中：<id> · 阶段 <阶段> · 已用时 <d>
+       ✓ 编译完成：<id> · 用时 <d>
+       ✗ 编译失败：<id> · 阶段 <阶段> · 用时 <d>
+     随后是尾部日志与"下一步"提示。 */
+  var MM_BUILD_STAGES = ["配置", "编译", "收集", "打包", "校验"];
+
+  /** parseMMBuildReport 从消息文本里提取编译报告；没有则返回 null。
+      报告可能整段在 <details> 工具块里，因此匹配到 </details> 或文本末尾为止。 */
+  function parseMMBuildReport(content: string) {
+    var m = content.match(/(^|\n)([⏳✓✗] 编译(?:进行中|完成|失败)：[\s\S]*?)(?=\n?<\/details>|$)/);
+    if (!m) return null;
+    var report = m[2];
+    var lines = report.split("\n");
+    var head = lines.shift() || "";
+    var state = head.charAt(0) === "⏳" ? "running" : (head.charAt(0) === "✓" ? "done" : "failed");
+    var pluginID = (head.split("：")[1] || "").split(" · ")[0].trim();
+    var stageMatch = head.match(/阶段\s*([^·]+)/);
+    var elapsedMatch = head.match(/用时\s*([^·]+)/);
+    return {
+      state: state,
+      pluginID: pluginID,
+      stage: stageMatch ? stageMatch[1].trim() : "",
+      elapsed: elapsedMatch ? elapsedMatch[1].trim() : "",
+      log: lines.join("\n").trim(),
+      rest: content.replace(m[0], "").replace(/^\s*\n/, "")
+    };
+  }
+
+  function buildMMBuildCard(info: any) {
+    var card = document.createElement("div");
+    card.className = "mmbuild-card";
+    card.dataset.state = info.state;
+
+    var title = info.state === "running" ? "🧩 一键编译 · 进行中"
+      : (info.state === "done" ? "🧩 一键编译 · 完成" : "🧩 一键编译 · 失败");
+    var meta = [];
+    if (info.stage) meta.push("阶段 " + info.stage);
+    if (info.elapsed) meta.push("用时 " + info.elapsed);
+
+    var head = document.createElement("div");
+    head.className = "mmbuild-head";
+    head.innerHTML = '<span class="mmbuild-title">' + UI.esc(title) +
+      (info.pluginID ? ' <b>' + UI.esc(info.pluginID) + "</b>" : "") + "</span>" +
+      '<span class="mmbuild-meta">' + UI.esc(meta.join(" · ")) + "</span>";
+
+    var steps = document.createElement("ol");
+    steps.className = "mmbuild-steps";
+    var stageIdx = MM_BUILD_STAGES.indexOf(info.stage);
+    MM_BUILD_STAGES.forEach(function (name: string, i: number) {
+      var li = document.createElement("li");
+      li.textContent = name;
+      if (info.state === "done" || (stageIdx >= 0 && i < stageIdx)) li.className = "done";
+      else if (stageIdx >= 0 && i === stageIdx) li.className = info.state === "failed" ? "failed" : "active";
+      steps.appendChild(li);
+    });
+
+    card.appendChild(head);
+    card.appendChild(steps);
+
+    if (info.log) {
+      var det = document.createElement("details");
+      det.className = "mmbuild-log";
+      var sum = document.createElement("summary");
+      sum.textContent = "日志（" + info.log.split("\n").length + " 行）";
+      var pre = document.createElement("pre");
+      pre.textContent = info.log;
+      det.appendChild(sum);
+      det.appendChild(pre);
+      /* 进行中默认展开（用户正盯着看），结束/失败折叠但可展开 */
+      det.open = info.state === "running";
+      card.appendChild(det);
+    }
+
+    if (info.state === "failed") {
+      var actions = document.createElement("div");
+      actions.className = "mmbuild-actions";
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mmbuild-copy";
+      btn.textContent = "⧉ 复制失败日志";
+      btn.addEventListener("click", function () {
+        var text = (info.pluginID ? info.pluginID + "\n" : "") + (info.log || "");
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { UI.toast!("✓ 已复制编译日志", "ok"); },
+              function () { copyTextFallback(text); UI.toast!("✓ 已复制编译日志", "ok"); });
+            return;
+          }
+        } catch (e) {}
+        copyTextFallback(text);
+        UI.toast!("✓ 已复制编译日志", "ok");
+      });
+      actions.appendChild(btn);
+      card.appendChild(actions);
+    }
+    return card;
   }
 
   /* ═══════════ AI 提问卡片（ask_user_question） ═══════════ */

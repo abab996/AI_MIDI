@@ -80,6 +80,18 @@
   .mm-empty { color: var(--ink-dim); padding: 8px 0; }
   .mm-status { color: var(--ink-dim); font-family: "Cascadia Mono", Consolas, monospace; }
 
+  /* 右下角缩放把手（§4.7）：窗口由 window.open 打开，可 resizeTo；
+     拖完按插件记住尺寸，下次打开沿用。 */
+  .mm-grip {
+    position: fixed; right: 0; bottom: 0; width: 18px; height: 18px;
+    cursor: nwse-resize; touch-action: none; z-index: 10;
+    background:
+      linear-gradient(135deg, transparent 0 45%, var(--border) 45% 55%, transparent 55% 100%),
+      linear-gradient(135deg, transparent 0 70%, var(--border) 70% 80%, transparent 80% 100%);
+  }
+  .mm-grip:hover { background-color: var(--bg-alt); }
+  .mm-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
   @media (prefers-reduced-motion: reduce) {
     .sk-anim { animation: none; }
     button { transition: none; }
@@ -104,6 +116,8 @@
   </div>
 </main>
 <div class="mm-params" id="mmParams" hidden></div>
+<div class="mm-grip" id="mmGrip" role="separator" tabindex="0"
+     title="拖动调整窗口大小（按插件记住）；方向键也可微调"></div>
 
 <!-- 启动令牌引导：本页要调 /api/engine/plugins/{ui,param}，必须先拿到
      X-MM-Token（与其它页面同一条路径）。放在内联脚本之前同步执行。 -->
@@ -293,6 +307,75 @@
   document.getElementById("mmReloadBtn").addEventListener("click", function () {
     loadFrame();
   });
+
+  /* ── 窗口缩放（§4.7：右下角缩放把手 + 尺寸记忆）──
+     本页是 window.open 打开的，因此 window.resizeTo 可用（Chromium 对脚本
+     打开的窗口允许改尺寸）；WebView/被拦时静默降级为只调 iframe 高度。
+     尺寸按插件 id 记忆，下次打开沿用（manifest 的 ui 尺寸仍是初值）。 */
+  var SIZE_KEY = "melodymate-mm-ui-size:";
+  function readSavedSize() {
+    try {
+      var raw = localStorage.getItem(SIZE_KEY + pluginId);
+      if (!raw) return null;
+      var v = JSON.parse(raw);
+      if (v && v.w >= 320 && v.h >= 240 && v.w <= 4096 && v.h <= 4096) return v;
+    } catch (e) {}
+    return null;
+  }
+  function saveSize(w, h) {
+    try { localStorage.setItem(SIZE_KEY + pluginId, JSON.stringify({ w: w, h: h })); } catch (e) {}
+  }
+  function currentSize() {
+    return { w: Math.round(window.outerWidth || window.innerWidth), h: Math.round(window.outerHeight || window.innerHeight) };
+  }
+  function applySize(w, h) {
+    try { window.resizeTo(w, h); } catch (e) {}
+    /* 兜底：即便窗口尺寸改不了，也让插件 iframe 跟随（内容区仍可变） */
+    frame.style.height = Math.max(120, h - 96) + "px";
+  }
+  (function initGrip() {
+    var grip = document.getElementById("mmGrip");
+    if (!grip) return;
+    var saved = readSavedSize();
+    if (saved) applySize(saved.w, saved.h);
+    var start = null;
+    grip.addEventListener("pointerdown", function (ev) {
+      var cur = currentSize();
+      start = { x: ev.clientX, y: ev.clientY, w: cur.w, h: cur.h };
+      try { grip.setPointerCapture(ev.pointerId); } catch (e) {}
+      ev.preventDefault();
+    });
+    grip.addEventListener("pointermove", function (ev) {
+      if (!start) return;
+      var w = Math.max(360, Math.round(start.w + (ev.clientX - start.x)));
+      var h = Math.max(280, Math.round(start.h + (ev.clientY - start.y)));
+      applySize(w, h);
+    });
+    var finish = function () {
+      if (!start) return;
+      start = null;
+      var cur = currentSize();
+      saveSize(cur.w, cur.h);
+      elStatus.textContent = "窗口尺寸 " + cur.w + "×" + cur.h + "（已记住）";
+    };
+    grip.addEventListener("pointerup", finish);
+    grip.addEventListener("pointercancel", finish);
+    /* 键盘可达：方向键 ±20px，Shift ±4px（与滑杆同一套无障碍口径） */
+    grip.addEventListener("keydown", function (ev) {
+      var step = ev.shiftKey ? 4 : 20;
+      var cur = currentSize();
+      var w = cur.w, h = cur.h;
+      if (ev.key === "ArrowLeft") w -= step;
+      else if (ev.key === "ArrowRight") w += step;
+      else if (ev.key === "ArrowUp") h -= step;
+      else if (ev.key === "ArrowDown") h += step;
+      else return;
+      ev.preventDefault();
+      w = Math.max(360, w); h = Math.max(280, h);
+      applySize(w, h);
+      saveSize(w, h);
+    });
+  })();
 
   function loadFrame() {
     elSkeleton.hidden = false;

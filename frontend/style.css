@@ -8806,3 +8806,53 @@ html.has-titlebar .top-nav {
   .plg-btn { transition: none; }
   .plg-param-row.plg-echo { animation: none; background: var(--color-primary-soft); }
 }
+
+/* ═══════════ 一键编译进度卡（计划 §4.8，P6 交付）═══════════
+   对话流内卡片：阶段步骤条（配置→编译→收集→打包→校验）+ 折叠日志 +
+   失败一键复制；进行中阶段脉冲，reduced-motion 下静态。 */
+.mmbuild-card {
+  border: 1px solid var(--color-border); border-left: 3px solid var(--color-primary);
+  border-radius: 8px; background: var(--color-bg-card); padding: 8px 10px;
+  margin: 6px 0; display: flex; flex-direction: column; gap: 6px;
+}
+.mmbuild-card[data-state="done"] { border-left-color: var(--color-hud); }
+.mmbuild-card[data-state="failed"] { border-left-color: var(--color-danger); }
+.mmbuild-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mmbuild-title { color: var(--color-ink); font-weight: 600; font-size: 12.5px; }
+.mmbuild-title b { font-family: "Cascadia Mono", Consolas, monospace; }
+.mmbuild-meta {
+  margin-left: auto; color: var(--color-ink-dim); font-size: 11px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+.mmbuild-steps { display: flex; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.mmbuild-steps li {
+  flex: 1 1 0; text-align: center; font-size: 11px; padding: 2px 4px;
+  border-radius: 4px; border: 1px solid var(--color-border); color: var(--color-ink-faint);
+}
+.mmbuild-steps li.active {
+  color: var(--color-ink); border-color: var(--color-primary);
+  background: var(--color-primary-soft); animation: mmbuild-pulse 1.2s ease-in-out infinite;
+}
+.mmbuild-steps li.done { color: var(--color-ink-dim); border-color: var(--color-border-strong); }
+.mmbuild-steps li.failed {
+  color: var(--color-danger); border-color: var(--color-danger); background: var(--color-danger-soft);
+}
+@keyframes mmbuild-pulse { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
+.mmbuild-log summary { cursor: pointer; color: var(--color-ink-dim); font-size: 11.5px; }
+.mmbuild-log pre {
+  margin: 4px 0 0; max-height: 200px; overflow: auto;
+  background: var(--color-bg-console); border: 1px solid var(--color-border);
+  border-radius: 6px; padding: 6px 8px; font-size: 11px; color: var(--color-ink-dim);
+  font-family: "Cascadia Mono", Consolas, monospace; white-space: pre-wrap;
+}
+.mmbuild-actions { display: flex; gap: 6px; }
+.mmbuild-copy {
+  font: inherit; font-size: 11.5px; padding: 3px 8px; cursor: pointer;
+  color: var(--color-ink); background: var(--color-bg-soft);
+  border: 1px solid var(--color-border); border-radius: 6px;
+}
+.mmbuild-copy:hover { background: var(--color-primary-soft); }
+.mmbuild-rest { margin-top: 4px; }
+@media (prefers-reduced-motion: reduce) {
+  .mmbuild-steps li.active { animation: none; }
+}

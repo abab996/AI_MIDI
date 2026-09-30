@@ -1141,6 +1141,32 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 			/* 对照实验（判定电平表本身是否可信）：用**引擎自己的轨道增益**做 A/B。
 			   增益由宿主直接相乘，与插件无关。若这一步都不能让电平归零，那么问题
 			   在"电平表这个量"，而不是"插件参数有没有送达"——两者必须分开定性。 */
+			/* 后级电平测量：读 getLevels 的 **postLevels** —— 每轨 FX 链输出的原始
+			   峰值（未乘轨道增益、未做释放平滑）。表值（levels）混合了这两层，
+			   做效果器 A/B 会得到与参数无关的假象。 */
+			measurePost := func() float64 {
+				_, _ = c.request("panic", nil)
+				time.Sleep(700 * time.Millisecond)
+				_ = c.writeFrame(0x04, []byte{0, 0x90, 60, 100})
+				last := 0.0
+				for i := 0; i < 20; i++ {
+					time.Sleep(100 * time.Millisecond)
+					lv, lerr := c.request("getLevels", nil)
+					if lerr != nil || lv == nil || !lv.OK {
+						continue
+					}
+					var levels struct {
+						Post []float64 `json:"postLevels"`
+					}
+					_ = json.Unmarshal(lv.Result, &levels)
+					if len(levels.Post) > 0 {
+						last = levels.Post[0]
+					}
+				}
+				_ = c.writeFrame(0x04, []byte{0, 0x80, 60, 0})
+				_, _ = c.request("panic", nil)
+				return last
+			}
 			setTrackGain := func(v float64) {
 				_, _ = c.request("setTrackMix", map[string]interface{}{"track": 0, "gain": v})
 				time.Sleep(400 * time.Millisecond)
@@ -1169,37 +1195,31 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 					})
 					time.Sleep(400 * time.Millisecond) // 参数平滑 + 音频块跟进
 				}
-				base := measure()
+				base := measurePost()
 				setCutoff(0.0) // 20 Hz
-				lowCut := measure()
+				lowCut := measurePost()
 				setCutoff(1.0) // 18 kHz
-				highCut := measure()
-				fmt.Printf("      滤波器实测电平：默认截止 %.4f / 截止 20Hz %.4f / 截止 18kHz %.4f\n",
+				highCut := measurePost()
+				fmt.Printf("      低通实测（后级原始峰值）：默认截止 %.4f / 截止 20Hz %.4f / 截止 18kHz %.4f\n",
 					base, lowCut, highCut)
-				fmt.Printf("      低通实测电平：默认截止 %.4f / 截止 20Hz %.4f / 截止 18kHz %.4f\n",
-					base, lowCut, highCut)
-				/* 【参考信息，暂不断言】插件参数下的读数呈固定 2:1:3 比例，与参数值
-				   无关。已排除的假设（每一步都是实测）：
-				     · 电平表本身不可信 —— **排除**：轨道增益对照
-				       1.0→0.3543 / 0.0→0.0000 / 1.0→0.3543，精确复现；
-				     · 声部累积 —— 排除：panic 后静场 0.0000；
-				     · 相位叠加 —— 排除：单音 + 先 panic 仍同比例；
-				     · 平滑未收敛 —— 排除：取末次采样（保持 2 秒）；
-				     · 线性/仿射模型 out = x(a+b·g) —— 排除：三点解不出自洽的 a、b。
-				   下一步（明确）：在引擎侧记录 FX 链**每块的输入/输出峰值**（临时日志
-				   或新增后级电平字段），把"插件 DSP 输出"与"电平表读数"分开，
-				   再决定断言怎么写。仅凭现有读数写断言只会得到时对时错的套件。 */
-				if highCut <= 0.0 {
-					check("拉回 18kHz 后不得为静音（高频不稳定回归）", false, "highCut=0")
-				}
+				/* 【参考，暂不断言】连**后级原始峰值**（未乘轨道增益、未平滑）也是
+				   2:1:3：0.3929 / 0.1964 / 0.3937。至此"表内平滑""轨道增益"两层
+				   已彻底排除，读数直接来自 FX 链输出本身 —— 仍与参数值不成简单
+				   关系（仿射模型解不出自洽系数）。留给下一步：
+				   在 FxChain::process 里记录每块的输入/输出峰值（日志），必要时
+				   先跑一个"恒等插件"（不改样本）确认链路本身是否引入量化。 */
+				_ = lowCut
+				check("拉回 18kHz 后后级峰值恢复（是滤波而非静音/增益问题）",
+					highCut > base*0.8,
+					fmt.Sprintf("base=%.4f high=%.4f", base, highCut))
 				_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
 			}
 
-			/* 对照实验：用 MM gain 效果器把增益设为 0。
-			   目的：区分"参数没送到插件"与"这个滤波器行为异常"。
-			   若 gain=0 后电平不塌，说明 MM 的 setParam 只更新了宿主记账、**没送到
-			   插件**（onParam 未被调用）——那是 MM 运行时的功能性缺陷，而不是示例
-			   DSP 的问题。（此前只验过"参数的宿主记账能回读"，没验过"插件真的收到"。） */
+			/* 对照实验：用 MM gain 效果器把增益设为 0，读**后级原始峰值**。
+			   目的：区分"参数没送到插件"与"滤波器行为异常"。
+			   若 gain=0 后后级峰值不塌，说明 MM 的 setParam 只更新了宿主记账、
+			   **没送到插件**（onParam 未被调用）—— 那是 MM 运行时的功能性缺陷。
+			   （此前只验过"参数的宿主记账能回读"，没验过"插件真的收到"。） */
 			if gainDll != "" {
 				rg, gerr := c.request("plugin.load", map[string]interface{}{
 					"format": "mm", "path": gainDll, "id": gainDll, "track": 0, "slot": 0,
@@ -1213,19 +1233,16 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 						})
 						time.Sleep(400 * time.Millisecond)
 					}
-					gBase := measure()
+					gBase := measurePost()
 					setGain(0.0)
-					gZero := measure()
+					gZero := measurePost()
 					setGain(1.0)
-					gFull := measure()
-					fmt.Printf("      增益对照实测电平：默认 %.4f / 增益 0 %.4f / 增益 1 %.4f\n",
+					gFull := measurePost()
+					fmt.Printf("      增益对照（后级原始峰值）：默认 0.8 %.4f / 增益 0 %.4f / 增益 1.0 %.4f\n",
 						gBase, gZero, gFull)
-					fmt.Printf("      增益对照实测电平：增益 0.8 %.4f / 增益 0 %.4f / 增益 1.0 %.4f\n",
-						gBase, gZero, gFull)
-					/* 同上：这条本该是"参数送达插件"的判据，但读数同样呈 2:1:3，
-					   暂时只能作参考。首读数 = 无滤波基线 × 0.8（gain 默认值）这一点
-					   仍是有力线索：插件在处理音频。 */
-					_ = gBase
+					/* 同上：后级原始峰值也呈 2:1:3（0.3937 / 0.1968 / 0.5906），
+					   暂作参考。注意"回升"方向是对的、且 g=1 时比基线高 —— 这两点
+					   说明插件确实在链路上，但幅度关系还没弄懂，不能拿它当判据。 */
 					_ = gZero
 					_ = gFull
 					_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})

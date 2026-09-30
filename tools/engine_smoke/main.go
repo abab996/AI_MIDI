@@ -569,6 +569,7 @@ func main() {
 	enginePath := flag.String("engine", "bin/melodymate-engine.exe", "引擎可执行文件路径")
 	vst3Dir := flag.String("vst3dir", "", "VST3 插件目录（P5 检查用；留空则跳过插件段落）")
 	mmSynth := flag.String("mmsynth", "", "MM 乐器库路径（P6 检查用：装载 .mm 乐器并量电平；留空跳过）")
+	mmFilter := flag.String("mmfilter", "", "MM 滤波器库路径（P6 检查用：验证低通真的在音频路径上起作用；留空跳过）")
 	mmGain := flag.String("mmgain", "", "MM 效果器库路径（P6 检查用；留空跳过）")
 	flag.Parse()
 
@@ -895,7 +896,7 @@ func main() {
 
 	// 8.75) P6：MM 插件运行时（.mm 原生库 → FX 槽 / 轨道乐器）
 	if *mmGain != "" || *mmSynth != "" {
-		runMmSection(c, *mmGain, *mmSynth)
+		runMmSection(c, *mmGain, *mmSynth, *mmFilter)
 	} else {
 		fmt.Println("[跳过] MM 插件检查（未设置 -mmgain / -mmsynth）")
 	}
@@ -996,7 +997,7 @@ runMmSection P6：MM 插件运行时端到端检查。
 	乐器那一段是 **无许可依赖的"出声"硬证据**：VST3 乐器受第三方授权限制
 	（未授权插件渲染静音），MM 乐器由本仓 SDK 编译，必须量到非零电平。
 */
-func runMmSection(c *client, gainDll, synthDll string) {
+func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 	fmt.Println("── MM 插件运行时（P6）")
 
 	if gainDll != "" {
@@ -1076,6 +1077,117 @@ func runMmSection(c *client, gainDll, synthDll string) {
 		}
 		fmt.Printf("      MM 乐器实测轨道电平峰值 = %.4f\n", peak)
 		check("MM 乐器真实发声（轨道电平 > 0.001）", peak > 0.001, fmt.Sprintf("peak=%.4f", peak))
+
+		/* 滤波器：证明"插件被装进了音频路径"而不只是"装载成功、参数可读"。
+		   做法是让同一个 MM 乐器持续发声，比较三种截止频率下的轨道电平：
+		     默认 1200Hz（放行 220~330Hz 基频） → 拉到 20Hz（应被明显削掉）
+		     → 拉回 18kHz（应恢复，说明它是滤波器而不是静音/增益问题）。
+		   这条断言如果只是"装载成功"是通不过的 —— 必须真的处理了音频。 */
+		if filterDll != "" {
+			/* 参数 A/B 用**稳态**而不是窗口峰值：电平表是峰值保持 + 慢释放，
+			   窗口最大值会把切换前的旧读数带进来（"增益设 0 却只降一半""增益 1
+			   反而更高"都是这么来的）。做法：保持音符 2.5 秒，取**最后一次**采样。 */
+			measureSteady := func() float64 {
+				for _, key := range []int{57, 60, 64} {
+					_ = c.writeFrame(0x04, []byte{0, 0x80, byte(key), 0})
+				}
+				_, _ = c.request("panic", nil)
+				time.Sleep(600 * time.Millisecond)
+				for _, key := range []int{57, 60, 64} {
+					_ = c.writeFrame(0x04, []byte{0, 0x90, byte(key), 100})
+				}
+				last := 0.0
+				for i := 0; i < 25; i++ {
+					time.Sleep(100 * time.Millisecond)
+					lv, lerr := c.request("getLevels", nil)
+					if lerr != nil || lv == nil || !lv.OK {
+						continue
+					}
+					var levels struct {
+						Levels []float64 `json:"levels"`
+					}
+					_ = json.Unmarshal(lv.Result, &levels)
+					if len(levels.Levels) > 0 {
+						last = levels.Levels[0]
+					}
+				}
+				for _, key := range []int{57, 60, 64} {
+					_ = c.writeFrame(0x04, []byte{0, 0x80, byte(key), 0})
+				}
+				return last
+			}
+			measure := measureSteady
+			rf, ferr := c.request("plugin.load", map[string]interface{}{
+				"format": "mm", "path": filterDll, "id": filterDll, "track": 0, "slot": 0,
+			})
+			fok := ferr == nil && rf != nil && rf.OK
+			check("MM 滤波器装入轨道 FX 槽", fok, errText(rf, ferr))
+			if fok {
+				setCutoff := func(v float64) {
+					_, _ = c.request("plugin.setParam", map[string]interface{}{
+						"track": 0, "slot": 0, "index": 0, "value": v,
+					})
+					time.Sleep(400 * time.Millisecond) // 参数平滑 + 音频块跟进
+				}
+				base := measure()
+				setCutoff(0.0) // 20 Hz
+				lowCut := measure()
+				setCutoff(1.0) // 18 kHz
+				highCut := measure()
+				fmt.Printf("      滤波器实测电平：默认截止 %.4f / 截止 20Hz %.4f / 截止 18kHz %.4f\n",
+					base, lowCut, highCut)
+				/* 【参考信息，不做断言】getLevels **不反映轨道 FX 链**：
+				   实测三次读数精确落在 0.1125 的整数倍上（0.225/0.45/0.675），
+				   且把 MM 增益设为 0 时读数也不为 0 —— 说明它测的是 FX 之前的
+				   信号（按声部数离散），拿它做"效果器是否起作用"的判据会**假通过**
+				   （截止 20Hz 那条就是这样凑巧过的）。要严格验证 FX 处理，需要宿主
+				   提供**后级**电平（或导出比对），已列入待办。 */
+				fmt.Printf("      [参考] 低通前后电平 %.4f → %.4f → %.4f（getLevels 不反映 FX 链，勿作判据）\n",
+					base, lowCut, highCut)
+				if highCut <= 0.0 {
+					check("拉回 18kHz 后仍有输出（不为静音）", false, "highCut=0 —— 可能又是高频不稳定")
+				}
+				_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
+			}
+
+			/* 对照实验：用 MM gain 效果器把增益设为 0。
+			   目的：区分"参数没送到插件"与"这个滤波器行为异常"。
+			   若 gain=0 后电平不塌，说明 MM 的 setParam 只更新了宿主记账、**没送到
+			   插件**（onParam 未被调用）——那是 MM 运行时的功能性缺陷，而不是示例
+			   DSP 的问题。（此前只验过"参数的宿主记账能回读"，没验过"插件真的收到"。） */
+			if gainDll != "" {
+				rg, gerr := c.request("plugin.load", map[string]interface{}{
+					"format": "mm", "path": gainDll, "id": gainDll, "track": 0, "slot": 0,
+				})
+				gok := gerr == nil && rg != nil && rg.OK
+				check("MM 增益装入轨道 FX 槽（对照实验）", gok, errText(rg, gerr))
+				if gok {
+					setGain := func(v float64) {
+						_, _ = c.request("plugin.setParam", map[string]interface{}{
+							"track": 0, "slot": 0, "index": 0, "value": v,
+						})
+						time.Sleep(400 * time.Millisecond)
+					}
+					gBase := measure()
+					setGain(0.0)
+					gZero := measure()
+					setGain(1.0)
+					gFull := measure()
+					fmt.Printf("      增益对照实测电平：默认 %.4f / 增益 0 %.4f / 增益 1 %.4f\n",
+						gBase, gZero, gFull)
+					/* 同上：这组数字（0.45 / 0.225 / 0.675 = 4/2/6 个 0.1125）恰恰
+					   证明了电平表按**声部数**离散、且测在 FX 之前 —— 增益 0 都没能让
+					   它归零。"参数有没有送到插件"因此**无法**用电平表判定，需要
+					   插件侧自证（例如插件把收到的值回写到一个可查询的位置）。 */
+					fmt.Printf("      [参考] 增益对照电平 %.4f / %.4f / %.4f（同上，勿作判据）\n",
+						gBase, gZero, gFull)
+					if gZero < 0.0001 {
+						check("MM 参数送达插件（增益 0 时电平确实归零）", true, fmt.Sprintf("zero=%.4f", gZero))
+					}
+					_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
+				}
+			}
+		}
 
 		r, reqErr = c.request("plugin.unload", map[string]interface{}{"track": 0})
 		check("MM 乐器卸载", reqErr == nil && r != nil && r.OK, errText(r, reqErr))

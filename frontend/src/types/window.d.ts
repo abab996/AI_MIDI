@@ -455,6 +455,7 @@ interface PluginPanelApi {
   close(): void;
   /** 工程载入后把记录的插件装回引擎并恢复状态（浏览器模式静默跳过） */
   restoreAll(ctrl: unknown): Promise<any>;
+  saveAll(ctrl: unknown): Promise<any>;
   resolvePlugin(ref: string): Promise<any>;
   enqueue(ctrl: ArrangeController, task: ()=>Promise<any>, valid?: ()=>boolean): Promise<boolean>;
   isOpen(): boolean;

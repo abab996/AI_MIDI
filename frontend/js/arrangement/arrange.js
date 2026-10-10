@@ -667,6 +667,9 @@
         snapshot.rev = result.rev;
         if (!record.base || result.rev >= record.base.rev) record.base = snapshot;
         if (active()) { self.rev = record.base.rev; self.setSaveStamp(self.dirty ? "EDIT…" : "SAVED", !!self.dirty); }
+        if (window.PluginPanel && window.PluginPanel.saveAll) {
+          window.PluginPanel.saveAll(self);
+        }
         if (!record.draft || window.ArrangementSync.equal(record.draft.local, Object.assign({}, snapshot, {rev: record.draft.local.rev}))) {
           record.draft = null;
           return window.ArrangementSync.draft("delete", project).catch(function () {});

@@ -586,10 +586,29 @@
     return engineQueue.catch(function(){});
   }
 
+  function saveAll(ctrl: any) {
+    if (!ctrl || !ctrl.projectId) return Promise.resolve();
+    if (window.AudioBackend && !window.AudioBackend.isEngine()) return Promise.resolve();
+    if (!session || !session.jobs || !session.jobs.length) return Promise.resolve();
+    var project = ctrl.projectId;
+    var epoch = ctrl.projectEpoch;
+    return enqueue(ctrl, async function () {
+      for (var job of session.jobs) {
+        if (ctrl.projectId !== project || ctrl.projectEpoch !== epoch) return;
+        try {
+          await window.UI.postJSON("/api/engine/plugins/state/save", identity(session.snapshot || ctrl, job));
+        } catch (e: any) {
+          if (console && console.warn) console.warn("插件状态保存失败:", job.ref, e);
+        }
+      }
+    });
+  }
+
   window.PluginPanel = {
     open: open,
     close: close,
     restoreAll: restoreAll,
+    saveAll: saveAll,
     resolvePlugin: resolvePlugin,
     enqueue: enqueue,
     isOpen: function () { return state.open; }

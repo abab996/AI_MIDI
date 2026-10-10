@@ -28,4 +28,9 @@ ctrl.projectId='current';ctrl.projectEpoch++;ctrl.tracks=[];const latest=window.
 assert.equal(ctrl.audioSync,'ready');assert.equal(calls.filter(c=>c.url.endsWith('/plugins/load')&&c.body.project==='slow').length,1);
 window.UI.postJSON=async(url,body)=>{if(url.endsWith('/state/load'))throw Object.assign(new Error('invalid plugin state'),{status:400});return originalPost(url,body);};
 ctrl.projectId='bad-state';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}}];await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'failed');assert.ok(warnings.some(w=>w.includes('invalid plugin state')));
-console.log('plugin lifecycle: references, stable reorder/delete, empty switch, serial generations, mix-only updates, backup failures and state error handling passed');
+window.UI.postJSON=originalPost;
+ctrl.projectId='save-all';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}}];calls.length=0;
+await window.PluginPanel.restoreAll(ctrl);calls.length=0;
+await window.PluginPanel.saveAll(ctrl);
+assert.ok(calls.some(c=>c.url.endsWith('/state/save')&&c.body.project==='save-all'&&c.body.trackId==='A'));
+console.log('plugin lifecycle: references, stable reorder/delete, empty switch, serial generations, mix-only updates, backup failures, state error handling and saveAll passed');

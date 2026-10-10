@@ -2217,6 +2217,9 @@
         UI.toast!(n > 0
           ? "✓ 扫描到 " + n + " 个插件：到编曲窗混音台点空 FX 槽 →「装载插件」选择"
           : "✓ 扫描完成，但没有发现插件：请确认已安装 VST3 到系统插件目录", n > 0 ? "ok" : "warn");
+        if (sndReg && sndReg() && sndReg().reload) {
+          sndReg().reload().catch(function () {});
+        }
       }).catch(function (e: any) {
         var msg = e && e.message ? e.message : "未知错误";
         UI.toast!("✗ 扫描失败：" + msg +

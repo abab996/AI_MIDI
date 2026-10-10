@@ -195,7 +195,12 @@
     if (id === BUILTIN_GM) return gmItem(presetId || "0:0", name);
     var reg = window.SoundRegistry;
     var src = reg ? reg.get(id) : null;
-    if (src) return registryItem(src, presetId, name);
+    if (src) {
+      if ((src.kind === "vst3" || src.kind === "mm") && src.category && src.category !== "instrument") {
+        return null;
+      }
+      return registryItem(src, presetId, name);
+    }
     if (/\.(wav|wave|mp3|ogg|oga|flac|m4a|aac)$/i.test(id)) return sampleItem(id, name);
     return null;
   }
@@ -1005,6 +1010,9 @@
     if (reg) {
       ["sf2", "vst3", "mm"].forEach(function (kind) {
         reg.enabledOf(kind).forEach(function (src     ) {
+          if ((kind === "vst3" || kind === "mm") && src.category && src.category !== "instrument") {
+            return;
+          }
           out.push({
             kind: registryKindToRackKind(src.kind),
             sourceId: src.id,

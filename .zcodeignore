@@ -1,0 +1,126 @@
+# ============================================================
+# MelodyMate (Go + Wails) 开源仓库忽略规则 —— Apache-2.0
+# ============================================================
+
+# ---------- 严禁推送：闭源 JUCE 音频引擎 ----------
+# 引擎源码在独立私有仓库维护，本仓库绝不跟踪；
+# 编译产物只通过 Release 附件分发（JUCE EULA 1.9/1.11 允许）
+/engine/
+third_party/
+ThirdParty/
+asio_sdk/
+ASIO*SDK*/
+
+# ---------- 大体积音色（本地使用，不入库：历史已清理） ----------
+Library/soundfonts/*.sf2
+
+# ---------- 二进制与构建产物 ----------
+*.exe
+*.dll
+*.pdb
+build/bin/
+bin/
+dist/
+
+# ---------- 敏感配置（含 API key，永不入库） ----------
+settings.json
+.env
+
+# ---------- 运行时生成的文件与数据 ----------
+theme.txt
+window_icon.ico
+output/
+doing/
+projects/
+internal/midi/output/
+
+# ---------- 用户自定义乐理知识（设置页上传，运行时数据不入库） ----------
+Library/user/
+
+# ---------- 前端生成绑定（wails build 自动重建） ----------
+frontend/wailsjs/
+
+# ---------- 编辑器与工具状态 ----------
+.idea/
+.vscode/
+.workbuddy/
+.zcode/
+.agents/
+.omo/
+.trae/
+
+# ---------- 旧版 Python 后端（自带独立 git 仓库，不混入本仓库） ----------
+原版Python后端/
+*.exe~
+
+# ---------- 调试产物（运行日志/临时探针输出，不入库） ----------
+smoke_run.log
+*.log
+
+# ---------- 宣传片/演示产物（体积大，源码已入库，产物不入库） ----------
+promo/__pycache__/
+promo/audio/
+promo/out/
+promo/sfx/
+promo/*.ttc
+frontend/demo/assets/shots/
+promo/msyhbd.ttc
+build/release/
+
+# ---------- 补充：音色其他格式（与 .sf2 同类的大体积采样） ----------
+Library/soundfonts/*.sf3
+
+# ---------- 补充：Python/Node 运行时产物 ----------
+__pycache__/
+*.py[cod]
+node_modules/
+
+# ---------- 补充：环境变量变体（.env.local 等同样含密钥） ----------
+.env.*
+!.env.example
+
+# ---------- 补充：操作系统垃圾文件 ----------
+Thumbs.db
+Desktop.ini
+.DS_Store
+build/test/
+
+# ---------- 补充：Cloudflare Wrangler 本地缓存（含账号信息，防误提交） ----------
+.wrangler/
+
+# ---------- 补充：会话工具状态与运行时上传（与 output/ 同类，不入库） ----------
+.jspace/
+input/
+
+# ---------- 补充：窗口几何记忆（设备本地偏好，不入库） ----------
+window-state.json
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

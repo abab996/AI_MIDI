@@ -32,6 +32,16 @@
   var LOOKAHEAD_S = 0.45; // 入队提前量
   var TRIGGER_S = 0.15;   // 触发提前量（包络事件的最远端点）
 
+  function currentTarget(engine                       ,track     ,nodes     ) {
+    var ctrl=engine.controller,epoch=ctrl?.projectEpoch,project=ctrl?.projectId,key=nodes.sourceKey,source=JSON.stringify(track.source);
+    return function(){var active=(engine.getTracks?engine.getTracks():[]).find(function(t){return t.id===track.id;});return engine.trackNodes[track.id]===nodes && nodes.sourceKey===key && !!active && JSON.stringify(active.source)===source && (!ctrl || ctrl.projectId===project && ctrl.projectEpoch===epoch);};
+  }
+  function queueNative(engine                       ,track     ,nodes     ,task                                                ) {
+    var valid=currentTarget(engine,track,nodes);
+    var run=async function(){if(!valid())return;var index=trackIndexOf(track.id,engine.getTracks?engine.getTracks():[]);if(index>=0)await task(index,valid);};
+    return engine.controller && window.PluginPanel ? window.PluginPanel.enqueue(engine.controller,run,valid) : Promise.resolve().then(run).then(valid);
+  }
+
   function isNativePreferred() {
     try {
       /* 单一路由源：AudioBackend.isNativePreferred（引擎模式且就绪——
@@ -245,7 +255,7 @@
        同轨切换也不会漏重建发声链。 */
     var resolved = window.ArrRack.resolveSource(track.source);
     var v = resolved.voice;
-    var key = resolved.key + "|" + v.type;
+    var key = resolved.key + "|" + v.type + "|" + (this.controller?.projectEpoch||0) + "|" + trackIndexOf(track.id,this.getTracks?this.getTracks():[]);
 
     if (nodes.sourceKey !== key) {
       nodes.sourceKey = key;
@@ -309,29 +319,28 @@
   ArrangeEngine.prototype._ensureTrackBuiltinPreset = function (                             track     , src     ) {
     var self = this;
     var trackId = track.id;
-    if (this._builtinRetryAt && Date.now() < this._builtinRetryAt) return;
-    if (this._builtinPrepared && this._builtinPrepared.trackId === trackId
-        && this._builtinPrepared.tone === (src.tone || "piano")) return;
+    var nodes    =this.trackNodes[trackId];
+    if(!nodes || !isNativePreferred())return;
+    var valid=currentTarget(this,track,nodes),signature=nodes.sourceKey+"|"+(src.tone||"piano");
+    if(nodes._builtinRetryAt && Date.now()<nodes._builtinRetryAt || nodes._builtinSig===signature)return;
     var fail = function (msg     ) {
-      self._builtinPrepared = null;              // 失败：下次 ensureTrack 重试
-      self._builtinRetryAt = Date.now() + 3000;  // 冷却：期间不重复 toast/请求
+      if(!valid())return;
+      nodes._builtinSig = null;
+      nodes._builtinRetryAt = Date.now() + 3000;
+      nodes._useNative=false;
       if (window.UI && UI.toast) UI.toast (msg, "err");
     };
-    this._builtinPrepared = { trackId: trackId, tone: src.tone || "piano" };
-    var idx = trackIndexOf(trackId, this.getTracks ? this.getTracks() : null);
-    if (idx < 0) return;
+    nodes._builtinSig=signature;nodes._useNative=false;
     var program = (src.tone || "piano") === "strings" ? 48 : 0;
-    fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (j) {
+    queueNative(this,track,nodes,async function(index,isCurrent){
+      var response=await fetch("/api/audio/status"),j=await response.json();
+      if(!isCurrent())return;
       var path = j && j.default_soundfont;
-      if (!path) { fail("✗ 缺少内置音色库（引擎模式），请在音色目录放置 SF2"); return; }
-      window.EngineBridge.loadSoundFont(path, idx)
-        .then(function () { return window.EngineBridge.setTrackPreset(idx, 0, program); })
-        .then(function () { self._builtinRetryAt = 0; })
-        .catch(function (e) {
-          fail("✗ 内置音色加载失败: " + ((e && e.message) || "引擎不可用"));
-        });
-    }).catch(function () {
-      fail("✗ 获取引擎状态失败，内置音色不可用");
+      if(!path)throw new Error("缺少内置音色库，请在音色目录放置 SF2");
+      await window.EngineBridge.loadSoundFont(path,index);
+      if(isCurrent())await window.EngineBridge.setTrackPreset(index,0,program);
+    }).then(function(current){if(current){nodes._builtinRetryAt=0;nodes._useNative=true;}}).catch(function(e){
+      fail("✗ 内置音色加载失败："+e.message);
     });
   };
 
@@ -364,11 +373,15 @@
     };
     var sig = [idx, p.wave, p.attack, p.decay, p.sustain, p.release, p.cutoff, p.resonance, p.gain].join("|");
     if (nodes._voiceSig === sig) return;
-    window.EngineBridge.setTrackVoice(idx, p).then(function () {
+    var valid=currentTarget(this,track,nodes);
+    nodes._voiceSig = sig;
+    queueNative(this,track,nodes,function(index){return window.EngineBridge.setTrackVoice(index,p);}).then(function (current) {
+      if(!current)return;
       nodes._voiceSig = sig;
       nodes._voiceRetryAt = 0;
       nodes._useNative = true;
     }).catch(function (e) {
+      if(!valid())return;
       console.warn("[ArrangeEngine] setTrackVoice 失败，3s 后重试，期间该轨静音:", e);
       nodes._voiceSig = null;
       nodes._voiceRetryAt = Date.now() + 3000;
@@ -390,11 +403,13 @@
     var self = this;
     if (!src) return;
     nodes.sfLoading = true;
+    var valid=currentTarget(this,track,nodes);
 
     var reg = window.SoundRegistry ? window.SoundRegistry.get(src.sourceId) : null;
     var regPath = (reg && window.SoundRegistry) ? window.SoundRegistry.diskPathOf(reg) : "";
 
     var native = function (diskPath        , presets                    ) {
+      if(!valid())return true;
       if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.loadSoundFont) return false;
       var tracks = self.getTracks ? self.getTracks() : [];
       var idx = trackIndexOf(track.id, tracks);
@@ -402,21 +417,19 @@
          此前兜底 idx=0 会把音色装载到引擎 0 号轨并 setTrackPreset，
          静默改写工程第一轨的音色 */
       if (idx < 0) { nodes.sfLoading = false; return true; }
-      window.EngineBridge.loadSoundFont(diskPath, idx).then(function () {
+      queueNative(self,track,nodes,async function(index,isCurrent){
+        if(reg && !reg.enabled)throw new Error("音源已禁用");
+        await window.EngineBridge.loadSoundFont(diskPath,index);
+        if(!isCurrent())return;
+        if(src.presetId){var p=normalizePresetId(src.presetId,presets || nodes.soundfont && nodes.soundfont.loadedPresets);await window.EngineBridge.setTrackPreset(index,p.bank,p.program);}
+      }).then(function (current) {
+        if(!current)return;
         nodes.sfLoading = false;
         nodes._useNative = true;
         nodes._nativeTrackIdx = idx;
-        if (!src.presetId) return;
-        var p = normalizePresetId(src.presetId, presets || nodes.soundfont && nodes.soundfont.loadedPresets);
-        return window.EngineBridge.setTrackPreset(idx, p.bank, p.program).catch(function (e) {
-          // 预设不存在：回退该文件预设 0 并提示
-          return window.EngineBridge.setTrackPreset(idx, 0, 0).then(function () {
-            if (window.UI && UI.toast) UI.toast ("⚠ 预设不存在，已用该音色库首个预设", "warn");
-          }).catch(function () { throw e; });
-        });
-      }).then(function () {
         if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, { name: (reg && reg.name) || src.name, presets: presets || [], native: true });
       }).catch(function (e) {
+        if(!valid())return;
         nodes.sfLoading = false;
         nodes._useNative = false;
         if (self.onSoundFontError) self.onSoundFontError(track.id, e);
@@ -427,8 +440,10 @@
     // 引擎模式 + 注册表已入册：磁盘路径直供，跳过 IndexedDB
     if (regPath && native(regPath, null)) return;
 
-    if (!window.SoundLibrary || !src.libId) { nodes.sfLoading = false; return; }
-    window.SoundLibrary.getSoundFont(src.libId).then(function (rec     ) {
+    if (!window.SoundRegistry && (!window.SoundLibrary || !src.libId)) { nodes.sfLoading = false; return; }
+    var load=window.SoundRegistry?window.SoundRegistry.loadSf2(src.sourceId,src.libId):window.SoundLibrary .getSoundFont(src.libId);
+    load.then(function (rec     ) {
+      if(!valid())return;
       if (!rec || !rec.data) throw new Error("音源数据不存在");
       // 服务器落盘的绝对路径优先（上传时由 /api/audio/soundfonts 的
       // saved 字段存入记录）；旧记录无 diskPath 时按 safe 规则推导相对
@@ -450,6 +465,7 @@
       nodes.sfLoading = false;
       if (self.onSoundFontLoaded) self.onSoundFontLoaded(track.id, parsed);
     }).catch(function (err) {
+      if(!valid())return;
       nodes.sfLoading = false;
       console.warn("轨道音源加载失败:", err);
       if (self.onSoundFontError) self.onSoundFontError(track.id, err);
@@ -507,7 +523,9 @@
         return res.arrayBuffer();
       })
       .then(function (ab) {
-        return self.ctx .decodeAudioData(ab);
+        var actx      = self.ctx || (window.SharedAudio && window.SharedAudio.getDecodeContext && window.SharedAudio.getDecodeContext());
+        if (!actx) throw new Error("缺少音频解码上下文");
+        return actx.decodeAudioData(ab);
       })
       .then(function (buffer) {
         entry .buffer = buffer;
@@ -696,7 +714,7 @@
     // 旧回调不得在停止后重新拉起播放（此前快速连点播放→暂停会出现
     // UI 显示"播放"（暂停态）但音频仍在响的状态分裂）
     var gen = ++this._playGen;
-    this.resume().then(function () {
+    return this.resume().then(function () {
       if (gen !== self._playGen) return;
       self._beginPlay(startBeat);
     }).catch(function (e) {
@@ -706,6 +724,7 @@
       self.isPlaying = false;
       console.warn("[ArrangeEngine] 播放启动失败:", e);
       if (window.UI && UI.toast) UI.toast ("✗ 音频设备启动失败: " + (e && e.message ? e.message : "请检查音频输出设备"), "err");
+      throw e;
     });
   };
 
@@ -1302,10 +1321,11 @@
       if (window.UI && UI.toast) UI.toast ("✗ 引擎模式下素材试听暂不支持（可在设置页切换 WEBAUDIO 模式试听）", "err");
       return Promise.resolve();
     }
-    this.resume().catch(function (e) {
+    return this.resume().catch(function (e) {
       console.warn("[ArrangeEngine] 试听前 AudioContext 恢复失败:", e);
-    });
-    return this.getSampleEntry(absPath).then(function (entry) {
+    }).then(function () {
+      return self.getSampleEntry(absPath);
+    }).then(function (entry) {
       if (!entry || !entry.buffer) return;
       if (self._previewSrc) {
         try { self._previewSrc.stop(); } catch (e) {}

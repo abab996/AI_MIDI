@@ -194,7 +194,7 @@ func main() {
 		addr := fmt.Sprintf("127.0.0.1:%d", *port)
 		go func() {
 			splashCtrl.Wait()
-			openBrowser(fmt.Sprintf("http://%s/chat.html", addr))
+			openBrowser(router.BrowserLaunchURL(fmt.Sprintf("http://%s/chat.html", addr)))
 		}()
 
 		fmt.Printf("[MelodyMate] HTTP 服务已在 http://%s 启动 (浏览器模式)\n", addr)
@@ -294,7 +294,7 @@ func main() {
 		},
 		AssetServer: &assetserver.Options{
 			Assets:  subFS,
-			Handler: router,
+			Handler: router.TrustedDesktopHandler(),
 		},
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,

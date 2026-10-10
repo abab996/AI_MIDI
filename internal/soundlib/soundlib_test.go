@@ -495,12 +495,12 @@ func TestLoadToleratesCorruptFile(t *testing.T) {
 	if got := List("", ""); len(got) != 0 {
 		t.Fatalf("损坏文件应退回空注册表: %+v", got)
 	}
-	// 仍能正常写入
-	if _, err := Add(Source{Kind: KindSF2, Name: "a", Path: "Library/soundfonts/a.sf2"}); err != nil {
-		t.Fatalf("损坏文件后应能重新写入: %v", err)
+	// 损坏文件不可被迁移或新增条目静默覆盖。
+	if _, err := Add(Source{Kind: KindSF2, Name: "a", Path: "Library/soundfonts/a.sf2"}); err == nil {
+		t.Fatal("损坏注册表被覆盖")
 	}
-	if got := List(KindSF2, ""); len(got) != 1 {
-		t.Fatalf("重写后应读回 1 条: %+v", got)
+	if raw, _ := os.ReadFile(FilePath()); string(raw) != "{ 这不是 json" {
+		t.Fatal("原始文件未保留")
 	}
 }
 

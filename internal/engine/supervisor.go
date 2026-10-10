@@ -81,9 +81,15 @@ type Supervisor struct {
 	lastVoices     map[int]map[string]any // 每轨内置波形声部参数（重启后重放）
 	/* P4：FX 链槽位参数与主总线增益（重启后重放；插件实例由 P5/P6 装载，
 	   这里存的是"槽位状态"——bypass/wet 与（P5 起）插件引用） */
-	lastChains      map[int][]map[string]any
-	lastMasterChain []map[string]any
-	lastMasterGain  float64
+	lastChains        map[int][]map[string]any
+	lastMasterChain   []map[string]any
+	lastMasterGain    float64
+	hasMasterGain     bool
+	pluginQueue       sync.Mutex
+	loadedPlugins     map[string]loadedPlugin
+	activeProject     string
+	projectGeneration int64
+	trackIDs          []string
 	/* P5：插件二进制状态缓存（工程级）。引擎崩溃重启会把 FX 链重放回来，
 	   但插件自己的参数/状态回到默认值——重放完成后用这份缓存把状态推回去，
 	   用户才不会感知到"崩溃后音色变了"。默认取进程级单例（与 HTTP 层同一份）。 */
@@ -544,6 +550,7 @@ func (s *Supervisor) SetMaster(gain float64) error {
 	}
 	s.mu.Lock()
 	s.lastMasterGain = gain
+	s.hasMasterGain = true
 	s.mu.Unlock()
 	return nil
 }
@@ -744,6 +751,10 @@ func (s *Supervisor) LoadPluginCache() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return s.loadPluginCacheWithClient(cli)
+}
+
+func (s *Supervisor) loadPluginCacheWithClient(cli *Client) (int, error) {
 	resp, err := cli.TryRequest("plugin.loadCache", map[string]any{"path": s.pluginCachePath()}, s.cfg.RequestTimeout)
 	if err != nil {
 		return 0, err
@@ -805,11 +816,17 @@ func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
 		params["track"] = track
 	}
 	// 插件实例化要加载 DLL，给足时间（大插件可能数秒）
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
 	resp, err := cli.Request("plugin.load", params, 60*time.Second)
 	if err != nil {
 		return err
 	}
-	return resp.Err()
+	if err := resp.Err(); err != nil {
+		return err
+	}
+	s.rememberPlugin(track, slot, params, pluginID, "vst3")
+	return nil
 }
 
 // ValidateMmPluginPath 导出的 MM 插件原生库路径校验：必须位于 pluginsDir
@@ -886,6 +903,8 @@ func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]a
 	} else {
 		params["track"] = track
 	}
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
 	resp, err := cli.Request("plugin.load", params, 60*time.Second)
 	if err != nil {
 		return nil, err
@@ -893,6 +912,7 @@ func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]a
 	if err := resp.Err(); err != nil {
 		return nil, err
 	}
+	s.rememberPlugin(track, slot, params, dllPath, "mm")
 	var out map[string]any
 	_ = json.Unmarshal(resp.Result, &out)
 	return out, nil
@@ -915,11 +935,17 @@ func (s *Supervisor) UnloadPlugin(track, slot int) error {
 	} else {
 		params["track"] = track
 	}
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
 	resp, err := cli.Request("plugin.unload", params, 30*time.Second)
 	if err != nil {
 		return err
 	}
-	return resp.Err()
+	if err := resp.Err(); err != nil {
+		return err
+	}
+	s.forgetPlugin(track, slot)
+	return nil
 }
 
 // pluginTarget 组装插件定位参数（乐器 / 轨 FX 槽 / 主链 FX 槽）
@@ -1068,10 +1094,33 @@ func (s *Supervisor) restorePluginStates(cli *Client) {
 	}
 	restored, failed := 0, 0
 	for _, st := range states {
-		params := pluginTarget(st.Target.Track, st.Target.Slot)
-		params["data"] = base64.StdEncoding.EncodeToString(st.Payload)
-		if _, err := cli.Request("plugin.setState", params, 60*time.Second); err != nil {
+		s.mu.RLock()
+		track := st.Target.Track
+		if st.Target.TrackID != "" {
+			track = -2
+			for index, id := range s.trackIDs {
+				if id == st.Target.TrackID {
+					track = index
+					break
+				}
+			}
+		}
+		p, ok := s.loadedPlugins[pluginKey(track, st.Target.Slot)]
+		matching := ok && p.Ref == st.Ref && p.Format == st.Format
+		s.mu.RUnlock()
+		if !matching {
 			failed++
+			continue
+		}
+		params := pluginTarget(track, st.Target.Slot)
+		params["data"] = base64.StdEncoding.EncodeToString(st.Payload)
+		resp, err := cli.Request("plugin.setState", params, 60*time.Second)
+		if err == nil {
+			err = resp.Err()
+		}
+		if err != nil {
+			failed++
+			s.recordReplayError(st.Ref, err)
 			slog.Debug("[engine] 恢复插件状态失败（槽位可能为空）",
 				"track", st.Target.Track, "slot", st.Target.Slot, "err", err)
 			continue
@@ -1370,6 +1419,9 @@ func (s *Supervisor) openEngineLog() *os.File {
 // runOnce 单次完整会话：拉起进程 → 连接握手 → 心跳监控 → 会话失效返回。
 // 返回失败原因（空串 = ctx 取消），供重启消息展示真实原因
 func (s *Supervisor) runOnce() string {
+	s.mu.Lock()
+	s.status.ReplayErrors = nil
+	s.mu.Unlock()
 	s.setState(StateStarting, "")
 
 	cmd := exec.Command(s.exePath, "--parent", strconv.Itoa(os.Getpid()))
@@ -1438,7 +1490,6 @@ func (s *Supervisor) runOnce() string {
 	}
 	s.lastReadyAt = time.Now()
 	s.mu.Unlock()
-	s.setState(StateReady, "")
 
 	// 重放最近的音频设置（崩溃恢复对上层透明）
 	s.mu.RLock()
@@ -1635,10 +1686,26 @@ func (s *Supervisor) runOnce() string {
 	   走缓存路径完全不碰插件二进制，能规避这一类问题。
 	   缓存缺失/损坏时静默跳过（回落到显式扫描）。 */
 	if failReason == "" {
-		if n, err := s.LoadPluginCache(); err != nil {
+		if n, err := s.loadPluginCacheWithClient(cli); err != nil {
 			slog.Debug("[engine] 无插件清单缓存（首次启动属正常）", "err", err)
 		} else {
 			slog.Info("[engine] 插件清单缓存已载入", "count", n)
+		}
+	}
+	s.mu.RLock()
+	instances := make([]loadedPlugin, 0, len(s.loadedPlugins))
+	for _, p := range s.loadedPlugins {
+		instances = append(instances, p)
+	}
+	s.mu.RUnlock()
+	for _, p := range instances {
+		resp, err := cli.Request("plugin.load", p.Params, 60*time.Second)
+		if err == nil {
+			err = resp.Err()
+		}
+		if err != nil {
+			s.recordReplayError(p.Ref, err)
+			slog.Warn("[engine] 插件实例重放失败", "ref", p.Ref, "err", err)
 		}
 	}
 	/* 重放 FX 链（P4）：排在 setTrackVoice 之后——链是"轨声部之后"的处理位点。
@@ -1651,13 +1718,17 @@ func (s *Supervisor) runOnce() string {
 		chains[tr] = cp
 	}
 	masterChain := append([]map[string]any(nil), s.lastMasterChain...)
-	masterGain, hasMasterGain := s.lastMasterGain, s.lastMasterGain > 0
+	masterGain, hasMasterGain := s.lastMasterGain, s.hasMasterGain
 	s.mu.RUnlock()
 	if failReason == "" {
 		for tr, slots := range chains {
-			if _, err := cli.Request("fx.setChain", map[string]any{
+			if resp, err := cli.Request("fx.setChain", map[string]any{
 				"track": tr, "slots": slots,
-			}, 10*time.Second); err != nil {
+			}, 10*time.Second); err != nil || resp.Err() != nil {
+				if err == nil {
+					err = resp.Err()
+				}
+				s.recordReplayError("fx.setChain", err)
 				select {
 				case <-cli.Done():
 					failReason = "冷启动重放失败: IPC 会话失效"
@@ -1671,9 +1742,13 @@ func (s *Supervisor) runOnce() string {
 		}
 	}
 	if failReason == "" && len(masterChain) > 0 {
-		if _, err := cli.Request("fx.setChain", map[string]any{
+		if resp, err := cli.Request("fx.setChain", map[string]any{
 			"master": true, "slots": masterChain,
-		}, 10*time.Second); err != nil {
+		}, 10*time.Second); err != nil || resp.Err() != nil {
+			if err == nil {
+				err = resp.Err()
+			}
+			s.recordReplayError("fx.setChain", err)
 			select {
 			case <-cli.Done():
 				failReason = "冷启动重放失败: IPC 会话失效"
@@ -1683,9 +1758,13 @@ func (s *Supervisor) runOnce() string {
 		}
 	}
 	if failReason == "" && hasMasterGain {
-		if _, err := cli.Request("mixer.setMaster", map[string]any{
+		if resp, err := cli.Request("mixer.setMaster", map[string]any{
 			"gain": masterGain,
-		}, 10*time.Second); err != nil {
+		}, 10*time.Second); err != nil || resp.Err() != nil {
+			if err == nil {
+				err = resp.Err()
+			}
+			s.recordReplayError("mixer.setMaster", err)
 			select {
 			case <-cli.Done():
 				failReason = "冷启动重放失败: IPC 会话失效"
@@ -1699,6 +1778,9 @@ func (s *Supervisor) runOnce() string {
 	   这里把当前工程的插件状态推回去（尽力而为，失败不影响会话）。 */
 	if failReason == "" {
 		s.restorePluginStates(cli)
+	}
+	if failReason == "" {
+		s.setState(StateReady, "")
 	}
 
 	// 心跳 + 进程退出 + IPC 失联三通道监控
@@ -2177,4 +2259,12 @@ func (s *Supervisor) TryRequestRaw(method string, timeout time.Duration) (json.R
 		return nil, err
 	}
 	return resp.Result, nil
+}
+
+func (s *Supervisor) recordReplayError(target string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	message := target + ": " + err.Error()
+	s.status.ReplayErrors = append(s.status.ReplayErrors, message)
+	s.status.LastError = strings.Join(s.status.ReplayErrors, "; ")
 }

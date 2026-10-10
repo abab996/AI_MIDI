@@ -25,6 +25,7 @@ type mmManifest struct {
 	Version      string   `json:"version"`
 	Vendor       string   `json:"vendor"`
 	Kind         string   `json:"kind"`
+	Entry        string   `json:"entry"` // Legacy MM SDK manifests.
 	Capabilities []string `json:"capabilities"`
 	Author       *struct {
 		Type string `json:"type"`
@@ -62,15 +63,7 @@ func readMMManifest(installDir string) (mmManifest, error) {
 
 // mmRelPath 安装目录相对数据根的路径（数据根之外保留绝对路径，
 // 开发期与测试直接用临时目录时不会算错——**不依赖进程 CWD**）
-func mmRelPath(installDir string) string {
-	base := config.LibraryDir
-	if base != "" {
-		if rel, err := filepath.Rel(base, installDir); err == nil && !strings.HasPrefix(rel, "..") {
-			return filepath.ToSlash(rel)
-		}
-	}
-	return filepath.ToSlash(installDir)
-}
+func mmRelPath(installDir string) string { return StorePath(installDir) }
 
 // mmHashOf 取一个代表性哈希（注册表只存一个字符串）
 func mmHashOf(mf mmManifest) string {
@@ -116,9 +109,9 @@ func SyncInstalledMM(installDir string) (Source, bool, error) {
 			s.Name, s.Vendor = mf.Name, mf.Vendor
 			s.Kind, s.Origin = KindMM, origin
 			s.Capabilities, s.Hash = caps, mmHashOf(mf)
-			s.Category, s.Enabled = mf.Kind, true
+			s.Category = mf.Kind
+			s.Path = StorePath(installDir)
 			s.ClassUID = mf.ID // 插件 id（带点的反向域名）：界面据此打开 mm-ui.html
-			s.UpdatedAt = time.Now().Unix()
 			s.AI = mmAIInfo(mmIsAI(mf))
 			return nil
 		})
@@ -210,12 +203,12 @@ func InstalledMMInfo(installDir string) (map[string]any, error) {
 // mmLibPath 把 manifest 的 dsp.entry（相对 bin/）换算成安装目录下的绝对路径。
 // 返回空串表示该包没有声明或文件不存在（调用方据此给可解释错误）。
 func mmLibPath(installDir string, mf mmManifest) string {
-	if mf.DSP == nil {
-		return ""
+	entry := mf.Entry
+	if mf.DSP != nil {
+		entry = mf.DSP.Entry
 	}
-	clean := strings.ReplaceAll(strings.TrimSpace(mf.DSP.Entry), "\\", "/")
-	clean = strings.TrimPrefix(clean, "/")
-	if clean == "" || strings.Contains(clean, "..") {
+	clean := strings.ReplaceAll(strings.TrimSpace(entry), "\\", "/")
+	if clean == "" || filepath.IsAbs(clean) || strings.Contains(clean, "..") {
 		return ""
 	}
 	full := filepath.Join(installDir, "bin", filepath.FromSlash(clean))

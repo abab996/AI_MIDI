@@ -595,6 +595,15 @@ func (c *opsCtx) setFxSlot(op map[string]any) error {
 	}
 
 	parts := []string{}
+	if v, ok := op["sourceId"]; ok {
+		ref := strings.TrimSpace(fmt.Sprint(v))
+		if len(ref) > 300 {
+			return fmt.Errorf("音源引用过长")
+		}
+		entry["sourceId"] = ref
+		parts = append(parts, "音源 "+ref)
+	}
+
 	if v, ok := op["plugin"]; ok && v != nil {
 		ref := strings.TrimSpace(fmt.Sprint(v))
 		if ref == "" {
@@ -634,6 +643,7 @@ func (c *opsCtx) setFxSlot(op map[string]any) error {
 		}
 		if b {
 			entry["plugin"] = ""
+			entry["sourceId"] = ""
 			parts = append(parts, "清空槽位")
 		}
 	}

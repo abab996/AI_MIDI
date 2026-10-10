@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"sync"
+	"time"
 
 	"melodymate/internal/config"
 )
@@ -31,6 +33,8 @@ type Router struct {
 	   （curl/脚本没有 Origin，此前会被放行）。 */
 	authToken     string
 	originChecker func(origin string) bool
+	launchMu      sync.Mutex
+	launches      map[string]time.Time
 }
 
 // NewRouter 创建路由器实例
@@ -41,6 +45,7 @@ func NewRouter(assetsFS fs.FS, dialogFn func() (string, error)) *Router {
 		dialogFn:      dialogFn,
 		updater:       newUpdater(),
 		authToken:     newAuthToken(),
+		launches:      map[string]time.Time{},
 		originChecker: isAllowedOrigin,
 	}
 	r.registerRoutes()
@@ -61,7 +66,7 @@ func newAuthToken() string {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		slog.Warn("[server] 生成启动令牌失败，本次会话不启用令牌校验", "err", err)
-		return ""
+		panic("无法生成安全启动令牌")
 	}
 	return hex.EncodeToString(buf)
 }
@@ -102,6 +107,9 @@ func (r *Router) AuthToken() string { return r.authToken }
 //   - /api/engine/plugins/ui：由 <iframe src> 直接加载，浏览器导航带不了
 //     自定义头；改由一次性 ui_ticket 校验（见 handler_plugins.go 的 /ui 分支）
 func tokenExemptPath(path string) bool {
+	if strings.HasPrefix(path, "/api/engine/plugins/resources/") {
+		return true
+	}
 	switch path {
 	case "/api/bootstrap.js", "/api/health", "/api/version", "/api/engine/plugins/ui":
 		return true
@@ -182,6 +190,12 @@ func (c *capturingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return h.Hijack()
 }
 
+// Unwrap 透传底层 ResponseWriter，使 http.NewResponseController 能探测到底层
+// ResponseWriter 实现的方法（如 SetWriteDeadline、SetReadDeadline 等）
+func (c *capturingWriter) Unwrap() http.ResponseWriter {
+	return c.ResponseWriter
+}
+
 // requestLimitFor 按路径返回请求体上限。此前除个别 handler 外全部无上限：
 // multipart 上传会把超限部分 spool 到临时目录（可填满磁盘），JSON decoder
 // 会把整个请求体读进内存（无界分配）。统一在中间件层兜底。
@@ -195,7 +209,8 @@ func requestLimitFor(path, method string) int64 {
 		return 288 << 20 // SF2 导入（handler 内部 256MB 限流，与 /api/audio/soundfonts 同规）
 	case strings.HasPrefix(path, "/api/sound/"):
 		return 8 << 20 // 注册表 JSON（采样包目录列表/标签可能较长）
-	case strings.HasPrefix(path, "/api/arrangement/"):
+	case strings.HasPrefix(path, "/api/arrangement/") ||
+		(strings.HasPrefix(path, "/api/projects/") && (strings.HasSuffix(path, "/arrangement") || strings.HasSuffix(path, "/arrangement/ops"))):
 		return 8 << 20 // 编排数据（handler 内部 5MB）
 	case strings.HasPrefix(path, "/api/library/"):
 		return 2 << 20 // 用户知识文件上传（handler 内部同值 2MB：.md/.txt 纯文本）。
@@ -213,7 +228,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusForbidden, "非法 Host")
 		return
 	}
-	if !r.originChecker(req.Header.Get("Origin")) {
+	// A sandboxed plugin document has an opaque origin. Its ES module requests
+	// carry Origin:null and use a directory-scoped capability, never the API token.
+	opaqueResource := req.Method == http.MethodGet && req.Header.Get("Origin") == "null" &&
+		strings.HasPrefix(req.URL.Path, "/api/engine/plugins/resources/")
+	if !opaqueResource && !r.originChecker(req.Header.Get("Origin")) {
 		writeError(w, http.StatusForbidden, "非法来源")
 		return
 	}
@@ -230,11 +249,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	if origin := req.Header.Get("Origin"); origin != "" && r.originChecker(origin) && localOriginRe.MatchString(origin) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-	}
+		if origin := req.Header.Get("Origin"); origin != "" && r.originChecker(origin) && localOriginRe.MatchString(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-MM-Token, X-MM-Launch")
+		}
 
 	if req.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -421,6 +440,21 @@ func (r *Router) handleClientError(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleBootstrapJS(w http.ResponseWriter, req *http.Request) {
 	if !r.originChecker(req.Header.Get("Origin")) {
 		writeError(w, http.StatusForbidden, "非法来源")
+		return
+	}
+	authorized := req.Context().Value(desktopTransportKey{}) == true
+	if token := req.Header.Get("X-MM-Token"); token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(r.authToken)) == 1 {
+		authorized = true
+	}
+	if grant := req.Header.Get("X-MM-Launch"); grant != "" {
+		r.launchMu.Lock()
+		expires, ok := r.launches[grant]
+		delete(r.launches, grant)
+		r.launchMu.Unlock()
+		authorized = authorized || ok && time.Now().Before(expires)
+	}
+	if !authorized {
+		writeError(w, http.StatusUnauthorized, "浏览器尚未获得应用授权")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

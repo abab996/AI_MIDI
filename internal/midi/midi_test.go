@@ -90,6 +90,19 @@ func TestSMFRoundtrip(t *testing.T) {
 	if len(noteStrings) != 3 {
 		t.Fatalf("roundtrip got %d notes, want 3", len(noteStrings))
 	}
+
+	// 测试空音符表能正常生成有效空 MIDI
+	emptyBytes, err := TxtToMidi("", "", 120)
+	if err != nil {
+		t.Fatalf("TxtToMidi with empty note table failed: %v", err)
+	}
+	emptyNotes, err := ParseMidiToCustomFormat(emptyBytes)
+	if err != nil {
+		t.Fatalf("ParseMidiToCustomFormat on empty midi failed: %v", err)
+	}
+	if len(emptyNotes) != 0 {
+		t.Fatalf("expected 0 notes, got %d", len(emptyNotes))
+	}
 }
 
 func TestJSONNoteTableParsing(t *testing.T) {

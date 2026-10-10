@@ -233,6 +233,25 @@
         self.emit("noteoff", note, 0);
       }
     });
+
+    /* 窗口失焦保护：Alt+Tab 或切换窗口时 keyup 丢失会导致音符持续鸣响（卡音/挂音）；
+       失焦时向所有当前发声音符补发 noteoff 并重置按键表 */
+    window.addEventListener("blur", function () {
+      for (var code in self.pressedKeys) {
+        var note = self.pressedKeys[code];
+        if (note !== undefined) {
+          self.emit("noteoff", note, 0);
+        }
+      }
+      self.pressedKeys = {};
+      for (var n in self.heldNotes) {
+        var noteNum = Number(n);
+        if (!isNaN(noteNum)) {
+          self.emit("noteoff", noteNum, 0);
+        }
+      }
+      self.heldNotes = {};
+    });
   };
 
   window.MidiInputRouter = new (MidiInputRouter as any)();

@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "sf2_generaluser_gs_v1_471_50171b",
+      "kind": "sf2",
+      "name": "GeneralUser GS v1.471",
+      "origin": "builtin",
+      "path": "Library/soundfonts/GeneralUser GS v1.471.sf2",
+      "enabled": true,
+      "addedAt": 1790495885,
+      "updatedAt": 1790496552
+    },
+    {
+      "id": "sf2_pianoteqtest_08a5be",
+      "kind": "sf2",
+      "name": "PianoteqTest",
+      "origin": "user",
+      "path": "Library/soundfonts/PianoteqTest.sf2",
+      "enabled": true,
+      "addedAt": 1790495885,
+      "updatedAt": 1790495885
+    },
+    {
+      "id": "pack_默认素材_21dd0a",
+      "kind": "samplepack",
+      "name": "默认素材",
+      "origin": "builtin",
+      "dirs": [
+        "F:\\cy"
+      ],
+      "enabled": true,
+      "addedAt": 1790495885,
+      "updatedAt": 1790495885
+    },
+    {
+      "id": "com_example_aitest@0.1.0",
+      "kind": "mm",
+      "name": "AI Test Gain",
+      "origin": "ai",
+      "path": "plugins/com.example.aitest@0.1.0",
+      "category": "effect",
+      "classUid": "com.example.aitest",
+      "hash": "8466343b2d263258219008015eef7eae48469e7105d53272e68c01baad198617",
+      "ai": {
+        "createdBy": "mm-plugin"
+      },
+      "enabled": true,
+      "addedAt": 1790510783,
+      "updatedAt": 1790775358
+    },
+    {
+      "id": "com_example_capped@0.1.0",
+      "kind": "mm",
+      "name": "Capped Fx",
+      "origin": "user",
+      "path": "plugins/com.example.capped@0.1.0",
+      "category": "effect",
+      "classUid": "com.example.capped",
+      "capabilities": [
+        "network",
+        "files"
+      ],
+      "hash": "bbb64d26d168bac29f24aeb211af3ca12a6a15e9e3c51bb2e809158311e33193",
+      "enabled": true,
+      "addedAt": 1790511191,
+      "updatedAt": 1790775358
+    },
+    {
+      "id": "com_melodymate_example_gain@1.0.0",
+      "kind": "mm",
+      "name": "MM Example Gain",
+      "vendor": "MelodyMate",
+      "origin": "user",
+      "path": "plugins/com.melodymate.example.gain@1.0.0",
+      "category": "effect",
+      "classUid": "com.melodymate.example.gain",
+      "hash": "4719637ef0cdcb6d1dda04d6543c2322a87ce7e63051d817fd72a3423e2a653f",
+      "enabled": true,
+      "addedAt": 1790510783,
+      "updatedAt": 1790775358
+    },
+    {
+      "id": "com_melodymate_example_synth@1.0.0",
+      "kind": "mm",
+      "name": "MM Example Synth",
+      "vendor": "MelodyMate",
+      "origin": "user",
+      "path": "plugins/com.melodymate.example.synth@1.0.0",
+      "category": "instrument",
+      "classUid": "com.melodymate.example.synth",
+      "hash": "5d503d8abcabab88b91843340ca835968ba0ee8bed82ed0a5256c251352703d6",
+      "enabled": true,
+      "addedAt": 1790510783,
+      "updatedAt": 1790775358
+    }
+  ]
+}

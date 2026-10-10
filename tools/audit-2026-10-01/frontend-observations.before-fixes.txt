@@ -1,0 +1,176 @@
+// Function-level probes against the actual emitted frontend JS, with no network.
+// A CONFIRMED line means the reported defect is still present, not that it is fixed.
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+
+const read = p => fs.readFileSync(new URL('../../' + p, import.meta.url), 'utf8');
+const tick = () => new Promise(resolve => setTimeout(resolve, 20));
+let count = 0;
+function confirmed(name, detail) { count++; console.log(`CONFIRMED ${name}: ${detail}`); }
+const noop = () => {};
+
+function controller(getJSON = async () => ({})) {
+  const win = {
+    UI: { getJSON, postJSON: async () => ({}), toast: noop },
+    ArrangeEngine: class { trackNodes = {}; ensureTrack() {} },
+    ArrRack: { cloneItem: x => ({...x}) },
+    EngineBridge: {},
+    addEventListener: noop,
+  };
+  vm.runInNewContext(read('frontend/js/arrangement/arrange.js'), {
+    window: win, document: { addEventListener: noop }, console, setTimeout, clearTimeout,
+  });
+  const a = win.Arrange;
+  for (const name of ['doSave','stopPlayback','setSaveStamp','syncTransportUI',
+    'renderTracks','_pruneTrackNodes','notifyRackChanged','updateContentWidth','scheduleSave','normalizeRack']) a[name] = noop;
+  return { win, a };
+}
+
+// Project A's delayed response is delivered after B has already loaded.
+{
+  const pending = new Map();
+  const {a} = controller(url => url.endsWith('/bpm') ? Promise.resolve({bpm:120}) :
+    new Promise(resolve => pending.set(url, resolve)));
+  a.deserialize = data => { a.tracks = data.tracks; };
+  a.setProject('A'); a.setProject('B');
+  pending.get('/api/projects/B/arrangement')({tracks:[{id:'B-track'}]});
+  await tick();
+  pending.get('/api/projects/A/arrangement')({tracks:[{id:'A-track'}]});
+  await tick();
+  assert.equal(a.projectId, 'B'); assert.equal(a.loadedProjectId, 'B');
+  assert.equal(a.tracks[0].id, 'A-track');
+  confirmed('PROJECT-SWITCH-RACE', 'current project B contains A-track and is marked loaded as B');
+}
+
+// A track was added locally, but is absent from the on-disk snapshot read by ops.
+{
+  const {a} = controller();
+  a.applyMixSafe = noop;
+  a.tracks = [{id:'saved', clips:[]}, {id:'unsaved', clips:[{id:'new-clip'}]}];
+  a.applyRemoteArrangement({tracks:[{id:'saved', name:'renamed'}]}, ['tracks']);
+  assert.equal(JSON.stringify(a.tracks.map(t=>t.id)), '["saved"]');
+  confirmed('UNSAVED-TRACK-LOSS', 'ops response removes the unsaved track and its new clip');
+}
+
+// AI setMaster/setFxSlot marks only mixer; neither bridge nor render runs.
+{
+  const {a,win} = controller();
+  const calls = [];
+  a.applyMixSafe = () => calls.push('applyMixSafe');
+  a.renderTracks = () => calls.push('renderTracks');
+  win.EngineBridge.setMaster = () => calls.push('setMaster');
+  win.EngineBridge.setFxChain = () => calls.push('setFxChain');
+  a.applyRemoteArrangement({mixer:{channels:{}, master:{gain:0.2,fx:[{slot:0,wet:0.1}]}}}, ['mixer']);
+  assert.equal(a.mixer.master.gain, 0.2); assert.equal(calls.length, 0);
+  confirmed('AI-MIXER-NO-AUDIO-UPDATE', 'local gain changes to 0.2, but no engine or mixer render call occurs');
+}
+
+function panel(installed = [], vst = []) {
+  const calls = [], warnings = [];
+  const win = {
+    setTimeout, clearTimeout, setInterval, clearInterval,
+    UI: {
+      getJSON: async url => ({plugins: url.endsWith('/installed') ? installed : vst}),
+      postJSON: async (url,body) => { calls.push({url,body}); return {}; },
+      toast: (message,kind) => warnings.push({message,kind}),
+    },
+  };
+  // Expose private resetAll/state in memory only; do not rewrite the emitted file.
+  const source = read('frontend/js/arrangement/plugin_panel.js').replace(
+    'window.PluginPanel = {', 'window.__auditPanel = { state: state, resetAll: resetAll }; window.PluginPanel = {');
+  vm.runInNewContext(source, {window:win, document:{}, console});
+  return {win,calls,warnings};
+}
+
+{
+  const {win,calls} = panel([{id:'com.audit.fx',libPath:'C:/audit/fx.dll'}]);
+  win.PluginPanel.restoreAll({projectId:'P',tracks:[],mixer:{channels:{},master:{fx:[{slot:1,plugin:'com.audit.fx',bypass:true,wet:0.2}]}}});
+  await tick();
+  const load = calls.find(c=>c.url.endsWith('/plugins/load'));
+  assert.ok(load); assert.equal(load.body.track,0); assert.equal(load.body.master,undefined);
+  confirmed('MM-MASTER-FX-WRONG-TARGET', 'restore sends track=0 with no master flag');
+  assert.ok(calls.every(c=>!c.url.includes('setChain')));
+  assert.ok(calls.every(c=>c.body.wet===undefined && c.body.bypass===undefined));
+  confirmed('FX-MIX-PARAMS-NOT-RESTORED', 'saved bypass=true and wet=0.2 are absent from all restore requests');
+  const before=calls.length;
+  win.PluginPanel.restoreAll({projectId:'next',tracks:[],mixer:{channels:{},master:{fx:[]}}});
+  await tick(); assert.equal(calls.length,before);
+  confirmed('PROJECT-PLUGIN-NO-CLEAR', 'switching to a project without plugins issues no unload/clear request');
+}
+
+{
+  const {win,calls,warnings} = panel([{id:'com.audit.instrument',libPath:'C:/audit/inst.dll'}]);
+  win.PluginPanel.restoreAll({projectId:'P',tracks:[{id:'T',source:{itemId:'rack1'}}],rack:{items:[
+    {id:'rack1',kind:'mm',sourceId:'com_audit_instrument@1.0.0'}]},mixer:{channels:{}}});
+  await tick(); assert.equal(calls.length,0); assert.ok(warnings.length);
+  confirmed('MM-INSTRUMENT-ID-MISMATCH', 'installed dotted ID does not match the registry ID stored in the rack');
+}
+
+{
+  const {win,calls,warnings} = panel([], [{id:'VST3|C:/audit/inst.vst3|uid',path:'C:/audit/inst.vst3'}]);
+  win.PluginPanel.restoreAll({projectId:'P',tracks:[{id:'T',source:{itemId:'rack1'}}],rack:{items:[
+    {id:'rack1',kind:'vst3',sourceId:'vst3_registry_id',path:''}]},mixer:{channels:{}}});
+  await tick(); assert.equal(calls.length,0); assert.ok(warnings.length);
+  confirmed('VST-INSTRUMENT-NO-PATH', 'normal registry-derived rack item cannot resolve an installed VST3');
+}
+
+{
+  const {win,calls} = panel();
+  const state=win.__auditPanel.state;
+  state.target={track:0,slot:0,master:false};
+  state.rows=[{index:0,default:1,min:0,max:2,sliderEl:{setAttribute:noop},valueEl:{}}];
+  win.__auditPanel.resetAll();
+  await tick();
+  const param=calls.find(c=>c.url.endsWith('/param'));
+  assert.equal(param.body.value,1); // physical value becomes 2, should be normalized 0.5
+  confirmed('MM-RESET-NORMALIZATION', 'physical default=1 in [0,2] is sent as normalized 1 rather than 0.5');
+}
+
+{
+  let reads=0,parses=0;
+  const win={AudioBackend:{isNativePreferred:()=>false,isEngine:()=>false},
+    SoundRegistry:{get:()=>({id:'sf2_registry_id'}),diskPathOf:()=> 'C:/audit/font.sf2'},
+    SoundLibrary:{getSoundFont:async()=>{reads++;return {data:new ArrayBuffer(0)};}},
+  };
+  vm.runInNewContext(read('frontend/js/arrangement/audio_engine.js'),{window:win,console,setTimeout,clearTimeout,setInterval,clearInterval});
+  const engine=new win.ArrangeEngine();
+  const nodes={soundfont:{parseSF2:()=>{parses++;return true;}}};
+  engine.loadTrackSoundFont({id:'T'},nodes,{sourceId:'sf2_registry_id',presetId:'0:0'});
+  await tick(); assert.equal(reads,0); assert.equal(parses,0);
+  confirmed('BROWSER-SF2-SILENT', 'v2 SF2 voice exits before retrieving or decoding any sample data');
+}
+
+{
+  const html=read('frontend/mm-ui.html');
+  const start=html.indexOf('function onPluginMessage(ev) {');
+  const end=html.indexOf('window.addEventListener("message", onPluginMessage);',start);
+  assert.ok(start>=0 && end>start);
+  const writes=[];
+  const sandbox={paramsById:{gain:{index:0}},setParam:(index,value)=>writes.push({index,value}),
+    dropped:0,elStatus:{},elSkeleton:{},frame:{contentWindow:{},style:{}},loadParams:async()=>{},Math};
+  vm.runInNewContext(html.slice(start,end)+'\nthis.handler=onPluginMessage;',sandbox);
+  sandbox.handler({source:{},origin:'https://untrusted.invalid',data:{type:'mm.setParam',id:'gain',value:0}});
+  assert.deepEqual(writes,[{index:0,value:0}]);
+  confirmed('MM-POSTMESSAGE-SOURCE', 'a message from an unrelated window reaches setParam');
+}
+
+{
+  const js=read('frontend/js/chat.js');
+  const start=js.indexOf('function applyArrangementEvent(ev');
+  const end=js.indexOf('function pullArrangementRemote(',start);
+  assert.ok(start>=0 && end>start);
+  const timers=new Map(), pulls=[];
+  let sequence=0;
+  const sandbox={currentProjectId:'P',window:{Arrange:{projectId:'P',rev:0}},UI:{toast:noop},
+    appendSysLine:noop,arrangementPullTimer:null,pullArrangementRemote:x=>pulls.push(x),
+    setTimeout:fn=>{const id=++sequence;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id)};
+  vm.runInNewContext(js.slice(start,end)+'\nthis.handler=applyArrangementEvent;',sandbox);
+  sandbox.handler({project:'P',rev:1,changed:['rack']});
+  sandbox.handler({project:'P',rev:2,changed:['mixer']});
+  for (const fn of timers.values()) fn();
+  assert.equal(JSON.stringify(pulls), '[["mixer"]]');
+  confirmed('SSE-DEBOUNCE-LOST-CHANGE', 'rack followed by mixer within 220ms results in applying only mixer');
+}
+
+console.log(`${count} isolated frontend observations confirmed.`);

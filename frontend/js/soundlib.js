@@ -296,6 +296,18 @@
   };
 
   /* browserRecord 取浏览器模式（WebAudio）解码缓存对应的 IndexedDB 记录 */
+  SoundRegistry.prototype.loadSf2 = function(                       sourceId        ,libId         ) {
+    var self=this;
+    return this.load().then(function(){
+      var src=self.get(sourceId);
+      if(src && src.enabled===false)throw new Error("音源已禁用");
+      return src?self.browserRecord(src).then(function(hit     ){return hit&&window.SoundLibrary?window.SoundLibrary.getSoundFont(hit.id):null;}):libId&&window.SoundLibrary?window.SoundLibrary.getSoundFont(libId):null;
+    }).then(function(rec     ){
+      if(rec?.data)return rec;
+      return fetch("/api/sound/data?id="+encodeURIComponent(sourceId)).then(function(r){if(!r.ok)throw new Error("SF2 数据读取失败：HTTP "+r.status);return r.arrayBuffer();}).then(function(data){return {data:data,name:self.get(sourceId)?.name||sourceId};});
+    });
+  };
+
   SoundRegistry.prototype.browserRecord = function (                        src     ) {
     if (!src || !window.SoundLibrary) return Promise.resolve(null);
     return window.SoundLibrary.recordForSource(src.id, src.name).catch(function () { return null; });

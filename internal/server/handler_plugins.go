@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -100,13 +103,99 @@ func (r *Router) handleUITicket(w http.ResponseWriter, req *http.Request) {
 // 引擎未启动时统一返回 503 + 可解释文案（浏览器模式没有原生引擎）。
 func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request) {
 	sub := strings.TrimPrefix(req.URL.Path, "/api/engine/plugins")
+	if sub == "/ui-ticket" {
+		r.handleBoundUITicket(w, req)
+		return
+	}
+	if sub == "/ui" {
+		r.exchangePluginUITicket(w, req)
+		return
+	}
+	if strings.HasPrefix(sub, "/resources/") {
+		r.handlePluginResource(w, req)
+		return
+	}
+	if sub == "/ui-session/revoke" {
+		r.revokePluginResource(w, req)
+		return
+	}
+	if sub == "/installed" && req.Method == http.MethodGet {
+		list := soundlib.ListInstalledMM()
+		writeJSON(w, http.StatusOK, map[string]any{"count": len(list), "plugins": list})
+		return
+	}
+	if sub == "/sync" && req.Method == http.MethodPost {
+		added, updated, failed := soundlib.SyncAllInstalledMM()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "added": added, "updated": updated, "failed": failed})
+		return
+	}
 	sup := engine.Get()
 	if sup == nil {
 		writeError(w, http.StatusServiceUnavailable, "原生引擎未启动：VST3 插件仅在桌面版可用（浏览器模式请用 SF2/采样包音源）")
 		return
 	}
+	if req.Method == http.MethodGet && req.URL.Query().Get("generation") != "" {
+		q := req.URL.Query()
+		generation, _ := strconv.ParseInt(q.Get("generation"), 10, 64)
+		id := q.Get("trackId")
+		if q.Get("master") == "1" {
+			id = "$master"
+		}
+		track, err := sup.ResolvePluginTrack(q.Get("project"), id, generation)
+		if err != nil {
+			writeError(w, 409, err.Error())
+			return
+		}
+		q.Set("track", strconv.Itoa(track))
+		req.URL.RawQuery = q.Encode()
+	}
 
+	if sub != "/session" && req.Method == http.MethodPost && req.Body != nil {
+		raw, err := io.ReadAll(req.Body)
+		if err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		if id, _ := body["trackId"].(string); id != "" || body["generation"] != nil {
+			projectID, _ := body["project"].(string)
+			generation, _ := body["generation"].(float64)
+			if master, _ := body["master"].(bool); master {
+				id = "$master"
+			}
+			track, err := sup.ResolvePluginTrack(projectID, id, int64(generation))
+			if err != nil {
+				writeError(w, 409, err.Error())
+				return
+			}
+			body["track"] = track
+			raw, _ = json.Marshal(body)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(raw))
+	}
 	switch sub {
+	case "/session":
+		var in struct {
+			Project    string   `json:"project"`
+			Generation int64    `json:"generation"`
+			Tracks     []string `json:"tracks"`
+		}
+		if req.Method != http.MethodPost || json.NewDecoder(req.Body).Decode(&in) != nil {
+			writeError(w, 400, "无效工程会话")
+			return
+		}
+		if len(in.Tracks) > plugins.MaxTracks {
+			writeError(w, 400, "轨道数量超限")
+			return
+		}
+		revokeProjectResources(in.Project, in.Generation)
+		if err := sup.BeginPluginSession(in.Project, in.Generation, in.Tracks); err != nil {
+			writeError(w, 503, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
 	case "/ui-ticket":
 		r.handleUITicket(w, req)
 
@@ -134,78 +223,13 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if err = soundlib.SyncVST3Plugins(list.Plugins); err != nil {
+			writeError(w, http.StatusInternalServerError, "插件已扫描，但注册表同步失败："+err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"count": list.Count, "plugins": list.Plugins, "formats": list.Formats,
 		})
-
-	case "/ui":
-		/* P6：MM 插件 UI 的静态承载（前端 mm-ui.html 用 sandbox iframe 加载它）。
-		   路径必须落在 Library/plugins/<id>@<ver>/ 内：逐条校验，拒绝任何穿越。
-		   query：plugin=<插件 id>、asset=<包内相对路径，默认取 manifest 的 ui.entry>
-
-		   鉴权说明：本端点被 <iframe src> 直接加载，浏览器导航无法携带
-		   X-MM-Token 自定义头，因此走一次性的 ui_ticket（由已在令牌保护下
-		   的 /api/engine/plugins/ui-ticket 换取，仅限本端点、短时效）。 */
-		q := req.URL.Query()
-		if !consumeUITicket(q.Get("ticket")) {
-			writeError(w, http.StatusUnauthorized, "插件界面访问凭据缺失或已失效：请从混音台重新打开插件界面")
-			return
-		}
-		pluginID := strings.TrimSpace(q.Get("plugin"))
-		if pluginID == "" || strings.ContainsAny(pluginID, "/\\") || strings.Contains(pluginID, "..") {
-			writeError(w, http.StatusBadRequest, "plugin 参数非法")
-			return
-		}
-		asset := strings.TrimSpace(q.Get("asset"))
-		if asset == "" {
-			asset = "ui/index.html"
-		}
-		clean := filepath.ToSlash(filepath.Clean(asset))
-		if strings.HasPrefix(clean, "/") || strings.Contains(clean, "..") {
-			writeError(w, http.StatusBadRequest, "asset 路径非法")
-			return
-		}
-		pluginsRoot := filepath.Join(config.LibraryDir, "plugins")
-		entries, _ := os.ReadDir(pluginsRoot)
-		var base string
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if name == pluginID || strings.HasPrefix(name, pluginID+"@") {
-				base = filepath.Join(pluginsRoot, name)
-				break
-			}
-		}
-		if base == "" {
-			writeError(w, http.StatusNotFound, "插件未安装："+pluginID)
-			return
-		}
-		full := filepath.Join(base, filepath.FromSlash(clean))
-		rel, rerr := filepath.Rel(base, full)
-		if rerr != nil || strings.HasPrefix(rel, "..") {
-			writeError(w, http.StatusBadRequest, "asset 越界")
-			return
-		}
-		if st, serr := os.Stat(full); serr != nil || st.IsDir() {
-			writeError(w, http.StatusNotFound, "插件 UI 资源不存在："+clean)
-			return
-		}
-		/* 只服务插件 UI 需要的静态类型（不当作通用文件服务器） */
-		switch strings.ToLower(filepath.Ext(full)) {
-		case ".html", ".js", ".css", ".json", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf":
-		default:
-			writeError(w, http.StatusForbidden, "不允许的资源类型")
-			return
-		}
-		/* 安全响应头：该文档与应用同源。正常路径下它只被 mm-ui.html 的
-		   sandbox iframe 加载；但对话里的链接可能把它当顶层文档打开——
-		   sandbox 指令让浏览器对它强制启用沙箱（与 iframe 同等限制），
-		   使其脚本拿不到主界面权限（cookie/同源 API 调用）。 */
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		http.ServeFile(w, req, full)
 
 	case "/install":
 		/* .mm 包安装两步式（能力授权对话框的后端）：
@@ -422,8 +446,12 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		store := plugins.NewStore(dir)
-		env, lerr := store.Load(target)
+		env, lerr := store.LoadMatching(target, in.Ref, in.Format)
 		if lerr != nil {
+			if errors.Is(lerr, plugins.ErrReferenceMismatch) {
+				writeJSON(w, http.StatusConflict, map[string]any{"code": "plugin_state_reference_mismatch", "error": lerr.Error()})
+				return
+			}
 			if os.IsNotExist(lerr) {
 				writeError(w, http.StatusNotFound, "该槽位还没有保存过插件状态")
 				return
@@ -432,7 +460,7 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		/* 引用不一致时拒绝恢复：把 A 插件的状态灌进 B 插件轻则报错、重则崩溃 */
-		if !env.Matches(in.Ref) {
+		if !env.Matches(in.Ref) || env.Format != in.Format {
 			writeError(w, http.StatusConflict,
 				"保存的状态属于另一个插件（"+env.Ref+"），拒绝恢复到当前插件")
 			return
@@ -484,6 +512,7 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		var in struct {
+			Ref    string `json:"ref"`
 			ID     string `json:"id"`
 			Format string `json:"format"`
 			Path   string `json:"path"`
@@ -516,6 +545,9 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
+			if in.Ref != "" {
+				sup.SetPluginReference(track, slot, in.Ref)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mm": state})
 			return
 		}
@@ -530,6 +562,9 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if err := sup.LoadPlugin(track, slot, in.ID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if in.Ref != "" {
+			sup.SetPluginReference(track, slot, in.Ref)
 		}
 		state, _ := sup.PluginState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
@@ -647,6 +682,7 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 
 // pluginStateRequest 插件状态读写请求体（/state/save、/state/load 共用）。
 type pluginStateRequest struct {
+	TrackID string `json:"trackId"`
 	Project string `json:"project"` // 工程 ID（状态按工程存放）
 	Track   int    `json:"track"`
 	Slot    *int   `json:"slot"` // nil = 该轨乐器（与 /load 同一约定）
@@ -669,7 +705,7 @@ func (in pluginStateRequest) target() (plugins.Target, string, error) {
 	if in.Slot != nil {
 		slot = *in.Slot
 	}
-	target := plugins.Target{ProjectID: projectID, Track: track, Slot: slot}
+	target := plugins.Target{ProjectID: projectID, TrackID: in.TrackID, Track: track, Slot: slot}
 	if err := target.Valid(); err != nil {
 		return plugins.Target{}, "", err
 	}

@@ -176,22 +176,36 @@
   function throwHttpError(r: Response) {
     return r.text().then(function (t) {
       var detail = "";
+      var payload: any = null;
       try {
-        detail = JSON.parse(t).detail || "";
+        payload = JSON.parse(t);
+        detail = payload.detail || "";
       } catch (e) {
         detail = (t || "").slice(0, 200);
       }
-      throw new Error(detail || ("HTTP " + r.status));
+      var error: any = new Error(detail || ("HTTP " + r.status));
+      error.status = r.status;
+      error.data = payload;
+      throw error;
     });
   }
 
   /* 网络层错误（断网/DNS 失败）：fetch 拒绝时把浏览器原文
      "Failed to fetch" 换成可读文案 */
+  async function download(url: string,name?: string) {
+    var response=await fetch(url,{cache:"no-store"});if(!response.ok)return throwHttpError(response);
+    var blob=new Blob([await response.arrayBuffer()],{type:response.headers.get("Content-Type")||"application/octet-stream"}),objectURL=URL.createObjectURL(blob),a=document.createElement("a");
+    var disposition=response.headers.get("Content-Disposition")||"";
+    var encoded=/filename\*=UTF-8''([^;]+)/i.exec(disposition),plain=/filename="?([^";]+)/i.exec(disposition);
+    a.href=objectURL;a.download=name||(encoded?decodeURIComponent(encoded[1]):plain?plain[1]:"download");
+    document.body.appendChild(a);try{a.click();}finally{a.remove();setTimeout(function(){URL.revokeObjectURL(objectURL);},1000);}
+  }
+
   function friendlyError(e: unknown) {
     if (e instanceof TypeError && /fetch/i.test(e.message || "")) {
-      return new Error("网络连接失败，请检查网络后重试");
+      throw new Error("网络连接失败，请检查网络后重试");
     }
-    return e;
+    throw e;
   }
 
   function getJSON<T>(url: string): Promise<T> {
@@ -379,7 +393,7 @@
        时不能无限转圈——超时收尾复位 busy 态并抛出可见错误；任一事件帧
        到达即重置。此前桥路径无任何超时兜底 */
     var settled = false;
-    var settleResolve: (value?: void) => void, settleReject: (reason?: unknown) => void;
+    var settleResolve = function (_?: void) {}, settleReject = function (_?: unknown) {};
     var settle = new Promise<void>(function (res, rej) { settleResolve = res; settleReject = rej; });
     var timer: number | null = null;
     function clearTimer() {
@@ -412,6 +426,25 @@
       finish();
       if (!settled) { settled = true; settleResolve(); }
     });
+
+    var externalSignal = opts && opts.signal;
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        finish();
+        if (!settled) {
+          settled = true;
+          settleReject(new DOMException("The user aborted a request.", "AbortError"));
+        }
+      } else {
+        externalSignal.addEventListener("abort", function () {
+          finish();
+          if (!settled) {
+            settled = true;
+            settleReject(new DOMException("The user aborted a request.", "AbortError"));
+          }
+        }, { once: true });
+      }
+    }
 
     var p: Promise<void>;
     if (kind === "answer") {
@@ -838,14 +871,59 @@
     });
   }
 
+  /* WebView2 子窗口不会经过 Wails 资源处理器。桌面使用同源承载 iframe，
+     插件自身仍由 mm-ui 的无同源权限沙箱加载；浏览器保留独立窗口。 */
+  function openPluginUI(url: string, name: string, width = 760, height = 560) {
+    if (!(global as any).go?.app?.App) return window.open(url, name, "width=" + width + ",height=" + height);
+    var previous = document.activeElement as HTMLElement;
+    var overlay = document.createElement("div");
+    overlay.className = "modal-overlay plugin-ui-host";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "插件界面");
+    var box = document.createElement("div");
+    box.className = "card brackets plugin-ui-window";
+    box.style.width = Math.max(320, Math.min(4096, width)) + "px";
+    var closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "btn btn-secondary plugin-ui-close";
+    closeButton.textContent = "关闭 · Esc";
+    var frame = document.createElement("iframe");
+    frame.title = "MM 插件界面";
+    frame.style.height = Math.max(240, Math.min(4096, height)) + "px";
+    frame.src = url;
+    box.append(closeButton, frame);
+    overlay.appendChild(box);
+    var closed = false;
+    function close() {
+      if (closed) return;
+      closed = true;
+      try { (frame.contentWindow as any)?.MMPluginHostClose?.(); } catch (_) {}
+      window.removeEventListener("message", onMessage);
+      overlay.remove();
+      if (previous && document.contains(previous)) previous.focus();
+    }
+    function onMessage(event: MessageEvent) {
+      if (event.source === frame.contentWindow && event.origin === location.origin && event.data?.type === "mm.close") close();
+    }
+    closeButton.addEventListener("click", close);
+    overlay.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") { event.stopPropagation(); close(); }
+    });
+    window.addEventListener("message", onMessage);
+    document.body.appendChild(overlay);
+    closeButton.focus();
+    return { get closed() { return closed; }, close: close, postMessage(message: unknown, targetOrigin: string) { frame.contentWindow?.postMessage(message, targetOrigin); } };
+  }
+
   global.UI = {
     qs: qs, qsa: qsa, toast: toast, esc: esc,
     confirm: confirmDialog,
     prompt: promptDialog,
     fmtSize: fmtSize, fmtDate: fmtDate, friendlyText: friendlyText,
     isLocalEndpoint: isLocalEndpoint,
-    getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
-    openExternal: openExternal,
+    download: download, getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
+    openExternal: openExternal, openPluginUI: openPluginUI,
     ssePost: ssePost, md: md, mdInline: mdInline, projectCard: projectCard,
     streamStart: streamStart,
     transportPrefs: getTransportPrefs,

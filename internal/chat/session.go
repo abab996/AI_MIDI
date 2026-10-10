@@ -285,6 +285,13 @@ func (s *ProjectSession) SwitchTask(taskID string) {
 	s.CurrentTaskID = taskID
 }
 
+// GetCurrentTaskID 线程安全获取当前任务 ID
+func (s *ProjectSession) GetCurrentTaskID() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.CurrentTaskID
+}
+
 // GetTaskState 获取指定任务的独立状态对象
 func (s *ProjectSession) GetTaskState(taskID string) *TaskState {
 	s.mu.Lock()

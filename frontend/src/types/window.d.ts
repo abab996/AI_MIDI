@@ -2,6 +2,8 @@
    迁移某个文件时只收紧类型，不改这些名字。 */
 
 interface UIApi {
+  openPluginUI(url: string, name: string, width?: number, height?: number): { readonly closed: boolean; close(): void; postMessage(message: unknown, targetOrigin: string): void } | null;
+  download(url: string,name?: string): Promise<any>;
   qs(sel: string, root?: ParentNode): Element | null;
   /* 现有调用都把结果当 HTML 元素（hidden、style）。迁 app.ts 时，
      querySelectorAll 的 Element[] 要在 return 上断言成 HTMLElement[]。 */
@@ -82,6 +84,7 @@ interface TasksApi {
 
 interface SharedAudioApi {
   get(): AudioContext | null;
+  getDecodeContext?(): BaseAudioContext | AudioContext | null;
   resume(): Promise<void>;
   now(): number;
   dispose(): void;
@@ -251,6 +254,7 @@ interface ArrangeTrackNodes {
 }
 
 interface ArrangeEngineInstance {
+  controller?: ArrangeController;
   ctx: AudioContext | null;
   bpm: number;
   metronome: boolean;
@@ -281,8 +285,23 @@ interface ArrangeEngineConstructor {
   prototype: ArrangeEngineInstance;
 }
 
+interface Window {
+  ArrangementSync: { copy(x: any): any; equal(a: any, b: any): boolean; merge(b: any,l: any,r: any): {value:any;conflicts:string[]}; draft(method: string,project: string,value?: any): Promise<any>; chooseConflict(conflicts:string[]):Promise<string|null>;cancelConflict():void };
+}
+
 interface ArrangeController {
   projectId: string | null;
+  projectEpoch: number;
+  audioSync?: "waiting" | "ready" | "failed";
+  _audioSyncRequest?: number;
+  _audioRequestedSignature?: string;
+  _saves: { [project: string]: { base: any; inflight: Promise<any> | null; draft: any; lastError?: any } };
+  saveConflict: { base: any; local: any; remote: any; conflicts: string[] } | null;
+  _conflictDialog?: boolean;
+  _stashDraft(): Promise<any>;
+  _applyMergedState(data: any): void;
+  _pauseForConflict(base: any, local: any, remote: any, conflicts: string[]): void;
+  resolveSaveConflict(): void;
   bpm: number;
   tracks: ArrangeTrack[];
   setProject(projectId: string | null): void;
@@ -435,7 +454,9 @@ interface PluginPanelApi {
   open(ctrl: unknown, target: unknown): void;
   close(): void;
   /** 工程载入后把记录的插件装回引擎并恢复状态（浏览器模式静默跳过） */
-  restoreAll(ctrl: unknown): void;
+  restoreAll(ctrl: unknown): Promise<any>;
+  resolvePlugin(ref: string): Promise<any>;
+  enqueue(ctrl: ArrangeController, task: ()=>Promise<any>, valid?: ()=>boolean): Promise<boolean>;
   isOpen(): boolean;
 }
 

@@ -959,6 +959,7 @@
 <script src="/js/arrangement/material.js" defer></script>
 <script src="/js/arrangement/mixer.js" defer></script>
 <script src="/js/arrangement/plugin_panel.js" defer></script>
+<script src="/js/arrangement/sync.js" defer></script>
 <script src="/js/arrangement/arrange.js" defer></script>
 <script src="/js/chat.js" defer></script>
 <script src="/demo/script_data.js" defer></script>
@@ -978,6 +979,7 @@
          判定（isEngineDown）把一次 HTTP 抖动当成引擎掉线，掐断正在播放的
          走带。首次加载即失败时保持未取到（undefined），判定侧同样忽略 */
       var state = statusOk ? (st.state || "unknown") : (window.__engineState || "unknown");
+      if(statusOk && st.replay_errors && st.replay_errors.length)state="failed";
       /* 浏览器模式（无 Wails 桥）：没有引擎通道，实际发声恒为 WebAudio
          兼容层——徽章必须如实反映，不得显示引擎就绪 */
       var noBridge = !(window.EngineBridge && window.EngineBridge.available);

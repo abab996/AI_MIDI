@@ -20,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 
-	"melodymate/internal/config"
 	"melodymate/internal/engine"
 	"melodymate/internal/llm"
 	"melodymate/internal/project"
@@ -890,87 +889,115 @@ func listPluginsText(args map[string]any) string {
 
 // loadPluginText 装载插件 + 落一份槽位状态（AI 不必再查）
 func loadPluginText(env ToolEnv, args map[string]any) string {
-	sup := engine.Get()
-	if sup == nil {
-		return "引擎未启动：VST3 插件需要在桌面版（原生引擎）下使用。"
-	}
 	id := stringArg(args, "id")
 	if id == "" {
 		return "错误：缺少 id（先 list_plugins）"
 	}
-	trackText := strings.ToLower(strings.TrimSpace(stringArg(args, "track")))
-	slot := -1
-	if v, ok := args["slot"]; ok && v != nil {
-		if f, isNum := v.(float64); isNum {
-			slot = int(f)
-		}
+	registered, err := findAIPluginSource(id, stringArg(args, "path"))
+	if err != nil {
+		return "错误：" + err.Error()
 	}
-	engineTrack := 0
-	isMaster := trackText == "master" || trackText == "主总线"
-	if !isMaster {
+	resolved, err := soundlib.ResolvePlugin(registered.ID)
+	if err != nil {
+		return "错误：" + err.Error()
+	}
+	slot := -1
+	if value, ok := args["slot"].(float64); ok {
+		if value != math.Trunc(value) || value < 0 || value >= 8 {
+			return "错误：slot 超出范围（0-7）"
+		}
+		slot = int(value)
+	}
+	master := strings.EqualFold(stringArg(args, "track"), "master") || stringArg(args, "track") == "主总线"
+	if master && slot < 0 {
+		return "错误：主总线必须指定 FX 槽"
+	}
+	if slot < 0 && resolved.Category != "instrument" {
+		return "错误：该插件不是乐器"
+	}
+	if slot >= 0 && resolved.Category == "instrument" {
+		return "错误：FX 槽不接受乐器"
+	}
+	op := map[string]any{"op": "setFxSlot", "slot": slot, "plugin": resolved.ID, "sourceId": registered.ID, "bypass": false}
+	where := "主总线"
+	if master {
+		op["master"] = true
+	} else {
 		track, err := requireTrack(args)
 		if err != nil {
 			return "错误：" + err.Error()
 		}
-		// AI 用轨道序号/id/名称，引擎用 0~31 的槽位号
-		idx, err := resolveTrackIndex(env.ProjectID, track)
+		index, err := resolveTrackIndex(env.ProjectID, track)
 		if err != nil {
 			return "错误：" + err.Error()
 		}
-		engineTrack = idx
+		tracks := arrangementTracks(loadArrangement(env.ProjectID))
+		if index >= len(tracks) {
+			return "错误：轨道已删除"
+		}
+		target, _ := tracks[index].(map[string]any)
+		trackID := stringArg(target, "id")
+		op["track"] = trackID
+		where = "轨道 " + trackID
+		if slot < 0 {
+			op = map[string]any{"op": "setTrackSource", "track": trackID, "itemId": registered.ID}
+		}
 	}
-	if isMaster {
-		engineTrack = -1
-	}
-	/* P6：MM 插件是 .mm 包解包后的原生库：引擎按**路径**装载（format=mm）。
-	   id 仍是插件 id（com.x.y），写进工程用于识别与打开承载窗。 */
-	if strings.EqualFold(strings.TrimSpace(stringArg(args, "format")), "mm") {
-		libPath := strings.TrimSpace(stringArg(args, "path"))
-		if libPath == "" {
-			return "错误：装载 MM 插件需要 path（用 mm_list 取 libPath）"
-		}
-		if verr := engine.ValidateMmPluginPath(filepath.Join(config.LibraryDir, "plugins"), libPath); verr != nil {
-			return "错误：" + verr.Error()
-		}
-		if _, err := sup.LoadMmPlugin(engineTrack, slot, libPath); err != nil {
-			return "错误：" + err.Error()
-		}
-	} else if err := sup.LoadPlugin(engineTrack, slot, id); err != nil {
-		return "错误：" + err.Error()
-	}
-
-	// 槽位状态也写进工程（前端/重启后知道这里该有什么）
-	if slot >= 0 {
-		op := map[string]any{"op": "setFxSlot", "slot": slot, "plugin": id, "bypass": false}
-		if isMaster {
-			op["master"] = true
-		} else {
-			op["track"] = engineTrack
-		}
-		if _, err := project.ApplyOps(env.ProjectID, []map[string]any{op}); err != nil {
-			return "插件已装载，但槽位状态未落到工程：" + err.Error()
-		}
+	result, err := project.ApplyOps(env.ProjectID, []map[string]any{op})
+	if err != nil {
+		return "错误：插件引用保存失败：" + err.Error()
 	}
 	if env.Emit != nil {
-		env.Emit(map[string]any{
-			"type":    "arrangement",
-			"project": env.ProjectID,
-			"changed": []string{"mixer"},
-			"summary": []string{"装载插件 " + id},
-			"source":  "ai",
-			"tool":    "load_plugin",
-		})
+		env.Emit(map[string]any{"type": "arrangement", "project": env.ProjectID, "rev": result.Rev, "changed": []string{"mixer", "tracks", "rack"}, "summary": []string{"指派插件 " + registered.ID}, "source": "ai", "tool": "load_plugin"})
 	}
-	where := "轨道 #" + fmt.Sprint(engineTrack+1)
-	if isMaster {
-		where = "主总线"
+	return "已将插件指派到 " + where + "：" + registered.ID + "。当前工程由音频协调器装载并恢复状态。"
+}
+
+func findAIPluginSource(id, legacyPath string) (soundlib.View, error) {
+	if source, err := soundlib.Get(id); err == nil {
+		return source, nil
 	}
-	if slot >= 0 {
-		where += fmt.Sprintf(" FX 槽 %d", slot)
-	} else {
-		where += "（乐器）"
+	var matches []soundlib.View
+	for _, source := range soundlib.List("", "") {
+		if source.Kind != soundlib.KindMM && source.Kind != soundlib.KindVST3 {
+			continue
+		}
+		if source.ClassUID != id {
+			continue
+		}
+		if legacyPath != "" && source.Kind == soundlib.KindMM {
+			ref, err := soundlib.ResolvePlugin(source.ID)
+			if err != nil || !strings.EqualFold(filepath.Clean(ref.Path), filepath.Clean(legacyPath)) {
+				continue
+			}
+		}
+		matches = append(matches, source)
 	}
-	return "已把插件装载到 " + where + "：" + id + "\n" + pluginStateText(sup)
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return soundlib.View{}, fmt.Errorf("多个版本已安装，请使用注册表 sourceId")
+	}
+	sup := engine.Get()
+	if sup == nil {
+		return soundlib.View{}, fmt.Errorf("插件未登记：%s", id)
+	}
+	list, err := sup.ListPlugins()
+	if err != nil {
+		return soundlib.View{}, err
+	}
+	for _, plugin := range list.Plugins {
+		if plugin.ID != id {
+			continue
+		}
+		source, err := soundlib.Add(soundlib.Source{Kind: soundlib.KindVST3, Name: plugin.Name, Vendor: plugin.Vendor, Path: plugin.Path, ClassUID: plugin.ID, Category: plugin.Category, Enabled: true, Origin: soundlib.OriginUser})
+		if err != nil {
+			return soundlib.View{}, err
+		}
+		return soundlib.Get(source.ID)
+	}
+	return soundlib.View{}, fmt.Errorf("插件未登记：%s", id)
 }
 
 // pluginStateText 宿主机内状态摘要

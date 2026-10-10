@@ -8,14 +8,14 @@ import (
 )
 
 // SaveDraft 保存项目输入框草稿
-func SaveDraft(projectID, text string) {
+func SaveDraft(projectID, text string) error {
 	pdir, err := ProjectDir(projectID)
 	if err != nil {
-		return
+		return err
 	}
 	_ = os.MkdirAll(pdir, 0755)
 	draftFile := filepath.Join(pdir, config.DraftFilename)
-	_ = os.WriteFile(draftFile, []byte(text), 0644)
+	return os.WriteFile(draftFile, []byte(text), 0644)
 }
 
 // LoadDraft 读取项目输入框草稿

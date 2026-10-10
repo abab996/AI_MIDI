@@ -7,7 +7,8 @@
   "scripts": {
     "build": "tsc -p frontend/tsconfig.json --noEmit && node tools/dev/emit-frontend.mjs",
     "typecheck": "tsc -p frontend/tsconfig.json --noEmit --pretty false",
-    "test": "node tools/dev/audio_engine_test.mjs",
+    "test": "node tools/dev/audio_engine_test.mjs && node tools/dev/audio_generation_test.mjs && node tools/dev/arrangement_sync_test.mjs && node tools/dev/arrangement_save_test.mjs && node tools/dev/plugin_lifecycle_test.mjs && node tools/dev/mm_ui_lifecycle_test.mjs",
+    "check:audit": "node tools/audit-2026-10-01/frontend-repro.mjs",
     "check:sound": "node tools/dev/sound_pane_check.mjs",
     "check:rack": "node tools/dev/rack_check.mjs",
     "check:material": "node tools/dev/material_check.mjs",

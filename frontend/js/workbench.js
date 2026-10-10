@@ -296,6 +296,7 @@
         if (ev.download_url) {
           var link = $("#downloadLink");
           link.href = ev.download_url;
+          link.onclick=function(e       ){e.preventDefault();UI.download(link.href).catch(function(err     ){UI.toast (err.message,"err");});};
           link.hidden = false;
         }
         setStatus("DONE", "ok");

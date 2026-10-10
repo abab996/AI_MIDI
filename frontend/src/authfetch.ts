@@ -22,13 +22,18 @@
      包裹必须在此之前完成） */
   function loadToken() {
     try {
+      token = sessionStorage.getItem("mm_token") || "";
+      var grant=new URLSearchParams(window.location.hash.slice(1)).get("mm_launch");
       var xhr = new XMLHttpRequest();
       xhr.open("GET", TOKEN_PATH, false);
+      if(token)xhr.setRequestHeader(HEADER,token);
+      if(grant)xhr.setRequestHeader("X-MM-Launch",grant);
       xhr.send(null);
       if (xhr.status >= 200 && xhr.status < 300) {
         var data = JSON.parse(xhr.responseText || "{}");
-        if (data && typeof data.token === "string") token = data.token;
+        if (data && typeof data.token === "string") {token = data.token;sessionStorage.setItem("mm_token",token);}
       }
+      if(grant)history.replaceState(null,"",window.location.pathname+window.location.search);
     } catch (e) {
       /* 取不到令牌：不阻断页面（后端可能未启用校验），请求照发 */
       token = "";
@@ -54,7 +59,14 @@
     var url = typeof input === "string" ? input : (input && input.url) || "";
     if (token && isSameOriginApi(url)) {
       init = init || {};
-      var headers = new Headers(init.headers || {});
+      var headers: Headers;
+      if (init.headers) {
+        headers = new Headers(init.headers);
+      } else if (input && typeof input === "object" && input.headers) {
+        headers = new Headers(input.headers);
+      } else {
+        headers = new Headers();
+      }
       if (!headers.has(HEADER)) headers.set(HEADER, token);
       init.headers = headers;
     }

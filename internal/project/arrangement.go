@@ -3,6 +3,7 @@ package project
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -36,13 +37,18 @@ func ReadArrangement(projectID string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
-// WriteArrangementVersioned 整份写入编排数据（前端保存路径）。
-//
-// 与 ApplyOps 共用项目级写锁，并维护单调递增的 rev：整份 PUT 与 AI 的定向
-// 修改并发时，"后写覆盖先写"不可避免，但有了 rev，前端能判断自己手里这份
-// 是不是最新（SSE 事件带回服务端 rev），从而丢弃过期的本地快照而不是覆盖。
-//
-// 内容以调用方为准：这里只补 rev，不改写结构（迁移由 ApplyOps/前端各自负责）。
+// ArrangementConflict carries the current snapshot without changing the file.
+type ArrangementConflict struct {
+	Rev         int64
+	Arrangement json.RawMessage
+}
+
+func (e *ArrangementConflict) Error() string {
+	return "编排已被其他操作修改，请合并后保存"
+}
+
+// WriteArrangementVersioned compares the caller's revision under the same lock
+// as ApplyOps. A lock alone cannot prevent a stale snapshot overwriting AI edits.
 func WriteArrangementVersioned(projectID string, data []byte) (int64, error) {
 	unlock := LockArrangement(projectID)
 	defer unlock()
@@ -51,11 +57,24 @@ func WriteArrangementVersioned(projectID string, data []byte) (int64, error) {
 	if err := json.Unmarshal(data, &arr); err != nil || arr == nil {
 		return 0, fmt.Errorf("非法的 JSON 数据")
 	}
+	base, ok := arr["rev"].(float64)
+	if !ok || base < 0 || math.Trunc(base) != base || base > 9007199254740991 {
+		return 0, fmt.Errorf("缺少或无效的编排 rev")
+	}
 	prev := int64(0)
-	if raw, err := ReadArrangement(projectID); err == nil {
-		if old := decodeArrangement(raw); old != nil {
-			prev = intField(old, "rev")
+	raw, readErr := ReadArrangement(projectID)
+	if readErr != nil {
+		return 0, readErr
+	}
+	if len(raw) > 0 {
+		old := decodeArrangement(raw)
+		if old == nil {
+			return 0, fmt.Errorf("现有编排数据损坏，请先恢复备份")
 		}
+		prev = intField(old, "rev")
+	}
+	if int64(base) != prev {
+		return prev, &ArrangementConflict{Rev: prev, Arrangement: raw}
 	}
 	rev := prev + 1
 	arr["rev"] = rev
@@ -87,6 +106,27 @@ func WriteArrangement(projectID string, data []byte) error {
 		return err
 	}
 	pretty := data
+	if original, err := os.ReadFile(file); err == nil {
+		var previous map[string]any
+		if json.Unmarshal(original, &previous) != nil {
+			return fmt.Errorf("现有编排文件损坏，拒绝覆盖")
+		}
+		if version, _ := previous["version"].(float64); version < 2 {
+			f, err := os.OpenFile(file+".before-v2-migration", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+			if err == nil {
+				_, err = f.Write(original)
+				closeErr := f.Close()
+				if err != nil {
+					return err
+				}
+				if closeErr != nil {
+					return closeErr
+				}
+			} else if !os.IsExist(err) {
+				return err
+			}
+		}
+	}
 	if ind, err := json.MarshalIndent(v, "", "  "); err == nil {
 		pretty = ind
 	}

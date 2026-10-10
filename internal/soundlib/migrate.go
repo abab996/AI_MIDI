@@ -102,7 +102,24 @@ func absorbDiskLocked(reg *Registry) (int, int, int) {
 	}
 
 	// 2. 采样目录：settings.MaterialDirs → 注册表采样包条目
-	legacy := config.LoadSettings().MaterialDirs
+	managed := map[string]bool{}
+	for _, s := range reg.Sources {
+		if s.Kind == KindSamplePack && s.Origin != OriginBuiltin {
+			for _, d := range s.Dirs {
+				managed[strings.ToLower(filepath.Clean(d))] = true
+			}
+		}
+	}
+	unmanaged := func(dirs []string) []string {
+		var out []string
+		for _, d := range dirs {
+			if !managed[strings.ToLower(filepath.Clean(d))] {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	legacy := unmanaged(config.LoadSettings().MaterialDirs)
 	idx := -1
 	for i := range reg.Sources {
 		if reg.Sources[i].Kind == KindSamplePack && reg.Sources[i].Origin == OriginBuiltin {
@@ -128,11 +145,14 @@ func absorbDiskLocked(reg *Registry) (int, int, int) {
 	addedDirs := 0
 	if idx >= 0 {
 		before := len(reg.Sources[idx].Dirs)
-		merged := normalizeDirs(append(append([]string{}, reg.Sources[idx].Dirs...), legacy...))
-		if len(merged) != before {
+		merged := normalizeDirs(unmanaged(append(append([]string{}, reg.Sources[idx].Dirs...), legacy...)))
+		if !sameDirList(merged, reg.Sources[idx].Dirs) {
 			reg.Sources[idx].Dirs = merged
 			reg.Sources[idx].UpdatedAt = time.Now().Unix()
 			addedDirs = len(merged) - before
+			if addedDirs <= 0 {
+				addedDirs = 1
+			}
 		}
 	}
 	return addedFonts, addedPacks, addedDirs

@@ -297,7 +297,7 @@ interface ArrangeController {
   deleteSelectedSilent(ids: any): unknown;
   dirs: string[];
   dirty: boolean;
-  doSave(): void;
+  doSave(): Promise<any>;
   dragState: DragState | null;
   drawAudioThumb(ctx: any, track: any, clip: any, w: any, h: any, spb: any): void;
   drawMidiThumb(ctx: any, track: any, clip: any, w: any, h: any): void;

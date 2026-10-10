@@ -79,10 +79,21 @@
 
   /** analysisContext 只用于解码分析的 AudioContext：
       引擎模式下应用不建 WebAudio 发声链，但波形缩略图需要离线解码，
-      这里单独取共享上下文（不接任何输出，不产生声音）。 */
+      这里取离线解码上下文（不接任何输出，不产生声音）。 */
   function analysisContext() {
     try {
-      if (window.SharedAudio && window.SharedAudio.get) return window.SharedAudio.get();
+      if (window.SharedAudio) {
+        if (typeof window.SharedAudio.getDecodeContext === "function") {
+          var dc = window.SharedAudio.getDecodeContext();
+          if (dc) return dc;
+        }
+        if (window.SharedAudio.get) {
+          var c = window.SharedAudio.get();
+          if (c) return c;
+        }
+      }
+      var OAC = window.OfflineAudioContext || (window       ).webkitOfflineAudioContext;
+      if (OAC) return new OAC(1, 1, 44100);
     } catch (e) {}
     return null;
   }

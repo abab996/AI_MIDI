@@ -8856,3 +8856,8 @@ html.has-titlebar .top-nav {
 @media (prefers-reduced-motion: reduce) {
   .mmbuild-steps li.active { animation: none; }
 }
+
+.plugin-ui-host { z-index: 2100; }
+.plugin-ui-window { max-width: calc(100vw - 32px); padding: 10px; }
+.plugin-ui-close { display: block; margin: 0 0 8px auto; }
+.plugin-ui-window > iframe { display: block; width: 100%; max-height: calc(100vh - 90px); border: 1px solid var(--color-border); }

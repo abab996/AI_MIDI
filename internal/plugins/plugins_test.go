@@ -196,11 +196,11 @@ func TestEnvelopeMatches(t *testing.T) {
 	if env.Matches("VST3|Serum") {
 		t.Fatalf("不同引用必须不匹配（否则会把 A 的状态灌进 B）")
 	}
-	if !env.Matches("") {
-		t.Fatalf("调用方不校验引用时应当放行")
+	if env.Matches("") {
+		t.Fatalf("缺少插件引用必须拒绝")
 	}
-	if !(Envelope{}).Matches("VST3|Serum") {
-		t.Fatalf("老状态文件没有引用时应当放行而不是拒绝恢复")
+	if (Envelope{}).Matches("VST3|Serum") {
+		t.Fatalf("老状态文件没有引用必须保留并拒绝错误恢复")
 	}
 }
 

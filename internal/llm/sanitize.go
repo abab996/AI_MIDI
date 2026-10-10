@@ -1,5 +1,10 @@
 package llm
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // SanitizeMessages 清理并修复消息列表，确保兼容 Gemini / OpenAI 等 API 的严格要求
 func SanitizeMessages(messages []ChatCompletionMessage, isGemini bool) []ChatCompletionMessage {
 	tcIDToName := make(map[string]string)
@@ -16,6 +21,14 @@ func SanitizeMessages(messages []ChatCompletionMessage, isGemini bool) []ChatCom
 				tc := &msgCopy.ToolCalls[i]
 				if tc.ID != "" && tc.Function.Name != "" {
 					tcIDToName[tc.ID] = tc.Function.Name
+				}
+
+				// 兜底修复 arguments：OpenAI 协议强制要求 arguments 必须为有效 JSON 字符串（即使无参也必须为 "{}"）
+				// 若为空、纯空白或非合法 JSON，上游在下一轮对话验证历史消息时会报 400:
+				// "Assistant tool call <id>.arguments must be valid JSON."
+				trimmedArgs := strings.TrimSpace(tc.Function.Arguments)
+				if trimmedArgs == "" || !json.Valid([]byte(trimmedArgs)) {
+					tc.Function.Arguments = "{}"
 				}
 
 				if isGemini {

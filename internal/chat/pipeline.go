@@ -393,12 +393,16 @@ func ChatStream(ctx context.Context, projectID, message string, edit bool, resum
 		// 处理工具调用
 		var tcHistoryList []any
 		for _, tc := range toolCalls {
+			fnArgs := strings.TrimSpace(tc.Function.Arguments)
+			if fnArgs == "" || !json.Valid([]byte(fnArgs)) {
+				fnArgs = "{}"
+			}
 			tcHistoryList = append(tcHistoryList, map[string]any{
 				"id":   tc.ID,
 				"type": "function",
 				"function": map[string]any{
 					"name":      tc.Function.Name,
-					"arguments": tc.Function.Arguments,
+					"arguments": fnArgs,
 				},
 				"extra_content": tc.ExtraContent,
 			})

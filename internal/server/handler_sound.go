@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"melodymate/internal/engine"
 	"melodymate/internal/soundlib"
 )
 
@@ -26,6 +27,37 @@ import (
 func (r *Router) handleSoundSub(w http.ResponseWriter, req *http.Request) {
 	sub := strings.TrimPrefix(req.URL.Path, "/api/sound/")
 	switch {
+	case sub == "plugin":
+		ref, err := soundlib.ResolvePlugin(req.URL.Query().Get("id"))
+		if err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if ref.Format == soundlib.KindVST3 {
+			sup := engine.Get()
+			if sup == nil {
+				writeError(w, 503, "VST3 引擎未启动")
+				return
+			}
+			list, err := sup.ListPlugins()
+			if err != nil {
+				writeError(w, 502, err.Error())
+				return
+			}
+			var matched []engine.PluginInfo
+			for _, plugin := range list.Plugins {
+				if strings.EqualFold(filepath.Clean(plugin.Path), filepath.Clean(ref.Path)) && (ref.ID == "" || plugin.ID == ref.ID || strings.HasSuffix(plugin.ID, "|"+ref.ID)) {
+					matched = append(matched, plugin)
+				}
+			}
+			if len(matched) != 1 {
+				writeError(w, 400, "VST3 注册表引用未能唯一匹配已安装插件")
+				return
+			}
+			ref.ID = matched[0].ID
+			ref.Category = matched[0].Category
+		}
+		writeJSON(w, 200, ref)
 	case sub == "sources":
 		switch req.Method {
 		case http.MethodGet:
@@ -51,6 +83,24 @@ func (r *Router) handleSoundSub(w http.ResponseWriter, req *http.Request) {
 		}
 	case sub == "presets":
 		r.handleSoundPresets(w, req)
+	case sub == "data":
+		src, err := soundlib.Get(req.URL.Query().Get("id"))
+		if err != nil {
+			writeError(w, 404, err.Error())
+			return
+		}
+		if src.Kind != soundlib.KindSF2 || !src.Enabled {
+			writeError(w, 403, "音源不可用或已禁用")
+			return
+		}
+		path := soundlib.ResolvePath(src.Path)
+		if st, err := os.Stat(path); err != nil || st.IsDir() {
+			writeError(w, 404, "音源文件不存在")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		http.ServeFile(w, req, path)
 	case sub == "samples":
 		r.handleSoundSamples(w, req)
 	case sub == "import/sf2":

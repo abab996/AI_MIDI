@@ -1632,8 +1632,8 @@
       uiBtn.addEventListener("click", function (e) {
         e.stopPropagation();
         var theme = document.documentElement.dataset.theme || "dark";
-        var url = "/mm-ui.html?plugin=" + encodeURIComponent(src.classUid) + "&theme=" + encodeURIComponent(theme);
-        var w = window.open(url, "mmui_" + src.classUid, "width=760,height=560");
+        var url = "/mm-ui.html?plugin=" + encodeURIComponent(src.id) + "&theme=" + encodeURIComponent(theme);
+        var w = UI.openPluginUI(url, "mmui_" + src.classUid);
         if (!w) UI.toast!("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn");
       });
       actions.appendChild(uiBtn);

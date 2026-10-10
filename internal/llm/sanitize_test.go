@@ -74,3 +74,51 @@ func TestEnsureToolClosureNormal(t *testing.T) {
 		t.Fatalf("期望正常闭合无需增加消息，实际长度为 %d", len(closed))
 	}
 }
+
+func TestSanitizeMessagesToolCallArguments(t *testing.T) {
+	// 回归测试：针对 OpenAI 400 "Assistant tool call <id>.arguments must be valid JSON."
+	// 当流式输出中断、模型提前截断或无参工具输出空字符串时，Arguments 必须被兜底修复为 "{}"
+	messages := []ChatCompletionMessage{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{
+					ID:       "call_empty",
+					Function: FunctionCall{Name: "list_files", Arguments: ""},
+				},
+				{
+					ID:       "call_spaces",
+					Function: FunctionCall{Name: "list_files", Arguments: "   "},
+				},
+				{
+					ID:       "call_broken",
+					Function: FunctionCall{Name: "read_file", Arguments: `{"filename": "test.md`}, // 截断的非法 JSON
+				},
+				{
+					ID:       "call_valid",
+					Function: FunctionCall{Name: "read_file", Arguments: `{"filename":"ok.md"}`},
+				},
+			},
+		},
+	}
+
+	sanitized := SanitizeMessages(messages, false)
+	if len(sanitized) != 1 || len(sanitized[0].ToolCalls) != 4 {
+		t.Fatalf("清洗后的消息或工具调用数量不匹配: %+v", sanitized)
+	}
+
+	tcs := sanitized[0].ToolCalls
+	if tcs[0].Function.Arguments != "{}" {
+		t.Errorf("空 arguments 期望修复为 \"{}\"，实际为 %q", tcs[0].Function.Arguments)
+	}
+	if tcs[1].Function.Arguments != "{}" {
+		t.Errorf("纯空白 arguments 期望修复为 \"{}\"，实际为 %q", tcs[1].Function.Arguments)
+	}
+	if tcs[2].Function.Arguments != "{}" {
+		t.Errorf("非法 JSON arguments 期望修复为 \"{}\"，实际为 %q", tcs[2].Function.Arguments)
+	}
+	if tcs[3].Function.Arguments != `{"filename":"ok.md"}` {
+		t.Errorf("合法 JSON arguments 不应被误修改，实际为 %q", tcs[3].Function.Arguments)
+	}
+}
+

@@ -892,6 +892,9 @@
        · 对应控件做 hud-pop 式高亮脉冲，让用户看见"AI 动了哪里"（4.8）。 */
 
   var arrangementPullTimer: any = null;
+  var arrangementPullProject = "";
+  var arrangementPullRev = 0;
+  var arrangementChanged: {[key:string]:boolean} = Object.create(null);
 
   function applyArrangementEvent(ev: any) {
     if (!ev || !ev.project || ev.project !== currentProjectId) return;
@@ -906,18 +909,29 @@
 
     /* 同一轮对话里 AI 可能连改好几次：合并成一次拉取 */
     clearTimeout(arrangementPullTimer);
+    if(arrangementPullProject!==ev.project){arrangementChanged=Object.create(null);arrangementPullRev=0;}
+    arrangementPullProject=ev.project;
+    arrangementPullRev=Math.max(arrangementPullRev,Number(ev.rev)||0);
+    (ev.changed || ["rack","tracks","mixer","pianoRoll","transport"]).forEach(function(k:string){arrangementChanged[k]=true;});
+    var eventProject=ev.project;
     arrangementPullTimer = setTimeout(function () {
-      pullArrangementRemote(ev.changed || []);
+      if(eventProject!==currentProjectId)return;
+      var changed=Object.keys(arrangementChanged);arrangementChanged=Object.create(null);
+      var revision=arrangementPullRev;arrangementPullRev=0;
+      pullArrangementRemote(changed,revision);
     }, 220);
   }
 
-  function pullArrangementRemote(changed: any) {
+  function pullArrangementRemote(changed: any,minimumRev?: number) {
     var arrange = (window as any).Arrange;
     if (!arrange || !arrange.projectId || !currentProjectId) return;
+    var project=currentProjectId, epoch=arrange.projectEpoch;
     fetch("/api/projects/" + encodeURIComponent(currentProjectId) + "/arrangement")
-      .then(function (r) { return r.json(); })
+      .then(function (r) { if(!r.ok)throw new Error("HTTP "+r.status);return r.json(); })
       .then(function (data: any) {
+        if(currentProjectId!==project || arrange.projectId!==project || arrange.projectEpoch!==epoch)return;
         if (!data || data.exists === false) return;
+        if(minimumRev && Number(data.rev)<minimumRev){setTimeout(function(){if(currentProjectId===project&&arrange.projectEpoch===epoch)pullArrangementRemote(changed,minimumRev);},150);return;}
         arrange.applyRemoteArrangement(data, changed && changed.length ? changed : null);
         echoArrangementChange(changed);
       })
@@ -1050,8 +1064,8 @@
   /* 下载：文件单文件 / 文件夹内全部文件（多文件后端自动打包 zip） */
   function downloadByNames(names: any) {
     if (!names.length) { UI.toast!("⚠ 文件夹内没有文件", "warn"); return; }
-    window.location.href = "/api/projects/" + currentProjectId + "/download?names=" +
-      encodeURIComponent(names.join(","));
+    UI.download("/api/projects/" + currentProjectId + "/download?names=" +
+      encodeURIComponent(names.join(","))).catch(function(e: any){UI.toast!(e.message,"err");});
   }
   function downloadFileByName(name: any) { downloadByNames([name]); }
   function downloadFolder(path: any) {
@@ -2400,6 +2414,7 @@
       } else if (ev.type === "download") {
         var link = $("#newMidiLink");
         link.href = ev.url;
+        link.onclick=function(e: Event){e.preventDefault();UI.download(link.href).catch(function(err: any){UI.toast!(err.message,"err");});};
         link.hidden = false;
         /* 新文件诞生显式提示：链接缩在工具条里极易被错过 */
         link.classList.remove("pop");
@@ -3696,6 +3711,7 @@
       } else if (ev.type === "download") {
         var link = $("#newMidiLink");
         link.href = ev.url;
+        link.onclick=function(e: Event){e.preventDefault();UI.download(link.href).catch(function(err: any){UI.toast!(err.message,"err");});};
         link.hidden = false;
         /* 新文件诞生显式提示：链接缩在工具条里极易被错过 */
         link.classList.remove("pop");
@@ -4709,7 +4725,7 @@
       var names = selectedNames();
       var url = "/api/projects/" + currentProjectId + "/download" +
         (names.length ? "?names=" + encodeURIComponent(names.join(",")) : "");
-      window.location.href = url;
+      UI.download(url).catch(function(e: any){UI.toast!(e.message,"err");});
     });
 
     $("#undoBtn").addEventListener("click", function () {

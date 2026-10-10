@@ -53,14 +53,14 @@
   /* ── 参数读写 ── */
 
   function paramsURL(t: any) {
-    var q = "?track=" + encodeURIComponent(t.track);
+    var q = "?track=" + encodeURIComponent(t.track) + "&project="+encodeURIComponent(t.project||"")+"&generation="+t.generation+"&trackId="+encodeURIComponent(t.trackId||"");
     if (t.slot >= 0) q += "&slot=" + encodeURIComponent(t.slot);
     if (t.master) q += "&master=1";
     return "/api/engine/plugins/params" + q;
   }
 
   function bodyOf(t: any, extra?: any) {
-    var body: any = { track: t.master ? 0 : t.track, master: !!t.master };
+    var body: any = { track: t.master ? 0 : t.track, master: !!t.master, project:t.project, generation:t.generation, trackId:t.trackId };
     if (t.slot >= 0) body.slot = t.slot;
     if (extra) for (var k in extra) body[k] = extra[k];
     return body;
@@ -395,11 +395,11 @@
     if (!t || !t.ref) { toast("⚠ 这个位置没有插件", "warn"); return; }
     if (isMmRef(t.ref)) {
       /* MM：无原生窗口，走 mm-ui.html 承载页（sandbox iframe + postMessage 桥） */
-      var qs = "?plugin=" + encodeURIComponent(t.ref) + "&slot=" + t.slot;
+      var qs = "?plugin=" + encodeURIComponent(t.ref) + "&slot=" + t.slot+"&project="+encodeURIComponent(t.project)+"&generation="+t.generation+"&trackId="+encodeURIComponent(t.trackId||"");
       if (t.master) qs += "&master=1"; else qs += "&track=" + t.track;
       var theme = document.documentElement.dataset.theme;
       if (theme) qs += "&theme=" + encodeURIComponent(theme);
-      var win = window.open("/mm-ui.html" + qs, "mmui_" + t.ref + "_" + t.slot, "width=760,height=560");
+      var win = window.UI.openPluginUI("/mm-ui.html" + qs, "mmui_" + t.ref + "_" + t.slot);
       if (!win) toast("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn");
       return;
     }
@@ -439,6 +439,8 @@
     state.open = true;
     state.target = {
       project: ctrl.projectId,
+      generation: ctrl.projectEpoch,
+      trackId: target.master ? "" : (ctrl.tracks[target.track || 0] || {}).id,
       track: typeof target.track === "number" ? target.track : 0,
       slot: typeof target.slot === "number" ? target.slot : -1,
       master: !!target.master,
@@ -481,117 +483,115 @@
   /* ── 工程载入时把插件装回引擎并恢复状态（P5 §4） ──
      引擎重启的会话内重放由守护器负责；这里是"重开工程/重启应用"路径：
      工程里记着 plugin 引用，就重新装载并推回保存的状态。 */
-  function restoreAll(ctrl: any) {
-    if (!ctrl || !ctrl.projectId) return;
-    var jobs: any[] = [];
-    var channels = (ctrl.mixer && ctrl.mixer.channels) || {};
-    Object.keys(channels).forEach(function (trackId: string) {
-      var idx = trackIndexOf(ctrl, trackId);
-      if (idx < 0) return;
-      var fx = (channels[trackId] && channels[trackId].fx) || [];
-      fx.forEach(function (entry: any) {
-        if (!entry || !entry.plugin) return;
-        jobs.push({ track: idx, slot: Number(entry.slot) || 0, master: false, ref: entry.plugin });
-      });
-    });
-    var masterFx = (ctrl.mixer && ctrl.mixer.master && ctrl.mixer.master.fx) || [];
-    masterFx.forEach(function (entry: any) {
-      if (!entry || !entry.plugin) return;
-      jobs.push({ track: 0, slot: Number(entry.slot) || 0, master: true, ref: entry.plugin });
-    });
-    /* 轨道乐器（机架里 kind=vst3/mm 的条目）：按注册表拿装载参数 */
-    (ctrl.tracks || []).forEach(function (tr: any, i: number) {
-      var item = rackItemOf(ctrl, tr);
-      if (!item || (item.kind !== "vst3" && item.kind !== "mm")) return;
-      jobs.push({ track: i, slot: -1, master: false, ref: item.sourceId || item.id, instrument: true, item: item });
-    });
-    if (!jobs.length) return;
-    var failed = 0;
-    jobs.reduce(function (chain: any, job: any) {
-      return chain.then(function () { return restoreOne(ctrl, job).catch(function () { failed++; }); });
-    }, Promise.resolve()).then(function () {
-      if (failed) toast("⚠ 有 " + failed + " 个插件未能自动恢复（可能未安装或已卸载）", "warn");
-    });
+  var engineQueue: Promise<any> = Promise.resolve();
+  var session: any = null;
+  function enqueue(ctrl: any, task: ()=>Promise<any>, valid?: ()=>boolean) {
+    var project=ctrl.projectId,epoch=ctrl.projectEpoch;
+    var current=function(){return ctrl.projectId===project && ctrl.projectEpoch===epoch && (!valid || valid());};
+    var result=engineQueue.catch(function(){}).then(async function(){if(!current())return false;await task();return current();});
+    engineQueue=result.catch(function(){});
+    return result;
   }
-
-  function trackIndexOf(ctrl: any, trackId: string) {
-    var list = ctrl.tracks || [];
-    for (var i = 0; i < list.length; i++) if (list[i] && list[i].id === trackId) return i;
-    return -1;
+  function identity(ctrl: any, job: any) {
+    var body: any = {project:ctrl.projectId,generation:ctrl.projectEpoch,master:!!job.master,ref:job.ref,format:job.format};
+    if(!job.master)body.trackId=job.trackId;
+    if(job.slot>=0)body.slot=job.slot;
+    return body;
   }
-
-  function rackItemOf(ctrl: any, track: any) {
-    if (!track || !track.source || !track.source.itemId) return null;
-    var items = (ctrl.rack && ctrl.rack.items) || [];
-    for (var i = 0; i < items.length; i++) if (items[i] && items[i].id === track.source.itemId) return items[i];
-    return null;
-  }
-
-  function restoreOne(ctrl: any, job: any) {
-    if (job.instrument) {
-      var item = job.item;
-      if (item.kind === "mm") {
-        /* MM 乐器：装载要的是原生库路径（引擎按路径 LoadLibrary） */
-        return mmLibPathOf(job.ref || item.sourceId).then(function (libPath: any) {
-          return loadAndRestore(ctrl, job, { id: job.ref || item.sourceId, format: "mm", path: libPath, track: job.track });
+  function resolvePlugin(ref: string) {
+    var registry=window.SoundRegistry;
+    return Promise.resolve(registry ? registry.load() : []).then(function(){
+      var src=registry && registry.get(ref);
+      if(src && !src.enabled)throw new Error("插件已禁用："+ref);
+      if(src && (src.kind==="mm" || src.kind==="vst3"))return window.UI.getJSON("/api/sound/plugin?id="+encodeURIComponent(src.id));
+      if(ref.indexOf("VST3|")===0) {
+        return window.UI.getJSON("/api/engine/plugins").then(function(res: any){
+          var path=src && registry.diskPathOf(src);
+          var hit=(res.plugins||[]).find(function(p: any){return p.id===ref || path && p.path===path && (!src.classUid || p.id===src.classUid || p.uid===src.classUid);});
+          if(!hit)throw new Error("VST3 未安装："+ref);
+          return {id:hit.id,format:"vst3"};
         });
       }
-      /* VST3 乐器的引擎 id 形如 VST3|路径|uid，注册表只记了路径：
-         用引擎清单按 path 反查 id（查不到就跳过，不猜） */
-      return window.UI.getJSON("/api/engine/plugins").then(function (res: any) {
-        var list = (res && res.plugins) || [];
-        var hit = null;
-        for (var i = 0; i < list.length; i++) {
-          if (item.path && list[i].path === item.path) { hit = list[i]; break; }
-        }
-        if (!hit) return Promise.reject(new Error("引擎清单里找不到该 VST3"));
-        return loadAndRestore(ctrl, { track: job.track, slot: -1, master: false, ref: hit.id }, { id: hit.id, track: job.track });
+      return window.UI.getJSON("/api/engine/plugins/installed").then(function(res: any){
+        var matches=(res.plugins||[]).filter(function(p: any){return p.id===ref;});
+        if(matches.length>1)throw new Error("多个插件版本已安装，请选择音源注册表条目："+ref);
+        var hit=matches[0];
+        if(!hit||!hit.libPath)throw new Error("插件引用无法解析："+ref);
+        return {id:hit.id,format:"mm",path:hit.libPath};
       });
-    }
-    if (isMmRef(job.ref)) {
-      /* MM 效果器：ref 是插件 id，装载参数要从已安装清单取 libPath */
-      return mmLibPathOf(job.ref).then(function (libPath: any) {
-        var body: any = { id: job.ref, format: "mm", path: libPath, track: job.master ? 0 : job.track };
-        if (job.slot >= 0) body.slot = job.slot;
-        return loadAndRestore(ctrl, job, body);
-      });
-    }
-    var body: any = { id: job.ref, track: job.master ? 0 : job.track, master: job.master };
-    if (job.slot >= 0) body.slot = job.slot;
-    return loadAndRestore(ctrl, job, body);
+    });
   }
-
-  /** mmLibPathOf 按插件 id 从已安装清单取原生库路径（取不到即拒绝） */
-  function mmLibPathOf(pluginID: string) {
-    return window.UI.getJSON("/api/engine/plugins/installed").then(function (res: any) {
-      var list = (res && res.plugins) || [];
-      for (var i = 0; i < list.length; i++) {
-        if (list[i] && list[i].id === pluginID) {
-          if (list[i].libPath) return String(list[i].libPath);
-          return Promise.reject(new Error("MM 插件缺少原生库：" + pluginID));
+  function collectJobs(ctrl: any) {
+    var jobs: any[]=[];
+    (ctrl.tracks||[]).forEach(function(t: any){
+      var item=rackItemOf(ctrl,t);
+      if(item&&(item.kind==="mm"||item.kind==="vst3"))jobs.push({trackId:t.id,slot:-1,ref:item.sourceId||item.path||item.id});
+      (((ctrl.mixer||{}).channels||{})[t.id]?.fx||[]).forEach(function(f: any){if(f&&(f.sourceId||f.plugin))jobs.push({trackId:t.id,slot:f.slot,ref:f.sourceId||f.plugin});});
+    });
+    (ctrl.mixer?.master?.fx||[]).forEach(function(f: any){if(f&&(f.sourceId||f.plugin))jobs.push({master:true,slot:f.slot,ref:f.sourceId||f.plugin});});
+    return jobs;
+  }
+  function trackIndexOf(ctrl: any,id: string){return (ctrl.tracks||[]).findIndex(function(t: any){return t.id===id;});}
+  function rackItemOf(ctrl: any,t: any){return (ctrl.rack?.items||[]).find(function(i: any){return i.id===t.source?.itemId;});}
+  function restoreAll(ctrl: any) {
+    if(!ctrl)return Promise.resolve();
+    if(window.AudioBackend && !window.AudioBackend.isEngine()){ctrl.audioSync="ready";return Promise.resolve();}
+    var snapshot=JSON.parse(JSON.stringify({projectId:ctrl.projectId,projectEpoch:ctrl.projectEpoch,tracks:ctrl.tracks,rack:ctrl.rack,mixer:ctrl.mixer}));
+    var jobs=collectJobs(snapshot), signature=JSON.stringify([snapshot.projectId,snapshot.projectEpoch,snapshot.tracks.map(function(t: any){return t.id;}),jobs]);
+    var requestSignature=signature+JSON.stringify(snapshot.mixer);
+    if(ctrl._audioRequestedSignature===requestSignature && ctrl.audioSync!=="failed")return engineQueue.catch(function(){});
+    ctrl._audioRequestedSignature=requestSignature;
+    var sequence=ctrl._audioSyncRequest=(ctrl._audioSyncRequest||0)+1;
+    if((!session || session.signature!==signature) && ctrl.isPlaying && ctrl.pausePlayback)ctrl.pausePlayback(true);
+    var current=function(){return ctrl.projectId===snapshot.projectId&&ctrl.projectEpoch===snapshot.projectEpoch&&ctrl._audioSyncRequest===sequence;};
+    ctrl.audioSync="waiting";
+    engineQueue=engineQueue.catch(function(){}).then(async function(){
+      if(!current())return;
+      var fresh=!session||session.signature!==signature;
+      if(fresh) {
+        if(session)for(var old of session.jobs){
+          if(!current())return;
+          try{await window.UI.postJSON("/api/engine/plugins/state/save",identity(session.snapshot,old));}catch(e: any){throw new Error(old.ref+" 状态备份失败："+e.message);}
+        }
+        if(!current())return;
+        await window.UI.postJSON("/api/engine/plugins/session",{project:snapshot.projectId||"",generation:snapshot.projectEpoch,tracks:snapshot.tracks.map(function(t: any){return t.id;})});
+        session={snapshot:snapshot,signature:"",jobs:[]};
+        for(var job of jobs){
+          if(!current())return;
+          var resolved=await resolvePlugin(job.ref);
+          if(!current())return;
+          job.format=resolved.format;
+          await window.UI.postJSON("/api/engine/plugins/load",Object.assign(identity(snapshot,job),resolved));
+          session.jobs.push(job);
         }
       }
-      return Promise.reject(new Error("MM 插件未安装：" + pluginID));
-    });
-  }
-
-  function loadAndRestore(ctrl: any, job: any, loadBody: any) {
-    return window.UI.postJSON("/api/engine/plugins/load", loadBody).then(function () {
-      var body: any = {
-        project: ctrl.projectId, track: job.master ? 0 : job.track, master: !!job.master,
-        ref: job.ref, format: isMmRef(job.ref) ? "mm" : "vst3"
-      };
-      if (job.slot >= 0) body.slot = job.slot;
-      return window.UI.postJSON("/api/engine/plugins/state/load", body).catch(function () {
-        /* 没有保存过状态不算失败：插件已经装回来了 */
-      });
-    });
+      if(!current())return;
+      var bridge=window.EngineBridge;
+      if(bridge&&bridge.setMaster)await bridge.setMaster(snapshot.mixer?.master?.gain===undefined?1:snapshot.mixer.master.gain);
+      for(var tr=-1;tr<snapshot.tracks.length;++tr){
+        if(!current())return;
+        var fx=tr<0?snapshot.mixer?.master?.fx:snapshot.mixer?.channels?.[snapshot.tracks[tr].id]?.fx;
+        if(bridge&&bridge.setFxChain)await bridge.setFxChain(tr,(fx||[]).map(function(f: any){return {slot:f.slot,bypass:!!f.bypass,wet:f.wet===undefined?1:f.wet};}));
+      }
+      if(fresh)for(var loaded of session.jobs){
+        if(!current())return;
+        try{await window.UI.postJSON("/api/engine/plugins/state/load",identity(snapshot,loaded));}catch(e: any){
+          if(e.status===409 && e.data?.code==="plugin_state_reference_mismatch")toast(loaded.ref+" 已使用初始状态；旧插件状态已保留","warn");
+          else if(e.status!==404)throw new Error(loaded.ref+" 状态恢复失败："+e.message);
+        }
+      }
+      if(!current())return;
+      session.signature=signature;session.snapshot=snapshot;ctrl.audioSync="ready";
+    }).catch(function(e: any){if(current()){ctrl.audioSync="failed";toast("工程音频恢复失败："+e.message,"err");}throw e;});
+    return engineQueue.catch(function(){});
   }
 
   window.PluginPanel = {
     open: open,
     close: close,
     restoreAll: restoreAll,
+    resolvePlugin: resolvePlugin,
+    enqueue: enqueue,
     isOpen: function () { return state.open; }
   };
 })(window);

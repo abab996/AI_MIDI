@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,44 +31,63 @@ func main() {
 
 	// 使用内存文件系统作为前端（无需真实文件）
 	r := server.NewRouter(nil, nil)
+	request := func(method, url string, body io.Reader) (*http.Response, error) {
+		req, err := http.NewRequest(method, url, body)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("X-MM-Token", r.AuthToken())
+		req.Header.Set("Content-Type", "application/json")
+		return http.DefaultClient.Do(req)
+	}
+	get := func(url string) (*http.Response, error) { return request("GET", url, nil) }
+	post := func(url, contentType string, body io.Reader) (*http.Response, error) {
+		return request("POST", url, body)
+	}
 	ts := httptest.NewServer(r)
 	defer ts.Close()
 
-	// 1. 测试默认 backend
-	fmt.Println("[1] 测试默认 backend 为 auto")
-	resp, err := http.Get(ts.URL + "/api/audio/settings")
+	// 1. 测试默认 audio settings
+	fmt.Println("[1] 测试默认 engine_enabled 为 true")
+	resp, err := get(ts.URL + "/api/audio/settings")
 	if err != nil {
 		panic(err)
 	}
 	var got map[string]any
 	json.NewDecoder(resp.Body).Decode(&got)
 	resp.Body.Close()
-	if got["backend"] != "auto" {
-		panic(fmt.Sprintf("backend = %v, want auto", got["backend"]))
+	if enabled, ok := got["engine_enabled"].(bool); !ok || !enabled {
+		panic(fmt.Sprintf("engine_enabled = %v, want true", got["engine_enabled"]))
 	}
-	fmt.Println("    ✓ 默认 auto")
+	fmt.Println("    ✓ 默认 engine_enabled 为 true")
 
-	// 2. 测试切换 webaudio
-	fmt.Println("[2] 测试切换 webaudio")
-	body, _ := json.Marshal(map[string]any{"backend": "webaudio"})
-	resp, err = http.Post(ts.URL+"/api/audio/settings", "application/json", bytes.NewReader(body))
+	// 2. 测试切换 engine_enabled
+	fmt.Println("[2] 测试切换 engine_enabled")
+	body, _ := json.Marshal(map[string]any{"engine_enabled": false})
+	resp, err = post(ts.URL+"/api/audio/settings", "application/json", bytes.NewReader(body))
 	if err != nil {
 		panic(err)
 	}
 	resp.Body.Close()
-	resp, _ = http.Get(ts.URL + "/api/audio/settings")
+	resp, _ = get(ts.URL + "/api/audio/settings")
 	json.NewDecoder(resp.Body).Decode(&got)
 	resp.Body.Close()
-	if got["backend"] != "webaudio" {
-		panic("切换 webaudio 失败")
+	if enabled, ok := got["engine_enabled"].(bool); !ok || enabled {
+		panic("切换 engine_enabled: false 失败")
 	}
-	fmt.Println("    ✓ 切换 webaudio 成功")
+	// 恢复为 true
+	body, _ = json.Marshal(map[string]any{"engine_enabled": true})
+	resp, _ = post(ts.URL+"/api/audio/settings", "application/json", bytes.NewReader(body))
+	if resp != nil && resp.Body != nil {
+		resp.Body.Close()
+	}
+	fmt.Println("    ✓ 切换 engine_enabled 成功")
 
 	// 3. 测试 bounce 无引擎时应 503
 	fmt.Println("[3] 测试 bounce 无引擎时 503")
 	engine.SetGlobal(nil)
 	body, _ = json.Marshal(map[string]any{"bpm": 120, "tracks": []any{}})
-	resp, err = http.Post(ts.URL+"/api/audio/bounce", "application/json", bytes.NewReader(body))
+	resp, err = post(ts.URL+"/api/audio/bounce", "application/json", bytes.NewReader(body))
 	if err != nil {
 		panic(err)
 	}
@@ -79,7 +99,7 @@ func main() {
 
 	// 4. 测试路径穿越防护
 	fmt.Println("[4] 测试 bounce file 路径穿越防护")
-	resp, _ = http.Get(ts.URL + "/api/audio/bounce/file?path=C:/Windows/win.ini")
+	resp, _ = get(ts.URL + "/api/audio/bounce/file?path=C:/Windows/win.ini")
 	if resp.StatusCode != 403 && resp.StatusCode != 404 {
 		panic(fmt.Sprintf("path traversal should blocked, got %d", resp.StatusCode))
 	}

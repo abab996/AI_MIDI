@@ -70,6 +70,9 @@
     this.mixer = { channels: {} };
     /* 服务端修订号：SSE arrangement 事件与保存回执带回，判断新鲜度 */
     this.rev = 0;
+    this.projectEpoch = 0;
+    this._saves = Object.create(null);
+    this.saveConflict = null;
     this.selectedTrackIdx = 0;
     this.selectedClips = [];
     this.clipboard = null;
@@ -82,6 +85,7 @@
     this.isPlaying = false;
 
     this.engine = new window.ArrangeEngine();
+    this.engine.controller = this;
     var self = this;
     this.engine.getTracks = function () { return self.tracks; };
     this.engine.onSoundFontLoaded = function () { self.showHUD("✓ 轨道音源已加载"); };
@@ -258,6 +262,10 @@
   Arrange.prototype.setProject = function (                         projectId     ) {
     if (this.projectId === projectId) return;
     this.doSave();   // 切走前冲刷：此后 projectId 被清空，挂起的保存定时器会静默空转
+    clearTimeout(this.saveTimer);
+    window.ArrangementSync.cancelConflict();
+    this._conflictDialog=false;
+    this.saveInFlight=false;
     this.stopPlayback();
     this.undoStack = [];
     this.redoStack = [];
@@ -265,10 +273,15 @@
     this.selectedTrackIdx = 0;
     this.playheadBeat = 0;
     this.projectId = projectId || null;
+    var epoch = ++this.projectEpoch;
+    this.audioSync = "waiting";
+    var requestedProject = this.projectId;
+    this.saveConflict = null;
     this.loadedProjectId = null;
 
     if (!this.projectId) {
       this.tracks = [];
+      if(window.PluginPanel)window.PluginPanel.restoreAll(this);
       if (this.el.arrLanes) this.el.arrLanes.innerHTML = "";
       if (this.isOpen) this.close();
       return;
@@ -279,10 +292,12 @@
        覆盖编排快照里的本地 bpm（旧版数据迁移兼容） */
     var bpmReq = UI.getJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/bpm")
       .catch(function () { return null; });
-    Promise.all([
-      UI.getJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement"),
+    var record = this._saves[requestedProject ] || (this._saves[requestedProject ] = { base: null, inflight: null, draft: null });
+    Promise.resolve(record.inflight).then(function () { return Promise.all([
+      UI.getJSON("/api/projects/" + encodeURIComponent(requestedProject ) + "/arrangement"),
       bpmReq
-    ]).then(function (results) {
+    ]); }).then(function (results) {
+        if (self.projectEpoch !== epoch || self.projectId !== requestedProject) return;
         var data      = results[0];
         var bpmData      = results[1];
         if (data && data.tracks) {
@@ -296,12 +311,14 @@
         }
         self.loadedProjectId = self.projectId;
         self.dirty = false;
+        record.base = window.ArrangementSync.copy(data && data.tracks ? data : self.serialize());
+        record.base.rev = self.rev;
         self.setSaveStamp("SAVED", false);
         /* v1 老工程（或音源引用被修复）在 deserialize 里已迁移成 v2：
            立即回写，否则磁盘上仍是 v1——下次 AI 定向修改又要重迁一遍，
            而且界面显示的音源与文件内容长期不一致。放在 dirty=false 之后，
            避免刚置的脏标记被这里清掉。 */
-        if (self._needsMigrationSave) {
+        if (self._needsMigrationSave || !data || !data.tracks) {
           self._needsMigrationSave = false;
           self.scheduleSave();
         }
@@ -310,12 +327,22 @@
         /* P5 §4：把工程里记录的插件装回引擎并恢复状态（FX 槽 + 插件乐器）。
            浏览器模式没有原生引擎，restoreAll 内部逐个失败也不抛（静默跳过）。 */
         if (window.PluginPanel) window.PluginPanel.restoreAll(self);
+        return window.ArrangementSync.draft("get", requestedProject ).then(function (draft     ) {
+          if (self.projectEpoch !== epoch || self.projectId !== requestedProject) return;
+          draft = record.draft || draft;
+          if (!draft || window.ArrangementSync.equal(draft.local, record.base)) return;
+          var merged = window.ArrangementSync.merge(draft.base, draft.local, record.base);
+          self._applyMergedState(merged.value);
+          if (merged.conflicts.length) self._pauseForConflict(draft.base, draft.local, record.base, merged.conflicts);
+          else self.scheduleSave();
+        }).catch(function () {});
       })
       .catch(function (e) {
+        if (self.projectEpoch !== epoch || self.projectId !== requestedProject) return;
         /* 读取失败不再静默回退空白（用户会以为编排数据丢了） */
         if (UI.toast) UI.toast ("⚠ 编排数据读取失败，已载入空白编排: " + ((e && e.message) || ""), "err");
         self.defaultState();
-        self.loadedProjectId = self.projectId;
+        self.loadedProjectId = null;
         if (self.isOpen) self.renderAll();
       });
   };
@@ -437,7 +464,7 @@
     var isV2 = Number(data.version) >= 2;
     /* 本次载入是否发生了迁移/修复：由 setProject 决定是否立即回写磁盘 */
     var migratedAny = !isV2;
-    this.rev = isV2 ? Number(data.rev) || 0 : 0;
+    this.rev = Number(data.rev) || 0;
     this.rack = { items: [] };
     if (isV2 && data.rack && Array.isArray(data.rack.items)) {
       data.rack.items.forEach(function (it     ) {
@@ -610,9 +637,11 @@
   };
 
   Arrange.prototype.scheduleSave = function (                       ) {
+    if(window.PluginPanel && this.loadedProjectId===this.projectId)window.PluginPanel.restoreAll(this);
     if (!this.projectId) return;
     this.dirty = true;
     this.setSaveStamp("EDIT…", true);
+    if (this.saveConflict) { this._stashDraft(); this.setSaveStamp("保存冲突 · 点击处理", true); return; }
     var self = this;
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(function () { self.doSave(); }, 800);
@@ -620,25 +649,97 @@
 
   Arrange.prototype.doSave = function (                       ) {
     var self = this;
-    if (!this.projectId || !this.dirty) return;
-    // 先"认领" dirty 再发请求：在途期间的编辑会重新置 dirty 并触发下一轮
-    // 保存。若等响应回来再清 flag，会误清掉在途编辑（保存期间打的音符
-    // 静默丢失且 UI 仍显示 SAVED，关窗兜底也因 dirty=false 跳过）
+    if (!this.projectId) return Promise.resolve();
+    var project = this.projectId, epoch = this.projectEpoch;
+    var record = this._saves[project] || (this._saves[project] = { base: window.ArrangementSync.copy(this.serialize()), inflight: null, draft: null });
+    if (record.inflight) { if(this.dirty)this._stashDraft(); return record.inflight; }
+    if (!this.dirty || this.saveConflict || this.loadedProjectId !== project) return Promise.resolve();
+    var snapshot = window.ArrangementSync.copy(this.serialize());
+    snapshot.rev = Number(record.base && record.base.rev) || 0;
+    var active = function () { return self.projectId === project && self.projectEpoch === epoch; };
     this.dirty = false;
-    this.saveInFlight = true; // 关窗兜底（beforeunload beacon）据此判断"保存仍在途"
+    this.saveInFlight = true;
     this.setSaveStamp("SAVING", false);
-    UI.putJSON("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement", this.serialize())
-      .then(function () {
-        self.saveInFlight = false;
-        self.setSaveStamp("SAVED", false);
-        if (self.dirty) self.scheduleSave(); // 保存期间有编辑：补一轮
+    var base = window.ArrangementSync.copy(record.base);
+    record.lastError=null;
+    record.inflight = this._stashDraft().then(function () { return UI.putJSON     ("/api/projects/" + encodeURIComponent(project) + "/arrangement", snapshot); })
+      .then(function (result     ) {
+        snapshot.rev = result.rev;
+        if (!record.base || result.rev >= record.base.rev) record.base = snapshot;
+        if (active()) { self.rev = record.base.rev; self.setSaveStamp(self.dirty ? "EDIT…" : "SAVED", !!self.dirty); }
+        if (!record.draft || window.ArrangementSync.equal(record.draft.local, Object.assign({}, snapshot, {rev: record.draft.local.rev}))) {
+          record.draft = null;
+          return window.ArrangementSync.draft("delete", project).catch(function () {});
+        }
       })
-      .catch(function (e) {
-        self.saveInFlight = false;
-        self.dirty = true; // 保存失败：恢复 dirty，防抖重试与关窗兜底仍有效
-        self.setSaveStamp("SAVE ERR", true);
-        if (UI.toast) UI.toast ("✗ 编排保存失败: " + e.message, "err");
+      .catch(function (e     ) {
+        record.lastError=e;
+        if (e.status === 409 && e.data && e.data.arrangement) {
+          var remote = record.base && record.base.rev > e.data.arrangement.rev ? record.base : e.data.arrangement;
+          var local = active() ? self.serialize() : (record.draft ? record.draft.local : snapshot);
+          var merged = window.ArrangementSync.merge(base, local, remote);
+          record.base = remote;
+          record.lastError=null;
+          record.draft = {base:base,local:local,remote:remote,conflicts:merged.conflicts};
+          if(active()) {
+            self._applyMergedState(merged.value);
+            self.dirty = true;
+            if(merged.conflicts.length) self._pauseForConflict(base, local, remote, merged.conflicts);
+          }
+          return window.ArrangementSync.draft("put", project, record.draft).catch(function(){ if(active())UI.toast ("恢复草稿保存失败，请保持窗口打开", "err"); });
+        }
+        if (active()) { self.dirty = true; self.setSaveStamp("SAVE ERR", true); if (UI.toast) UI.toast ("✗ 编排保存失败: " + e.message, "err"); }
+      }).then(function () {
+        record.inflight = null;
+        if (active()) { self.saveInFlight = false; if(self.dirty && !self.saveConflict)self.scheduleSave(); }
       });
+    return record.inflight;
+  };
+
+  Arrange.prototype._stashDraft = function (                       ) {
+    if (!this.projectId) return Promise.resolve();
+    var record=this._saves[this.projectId];
+    if (!record) return Promise.resolve();
+    record.draft={base:this.saveConflict?this.saveConflict.base:record.base,local:window.ArrangementSync.copy(this.serialize()),remote:this.saveConflict && this.saveConflict.remote,conflicts:this.saveConflict && this.saveConflict.conflicts};
+    return window.ArrangementSync.draft("put",this.projectId,record.draft).catch(function(){if(UI.toast)UI.toast ("恢复草稿保存失败，请保持窗口打开", "err");});
+  };
+
+  Arrange.prototype._applyMergedState = function (                         data     ) {
+    var previous      = Object.create(null);
+    this.tracks.forEach(function(t){previous[t.id]=t;});
+    this.deserialize(data);
+    this.tracks=this.tracks.map(function(t){
+      var old=previous[t.id]; if(!old)return t;
+      var clips     =Object.create(null); old.clips.forEach(function(c     ){clips[c.id]=c;});
+      t.clips=t.clips.map(function(c     ){var prior=clips[c.id];if(!prior)return c;Object.assign(prior,c);prior._rev=(prior._rev||0)+1;return prior;});
+      return Object.assign(old,t);
+    });
+    if(this.isOpen)this.renderAll();
+    if(window.ArrMixer)window.ArrMixer.syncTracks(this);
+    if(window.PluginPanel)window.PluginPanel.restoreAll(this);
+  };
+
+  Arrange.prototype._pauseForConflict = function (                         base     , local     , remote     , conflicts          ) {
+    this.saveConflict={base:base,local:local,remote:remote,conflicts:conflicts};
+    this.dirty=true; clearTimeout(this.saveTimer); this._stashDraft();
+    this.setSaveStamp("保存冲突 · 点击处理",true);
+    var self=this;
+    if(this.el.arrSaveStamp) { this.el.arrSaveStamp.tabIndex=0; this.el.arrSaveStamp.onclick=function(){self.resolveSaveConflict();}; this.el.arrSaveStamp.onkeydown=function(e               ){if(e.key==="Enter"||e.key===" "){e.preventDefault();self.resolveSaveConflict();}}; }
+    this.resolveSaveConflict();
+  };
+
+  Arrange.prototype.resolveSaveConflict = function (                       ) {
+    if(!this.saveConflict || this._conflictDialog)return;
+    var self=this, epoch=this.projectEpoch, conflict=this.saveConflict;
+    this._conflictDialog=true;
+    window.ArrangementSync.chooseConflict(conflict.conflicts).then(function(choice     ){
+      self._conflictDialog=false;
+      if(epoch!==self.projectEpoch || !choice || !self.saveConflict)return;
+      var current=self._saves[self.projectId ].base;
+      var merged=window.ArrangementSync.merge(conflict.base,self.serialize(),current);
+      self._applyMergedState(choice==="local" ? merged.value : window.ArrangementSync.merge(conflict.base,current,self.serialize()).value);
+      self.saveConflict=null; self.rev=current.rev; self.scheduleSave();
+    });
   };
 
   Arrange.prototype.setSaveStamp = function (                         text     , warn     ) {
@@ -825,6 +926,9 @@
   };
 
   Arrange.prototype.startPlayback = function (                       ) {
+    if(window.AudioBackend && window.AudioBackend.isEngine() && this.audioSync!=="ready"){
+      UI.toast (this.audioSync==="failed"?"工程音频恢复失败，请检查插件后重试":"工程音频正在同步，请稍后播放",this.audioSync==="failed"?"err":"warn");return;
+    }
     /* 引擎模式播放门控（严格路由）：引擎未就绪不播放、不静默回退 */
     if (window.AudioBackend && window.AudioBackend.isEngine && window.AudioBackend.isEngine()
         && !window.AudioBackend.isEngineReady()) {
@@ -832,6 +936,10 @@
       if (window.UI && window.UI.toast) UI.toast ("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）", "err");
       this.showHUD("✗ 音频引擎未就绪，播放不可用（可在设置页切换 WEBAUDIO 模式）");
       return;
+    }
+    if(window.AudioBackend?.isNativePreferred()){
+      var pendingSource=this.tracks.find((track)=>{var nodes    =this.engine.ensureTrack(track);return nodes && (nodes.sfLoading || nodes._useNative===false);});
+      if(pendingSource){UI.toast ("工程音源正在同步："+(pendingSource.name||pendingSource.id),"warn");return;}
     }
     this.engine.resume().catch(function (e     ) {
       console.warn("[Arrange] AudioContext 恢复失败:", e);
@@ -1074,12 +1182,7 @@
       }
       if (!url) throw new Error("无下载链接");
       self.showHUD("✅ 渲染完成，开始下载…");
-      var a = document.createElement("a");
-      a.href = url;
-      a.download = "";
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(function(){ try{ a.remove(); }catch(e){} }, 1000);
+      return UI.download(url);
     }).catch(function(err){
       self.showHUD("✗ 导出失败（可重试；持续失败请检查磁盘空间或引擎状态）");
       if (window.UI && window.UI.toast) window.UI.toast ("✗ 导出失败: " + (err && err.message || err), "err");
@@ -2944,10 +3047,11 @@
     var changed = prev.itemId !== next.itemId || String(prev.presetId || "") !== next.presetId;
     this.pianoRollSource = next;
     if (!changed) return;
-    var self = this;
+    var self = this, project = this.projectId, epoch = this.projectEpoch;
     this.arrangeOps([{ op: "setPianoRoll", itemId: next.itemId, presetId: next.presetId }])
-      .then(function () { self.scheduleSave(); })
+      .then(function () { if (self.projectId === project && self.projectEpoch === epoch) self.scheduleSave(); })
       .catch(function (err     ) {
+        if (self.projectId !== project || self.projectEpoch !== epoch) return;
         UI.toast ("✗ 钢琴窗音源未能保存: " + (err && err.message ? err.message : "未知错误"), "err");
       });
   };
@@ -2956,10 +3060,19 @@
   Arrange.prototype.arrangeOps = function (                         ops       ) {
     var self = this;
     if (!this.projectId) return Promise.reject(new Error("未打开项目"));
-    return UI.postJSON     ("/api/projects/" + encodeURIComponent(this.projectId) + "/arrangement/ops", {
+    var project=this.projectId, epoch=this.projectEpoch;
+    ops=ops.map((op)=>{var captured=window.ArrangementSync.copy(op);if(typeof captured.track==="number" && captured.track>=0 && this.tracks[captured.track])captured.track=this.tracks[captured.track].id;return captured;});
+    return this.doSave().then(function flush()      {
+      if(self.projectId!==project || self.projectEpoch!==epoch)throw new Error("项目已切换");
+      if(self.loadedProjectId!==project)throw new Error("工程正在加载，请稍后重试");
+      if(self.saveConflict)throw new Error("请先处理保存冲突");
+      if(self._saves[project].lastError)throw self._saves[project].lastError;
+      if(self.dirty)return self.doSave().then(flush);
+      return UI.postJSON     ("/api/projects/" + encodeURIComponent(project) + "/arrangement/ops", {
       ops: ops,
       client: "ui"
-    }).then(function (res     ) {
+    }); }).then(function (res     ) {
+      if(self.projectId!==project || self.projectEpoch!==epoch)return res;
       if (res && res.arrangement) self.applyRemoteArrangement(res.arrangement, res.changed || []);
       if (res && typeof res.rev === "number") self.rev = res.rev;
       return res || {};
@@ -2969,6 +3082,7 @@
   /** ensureRackItem 把 sourceId 入架（已在架复用）并返回条目 */
   Arrange.prototype.ensureRackItem = function (                         sourceId     , presetId     , name     ) {
     var self = this;
+    var project=this.projectId,epoch=this.projectEpoch;
     var local = window.ArrRack.itemFromSourceId(sourceId, presetId, name);
     return this.arrangeOps([{
       op: "addRackItem",
@@ -2976,6 +3090,7 @@
       presetId: presetId || "",
       name: name || ""
     }]).then(function (res     ) {
+      if(self.projectId!==project || self.projectEpoch!==epoch)return null;
       if (res && res.summary && res.summary.length) self.showHUD("🎛 " + res.summary[0]);
       var item = window.ArrRack.find(self.rack.items, local ? local.id : "");
       // 服务端 id 与前端派生 id 同算法；万一漂移（老数据/改名）按 sourceId 兜底查找
@@ -2988,8 +3103,9 @@
       }
       return item || local;
     }).catch(function (err     ) {
+      if(self.projectId!==project || self.projectEpoch!==epoch)return null;
       UI.toast ("✗ 加入机架失败: " + (err && err.message ? err.message : "未知错误"), "err");
-      return local;
+      return null;
     });
   };
 
@@ -3004,10 +3120,6 @@
     });
     if (probe.voice.type === "pack") {
       UI.toast ("⚠ 采样包不能直接分配给轨道：请在素材库中挑选采样文件（P3 接入）", "warn");
-      return;
-    }
-    if (probe.voice.type === "plugin") {
-      UI.toast ("⚠ 插件音源请在混音台点空 FX 槽 →「装载插件」选择（AI 也可用 load_plugin 直接装载）", "warn");
       return;
     }
     var idx = (trackIdx === undefined || trackIdx === null) ? this.selectedTrackIdx : Number(trackIdx);
@@ -3033,11 +3145,14 @@
     this.pushHistory();
     track.source = { itemId: item.id, presetId: preset };
     var self = this;
-    this.arrangeOps([{ op: "setTrackSource", track: idx, itemId: item.id, presetId: preset }])
+    var project=this.projectId,epoch=this.projectEpoch;
+    this.arrangeOps([{ op: "setTrackSource", track: track.id, itemId: item.id, presetId: preset }])
       .then(function (res     ) {
+        if(self.projectId!==project || self.projectEpoch!==epoch)return;
         if (res && res.summary && res.summary.length) self.showHUD("🎛 " + res.summary[0]);
       })
       .catch(function (err     ) {
+        if(self.projectId!==project || self.projectEpoch!==epoch)return;
         /* 服务端拒绝（条目被 AI 删了等）：本地回滚并明确提示 */
         self.undo();
         UI.toast ("✗ 分配音源失败: " + (err && err.message ? err.message : "未知错误"), "err");
@@ -3055,15 +3170,18 @@
   /** removeRackItem 移出机架（被轨道占用时服务端拒绝并给出占用清单） */
   Arrange.prototype.removeRackItem = function (                         itemId     , force      ) {
     var self = this;
+    var project=this.projectId,epoch=this.projectEpoch;
     var item = window.ArrRack.find(this.rack.items, itemId);
     var name = item ? item.name : itemId;
     this.pushHistory();
     return this.arrangeOps([{ op: "removeRackItem", itemId: itemId, force: !!force }])
       .then(function (res     ) {
+        if(self.projectId!==project || self.projectEpoch!==epoch)return;
         self.showHUD("🎛 已移出机架: " + name);
         self.renderTracks();
       })
       .catch(function (err     ) {
+        if(self.projectId!==project || self.projectEpoch!==epoch)return;
         self.undo();   // 服务端拒绝：撤销本次快照，避免留下无用历史
         UI.toast ("✗ 移出机架失败: " + (err && err.message ? err.message : "未知错误"), "err");
       });
@@ -3074,6 +3192,20 @@
       不会因为一次"AI 改音源"而丢失。 */
   Arrange.prototype.applyRemoteArrangement = function (                         data     , changed     ) {
     if (!data || typeof data !== "object") return;
+    var record=this._saves[this.projectId ];
+    if(record && record.base) {
+      if(Number(data.rev)<Number(record.base.rev))return;
+      var local=this.serialize(), base=this.saveConflict?this.saveConflict.base:record.base;
+      var merged=window.ArrangementSync.merge(base,local,data);
+      record.base=window.ArrangementSync.copy(data);
+      this._applyMergedState(merged.value);
+      this.rev=Number(data.rev)||0;
+      if(merged.conflicts.length)this._pauseForConflict(base,local,data,merged.conflicts);
+      else if(!window.ArrangementSync.equal(merged.value,data))this.scheduleSave();
+      this.notifyRackChanged();
+      if(window.PluginPanel)window.PluginPanel.restoreAll(this);
+      return;
+    }
     var ArrRack = window.ArrRack;
     var kinds                           = {};
     (changed || []).forEach(function (k     ) { kinds[String(k)] = true; });
@@ -4018,6 +4150,9 @@
   /** 试听（点击时播放一个 C4 音符）。 */
   Arrange.prototype.previewRackSource = function (                         resolved     , btn      ) {
     var self = this;
+    var previewProject=this.projectId,previewGeneration=this.projectEpoch;
+    var current=function(){return self.projectId===previewProject && self.projectEpoch===previewGeneration;};
+    var nativeTask=function(task                  ){return window.PluginPanel?window.PluginPanel.enqueue(self,task,current):Promise.resolve().then(function(){if(current())return task();});};
     var voice = resolved && resolved.voice ? resolved : window.ArrRack.resolve(this.rack.items, resolved);
     if (!voice || !voice.ok) {
       UI.toast ("⚠ 该音源不在机架中，无法试听", "warn");
@@ -4036,26 +4171,28 @@
         }
         var trk = (window.EngineBridge && window.EngineBridge.PREVIEW_TRACK) || 29;
         var playNativeNote = function () {
+          if(!current()){done();return;}
           window.EngineBridge.noteOnTrack(trk, 60, 100);
           setTimeout(function () {
-            try { window.EngineBridge.noteOffTrack(trk, 60); } catch (e) {}
+            if(current())try { window.EngineBridge.noteOffTrack(trk, 60); } catch (e) {}
             done();
           }, 600);
         };
         var v = voice.voice;
         if (v.type === "synth") {
-          window.EngineBridge.setTrackVoice(trk, {
+          nativeTask(function(){return window.EngineBridge.setTrackVoice(trk, {
             wave: v.wave || "sawtooth",
             attack: 0.01, decay: 0.15, sustain: 0.6, release: 0.25,
             cutoff: 8000, resonance: 1.0, gain: 0.7
-          }).then(playNativeNote).catch(function (e     ) {
+          });}).then(playNativeNote).catch(function (e     ) {
             done();
             self.showHUD("✗ 试听失败: " + (e && e.message ? e.message : "引擎不可用"));
           });
         } else if (v.type === "sf2") {
           var path = v.path || "";
           if (!path) throw new Error("音源文件缺失（可在设置页「声音管理」重新扫描）");
-          window.EngineBridge.loadSoundFont(path, trk).then(function () {
+          nativeTask(function(){return window.EngineBridge.loadSoundFont(path, trk).then(function () {
+            if(!current())return;
             var p = window.SoundRegistry
               ? window.SoundRegistry.parsePresetId(v.presetId || "0:0")
               : { bank: 0, program: 0 };
@@ -4064,19 +4201,20 @@
                 if (self.showHUD) self.showHUD("⚠ 预设不存在，已用该音色库首个预设");
               });
             });
-          }).then(playNativeNote).catch(function (err     ) {
+          });}).then(playNativeNote).catch(function (err     ) {
             done();
             if (self.showHUD) self.showHUD("✗ 试听失败: " + (err && err.message ? err.message : "引擎不可用"));
           });
         } else if (v.type === "builtin") {
           // 内置 GeneralUser GS：走随包音色库（/api/audio/status 的 default_soundfont）
-          fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (j) {
+          nativeTask(function(){return fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (j) {
+            if(!current())return;
             var path = j && j.default_soundfont;
             if (!path) throw new Error("缺少内置音色库（引擎模式）");
             var program = v.tone === "strings" ? 48 : 0;
             return window.EngineBridge.loadSoundFont(path, trk)
-              .then(function () { return window.EngineBridge.setTrackPreset(trk, 0, program); });
-          }).then(playNativeNote).catch(function (err     ) {
+              .then(function () { if(current())return window.EngineBridge.setTrackPreset(trk, 0, program); });
+          });}).then(playNativeNote).catch(function (err     ) {
             done();
             if (self.showHUD) self.showHUD("✗ 试听失败: " + (err && err.message ? err.message : "引擎不可用"));
           });
@@ -4110,6 +4248,7 @@
         }, 600);
       };
       var playNote = function (player     ) {
+        if(!current()){cleanup();return;}
         player.noteOn(60, 100);
         setTimeout(function () {
           try { player.noteOff(60); } catch (e) {}
@@ -4197,10 +4336,7 @@
     var sourceId = (voice && voice.voice && voice.voice.sourceId) || (source && (source.sourceId || source.itemId)) || "";
     if (reg && sourceId) {
       var s = reg.get(sourceId) || { id: sourceId, name: "" };
-      return reg.browserRecord(s).then(function (hit     ) {
-        if (hit && hit.id && window.SoundLibrary) return window.SoundLibrary.getSoundFont(hit.id);
-        return null;
-      });
+      return reg.loadSf2(sourceId,source && source.libId);
     }
     if (source && source.libId && window.SoundLibrary) {
       return window.SoundLibrary.getSoundFont(source.libId);
@@ -4244,6 +4380,8 @@
     }
     if (!a || !a.projectId) return;
     if (!a.dirty && !a.saveInFlight) return;
+    a._stashDraft();
+    if(a.saveConflict || a.saveInFlight)return;
     if (navigator.sendBeacon) {
       navigator.sendBeacon(
         "/api/projects/" + encodeURIComponent(a.projectId) + "/arrangement",

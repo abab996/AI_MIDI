@@ -3,7 +3,6 @@ package project
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -355,18 +354,7 @@ func copyDir(src, dst string) error {
 		if d.IsDir() {
 			return os.MkdirAll(target, 0755)
 		}
-		srcFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer srcFile.Close()
-		dstFile, err := os.Create(target)
-		if err != nil {
-			return err
-		}
-		defer dstFile.Close()
-		_, err = io.Copy(dstFile, srcFile)
-		return err
+		return copyFile(path, target)
 	})
 }
 

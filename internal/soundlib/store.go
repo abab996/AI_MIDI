@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -51,6 +52,26 @@ func loadLocked() *Registry {
 // saveLocked 原子落盘：唯一临时名 + rename。
 // 固定 ".tmp" 名会让两个并发写互相踩踏（一个 rename 后另一个的 fd 已失效）。
 func saveLocked(reg *Registry) error {
+	if original, err := os.ReadFile(FilePath()); err == nil {
+		if !json.Valid(original) {
+			return fmt.Errorf("注册表损坏，拒绝覆盖原始文件")
+		}
+		backup := FilePath() + ".before-audit-2026-10-01"
+		f, err := os.OpenFile(backup, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			_, err = f.Write(original)
+			closeErr := f.Close()
+			if err != nil {
+				return err
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		} else if !os.IsExist(err) {
+			return err
+		}
+	}
+
 	if reg.Version <= 0 {
 		reg.Version = RegistryVersion
 	}
@@ -214,6 +235,9 @@ func Update(id string, mutate func(*Source) error) (Source, error) {
 		}
 		next.ID = id // id 不可改：前端持久化的引用靠它
 		normalizeSource(&next)
+		if reflect.DeepEqual(next, reg.Sources[i]) {
+			return next, nil
+		}
 		next.UpdatedAt = time.Now().Unix()
 		reg.Sources[i] = next
 		if err := saveLocked(reg); err != nil {

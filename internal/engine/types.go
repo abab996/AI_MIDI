@@ -80,6 +80,7 @@ const (
 
 // EngineStatus 引擎运行状态快照（/api/audio/status）
 type EngineStatus struct {
+	ReplayErrors  []string    `json:"replay_errors,omitempty"`
 	State         EngineState `json:"state"`
 	PID           int         `json:"pid"`
 	Restarts      int         `json:"restarts"`

@@ -9,6 +9,7 @@
 (function (window: Window) {
   "use strict";
   var ctx: AudioContext | null = null;
+  var decodeCtx: BaseAudioContext | AudioContext | null = null;
 
   window.SharedAudio = {
     get: function () {
@@ -24,6 +25,21 @@
         }
       }
       return ctx;
+    },
+    /* 专用于离线数据解码（素材分析、波形缩略图绘制等），不接硬件发声通道；
+       即使在引擎模式下也可安全工作，避免因 ctx 为 null 导致 decodeAudioData 抛异常 */
+    getDecodeContext: function () {
+      if (ctx) return ctx;
+      if (decodeCtx) return decodeCtx;
+      var OAC = (window as any).OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+      if (OAC) {
+        try { decodeCtx = new OAC(1, 1, 44100); return decodeCtx; } catch (e) {}
+      }
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) {
+        try { decodeCtx = new AC(); return decodeCtx; } catch (e) {}
+      }
+      return null;
     },
     resume: function () {
       var c = this.get();

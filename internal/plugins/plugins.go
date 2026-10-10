@@ -17,8 +17,10 @@
 package plugins
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +29,13 @@ import (
 	"sync"
 	"time"
 )
+
+var ErrReferenceMismatch = errors.New("状态插件引用或格式不匹配")
+var storeWriteMu sync.Mutex
+
+func referenceArchive(path, ref, format string) string {
+	return path + fmt.Sprintf(".ref-%x", sha256.Sum256([]byte(format+"|"+ref)))
+}
 
 const (
 	// MaxStateBytes 单份状态上限 5MB（与计划 §3.2.2 的 5MB 口径一致）。
@@ -47,6 +56,7 @@ const (
 //   - Slot  = -1 表示轨道乐器（该轨的 VST3 / MM 乐器）
 type Target struct {
 	ProjectID string
+	TrackID   string
 	Track     int
 	Slot      int
 }
@@ -70,6 +80,13 @@ func (t Target) Valid() error {
 
 // FileName 目标对应的状态文件名（不含目录）。
 func (t Target) FileName() string {
+	if t.Track >= 0 && t.TrackID != "" {
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(t.TrackID)))
+		if t.Slot < 0 {
+			return "track_" + hash + "_inst.state"
+		}
+		return fmt.Sprintf("track_%s_slot_%d.state", hash, t.Slot)
+	}
 	switch {
 	case t.Track < 0:
 		return fmt.Sprintf("master_slot_%d.state", t.Slot)
@@ -88,6 +105,9 @@ func (t Target) Key() string {
 
 // Envelope 状态文件内容。
 type Envelope struct {
+	TrackID string `json:"trackId,omitempty"`
+	Track   int    `json:"track"`
+	Slot    int    `json:"slot"`
 	Version int    `json:"version"`
 	Ref     string `json:"ref"`     // 插件引用（arrangement.mixer.fx[].plugin 原值）
 	Format  string `json:"format"`  // vst3 | mm（仅用于可读性与诊断）
@@ -97,13 +117,10 @@ type Envelope struct {
 }
 
 // Matches 校验信封是否属于给定的插件引用。
-// ref 为空表示调用方不校验（老工程可能没记引用）。
+// 只有明确匹配的引用才能恢复，缺失引用的旧文件原样保留。
 func (e Envelope) Matches(ref string) bool {
 	ref = strings.TrimSpace(ref)
-	if ref == "" || strings.TrimSpace(e.Ref) == "" {
-		return true
-	}
-	return e.Ref == ref
+	return ref != "" && e.Ref == ref
 }
 
 // Payload 解码负载。Bytes 与 Data 不一致时以 Data 为准（但调用方会先被
@@ -138,6 +155,8 @@ func (s *Store) path(t Target) (string, error) {
 
 // Save 原子写入一份状态。超过 MaxStateBytes 直接拒绝。
 func (s *Store) Save(t Target, ref, format string, payload []byte) error {
+	storeWriteMu.Lock()
+	defer storeWriteMu.Unlock()
 	path, err := s.path(t)
 	if err != nil {
 		return err
@@ -151,7 +170,32 @@ func (s *Store) Save(t Target, ref, format string, payload []byte) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return fmt.Errorf("创建插件状态目录失败：%w", err)
 	}
+	if original, readErr := os.ReadFile(path); readErr == nil {
+		old, loadErr := loadStateFile(path, t)
+		if loadErr != nil {
+			return loadErr
+		}
+		if old.Ref != strings.TrimSpace(ref) || old.Format != strings.TrimSpace(format) {
+			backup, backupErr := os.OpenFile(path+".before-reference-change", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			if backupErr == nil {
+				_, backupErr = backup.Write(original)
+				closeErr := backup.Close()
+				if backupErr == nil {
+					backupErr = closeErr
+				}
+			}
+			if backupErr != nil && !os.IsExist(backupErr) {
+				return backupErr
+			}
+			if err := os.WriteFile(referenceArchive(path, old.Ref, old.Format), original, 0600); err != nil {
+				return err
+			}
+		}
+	} else if !os.IsNotExist(readErr) {
+		return readErr
+	}
 	env := Envelope{
+		TrackID: t.TrackID, Track: t.Track, Slot: t.Slot,
 		Version: envelopeVersion,
 		Ref:     strings.TrimSpace(ref),
 		Format:  strings.TrimSpace(format),
@@ -182,6 +226,10 @@ func (s *Store) Load(t Target) (Envelope, error) {
 	if err != nil {
 		return Envelope{}, err
 	}
+	return loadStateFile(path, t)
+}
+
+func loadStateFile(path string, t Target) (Envelope, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Envelope{}, err
@@ -192,6 +240,9 @@ func (s *Store) Load(t Target) (Envelope, error) {
 	}
 	if env.Version != envelopeVersion {
 		return Envelope{}, fmt.Errorf("状态文件版本不支持（%d，期望 %d）", env.Version, envelopeVersion)
+	}
+	if t.TrackID != "" && env.TrackID != t.TrackID {
+		return Envelope{}, fmt.Errorf("状态属于另一轨道或缺少保存时的稳定轨道映射")
 	}
 	if _, err := env.Payload(); err != nil {
 		return Envelope{}, err
@@ -225,12 +276,68 @@ func (s *Store) List() ([]Target, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".state") {
 			continue
 		}
+		raw, _ := os.ReadFile(filepath.Join(s.dir, e.Name()))
+		var env Envelope
+		if json.Unmarshal(raw, &env) == nil && env.TrackID != "" {
+			target := Target{TrackID: env.TrackID, Track: env.Track, Slot: env.Slot}
+			if target.FileName() == e.Name() {
+				out = append(out, target)
+				continue
+			}
+		}
 		if t, ok := parseFileName(e.Name()); ok {
 			out = append(out, t)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].FileName() < out[j].FileName() })
 	return out, nil
+}
+
+// LoadMatching migrates an index file only when its saved mapping and plugin identity prove ownership.
+func (s *Store) LoadMatching(t Target, ref, format string) (Envelope, error) {
+	env, err := s.Load(t)
+	if os.IsNotExist(err) && t.TrackID != "" {
+		legacy := t
+		legacy.TrackID = ""
+		old, lerr := s.Load(legacy)
+		if lerr != nil {
+			return Envelope{}, lerr
+		}
+		if old.TrackID != t.TrackID || !old.Matches(ref) || old.Format != format {
+			return Envelope{}, fmt.Errorf("旧状态缺少匹配的保存时轨道映射或插件引用，保留原文件")
+		}
+		path, _ := s.path(legacy)
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return Envelope{}, rerr
+		}
+		backup := path + ".before-stable-id"
+		if _, berr := os.Stat(backup); os.IsNotExist(berr) {
+			if berr = os.WriteFile(backup, raw, 0600); berr != nil {
+				return Envelope{}, berr
+			}
+		}
+		payload, _ := old.Payload()
+		if err = s.Save(t, ref, format, payload); err != nil {
+			return Envelope{}, err
+		}
+		return s.Load(t)
+	}
+	if err != nil {
+		return Envelope{}, err
+	}
+	if !env.Matches(ref) || env.Format != format {
+		path, _ := s.path(t)
+		archived, archiveErr := loadStateFile(referenceArchive(path, ref, format), t)
+		if archiveErr == nil && archived.Matches(ref) && archived.Format == format {
+			return archived, nil
+		}
+		if archiveErr != nil && !os.IsNotExist(archiveErr) {
+			return Envelope{}, archiveErr
+		}
+		return Envelope{}, ErrReferenceMismatch
+	}
+	return env, nil
 }
 
 // parseFileName 文件名 → 目标（不认识的名字直接忽略，不报错：

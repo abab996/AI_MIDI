@@ -286,6 +286,7 @@ interface SoundRegistryApi {
   samples(packId: string, sub?: string): Promise<any>;
   diskPathOf(src: any): string;
   browserRecord(src: any): Promise<SoundFontRecord | null>;
+  loadSf2(sourceId: string,libId?: string): Promise<any>;
   metaText(src: any): string;
 }
 

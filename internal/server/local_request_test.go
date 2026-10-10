@@ -77,7 +77,7 @@ func TestAuthTokenRequired(t *testing.T) {
 	r := NewRouter(nil, nil)
 
 	// 豁免路径不需要令牌（页面靠 bootstrap 拿令牌，健康检查无副作用）
-	for _, p := range []string{"/api/health", "/api/version", "/api/bootstrap.js"} {
+	for _, p := range []string{"/api/health", "/api/version"} {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
 		req.Host = "127.0.0.1"
 		w := httptest.NewRecorder()

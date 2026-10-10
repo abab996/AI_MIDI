@@ -144,14 +144,14 @@
   var paramsByIndex = {};
 
   function target() {
-    var t = {};
+    var t = {project:q.get("project")||"",generation:Number(q.get("generation")),trackId:q.get("trackId")||""};
     if (isMaster) t.master = true; else t.track = track;
     if (slot >= 0) t.slot = slot;
     return t;
   }
 
   function loadParams() {
-    var qs = new URLSearchParams();
+    var qs = new URLSearchParams({project:q.get("project")||"",generation:q.get("generation")||"0",trackId:q.get("trackId")||""});
     if (isMaster) qs.set("master", "1"); else qs.set("track", String(track));
     if (slot >= 0) qs.set("slot", String(slot));
     return fetch("/api/engine/plugins/params?" + qs.toString())
@@ -243,6 +243,7 @@
       窗口对象——同源顶层页面无法伪造 ev.source。 */
   var dropped = 0;
   function onPluginMessage(ev) {
+    if(ev.source !== frame.contentWindow)return;
     var d = ev.data;
     if (!d || typeof d !== "object" || typeof d.type !== "string" || d.type.indexOf("mm.") !== 0) return;
     if (d.type === "mm.ready") {
@@ -377,20 +378,39 @@
     });
   })();
 
+  var resourceSession="";
+  var resourceGeneration=0, hostClosed=false;
+  function releaseResource(session){return fetch("/api/engine/plugins/ui-session/revoke",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session:session}),keepalive:true}).catch(function(){});}
+  function revokeResource(){if(resourceSession){releaseResource(resourceSession);resourceSession="";}}
+  function closeHost(){hostClosed=true;resourceGeneration++;revokeResource();}
+  window.addEventListener("beforeunload",closeHost);
+  window.MMPluginHostClose = closeHost;
+  window.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && window.parent !== window) {
+      event.stopPropagation();
+      window.parent.postMessage({type:"mm.close"}, location.origin);
+    }
+  });
   function loadFrame() {
+    if(hostClosed)return;
+    revokeResource();
+    var generation=++resourceGeneration;
     elSkeleton.hidden = false;
     elStatus.textContent = "载入插件界面…";
-    /* iframe 是浏览器导航，带不了 X-MM-Token 头：先换取一次性 ui_ticket
-       再拼进 URL。/api/engine/plugins/ui-ticket 本身受启动令牌保护。
-
-       注意：票是一次性的，只能被 iframe 消费一次——这里不得再对同一 URL
-       做探测请求，否则会把票用掉导致 iframe 拿到 401。 */
-    fetch("/api/engine/plugins/ui-ticket", { method: "POST" })
+    /* 认证后签发一次性 ticket，再兑换目录受限的资源会话。
+       返回实际地址后直接导航，兼容 Wails WebView2 的资源拦截器。 */
+    fetch("/api/engine/plugins/ui-ticket", { method: "POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({plugin:pluginId,project:q.get("project")||"",generation:Number(q.get("generation"))}) })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
       .then(function (t) {
+        if(hostClosed||generation!==resourceGeneration){releaseResource(t.ticket);throw new Error("插件窗口已关闭或重载");}
+        resourceSession=t.ticket;
+        return fetch("/api/engine/plugins/ui?response=json&ticket="+encodeURIComponent(t.ticket))
+          .then(function (r) {return r.ok?r.json():Promise.reject(new Error("HTTP "+r.status));});
+      })
+      .then(function (grant) {
+        if(hostClosed||generation!==resourceGeneration){releaseResource(grant.session);throw new Error("插件窗口已关闭或重载");}
         frame.hidden = false;
-        frame.src = "/api/engine/plugins/ui?plugin=" + encodeURIComponent(pluginId) +
-          "&ticket=" + encodeURIComponent(t.ticket || "");
+        frame.src = grant.url;
         return loadParams().then(function () {
           post({ type: "mm.theme", theme: theme });
         }).catch(function () {
@@ -399,6 +419,7 @@
         });
       })
       .catch(function (e) {
+        if(hostClosed||generation!==resourceGeneration)return;
         elStatus.textContent = "插件界面加载失败：" + (e && e.message ? e.message : "未知错误");
         elSkeleton.hidden = true;
       });

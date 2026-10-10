@@ -219,6 +219,8 @@
     }
     if (same) {
       for (var i = 0; i < ctrl.tracks.length; i++) refreshStrip(ctrl, i);
+      var master=document.getElementById("mxrMaster");
+      if(master)buildMasterInto(ctrl,master);
       return;
     }
     render(ctrl);
@@ -803,29 +805,24 @@
   }
 
   /** openPluginPicker 拉引擎插件清单（GET /api/engine/plugins）→ 菜单选择装载。
+      派发 setFxSlot 算子并由 PluginPanel 统一经 "/api/engine/plugins/load" 下发原生引擎。
       浏览器模式没有原生引擎：接口 503，这里给可解释提示而不是空菜单。 */
   function openPluginPicker(ctrl                   , idx        , slot        ) {
     var where = (idx === MASTER_TRACK ? "主总线" : "通道 " + (idx + 1)) + " · FX " + (slot + 1);
-    UI.getJSON("/api/engine/plugins").then(function (res     ) {
-      var list = (res && res.plugins) || [];
+    Promise.all([UI.getJSON     ("/api/engine/plugins"),window.SoundRegistry?window.SoundRegistry.load():Promise.resolve([])]).then(function (results     ) {
+      var res=results[0];
+      var list = ((res && res.plugins) || []).concat((results[1]||[]).filter(function(s     ){return s.kind==="mm"&&s.enabled&&s.category!=="instrument";}).map(function(s     ){return {id:s.id,sourceId:s.id,name:s.name,vendor:s.vendor,instrument:false};}));
       if (!list.length) {
         toast("还没有扫描到 VST3 插件：请在设置页「声音管理」里扫描插件目录", "warn");
         return;
       }
       var items        = [{ heading: "装载插件到 " + where }];
-      list.slice(0, 60).forEach(function (p     ) {
+      list.filter(function(p     ){return !p.instrument;}).slice(0, 60).forEach(function (p     ) {
         items.push({
           label: (p.instrument ? "🎹 " : "🔧 ") + p.name + (p.vendor ? "（" + p.vendor + "）" : ""),
           action: function () {
-            UI.postJSON("/api/engine/plugins/load", {
-              id: p.id, track: idx === MASTER_TRACK ? 0 : idx, slot: slot,
-              master: idx === MASTER_TRACK
-            }).then(function () {
-              commitFx(ctrl, idx, slot, { plugin: p.id, bypass: false });
-              toast("✓ 已装载 " + p.name, "ok");
-            }).catch(function (err     ) {
-              toast("✗ 装载失败: " + (err && err.message ? err.message : "未知错误"), "err");
-            });
+            commitFx(ctrl,idx,slot,{plugin:p.id,sourceId:p.sourceId,bypass:false});
+
           }
         });
       });
@@ -839,15 +836,14 @@
   function openPluginEditor(ctrl                   , idx        , slot        , isMm          , pluginRef         ) {
     if (isMm) {
       var id = String(pluginRef || "").trim();
-      var qs = "?plugin=" + encodeURIComponent(id) + "&slot=" + slot;
+      var qs = "?plugin=" + encodeURIComponent(id) + "&slot=" + slot+"&project="+encodeURIComponent(ctrl.projectId||"")+"&generation="+ctrl.projectEpoch+"&trackId="+encodeURIComponent(idx===MASTER_TRACK?"":ctrl.tracks[idx].id);
       if (idx === MASTER_TRACK) qs += "&master=1";
       else qs += "&track=" + idx;
       var theme = document.documentElement.dataset.theme;
       if (theme) qs += "&theme=" + encodeURIComponent(theme);
       /* 尺寸取插件 manifest 声明的 ui 尺寸（缓存于面板打开时），拿不到再兜底 */
       var size = mmSizes[id] || { w: 760, h: 560 };
-      var win = window.open("/mm-ui.html" + qs, "mmui_" + id + "_" + slot,
-        "width=" + size.w + ",height=" + size.h);
+      var win = UI.openPluginUI("/mm-ui.html" + qs, "mmui_" + id + "_" + slot, size.w, size.h);
       if (!win) { toast("⚠ 浏览器拦截了弹窗：请允许本站弹窗后重试", "warn"); return; }
       /* 走带推送（规范 mm.transport）：承载窗不轮询 HTTP，走带在宿主手里。
          每秒推一次即可（插件界面只做只读展示）；窗口关闭后自动停。 */
@@ -879,6 +875,7 @@
     var op      = { op: "setFxSlot", slot: slot };
     if (idx === MASTER_TRACK) op.master = true; else op.track = idx;
     if (patch.plugin !== undefined) op.plugin = patch.plugin;
+    if(patch.sourceId!==undefined)op.sourceId=patch.sourceId;
     if (patch.bypass !== undefined) op.bypass = patch.bypass;
     if (patch.wet !== undefined) op.wet = patch.wet;
     if (patch.off) op.off = true;
@@ -888,8 +885,9 @@
     var fx        = ch.fx || (ch.fx = []);
     while (fx.length < MAX_SLOTS) fx.push({ slot: fx.length, bypass: true, wet: 1.0 });
     var entry = fx[slot] || (fx[slot] = { slot: slot, bypass: true, wet: 1.0 });
-    if (patch.off) { entry.plugin = ""; entry.bypass = true; entry.wet = 1; }
+    if (patch.off) { entry.plugin = ""; entry.sourceId=""; entry.bypass = true; entry.wet = 1; }
     if (patch.plugin !== undefined) entry.plugin = patch.plugin;
+    if(patch.sourceId!==undefined)entry.sourceId=patch.sourceId;
     if (patch.bypass !== undefined) entry.bypass = patch.bypass;
     if (patch.wet !== undefined) entry.wet = patch.wet;
 
@@ -902,28 +900,7 @@
       if (strip) refreshFxRack(ctrl, idx, strip);
     }
 
-    /* 引擎：P4 可下发槽参数；插件引用会被引擎如实拒绝（不静默） */
-    var bridge = window.EngineBridge;
-    var setChain = bridge ? bridge.setFxChain : undefined;
-    if (setChain) {
-      var payload      = {
-        slot: slot,
-        bypass: entry.bypass !== false,
-        wet: entry.wet === undefined ? 1 : entry.wet
-      };
-      if (entry.plugin) payload.plugin = entry.plugin;
-      if (patch.off) payload.off = true;
-      try {
-        setChain.call(bridge, idx === MASTER_TRACK ? -1 : idx, [payload]).catch(function (err     ) {
-          var msg = err && err.message ? err.message : String(err);
-          if (msg.indexOf("P5") >= 0 || msg.indexOf("P6") >= 0 || msg.indexOf("未启动") >= 0) {
-            toast("ℹ 原生引擎未启动：插件装载需要桌面版；槽位参数已保存", "warn");
-          } else {
-            toast("⚠ FX 链下发失败: " + msg, "err");
-          }
-        });
-      } catch (e) {}
-    }
+    ctrl.scheduleSave();
     commitOps(ctrl, [op]);
   }
 

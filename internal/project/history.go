@@ -9,10 +9,23 @@ import (
 	"time"
 )
 
+// IsValidTaskID 校验任务 ID 是否合法（防路径穿越与非法字符）
+func IsValidTaskID(taskID string) bool {
+	if taskID == "" || len(taskID) > 128 {
+		return false
+	}
+	for _, r := range taskID {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // HistoryFile 任务对话历史文件路径
 func HistoryFile(projectID, taskID string, legacy bool) string {
 	pdir, _ := ProjectDir(projectID)
-	if legacy || taskID == "" {
+	if legacy || taskID == "" || !IsValidTaskID(taskID) {
 		return filepath.Join(pdir, "history.json")
 	}
 	return filepath.Join(pdir, "tasks", taskID, "history.json")
@@ -21,7 +34,7 @@ func HistoryFile(projectID, taskID string, legacy bool) string {
 // EditHistoryFile 修改历史快照文件路径
 func EditHistoryFile(projectID, taskID string, legacy bool) string {
 	pdir, _ := ProjectDir(projectID)
-	if legacy || taskID == "" {
+	if legacy || taskID == "" || !IsValidTaskID(taskID) {
 		return filepath.Join(pdir, "edit_history.json")
 	}
 	return filepath.Join(pdir, "tasks", taskID, "edit_history.json")

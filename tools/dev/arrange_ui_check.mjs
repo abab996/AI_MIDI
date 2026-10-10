@@ -34,7 +34,7 @@ function check(name, ok, extra) {
 /* ── HTTP 小工具（避免 undici keep-alive 退出噪音） ── */
 /* 启动令牌：/api/ 非豁免路径要求 X-MM-Token（页面由 authfetch.js 注入）。
    脚本先取令牌，之后所有 /api/ 请求自动带上——与浏览器同一条路径。 */
-let authToken = "";
+let authToken = process.env.MM_AUTH_TOKEN || "";
 function httpFetch(url, opts = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -77,6 +77,8 @@ const api = async (method, p, body) => {
 /* 取启动令牌：/api/bootstrap.js 免令牌，其余 /api/ 路径需要 X-MM-Token
    （浏览器页面由 authfetch.js 注入，验收脚本走同一条路径） */
 async function loadAuthToken() {
+  if(authToken)return;
+  throw new Error("验收客户端必须显式提供 MM_AUTH_TOKEN");
   const r = await httpFetch(base + "/api/bootstrap.js", { method: "GET" });
   const j = await r.json().catch(() => ({}));
   authToken = (j && j.token) || "";
@@ -248,7 +250,7 @@ async function main() {
     projectId = created.json && (created.json.id || (created.json.meta && created.json.meta.id));
     if (!projectId) throw new Error("创建临时项目失败: " + JSON.stringify(created.json));
     const v1 = {
-      version: 1, bpm: 110, snap: 0.25, ppb: 26,
+      rev:0,version: 1, bpm: 110, snap: 0.25, ppb: 26,
       loop: { on: false, start: 0, end: 16 },
       tracks: [
         { id: "tr_uiA", name: "UI 旧轨 A", color: "#00B8CC", volume: 0.8, mute: false, solo: false,
@@ -273,6 +275,7 @@ async function main() {
 
     console.log("[UI] 加载页面并打开工程");
     /* 静态路由是文件名形式（/chat.html），/chat 会 404 */
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument",{source:"sessionStorage.setItem(\"mm_token\","+JSON.stringify(authToken)+");"});
     await cdp.send("Page.navigate", { url: base + "/chat.html" });
     await cdp.waitFor("window.Arrange && window.ArrRack && window.Arrange.initialized", 20000, "Arrange 初始化");
     await cdp.waitFor("!!window.ArrMaterial", 10000, "素材库模块加载");

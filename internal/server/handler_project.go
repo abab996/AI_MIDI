@@ -3,6 +3,7 @@ package server
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -119,17 +120,23 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, meta)
 
-	case sub == "draft":
-		if req.Method == http.MethodGet {
-			writeJSON(w, http.StatusOK, map[string]any{"text": project.LoadDraft(projectID)})
-		} else if req.Method == http.MethodPost {
-			var in struct {
-				Text string `json:"text"`
+		case sub == "draft":
+			if req.Method == http.MethodGet {
+				writeJSON(w, http.StatusOK, map[string]any{"text": project.LoadDraft(projectID)})
+			} else if req.Method == http.MethodPost {
+				var in struct {
+					Text string `json:"text"`
+				}
+				if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+					writeError(w, http.StatusBadRequest, "无效请求体")
+					return
+				}
+				if err := project.SaveDraft(projectID, in.Text); err != nil {
+					writeError(w, http.StatusInternalServerError, "保存草稿失败")
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			}
-			_ = json.NewDecoder(req.Body).Decode(&in)
-			project.SaveDraft(projectID, in.Text)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		}
 
 	case sub == "clear" && req.Method == http.MethodPost:
 		if tasks.TaskHasActive(projectID) {
@@ -145,16 +152,17 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		st.UndoStack = nil
 		st.PendingEdit = nil
 		st.EditHistory = nil
-		// 清空编辑历史并落盘（与 Python clear_chat 一致，否则重启后旧历史残留）
-		legacy := false
-		for _, t := range tasks.TaskList(projectID) {
-			if t.ID == s.CurrentTaskID {
-				legacy = t.Legacy
-				break
+			// 清空编辑历史并落盘（与 Python clear_chat 一致，否则重启后旧历史残留）
+			legacy := false
+			currentTaskID := s.GetCurrentTaskID()
+			for _, t := range tasks.TaskList(projectID) {
+				if t.ID == currentTaskID {
+					legacy = t.Legacy
+					break
+				}
 			}
-		}
-		project.SaveEditHistory(projectID, nil, s.CurrentTaskID, legacy)
-		project.SaveHistory(projectID, nil, s.MidiFiles, s.CurrentTaskID, legacy)
+			project.SaveEditHistory(projectID, nil, currentTaskID, legacy)
+			project.SaveHistory(projectID, nil, s.MidiFiles, currentTaskID, legacy)
 		fl.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})
 
@@ -234,11 +242,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			st.PendingEdit = nil
 			// 按当前任务是否为 legacy 决定落盘位置：硬编码 false 会把
 			// legacy 任务的历史写进 tasks/<id>/history.json，重启后撤回结果丢失
-			legacy := false
-			if t := tasks.TaskGet(s.CurrentTaskID); t != nil {
-				legacy = t.Legacy
-			}
-			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, s.CurrentTaskID, legacy)
+				legacy := false
+				currentTaskID := s.GetCurrentTaskID()
+				if t := tasks.TaskGet(currentTaskID); t != nil {
+					legacy = t.Legacy
+				}
+				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, currentTaskID, legacy)
 		}
 		resp := map[string]any{
 			"messages": chat.SnapshotDisplay(st.ChatDisplay),
@@ -387,6 +396,11 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		// 后写的一方会整份覆盖先写的一方（AI 刚加的机架条目被前端旧快照抹掉）
 		rev, werr := project.WriteArrangementVersioned(projectID, body)
 		if werr != nil {
+			var conflict *project.ArrangementConflict
+			if errors.As(werr, &conflict) {
+				writeJSON(w, http.StatusConflict, map[string]any{"code": "arrangement_conflict", "detail": conflict.Error(), "rev": conflict.Rev, "arrangement": conflict.Arrangement})
+				return
+			}
 			writeError(w, http.StatusBadRequest, werr.Error())
 			return
 		}
@@ -796,7 +810,7 @@ func (r *Router) openProject(w http.ResponseWriter, req *http.Request, projectID
 
 	taskID := req.URL.Query().Get("task_id")
 	s := chat.GetSession(projectID)
-	if taskID != "" {
+	if taskID != "" && project.IsValidTaskID(taskID) {
 		s.SwitchTask(taskID)
 	}
 
@@ -811,7 +825,8 @@ func (r *Router) openProject(w http.ResponseWriter, req *http.Request, projectID
 func buildProjectPayload(meta project.ProjectMeta) map[string]any {
 	projectID := meta.ID
 	s := chat.GetSession(projectID)
-	st := s.GetTaskState(s.CurrentTaskID)
+	currentTaskID := s.GetCurrentTaskID()
+	st := s.GetTaskState(currentTaskID)
 	baseDir := project.GetMidiBaseDir(projectID)
 
 	settings := config.LoadSettings()
@@ -823,7 +838,6 @@ func buildProjectPayload(meta project.ProjectMeta) map[string]any {
 	fl.RLock()
 	midiFiles := chat.SnapshotMidiFiles(s.MidiFiles)
 	display := chat.SnapshotDisplay(st.ChatDisplay)
-	currentTaskID := s.CurrentTaskID
 	fl.RUnlock()
 
 	// 空列表序列化为 [] 而非 null（前端虽有 || [] 兜底，统一更稳）

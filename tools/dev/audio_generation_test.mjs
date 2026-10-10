@@ -1,0 +1,10 @@
+import fs from 'node:fs';import vm from 'node:vm';import assert from 'node:assert/strict';import blank from 'ts-blank-space';
+const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{resolve,promise}};const tick=()=>new Promise(r=>setTimeout(r,5));
+let pending=deferred(),native=true;const calls=[];
+const window={AudioBackend:{isEngine:()=>native,isNativePreferred:()=>native},EngineBridge:{loadSoundFont:async(path,index)=>calls.push({path,index}),setTrackPreset:async()=>calls.push({preset:true})},SoundRegistry:{get:()=>null,loadSf2:()=>pending.promise},UI:{toast:()=>{}},SharedAudio:{get:()=>null}};
+vm.runInNewContext(blank(fs.readFileSync('frontend/src/arrangement/audio_engine.ts','utf8')),{window,console,setTimeout,clearTimeout,setInterval,clearInterval});
+const engine=new window.ArrangeEngine(),track={id:'same-id',source:{itemId:'font'}};const ctrl={projectId:'A',projectEpoch:1};engine.controller=ctrl;engine.getTracks=()=>[track];const nodes={sourceKey:'A',sfLoading:false,soundfont:{parseSF2:()=>calls.push({decoded:true})}};engine.trackNodes[track.id]=nodes;
+engine.loadTrackSoundFont(track,nodes,{sourceId:'font'});ctrl.projectId='B';ctrl.projectEpoch++;nodes.sourceKey='B';pending.resolve({data:new ArrayBuffer(8),diskPath:'A.sf2'});await tick();assert.deepEqual(calls,[]);
+pending=deferred();engine.loadTrackSoundFont(track,nodes,{sourceId:'font',presetId:'0:48'});pending.resolve({data:new ArrayBuffer(8),diskPath:'B.sf2'});await tick();assert.equal(calls[0].path,'B.sf2');assert.equal(calls[0].index,0);assert.ok(calls[1].preset);
+calls.length=0;native=false;pending=deferred();engine.loadTrackSoundFont(track,nodes,{sourceId:'font'});nodes.sourceKey='replacement';pending.resolve({data:new ArrayBuffer(8)});await tick();assert.deepEqual(calls,[]);
+console.log('audio generation: stale SF2 responses cannot change engine or decode a replacement source');

@@ -3,6 +3,7 @@ package midi
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -26,8 +27,11 @@ func TxtToMidi(sourceText string, outputPath string, bpm int) ([]byte, error) {
 	}
 
 	notesInfo, err := ParseNoteTableLines(sourceText)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrEmptyNoteTable) {
 		return nil, err
+	}
+	if notesInfo == nil {
+		notesInfo = []NoteEvent{}
 	}
 
 	midiBytes, err := BuildSMF(notesInfo, bpm)
@@ -47,16 +51,19 @@ func TxtToMidi(sourceText string, outputPath string, bpm int) ([]byte, error) {
 
 // OutNote 把 AI 返回的 note_table 文本写入 MIDI 文件
 func OutNote(noteTable string, bpm int, outputPath string) error {
-	_, err := TxtToMidi(noteTable, outputPath, bpm)
+	notes, err := ParseNoteTableLines(noteTable)
+	if err != nil {
+		return err
+	}
+	if len(notes) == 0 {
+		return ErrEmptyNoteTable
+	}
+	_, err = TxtToMidi(noteTable, outputPath, bpm)
 	return err
 }
 
 // BuildSMF 从音符事件列表构建标准 MIDI 文件字节流
 func BuildSMF(notes []NoteEvent, bpm int) ([]byte, error) {
-	if len(notes) == 0 {
-		return nil, ErrEmptyNoteTable
-	}
-
 	clampedBpm := ClampBPM(bpm)
 	tpb := config.TicksPerBeat
 

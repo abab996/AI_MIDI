@@ -22,8 +22,20 @@
     var dir = sessionStorage.getItem("melodymate-nav-dir");
     sessionStorage.removeItem("melodymate-nav-dir");
     if (dir === "forward" || dir === "back") {
-      document.documentElement.dataset.nav = dir;
-      setTimeout(function () { document.documentElement.removeAttribute("data-nav"); }, 800);
+      var html = document.documentElement;
+      html.dataset.nav = dir;
+      /* data-nav 必须保留到转场动画真正结束：固定 800ms 计时从 head 脚本执行
+         算起，重页面（chat.html）首帧较晚，计时会在动画中途触发——选择器失配
+         后浏览器改用默认交叉淡化并重启旧快照动画，表现为"闪回原页面" */
+      var clearNav = function () { html.removeAttribute("data-nav"); };
+      if ("onpagereveal" in window) {
+        window.addEventListener("pagereveal", function (e: any) {
+          if (e.viewTransition) e.viewTransition.finished.finally(clearNav);
+          else clearNav();
+        }, { once: true });
+      } else {
+        setTimeout(clearNav, 800);
+      }
     }
   } catch (e) {}
 })(window);

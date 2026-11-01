@@ -4000,7 +4000,7 @@ html[data-nav="forward"]:not(.theme-vt)::view-transition-old(root) {
 }
 
 html[data-nav="forward"]:not(.theme-vt)::view-transition-new(root) {
-  animation: page-in-right 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: page-in-right 0.55s cubic-bezier(0.22, 1.18, 0.36, 1) both;
 }
 
 /* 后退：旧页右滑出 / 新页左滑入 */
@@ -4009,13 +4009,14 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-old(root) {
 }
 
 html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
-  animation: page-in-left 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: page-in-left 0.55s cubic-bezier(0.22, 1.18, 0.36, 1) both;
 }
 
+/* 入场只用首尾两帧：多段关键帧会让 cubic-bezier 在每段内各跑一遍
+   （每个关键帧处减速到 0 再起步），表现为卡顿；过冲回弹交给
+   y>1 的贝塞尔曲线一次完成 */
 @keyframes page-in-right {
   0% { transform: translateX(36%); opacity: 0.2; }
-  55% { transform: translateX(-3%); opacity: 1; }
-  75% { transform: translateX(1.2%); }
   100% { transform: translateX(0); opacity: 1; }
 }
 
@@ -4026,8 +4027,6 @@ html[data-nav="back"]:not(.theme-vt)::view-transition-new(root) {
 
 @keyframes page-in-left {
   0% { transform: translateX(-36%); opacity: 0.2; }
-  55% { transform: translateX(3%); opacity: 1; }
-  75% { transform: translateX(-1.2%); }
   100% { transform: translateX(0); opacity: 1; }
 }
 

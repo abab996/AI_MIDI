@@ -26,15 +26,20 @@
       return resolveFormat(refOrTarget.sourceId || refOrTarget.ref || "");
     }
     var ref = String(refOrTarget || "").trim();
-    if (!ref) return "vst3";
+    if (!ref) return "";
     if (ref.indexOf("VST3|") === 0 || /\.vst3$/i.test(ref) || /^vst3[_:]/i.test(ref)) return "vst3";
     if (window.SoundRegistry && typeof window.SoundRegistry.get === "function") {
       var src = window.SoundRegistry.get(ref);
       if (src && (src.kind === "vst3" || src.kind === "mm")) return src.kind;
     }
-    return "mm";
+    /* 识别失败返回空串：等 /params 响应回写 res.format 后恢复完整功能，
+       不再瞎猜（猜 mm 会把 VST3 当 MM 走承载窗，猜 vst3 会拿 MM 去开原生编辑器）。 */
+    return "";
   }
   var isMmRef = function (refOrTarget     ) { return resolveFormat(refOrTarget) === "mm"; };
+  function formatOf(t     )         {
+    return t && (t.format === "mm" || t.format === "vst3") ? t.format : "";
+  }
 
   var state      = {
     open: false,
@@ -86,10 +91,11 @@
     if (!t) return;
     var keys = Object.keys(state.pending);
     if (!keys.length) return;
-    var index = Number(keys[0]);
-    var value = state.pending[index];
-    delete state.pending[index];
-    window.UI.postJSON("/api/engine/plugins/param", bodyOf(t, { index: index, value: value }))
+    var pending = state.pending;
+    state.pending = {};
+    /* 一次连接整批下发：避免逐参数排队（N×33ms）与相邻参数乱序 */
+    var changes = keys.map(function (k        ) { return { index: Number(k), value: pending[k] }; });
+    window.UI.postJSON("/api/engine/plugins/param", bodyOf(t, { changes: changes }))
       .then(function (res     ) {
         // 引擎回读：用它校正显示（步进参数会被量化）
         applyEngineParams(res);
@@ -98,7 +104,6 @@
         toast("✗ 参数下发失败：" + ((err && err.message) || "未知错误"), "err");
         refresh();
       });
-    if (Object.keys(state.pending).length) scheduleFlush();
   }
 
   function scheduleFlush() {
@@ -387,6 +392,7 @@
 
   function saveState() {
     if (!state.target || !state.target.project) { toast("⚠ 没有打开的工程，无法保存插件状态", "warn"); return; }
+    if (!formatOf(state.target)) { toast("⚠ 插件类型未识别，无法保存状态（关闭面板重开可重试）", "warn"); return; }
     window.UI.postJSON("/api/engine/plugins/state/save", stateBody())
       .then(function (res     ) {
         toast("✓ 插件状态已保存到工程（" + Math.round((res && res.bytes || 0) / 1024) + " KB）", "ok");
@@ -396,6 +402,7 @@
 
   function loadState() {
     if (!state.target || !state.target.project) { toast("⚠ 没有打开的工程，无法恢复插件状态", "warn"); return; }
+    if (!formatOf(state.target)) { toast("⚠ 插件类型未识别，无法恢复状态（关闭面板重开可重试）", "warn"); return; }
     window.UI.postJSON("/api/engine/plugins/state/load", stateBody())
       .then(function () {
         toast("✓ 已恢复插件状态", "ok");
@@ -407,7 +414,9 @@
   function openEditor() {
     var t = state.target;
     if (!t || !t.ref) { toast("⚠ 这个位置没有插件", "warn"); return; }
-    if (isMmRef(t)) {
+    var fmt = formatOf(t);
+    if (!fmt) { toast("⚠ 插件类型未识别，无法打开插件界面（关闭面板重开可重试）", "warn"); return; }
+    if (fmt === "mm") {
       /* MM：无原生窗口，走 mm-ui.html 承载页（sandbox iframe + postMessage 桥） */
       var qs = "?plugin=" + encodeURIComponent(t.ref) + "&slot=" + t.slot+"&project="+encodeURIComponent(t.project)+"&generation="+t.generation+"&trackId="+encodeURIComponent(t.trackId||"");
       if (t.master) qs += "&master=1"; else qs += "&track=" + t.track;
@@ -486,6 +495,15 @@
   function close() {
     state.open = false;
     state.dragging = -1;
+    var closing = state.target;
+    var keys = Object.keys(state.pending);
+    if (closing && keys.length) {
+      /* 关窗兜底：剩余待下发参数一次性 fire-and-forget 发出，避免丢改动 */
+      var closingPending = state.pending;
+      var closingChanges = keys.map(function (k        ) { return { index: Number(k), value: closingPending[k] }; });
+      window.UI.postJSON("/api/engine/plugins/param", bodyOf(closing, { changes: closingChanges }))
+        .catch(function () { /* 关窗兜底请求失败即放弃，0.5s 回读与下次打开会纠正 */ });
+    }
     state.pending = {};
     if (state.flushTimer) { window.clearTimeout(state.flushTimer); state.flushTimer = 0; }
     if (state.pollTimer) { window.clearInterval(state.pollTimer); state.pollTimer = 0; }
@@ -569,7 +587,9 @@
       if(!current())return;
       var fresh=!session||session.signature!==signature;
       if(fresh) {
-        if(session)for(var old of session.jobs){
+        /* 上次恢复从未到达 ready（signature 为空）时快照还是引擎默认状态，
+           备份回去会把默认状态写进工程 .state 文件——整个备份跳过。 */
+        if(session && session.signature)for(var old of session.jobs){
           if(!current())return;
           try{await window.UI.postJSON("/api/engine/plugins/state/save",identity(session.snapshot,old));}catch(e     ){throw new Error(old.ref+" 状态备份失败："+e.message);}
         }
@@ -602,25 +622,35 @@
       }
       if(!current())return;
       session.signature=signature;session.snapshot=snapshot;ctrl.audioSync="ready";
+      saveAllWarned=false;
     }).catch(function(e     ){if(current()){ctrl.audioSync="failed";toast("工程音频恢复失败："+e.message,"err");}throw e;});
     return engineQueue.catch(function(){});
   }
 
+  var saveAllWarned = false;
   function saveAll(ctrl     ) {
     if (!ctrl || !ctrl.projectId) return Promise.resolve();
     if (window.AudioBackend && !window.AudioBackend.isEngine()) return Promise.resolve();
     if (!session || !session.jobs || !session.jobs.length) return Promise.resolve();
+    if (!session.signature) {
+      /* 上次音频恢复未完成：快照可能是引擎默认状态，保存会把默认值固化进工程 */
+      if (!saveAllWarned) { saveAllWarned = true; toast("插件状态未保存：上次音频恢复未完成", "warn"); }
+      return Promise.resolve();
+    }
     var project = ctrl.projectId;
     var epoch = ctrl.projectEpoch;
     return enqueue(ctrl, async function () {
+      var failCount = 0;
       for (var job of session.jobs) {
         if (ctrl.projectId !== project || ctrl.projectEpoch !== epoch) return;
         try {
           await window.UI.postJSON("/api/engine/plugins/state/save", identity(session.snapshot || ctrl, job));
         } catch (e     ) {
+          failCount++;
           if (console && console.warn) console.warn("插件状态保存失败:", job.ref, e);
         }
       }
+      if (failCount > 0) toast(failCount + " 个插件状态保存失败", "err");
     });
   }
 

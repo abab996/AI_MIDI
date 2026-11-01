@@ -136,7 +136,11 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 	}
 	if req.Method == http.MethodGet && req.URL.Query().Get("generation") != "" {
 		q := req.URL.Query()
-		generation, _ := strconv.ParseInt(q.Get("generation"), 10, 64)
+		generation, err := strconv.ParseInt(q.Get("generation"), 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "generation 必须是整数")
+			return
+		}
 		id := q.Get("trackId")
 		if q.Get("master") == "1" {
 			id = "$master"
@@ -160,7 +164,11 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		_ = json.Unmarshal(raw, &body)
 		if id, _ := body["trackId"].(string); id != "" || body["generation"] != nil {
 			projectID, _ := body["project"].(string)
-			generation, _ := body["generation"].(float64)
+			generation, ok := body["generation"].(float64)
+			if body["generation"] != nil && !ok {
+				writeError(w, http.StatusBadRequest, "generation 必须是数字")
+				return
+			}
 			if master, _ := body["master"].(bool); master {
 				id = "$master"
 			}
@@ -217,7 +225,10 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		var in struct {
 			Dirs []string `json:"dirs"`
 		}
-		_ = json.NewDecoder(req.Body).Decode(&in)
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
 		list, err := sup.ScanPlugins(in.Dirs, 0)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -579,7 +590,10 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			Slot   *int `json:"slot"`
 			Master bool `json:"master"`
 		}
-		_ = json.NewDecoder(req.Body).Decode(&in)
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
 		track := in.Track
 		if in.Master {
 			track = -1
@@ -612,11 +626,15 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		var in struct {
-			Track  int     `json:"track"`
-			Slot   *int    `json:"slot"`
-			Master bool    `json:"master"`
-			Index  int     `json:"index"`
-			Value  float64 `json:"value"`
+			Track   int     `json:"track"`
+			Slot    *int    `json:"slot"`
+			Master  bool    `json:"master"`
+			Index   int     `json:"index"`
+			Value   float64 `json:"value"`
+			Changes []struct {
+				Index int     `json:"index"`
+				Value float64 `json:"value"`
+			} `json:"changes"` // 批量下发（一次连接写多个参数后统一回读）
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "请求格式错误")
@@ -630,7 +648,18 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if in.Slot != nil {
 			slot = *in.Slot
 		}
-		if err := sup.SetPluginParam(track, slot, in.Index, in.Value); err != nil {
+		if len(in.Changes) > 0 {
+			if len(in.Changes) > 256 {
+				writeError(w, http.StatusBadRequest, "单次最多下发 256 个参数")
+				return
+			}
+			for i, ch := range in.Changes {
+				if err := sup.SetPluginParam(track, slot, ch.Index, ch.Value); err != nil {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf("第 %d 个参数（index=%d）下发失败：%s", i+1, ch.Index, err.Error()))
+					return
+				}
+			}
+		} else if err := sup.SetPluginParam(track, slot, in.Index, in.Value); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -652,7 +681,10 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			Master bool `json:"master"`
 			Close  bool `json:"close"`
 		}
-		_ = json.NewDecoder(req.Body).Decode(&in)
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
 		if in.Close {
 			if err := sup.ClosePluginEditor(); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())

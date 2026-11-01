@@ -14,9 +14,11 @@ func SyncVST3Plugins(scanned []engine.PluginInfo) error {
 	for _, p := range scanned {
 		counts[pathKey(p.Path)]++
 	}
+	/* 旧注册表快照取一次循环外用：List 内部有磁盘 IO，放循环里是 O(n²) */
+	existing := List(KindVST3, "")
 	for _, p := range scanned {
 		matched := ""
-		for _, old := range List(KindVST3, "") {
+		for _, old := range existing {
 			if pathKey(old.Path) == pathKey(p.Path) && (old.ClassUID == p.ID || old.ClassUID != "" && strings.HasSuffix(p.ID, "|"+old.ClassUID) || old.ClassUID == "" && counts[pathKey(p.Path)] == 1) {
 				matched = old.ID
 				break

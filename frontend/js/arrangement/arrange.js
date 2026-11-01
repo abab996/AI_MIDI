@@ -4405,6 +4405,12 @@
       } catch (e) {}
     }
     if (!a || !a.projectId) return;
+    /* 关窗兜底：把插件状态也尽力保存一份（不依赖工程 dirty 标记）。
+       fire-and-forget，不阻塞卸载；浏览器不保证这些请求在页面销毁前
+       发出（sendBeacon 才有该保证），故仅是尽力而为的兜底。 */
+    try {
+      if (window.PluginPanel && window.PluginPanel.saveAll) window.PluginPanel.saveAll(a);
+    } catch (e) {}
     if (!a.dirty && !a.saveInFlight) return;
     a._stashDraft();
     if(a.saveConflict || a.saveInFlight)return;

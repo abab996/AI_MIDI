@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -527,10 +528,14 @@ func (r *Router) handleSoundMigrate(w http.ResponseWriter, req *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "扫描音源失败", err)
 		return
 	}
-	_, _, _ = soundlib.SyncAllInstalledMM()
+	if added, updated, failed := soundlib.SyncAllInstalledMM(); failed > 0 {
+		slog.Warn("MM 音源注册表同步存在失败条目", "added", added, "updated", updated, "failed", failed)
+	}
 	if sup := engine.Get(); sup != nil {
 		if list, lerr := sup.ListPlugins(); lerr == nil && list != nil && len(list.Plugins) > 0 {
-			_ = soundlib.SyncVST3Plugins(list.Plugins)
+			if err := soundlib.SyncVST3Plugins(list.Plugins); err != nil {
+				slog.Warn("VST3 注册表同步失败", "err", err)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

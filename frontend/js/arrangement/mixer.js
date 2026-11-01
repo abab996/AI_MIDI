@@ -828,7 +828,10 @@
       var res=results[0];
       var regList = results[1] || [];
       var vstList = ((res && res.plugins) || []).map(function (p     ) {
-        var matched = regList.find(function (s     ) { return s.kind === "vst3" && (s.classUid === p.id || s.path === p.path); });
+        /* 只从启用（s.enabled）的注册表条目回填 sourceId：被用户禁用的插件
+           不应通过 FX 菜单的注册表身份装载（classUid 精确优先，path 兜底）；
+           无匹配条目时仍可经引擎 id 直接装载（不带 sourceId）。 */
+        var matched = regList.find(function (s     ) { return s.kind === "vst3" && s.enabled && (s.classUid === p.id || s.path === p.path); });
         return matched ? Object.assign({}, p, { sourceId: matched.id }) : p;
       });
       var list = vstList.concat(regList.filter(function(s     ){return s.kind==="mm"&&s.enabled&&s.category!=="instrument";}).map(function(s     ){return {id:s.id,sourceId:s.id,name:s.name,vendor:s.vendor,instrument:false};}));

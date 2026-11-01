@@ -325,7 +325,9 @@ func (a *App) EngineScanPlugins(dirs []string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = soundlib.SyncVST3Plugins(list.Plugins)
+	if err := soundlib.SyncVST3Plugins(list.Plugins); err != nil {
+		slog.Warn("VST3 注册表同步失败", "err", err)
+	}
 	return map[string]any{"count": list.Count, "plugins": list.Plugins, "formats": list.Formats}, nil
 }
 

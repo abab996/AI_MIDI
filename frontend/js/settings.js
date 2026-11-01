@@ -2230,9 +2230,12 @@
     });
 
     /* 扫描 VST3：走引擎的插件扫描（POST /api/engine/plugins/scan，dirs 留空
-       = 系统默认插件目录）。结果存在引擎侧，混音台的「装载插件」菜单直接
-       读 GET /api/engine/plugins——因此这里不往音源注册表里塞条目。 */
+       = 系统默认插件目录）。服务端扫描完成后会同步进音源注册表（/scan 内部
+       调 SyncVST3Plugins），扫描结束刷新注册表视图即可，前端不塞条目。 */
+    var sndScanVst3Busy = false;    // 在途保护：扫描可能数十秒，防重复点击
     function sndScanVst3() {
+      if (sndScanVst3Busy) { UI.toast ("扫描正在进行，请稍候…", "warn"); return; }
+      sndScanVst3Busy = true;
       UI.toast ("⟳ 正在扫描系统插件目录，首次可能较慢…", "");
       UI.postJSON("/api/engine/plugins/scan", {}).then(function (res     ) {
         var n = (res && res.count) || 0;
@@ -2246,6 +2249,8 @@
         var msg = e && e.message ? e.message : "未知错误";
         UI.toast ("✗ 扫描失败：" + msg +
           "（VST3 扫描需要桌面版本机引擎；浏览器模式不可用）", "err");
+      }).finally(function () {
+        sndScanVst3Busy = false;
       });
     }
 

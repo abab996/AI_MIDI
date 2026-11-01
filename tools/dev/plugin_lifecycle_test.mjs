@@ -33,4 +33,47 @@ ctrl.projectId='save-all';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemI
 await window.PluginPanel.restoreAll(ctrl);calls.length=0;
 await window.PluginPanel.saveAll(ctrl);
 assert.ok(calls.some(c=>c.url.endsWith('/state/save')&&c.body.project==='save-all'&&c.body.trackId==='A'));
-console.log('plugin lifecycle: references, stable reorder/delete, empty switch, serial generations, mix-only updates, backup failures, state error handling and saveAll passed');
+
+/* ── 恢复失败防护：第二次 load 失败 → session.signature 停在 "" ── */
+window.UI.postJSON=async(url,body)=>{if(url.endsWith('/plugins/load')&&body.trackId==='B')throw new Error('second load boom');return originalPost(url,body)};
+ctrl.projectId='half-load';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}},{id:'B',source:{itemId:'I'}}];ctrl.mixer={channels:{A:{fx:[]},B:{fx:[]}},master:{gain:1,fx:[]}};
+await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'failed');
+window.UI.postJSON=originalPost;calls.length=0;
+const saveWarns=[];window.UI.toast=m=>saveWarns.push(m);
+/* signature==="" 时 saveAll 拒绝保存（快照可能是引擎默认值）并提示一次 */
+await window.PluginPanel.saveAll(ctrl);
+assert.equal(calls.filter(c=>c.url.endsWith('/state/save')).length,0);
+assert.ok(saveWarns.some(w=>w.includes('插件状态未保存：上次音频恢复未完成')));
+/* 下一次 fresh 恢复：旧会话 signature==="" → 整个备份循环跳过（不得把默认状态写回 .state） */
+ctrl.projectId='after-fail';ctrl.projectEpoch++;
+await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'ready');
+const preSession=calls.slice(0,Math.max(0,calls.findIndex(c=>c.url.endsWith('/session'))));
+assert.equal(preSession.filter(c=>c.url.endsWith('/state/save')).length,0);
+
+/* ── 参数批量下发 + 关窗兜底（独立上下文 + 最小 DOM 桩） ── */
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function fakeNode(tag){const n={tagName:(tag||'div').toUpperCase(),className:'',children:[],style:{},dataset:{},value:'',type:'',title:'',textContent:'',tabIndex:0,offsetWidth:0,parentNode:null,handlers:{},classList:{add(){},remove(){}},setAttribute(){},appendChild(c){n.children.push(c)},addEventListener(t,f){(n.handlers[t]=n.handlers[t]||[]).push(f)},removeEventListener(){},querySelector(){return fakeNode('div')},_fire(t,ev){(n.handlers[t]||[]).forEach(f=>f(ev))}};return n;}
+const created=[],calls2=[];
+const doc2={createElement:tag=>{const n=fakeNode(tag);created.push(n);return n},body:fakeNode('body'),addEventListener(){},removeEventListener(){}};
+const win2={UI:{getJSON:async url=>url.includes('/params')?{params:[{index:0,name:'Gain',value:.5},{index:1,name:'Tone',value:.25}],format:'vst3',name:'Synth'}:{},postJSON:async(url,body)=>{calls2.push({url,body});return{params:[]}},toast:()=>{}},SoundRegistry:{load:async()=>[],get:()=>null},AudioBackend:{isEngine:()=>true},setInterval,clearInterval,setTimeout,clearTimeout,innerWidth:1280};
+vm.runInNewContext(blank(fs.readFileSync('frontend/src/arrangement/plugin_panel.ts','utf8')),{window:win2,console,document:doc2,setTimeout,clearTimeout});
+await win2.PluginPanel.open({projectId:'PRJ',projectEpoch:3,tracks:[{id:'A'}]},{track:0,slot:-1,ref:'inst',name:'Synth'});
+for(let n=0;n<50&&!created.filter(x=>x.className==='plg-param-slider').length;n++)await sleep(2);
+const sliders=created.filter(x=>x.className==='plg-param-slider');assert.equal(sliders.length,2);
+/* 快速连动两个滑杆 → 一次连接整批下发（不再 N×33ms 排队） */
+sliders[0].value='0.7';sliders[0]._fire('input',{});
+sliders[1].value='0.9';sliders[1]._fire('input',{});
+await sleep(60);
+let paramCalls=calls2.filter(c=>c.url.endsWith('/param'));
+assert.equal(paramCalls.length,1);
+assert.deepEqual(JSON.parse(JSON.stringify(paramCalls[0].body.changes)),[{index:0,value:0.7},{index:1,value:0.9}]);
+assert.equal(paramCalls[0].body.project,'PRJ');assert.equal(paramCalls[0].body.generation,3);assert.equal(paramCalls[0].body.trackId,'A');
+/* 关窗兜底：剩余 pending 立即 fire-and-forget 发出，不丢改动 */
+sliders[0].value='0.1';sliders[0]._fire('input',{});
+win2.PluginPanel.close();
+await sleep(20);
+paramCalls=calls2.filter(c=>c.url.endsWith('/param'));
+assert.equal(paramCalls.length,2);
+assert.deepEqual(JSON.parse(JSON.stringify(paramCalls[1].body.changes)),[{index:0,value:0.1}]);
+assert.equal(win2.PluginPanel.isOpen(),false);
+console.log('plugin lifecycle: references, stable reorder/delete, empty switch, serial generations, mix-only updates, backup failures, state error handling, saveAll, restore-failure guards and batched param flush passed');

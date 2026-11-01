@@ -489,6 +489,10 @@
     return false;
   }
 
+  /* marked 安全配置是否生效。注册失败绝不能静默回退到"未加固的
+     marked.parse"——那会让原始 HTML 与 javascript: 链接直接进对话流
+     （fail-open）。置 false 后 md() 一律走先 esc 的 mdMini。 */
+  var _mdSanitized = false;
   if (window.marked && window.marked.use && window.marked.Renderer) {
     try {
       var _mdRenderer = new window.marked.Renderer();
@@ -514,12 +518,13 @@
         return _defaultLink.call(this, a, b, c);
       };
       window.marked.use({ renderer: _mdRenderer });
-    } catch (e) { /* marked 配置失败时按默认行为渲染 */ }
+      _mdSanitized = true;
+    } catch (e) { /* 注册失败 → _mdSanitized 保持 false，md() 强制走 mdMini */ }
   }
 
   function md(text         ) {
     var s = String(text == null ? "" : text);
-    if (window.marked && typeof window.marked.parse === "function") {
+    if (_mdSanitized && window.marked && typeof window.marked.parse === "function") {
       try {
         var out = window.marked.parse(s, { breaks: true, gfm: true });
         /* 外链新窗口打开（与旧迷你解析行为一致） */

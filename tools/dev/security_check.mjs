@@ -100,15 +100,41 @@ const mmUi = read("frontend/mm-ui.html");
 const appTs = read("frontend/src/app.ts");
 const appJs = read("frontend/js/app.js");
 
-check("承载页有 CSP", /http-equiv="Content-Security-Policy"/.test(mmUi));
+/* CSP 必须真实生效：meta 必须在注释之外（此前 TMP-CSP-DISABLED 把整段
+   meta 包进 HTML 注释，对原始文本做 regex 仍会误通过）。这里剥掉 HTML
+   注释后再断言，并逐页确认 script-src 不含 'unsafe-inline'。 */
+const stripHtmlComments = (s) => s.replace(/<!--[\s\S]*?-->/g, "");
+const activeCsp = (page) => {
+  const m = stripHtmlComments(read(page)).match(/http-equiv="Content-Security-Policy"\s+content="([^"]*)"/);
+  return m ? m[1] : "";
+};
+check("承载页 CSP 存在且未被注释禁用",
+  (() => { const c = activeCsp("frontend/mm-ui.html"); return c !== "" && !mmUi.includes("TMP-CSP-DISABLED"); })());
+check("承载页 script-src 无 unsafe-inline",
+  (() => { const c = activeCsp("frontend/mm-ui.html"); return c.includes("script-src") && !/script-src[^;]*'unsafe-inline'/.test(c); })());
+for (const page of ["frontend/index.html", "frontend/chat.html", "frontend/settings.html",
+  "frontend/audio_selftest.html", "frontend/demo/intro.html", "frontend/demo/stage.html",
+  "frontend/demo/transition.html", "frontend/demo/outro.html"]) {
+  check(`${page} script-src 无 unsafe-inline`,
+    (() => { const c = activeCsp(page); return c.includes("script-src") && !/script-src[^;]*'unsafe-inline'/.test(c); })());
+}
 /* 只校验 sandbox 属性本身，注释里提到 allow-same-origin 不算违规 */
 const sandboxAttr = (mmUi.match(/sandbox="([^"]*)"/) || [])[1] || "";
 check("插件 iframe 仍为 allow-scripts（无 allow-same-origin）",
   sandboxAttr.includes("allow-scripts") && !sandboxAttr.includes("allow-same-origin"), sandboxAttr);
 check("插件 iframe 地址带一次性 ui_ticket",
-  mmUi.includes("ui-ticket") && mmUi.includes("&ticket="));
+  (() => {
+    const carrier = exists("frontend/js/mm_ui_page.js") ? read("frontend/js/mm_ui_page.js") : mmUi;
+    return carrier.includes("ui-ticket") && carrier.includes("&ticket=");
+  })());
 check("Markdown 不再放行相对链接",
   appTs.includes("return false;") && !appTs.includes(`lower.indexOf(":") === -1`));
+check("Markdown 注册失败不再 fail-open（_mdSanitized 强制走 mdMini）",
+  appTs.includes("_mdSanitized") && appJs.includes("_mdSanitized"));
+check("页面启动/承载脚本已外置（CSP 收紧配套）",
+  exists("frontend/js/boot.js") && exists("frontend/js/index_page.js") &&
+  exists("frontend/js/chat_page.js") && exists("frontend/js/settings_page.js") &&
+  exists("frontend/js/audio_selftest.js") && exists("frontend/js/mm_ui_page.js"));
 check("已编译产物与源码一致（app.js 同为收紧后逻辑）",
   appJs.includes("/^https:/.test(lower)") && !appJs.includes(`lower.indexOf(":") === -1`));
 
@@ -123,7 +149,7 @@ for (const page of ["frontend/chat.html", "frontend/index.html", "frontend/setti
     read(page).indexOf("/js/authfetch.js") > 0);
 }
 check("插件 UI 响应补安全响应头",
-  read("internal/server/handler_plugins.go").includes("X-Content-Type-Options"));
+  read("internal/server/plugin_resources.go").includes("X-Content-Type-Options"));
 
 console.log("");
 if (failures > 0) {

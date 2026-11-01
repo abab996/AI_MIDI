@@ -2,55 +2,15 @@
 <html lang="zh-CN" data-theme="parchment">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
-<script>
-  /* 主题防闪烁：CSS 应用前同步设置已保存主题（theme.js 在 DOMContentLoaded
-     才生效，暗蓝用户每次导航会先闪暖纸） */
-  (function () {
-    try {
-      var themeKey = "melodymate-blueprint-theme";
-      if (localStorage.getItem(themeKey) == null) {
-        var oldTheme = localStorage.getItem("ai-midi-blueprint-theme");
-        if (oldTheme != null) localStorage.setItem(themeKey, oldTheme);
-      }
-      if (localStorage.getItem(themeKey) === "dark") {
-        document.documentElement.dataset.theme = "dark";
-      }
-    } catch (e) {}
-  })();
-</script>
-<script>
-  /* 启动落点改造（洞察报告 P0-4 步骤①）：冷启动不再落在快捷操作页，
-     直达档案库（对话工作台为主入口）。仅当"带导航标记进入"（从应用内
-     页面显式点过来）或本会话已展示过本页（刷新）时正常展示。
-     -browser 模式默认本就直达 chat.html，此处只兜住手动访问 "/" 的情况。 */
-  (function () {
-    try {
-      var dir = sessionStorage.getItem("melodymate-nav-dir");
-      var explicit = dir === "forward" || dir === "back";
-      var shown = sessionStorage.getItem("melodymate-index-shown") === "1";
-      if (explicit || shown) {
-        sessionStorage.setItem("melodymate-index-shown", "1");
-      } else {
-        location.replace("/chat.html");
-      }
-    } catch (e) {}
-  })();
-</script>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
+<!-- 页面脚本（原内联，CSP 收紧后搬出）：index_page 先于 boot——
+     重定向要先读 nav-dir 标记，boot 的导航块会把标记消费掉 -->
+<script src="/js/index_page.js"></script>
+<script src="/js/boot.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MelodyMate · AI 编曲助手</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="stylesheet" href="/style.css">
-<script>
-  (function () {
-    var dir = null;
-    try { dir = sessionStorage.getItem("melodymate-nav-dir"); sessionStorage.removeItem("melodymate-nav-dir"); } catch (e) {}
-    if (dir === "forward" || dir === "back") {
-      document.documentElement.dataset.nav = dir;
-      setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
-    }
-  })();
-</script>
 </head>
 <body>
 
@@ -156,22 +116,5 @@
 <script src="/js/theme.js"></script>
 <script src="/js/titlebar.js"></script>
 <script src="/js/workbench.js"></script>
-<script>
-  /* 旧快捷操作页引导：本页功能已集成进多轮对话页的「快速任务」，
-     每个会话提示一次（避免反复打扰） */
-  (function () {
-    try {
-      if (sessionStorage.getItem("melodymate_legacy_page_tip_v1") === "1") return;
-      sessionStorage.setItem("melodymate_legacy_page_tip_v1", "1");
-    } catch (e) {}
-    document.addEventListener("DOMContentLoaded", function () {
-      setTimeout(function () {
-        if (window.UI && UI.toast) {
-          UI.toast("ℹ 本页面已集成进「快速任务」：前往多轮对话页，点击顶部 ⚡ 快速任务 即可使用", "warn");
-        }
-      }, 600);
-    });
-  })();
-</script>
 </body>
 </html>

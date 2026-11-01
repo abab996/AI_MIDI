@@ -149,6 +149,24 @@ func LoadSettings() Settings {
 	return cloneSettings(&res)
 }
 
+// decryptSettingsRaw 把 raw 里 "dpapi:" 前缀的敏感值就地解密为明文。
+// 必须在任何解析/迁移/MirrorActive 之前调用：旧版扁平迁移与"激活供应商
+// 镜像到顶层"都会拷贝 api_key，晚一步解密就会把密文镜像扩散出去。
+func decryptSettingsRaw(raw map[string]interface{}) {
+	if v, ok := raw["api_key"].(string); ok {
+		raw["api_key"] = UnprotectSecret(v)
+	}
+	if list, ok := raw["providers"].([]interface{}); ok {
+		for _, item := range list {
+			if p, ok := item.(map[string]interface{}); ok {
+				if v, ok := p["api_key"].(string); ok {
+					p["api_key"] = UnprotectSecret(v)
+				}
+			}
+		}
+	}
+}
+
 // parseSettings 解析 settings.json 内容为 Settings（未提供的字段取默认值）
 func parseSettings(data []byte) Settings {
 	res := DefaultSettings()
@@ -157,6 +175,7 @@ func parseSettings(data []byte) Settings {
 		slog.Error("读取设置文件失败", "err", err)
 		return res
 	}
+	decryptSettingsRaw(raw)
 
 	if v, ok := raw["api_key"].(string); ok {
 		res.APIKey = v
@@ -244,18 +263,36 @@ func SaveSettings(s Settings) error {
 		s.Providers = []Provider{}
 	}
 
-	data, err := json.MarshalIndent(s, "", "  ")
+	/* 落盘副本：敏感值只在磁盘上的 JSON 里加密，内存缓存（下方 clone）
+	   保持明文——否则缓存里的 dpapi: 密文会污染掩码/回填/合成逻辑 */
+	stored := cloneSettings(&s)
+	if enc, err := ProtectSecret(stored.APIKey); err == nil {
+		stored.APIKey = enc
+	} else {
+		slog.Warn("API Key 加密失败，已按明文保存", "err", err)
+	}
+	for i := range stored.Providers {
+		if enc, err := ProtectSecret(stored.Providers[i].APIKey); err == nil {
+			stored.Providers[i].APIKey = enc
+		} else {
+			slog.Warn("供应商 API Key 加密失败，已按明文保存", "provider", stored.Providers[i].ID, "err", err)
+		}
+	}
+
+	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
 		return err
 	}
 
 	tmp := fmt.Sprintf("%s.tmp.%d.%d", SettingsFile, os.Getpid(), time.Now().UnixNano())
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	// 0600：settings.json 含 API Key，非 Windows 平台收紧权限兜底
+	//（Windows 权限位近似 no-op，机密性由 DPAPI 承担）
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		slog.Error("写入临时设置文件失败", "err", err)
 		return err
 	}
 	// 尝试 fsync 目录（最佳努力，失败不阻断）
-	if f, err := os.OpenFile(tmp, os.O_RDONLY, 0644); err == nil {
+	if f, err := os.OpenFile(tmp, os.O_RDONLY, 0600); err == nil {
 		_ = f.Sync()
 		_ = f.Close()
 	}
@@ -265,6 +302,7 @@ func SaveSettings(s Settings) error {
 		slog.Error("原子替换设置文件失败", "err", err)
 		return err
 	}
+	_ = os.Chmod(SettingsFile, 0600)
 	if dir, err := os.Open(filepath.Dir(SettingsFile)); err == nil {
 		_ = dir.Sync()
 		_ = dir.Close()

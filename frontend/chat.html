@@ -2,37 +2,13 @@
 <html lang="zh-CN" data-theme="parchment">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
-<script>
-  /* 主题防闪烁：CSS 应用前同步设置已保存主题（theme.js 在 DOMContentLoaded
-     才生效，暗蓝用户每次导航会先闪暖纸） */
-  (function () {
-    try {
-      var themeKey = "melodymate-blueprint-theme";
-      if (localStorage.getItem(themeKey) == null) {
-        var oldTheme = localStorage.getItem("ai-midi-blueprint-theme");
-        if (oldTheme != null) localStorage.setItem(themeKey, oldTheme);
-      }
-      if (localStorage.getItem(themeKey) === "dark") {
-        document.documentElement.dataset.theme = "dark";
-      }
-    } catch (e) {}
-  })();
-</script>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
+<!-- 主题防闪烁 + 导航方向：原内联脚本搬出为 boot.js（CSP 收紧） -->
+<script src="/js/boot.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MelodyMate · 多轮对话</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="stylesheet" href="/style.css">
-<script>
-  (function () {
-    var dir = null;
-    try { dir = sessionStorage.getItem("melodymate-nav-dir"); sessionStorage.removeItem("melodymate-nav-dir"); } catch (e) {}
-    if (dir === "forward" || dir === "back") {
-      document.documentElement.dataset.nav = dir;
-      setTimeout(function () { delete document.documentElement.dataset.nav; }, 800);
-    }
-  })();
-</script>
 <!-- Wails 运行时/绑定：Wails 的 assetserver 只对 "/" 与 "/index.html" 自动注入
      这两个脚本（isRuntimeInjectionMatch），而本应用冷启动被 index.html 直接
      location.replace 到 /chat.html——没有它们页面拿不到 window.runtime 与
@@ -654,12 +630,12 @@
     </div>
     <div class="field">
       <label class="field-label" for="lsMultiply">乘法缩放 (Multiply: 0.1x ~ 2.0x)</label>
-      <input type="range" id="lsMultiply" min="0.1" max="2.0" step="0.05" value="1.0" oninput="this.nextElementSibling.textContent=this.value+'x'">
+      <input type="range" id="lsMultiply" min="0.1" max="2.0" step="0.05" value="1.0">
       <span class="dim">1.0x</span>
     </div>
     <div class="field">
       <label class="field-label" for="lsOffset">整体力度偏移 (Offset: -64 ~ +64)</label>
-      <input type="range" id="lsOffset" min="-64" max="64" step="1" value="0" oninput="this.nextElementSibling.textContent=(this.value>0?'+':'')+this.value">
+      <input type="range" id="lsOffset" min="-64" max="64" step="1" value="0">
       <span class="dim">0</span>
     </div>
     <div class="field-grid">
@@ -685,12 +661,12 @@
     <div class="modal-title">🎸 扫弦化工具 · Strum Tool (Alt+S)</div>
     <div class="field">
       <label class="field-label" for="strumTime">拨弦时间跨度 Time (Ticks: 5 ~ 60)</label>
-      <input type="range" id="strumTime" min="5" max="60" step="2" value="20" oninput="this.nextElementSibling.textContent=this.value+' ticks'">
+      <input type="range" id="strumTime" min="5" max="60" step="2" value="20">
       <span class="dim">20 ticks</span>
     </div>
     <div class="field">
       <label class="field-label" for="strumVelRamp">力度衰减斜率 Velocity Ramp</label>
-      <input type="range" id="strumVelRamp" min="-20" max="20" step="1" value="-8" oninput="this.nextElementSibling.textContent=this.value">
+      <input type="range" id="strumVelRamp" min="-20" max="20" step="1" value="-8">
       <span class="dim">-8</span>
     </div>
     <label class="toggle-text" style="margin-top:6px">
@@ -964,82 +940,8 @@
 <script src="/js/chat.js" defer></script>
 <script src="/demo/script_data.js" defer></script>
 <script src="/demo/showrunner.js" defer></script>
-<script>
-// 引擎常驻徽章：桌面版固定走原生引擎（不降级），浏览器模式走 WebAudio 兼容层
-(function(){
-  var badge = document.getElementById("engineStamp");
-  if (!badge) return;
-  var lastState = null;
-  function updateBadge(){
-    var statusOk = true;
-    fetch("/api/audio/status").then(function(r){return r.json();}).catch(function(){statusOk = false; return {};})
-    .then(function(st){
-      st = st || {};
-      /* 取状态失败时保留上一次已知状态：写入 unknown 会让播放中的失联
-         判定（isEngineDown）把一次 HTTP 抖动当成引擎掉线，掐断正在播放的
-         走带。首次加载即失败时保持未取到（undefined），判定侧同样忽略 */
-      var state = statusOk ? (st.state || "unknown") : (window.__engineState || "unknown");
-      if(statusOk && st.replay_errors && st.replay_errors.length)state="failed";
-      /* 浏览器模式（无 Wails 桥）：没有引擎通道，实际发声恒为 WebAudio
-         兼容层——徽章必须如实反映，不得显示引擎就绪 */
-      var noBridge = !(window.EngineBridge && window.EngineBridge.available);
-      var text = "";
-      var cls = "stamp";
-      if (noBridge) {
-        text = "WEB ○";
-        cls = "stamp warn";
-        badge.title = "浏览器模式（无引擎桥）· 全部走 Web Audio 兼容层（桌面应用内为原生引擎）";
-      } else {
-        if (state === "ready") {
-          text = "ENGINE ●"; cls = "stamp ok";
-          var sfNote = (st.soundfont_loaded === false) ? " · 未加载音色（SF2 轨静音）" : "";
-          badge.title = (st.device_summary||"引擎就绪") + sfNote + " · 全链路原生引擎";
-        }
-        else if (state === "starting" || state === "restarting") { text = "ENGINE …"; cls = "stamp warn"; badge.title = "引擎启动中（播放暂不可用）"; }
-        else if (state === "failed" || state === "stopped" || state === "disabled") {
-          text = "ENGINE ✗"; cls = "stamp warn";
-          badge.title = "音频引擎不可用（不降级，播放无声）："+(st.last_error||state)+"；请检查声卡设置或重启应用";
-        }
-        else { text = "ENGINE ?"; cls = "stamp"; badge.title = "引擎状态："+state; }
-      }
-      badge.textContent = "ENGINE: " + text;
-      badge.className = cls;
-      var prevState = window.__engineState;
-      window.__engineState = state;
-      // 卡音兜底：引擎从就绪转为不可用时，之前经原生路径发出的音符没有
-      // 对应的前端 voice 可停——清引擎侧残留
-      if (prevState === "ready" && state !== "ready" && window.EngineBridge && window.EngineBridge.panic) {
-        try { window.EngineBridge.panic().catch(function(){}); } catch (e) {}
-      }
-      // 失败转态 toast（仅一次）：严格路由不降级，明确告知。
-      // 浏览器模式（无桥）不弹此提示（WebAudio 兼容层从未失效）
-      if (state === "failed" && lastState !== "failed" && !noBridge) {
-        if (window.UI && window.UI.toast) window.UI.toast("⚠ 音频引擎不可用（不降级，播放无声）。请检查声卡设置或重启应用", "warn");
-      }
-      // 引擎恢复（starting/restarting → ready）转态提示一次（此前恢复全程静默）
-      if (state === "ready" && (lastState === "starting" || lastState === "restarting" || lastState === "failed") && !noBridge) {
-        if (window.UI && window.UI.toast) window.UI.toast("✓ 音频引擎已就绪（播放可用）", "ok");
-      }
-      lastState = state;
-    });
-  }
-  updateBadge();
-  /* 轮询仅用于徽章显示：5s 常驻请求过密（与 tasks.ts 的自适应降频不一致），
-     放宽到 15s；页面隐藏（后台标签）时暂停，回到前台立即刷新一次 */
-  var badgeTimer = setInterval(updateBadge, 15000);
-  document.addEventListener("visibilitychange", function () {
-    if (document.hidden) {
-      clearInterval(badgeTimer);
-      badgeTimer = null;
-    } else {
-      updateBadge();
-      if (!badgeTimer) badgeTimer = setInterval(updateBadge, 15000);
-    }
-  });
-  // 后端设置项已移除（固定原生引擎），storage 跨页同步监听一并去掉
-  // 暴露给设置页调用（音频设置变更后立即刷新徽章）
-  window.__refreshEngineBadge = updateBadge;
-})();
-</script>
+<!-- 引擎常驻徽章 + 工具弹窗滑杆回显：原内联脚本搬出为 chat_page.js（defer，
+     在 engine_bridge.js 之后，CSP 收紧） -->
+<script src="/js/chat_page.js" defer></script>
 </body>
 </html>

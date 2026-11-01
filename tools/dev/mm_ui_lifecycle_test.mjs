@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const html=fs.readFileSync('frontend/mm-ui.html','utf8');
-const source=html.slice(html.indexOf('  var resourceSession='),html.indexOf('  if (!pluginId)',html.indexOf('  var resourceSession=')));
+/* 承载页脚本已外置（CSP 收紧）：从产物 mm_ui_page.js 切片提取资源会话逻辑 */
+const source=fs.readFileSync('frontend/js/mm_ui_page.js','utf8');
+const startMark=source.indexOf('var resourceSession');
+const slice=source.slice(startMark,source.indexOf('if (!pluginId)',startMark));
 const tick=()=>new Promise(resolve=>setTimeout(resolve,5));
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 for(const phase of ['ticket','exchange']){
@@ -13,7 +15,7 @@ for(const phase of ['ticket','exchange']){
    if(url.endsWith('/ui-ticket'))return phase==='ticket'?pending.promise:{ok:true,json:async()=>({ticket:'session'})};
    return pending.promise;
   }};
- vm.runInNewContext(source+'\nthis.load=loadFrame;',context);context.load();await tick();window.MMPluginHostClose();
+ vm.runInNewContext(slice+'\nthis.load=loadFrame;',context);context.load();await tick();window.MMPluginHostClose();
  pending.resolve({ok:true,json:async()=>phase==='ticket'?({ticket:'session'}):({session:'session',url:'/resources/session/editor.html'})});await tick();await tick();
  assert.equal(frame.src,'',`closed UI navigated after pending ${phase}`);assert.ok(revoked.includes('session'),`pending ${phase} was not revoked`);
 }

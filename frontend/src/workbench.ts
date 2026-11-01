@@ -295,9 +295,13 @@
         }
         if (ev.download_url) {
           var link = $("#downloadLink");
-          link.href = ev.download_url;
-          link.onclick=function(e: Event){e.preventDefault();UI.download(link.href).catch(function(err: any){UI.toast!(err.message,"err");});};
-          link.hidden = false;
+          var safeHref = UI.safeApiHref(ev.download_url);
+          if (!safeHref) { console && console.warn && console.warn("拒绝非同源 /api/ 下载地址:", ev.download_url); }
+          else {
+            link.href = safeHref;
+            link.onclick=function(e: Event){e.preventDefault();UI.download(link.href).catch(function(err: any){UI.toast!(err.message,"err");});};
+            link.hidden = false;
+          }
         }
         setStatus("DONE", "ok");
         consoleLine("> _", "dim");

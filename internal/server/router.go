@@ -232,8 +232,22 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// carry Origin:null and use a directory-scoped capability, never the API token.
 	opaqueResource := req.Method == http.MethodGet && req.Header.Get("Origin") == "null" &&
 		strings.HasPrefix(req.URL.Path, "/api/engine/plugins/resources/")
-	if !opaqueResource && !r.originChecker(req.Header.Get("Origin")) {
+	origin := req.Header.Get("Origin")
+	if !opaqueResource && !r.originChecker(origin) {
 		writeError(w, http.StatusForbidden, "非法来源")
+		return
+	}
+	/* fail-closed（Low 加固 2026-11-01）：/api/* 上无 Origin 的请求必须凭
+	   有效启动令牌通过。originChecker 对空 Origin 的放行只服务于静态导航、
+	   同源 GET fetch 与非浏览器客户端——API 面不能依赖"恰好没带 Origin"。
+	   此前空 Origin 直接过来源闸，全靠下一道令牌闸兜底，两道闸语义脱节：
+	   新增令牌豁免路径时可能无意漏在中间。这里把不变量钉在同一处。
+	   令牌豁免路径各有自己的把关（bootstrap.js 自校验 Origin、ui_ticket、
+	   resources 能力会话、health/version 只读），维持原状。 */
+	if req.Method != http.MethodOptions && origin == "" && !opaqueResource &&
+		strings.HasPrefix(req.URL.Path, "/api/") && !tokenExemptPath(req.URL.Path) &&
+		(r.authToken == "" || subtle.ConstantTimeCompare([]byte(req.Header.Get("X-MM-Token")), []byte(r.authToken)) != 1) {
+		writeError(w, http.StatusForbidden, "非法来源：无 Origin 请求必须携带启动令牌")
 		return
 	}
 
@@ -249,11 +263,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-		if origin := req.Header.Get("Origin"); origin != "" && r.originChecker(origin) && localOriginRe.MatchString(origin) {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-MM-Token, X-MM-Launch")
-		}
+	if origin != "" && r.originChecker(origin) && localOriginRe.MatchString(origin) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-MM-Token, X-MM-Launch")
+	}
 
 	if req.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)

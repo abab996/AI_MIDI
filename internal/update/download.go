@@ -239,6 +239,23 @@ func (d *Downloader) run(ctx context.Context, url, destPath, wantSHA string) {
 		return
 	}
 
+	/* 落位后、启动前重校验哈希，收窄 TOCTOU 窗口：.part 上算的 sha256
+	   与 exec 启动之间文件可能被同机进程替换。重算不能消灭竞态
+	   （替换仍可发生在重算与启动之间——同权限进程的残余风险，注释在案），
+	   但把窗口从"整个下载+落位期间"缩到"重算到启动的毫秒级"。 */
+	if wantSHA != "" {
+		final, err := fileSHA256(destPath)
+		if err != nil {
+			fail("启动前复验安装包失败: %v", err)
+			return
+		}
+		if !strings.EqualFold(final, strings.TrimSpace(wantSHA)) {
+			_ = os.Remove(destPath) // 内容已被替换：不得留给用户手动运行
+			fail("启动前复验失败（sha256 不匹配），安装包已被替换，已删除")
+			return
+		}
+	}
+
 	d.mu.Lock()
 	d.state = StateCompleted
 	d.path = destPath
@@ -294,4 +311,19 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	c.d.lastProgress = time.Now()
 	c.d.mu.Unlock()
 	return n, err
+}
+
+// fileSHA256 计算落位文件的 sha256（启动前复验用；.part 校验走的是
+// 流式 hasher，这里是对最终文件的独立重算）
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

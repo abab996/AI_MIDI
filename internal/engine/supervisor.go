@@ -152,11 +152,19 @@ func (s *Supervisor) currentToken() string {
 }
 
 // ResolveEnginePath 解析引擎可执行文件路径：
-// 显式覆盖 → 主程序同级 bin/（生产布局）→ 当前工作目录 bin/（go run 开发态）。
+// 显式覆盖（仅当解析后位于主程序同级 bin/ 内）→ 主程序同级 bin/（生产布局）
+// → 当前工作目录 bin/（go run 开发态）。
+// 覆盖值做包含性校验（Abs+EvalSymlinks 归一后必须落在 exe 同级 bin/ 下）：
+// settings.json 里的 audio.engine_path 不再能指向任意可执行文件（Low 加固
+// 2026-11-01）；校验不过就忽略覆盖走默认候选，不报错（配置残留不致命）。
 func ResolveEnginePath(override string) string {
 	candidates := []string{}
 	if override != "" {
-		candidates = append(candidates, override)
+		if cleaned, ok := containedEnginePath(override); ok {
+			candidates = append(candidates, cleaned)
+		} else {
+			slog.Warn("[engine] audio.engine_path 不在允许的 bin 目录内，忽略覆盖", "override", override)
+		}
 	}
 	if exeDir, err := os.Executable(); err == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(exeDir), "bin", "melodymate-engine.exe"))
@@ -175,6 +183,40 @@ func ResolveEnginePath(override string) string {
 	}
 	slog.Warn("[engine] 未找到 melodymate-engine.exe，使用首选候选路径", "candidates", candidates)
 	return candidates[0]
+}
+
+// containedEnginePath 校验 path 归一化（绝对化 + 解符号链接）后是否位于
+// 受信 bin 目录（主程序 exe 同级 bin/，或当前工作目录 bin/——go run 开发态
+// 与测试的 exe 在临时目录，此时以 cwd/bin 为准）内；是则返回归一化路径。
+func containedEnginePath(path string) (string, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	} else if _, statErr := os.Stat(abs); statErr != nil {
+		// 目标不存在（或父级符号链接未就绪）：归一化到目录层级即可判断
+		abs = filepath.Clean(abs)
+	}
+	var roots []string
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Join(filepath.Dir(exe), "bin"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		roots = append(roots, filepath.Join(cwd, "bin"))
+	}
+	for _, root := range roots {
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return abs, true
+	}
+	return "", false
 }
 
 // Start 异步启动守护主循环（幂等）

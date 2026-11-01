@@ -89,11 +89,13 @@ func TestSettingsButtonUnified(t *testing.T) {
 }
 
 func TestM4LatencyAndHotplug(t *testing.T) {
-	s := string(readRepoFile(t, "frontend/settings.html"))
+	/* 音频面板逻辑已随 CSP 收紧搬出为 settings_page.js（settings.html 只留
+	   引用），断言跟着搬到产物脚本 */
+	s := string(readRepoFile(t, "frontend/js/settings_page.js"))
 	if !strings.Contains(s, "updateLatency") || !strings.Contains(s, "buffer/sampleRate") {
-		t.Fatal("settings.html should have latency calculation")
+		t.Fatal("settings_page.js should have latency calculation")
 	}
 	if !strings.Contains(s, "热插拔") && !strings.Contains(s, "hashDevices") {
-		t.Fatal("settings.html should have hotplug polling")
+		t.Fatal("settings_page.js should have hotplug polling")
 	}
 }

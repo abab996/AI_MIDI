@@ -29,6 +29,8 @@ interface UIApi {
   postJSON<T = unknown>(url: string, body?: unknown): Promise<T>;
   putJSON<T = unknown>(url: string, body?: unknown): Promise<T>;
   delJSON<T = unknown>(url: string, body?: unknown): Promise<T>;
+  /* 下载链接白名单：同源 + /api/ 前缀才返回可赋值地址，否则返回 "" */
+  safeApiHref(u: unknown): string;
   openExternal?(url: string): Promise<unknown>;
   ssePost<T = unknown>(
     url: string,

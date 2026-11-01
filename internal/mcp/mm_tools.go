@@ -31,6 +31,35 @@ import (
 
 const mmMaxSourceBytes = 512 << 10 // 单文件 512 KiB
 
+// 工程总量上限（Low 加固 2026-11-01）：mm_write_file 写入前累计工程目录
+// 的文件数与字节数——没有总量闸门时，模型可以循环写大文件把 Library
+// 所在盘塞满（每次都在单文件上限内）。
+const (
+	mmMaxProjectFiles = 512
+	mmMaxProjectBytes = 16 << 20 // 16 MiB
+)
+
+// mmProjectUsage 统计工程目录当前的文件数与总字节数（剔除 build/、bin/——
+// 与批准清单同一口径，构建产物不占源码配额）
+func mmProjectUsage(dir string) (files int, bytes int64) {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr == nil {
+			rel = filepath.ToSlash(rel)
+			if strings.HasPrefix(rel, "build/") || strings.HasPrefix(rel, "bin/") {
+				return nil
+			}
+		}
+		files++
+		bytes += info.Size()
+		return nil
+	})
+	return files, bytes
+}
+
 var mmIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{2,127}$`)
 
 var mmTools = []llm.ToolDefinition{
@@ -153,7 +182,9 @@ func mmSourceDir(id string) (string, error) {
 	return dir, nil
 }
 
-// mmExePath 定位 mm.exe（构建为 mm.exe，随安装包分发；开发期在仓库 output/ 下）
+// mmExePath 定位 mm.exe（构建为 mm.exe，随安装包分发；开发期在仓库 output/ 下）。
+// 只接受显式环境变量与 exe 相对候选，不做 PATH 裸兜底（Low 加固 2026-11-01）：
+// PATH 上被塞进同名恶意 mm.exe 时，AI 编译/安装就会执行它。
 func mmExePath() (string, error) {
 	if v := strings.TrimSpace(os.Getenv("MM_EXE")); v != "" {
 		if _, err := os.Stat(v); err == nil {
@@ -170,10 +201,9 @@ func mmExePath() (string, error) {
 			filepath.Join(dir, "..", "output", "mm.exe"),
 		)
 	}
-	candidates = append(candidates, "mm.exe", "mm")
 	for _, c := range candidates {
-		if p, err := exec.LookPath(c); err == nil {
-			return p, nil
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
 		}
 	}
 	return "", fmt.Errorf("找不到 mm.exe：请设置环境变量 MM_EXE，或把它与主程序放在同一目录（发行包会带上）")
@@ -249,6 +279,10 @@ func executeMMTool(env ToolEnv, name string, args map[string]any) (string, error
 		}
 		if len(content) > mmMaxSourceBytes {
 			return fmt.Sprintf("错误：文件过大（%d 字节，上限 %d）", len(content), mmMaxSourceBytes), nil
+		}
+		if usageFiles, usageBytes := mmProjectUsage(dir); usageFiles >= mmMaxProjectFiles || usageBytes+int64(len(content)) > mmMaxProjectBytes {
+			return fmt.Sprintf("错误：工程超出总量上限（文件 %d/%d，字节 %d/%d，含本次写入）——清理不用的文件或精简内容",
+				usageFiles+1, mmMaxProjectFiles, usageBytes+int64(len(content)), mmMaxProjectBytes), nil
 		}
 		full := filepath.Join(dir, filepath.FromSlash(clean))
 		if r, rerr := filepath.Rel(dir, full); rerr != nil || strings.HasPrefix(r, "..") {

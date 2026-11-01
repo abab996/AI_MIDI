@@ -368,6 +368,16 @@ func (r *Router) handleModels(w http.ResponseWriter, req *http.Request) {
 			ProviderID string `json:"provider_id"`
 		}
 		_ = json.NewDecoder(req.Body).Decode(&in)
+		/* base_url 与 PUT /api/settings 同规：显式提供就必须过校验
+		   （SSRF 防线——FetchModels 会带着已保存的密钥向该主机发请求） */
+		if strings.TrimSpace(in.BaseURL) != "" {
+			normalized, berr := config.ValidateBaseURL(in.BaseURL, in.APIPath)
+			if berr != nil {
+				writeError(w, http.StatusBadRequest, berr.Error())
+				return
+			}
+			in.BaseURL = normalized
+		}
 		apiKey = in.APIKey
 		baseURL = in.BaseURL
 		apiPath = in.APIPath
@@ -431,9 +441,18 @@ func (r *Router) handleThemeSwitch(w http.ResponseWriter, req *http.Request) {
 		_ = json.NewDecoder(req.Body).Decode(&in)
 		theme = in.Theme
 	}
+	/* 白名单：前端主题就是 dark/parchment 二值（theme.ts / style.css）。
+	   原值不经校验直写 theme.txt 并落到窗口标题/图标路径——收进来防止
+	   任意串进配置与日志。 */
+	switch theme {
+	case "dark", "parchment":
+	default:
+		writeError(w, http.StatusBadRequest, "theme 必须是 dark 或 parchment")
+		return
+	}
 
 	iconFile := "app_icon_dark.ico"
-	if theme == "parchment" || theme == "warm" {
+	if theme == "parchment" {
 		iconFile = "app_icon_warm.ico"
 	}
 

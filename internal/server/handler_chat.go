@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"melodymate/internal/chat"
+	"melodymate/internal/project"
 )
 
 // sseCallback 构造带写超时的事件回调。必须给每次 Fprint 设写截止时间：
@@ -42,6 +43,12 @@ func (r *Router) handleChat(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "缺少 project_id 或无效请求")
 		return
 	}
+	/* 项目存在性 404 早退：与 download 同规——否则任意 projectID 都会在
+	   进程内水合出永不回收的会话/锁/任务对象（无界增长）。 */
+	if _, err := project.LoadProject(in.ProjectID); err != nil {
+		writeError(w, http.StatusNotFound, "项目不存在")
+		return
+	}
 
 	flusher := setupSSEHeaders(w)
 	callback := sseCallback(w, flusher)
@@ -70,6 +77,11 @@ func (r *Router) handleAnswer(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := json.NewDecoder(req.Body).Decode(&in); err != nil || in.ProjectID == "" || in.QuestionID == "" {
 		writeError(w, http.StatusBadRequest, "缺少参数或无效请求")
+		return
+	}
+	/* 项目存在性 404 早退（同 handleChat） */
+	if _, err := project.LoadProject(in.ProjectID); err != nil {
+		writeError(w, http.StatusNotFound, "项目不存在")
 		return
 	}
 

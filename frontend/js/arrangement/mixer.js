@@ -873,12 +873,15 @@
       var pushTransport = function () {
         if (!win || win.closed) { if (timer) { clearInterval(timer); timer = 0; } return; }
         try {
+          /* targetOrigin 用同源精确值（Low 加固 2026-11-01）：mm-ui.html 与
+             本页同源，"*" 会让消息跟着弹窗导航/重定向漂移到任意源。
+             承载页侧 fromHost 同样校验来源窗口与 origin。 */
           win.postMessage({
             type: "mm.transport",
             bpm: Number(ctrl.bpm) || 120,
             playing: !!ctrl.isPlaying,
             beat: Number(ctrl.playheadBeat) || 0
-          }, "*");
+          }, location.origin);
         } catch (e) { /* 弹窗跨源/已关闭：忽略 */ }
       };
       var timer = window.setInterval(pushTransport, 1000);

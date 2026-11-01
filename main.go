@@ -198,11 +198,13 @@ func main() {
 		}()
 
 		fmt.Printf("[MelodyMate] HTTP 服务已在 http://%s 启动 (浏览器模式)\n", addr)
-		// 不设 ReadTimeout/WriteTimeout：WriteTimeout 会掐断 SSE 长下行。
-		// 慢速请求体的保护由 ReadHeaderTimeout + handler 侧 LimitReader/MaxBytes 承担
+		// 不设全局 ReadTimeout/WriteTimeout：会掐断 SSE 长下行。慢速请求体
+		// 的保护 = ReadHeaderTimeout + 非 SSE 路径的按请求读截止
+		// （server.WithRequestReadDeadline，SSE 三端点豁免）+ handler 侧
+		// LimitReader/MaxBytes
 		srv := &http.Server{
 			Addr:              addr,
-			Handler:           router,
+			Handler:           server.WithRequestReadDeadline(router),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		}

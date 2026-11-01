@@ -190,6 +190,22 @@
     });
   }
 
+  /* 下载链接白名单（Low 加固 2026-11-01）：引擎/任务事件下发的地址赋给
+     <a>.href 前先校验——只接受同源 + /api/ 前缀（这些链接虽被 click 拦截
+     走 UI.download，但地址会显示在状态栏、可被中键/右键直接导航）。
+     合法返回可赋值的相对地址；非法返回 ""（调用方拒绝展示链接）。 */
+  function safeApiHref(u: unknown): string {
+    var s = String(u == null ? "" : u).trim();
+    if (!s) return "";
+    try {
+      var parsed = new URL(s, location.origin);
+      if (parsed.origin === location.origin && parsed.pathname.indexOf("/api/") === 0) {
+        return parsed.pathname + parsed.search;
+      }
+    } catch (e) {}
+    return "";
+  }
+
   /* 网络层错误（断网/DNS 失败）：fetch 拒绝时把浏览器原文
      "Failed to fetch" 换成可读文案 */
   async function download(url: string,name?: string) {
@@ -879,7 +895,18 @@
   /* WebView2 子窗口不会经过 Wails 资源处理器。桌面使用同源承载 iframe，
      插件自身仍由 mm-ui 的无同源权限沙箱加载；浏览器保留独立窗口。 */
   function openPluginUI(url: string, name: string, width = 760, height = 560) {
-    if (!(global as any).go?.app?.App) return window.open(url, name, "width=" + width + ",height=" + height);
+    if (!(global as any).go?.app?.App) {
+      /* 浏览器回退：跨源 URL 置空 opener（新窗口不得反向操控本页）。
+         同源 mm-ui.html 保留 opener——承载页 fromHost 靠它识别宿主窗口
+         （走带/主题推送通道），且其消息处理已有 origin 校验；当前所有
+         调用方都是 /mm-ui.html。返回句柄始终保留（混音台要 postMessage）。 */
+      var opened = window.open(url, name, "width=" + width + ",height=" + height);
+      try {
+        var crossOrigin = new URL(url, location.origin).origin !== location.origin;
+        if (opened && crossOrigin) opened.opener = null;
+      } catch (e) { /* URL 解析失败按同源处理，不置空 */ }
+      return opened;
+    }
     var previous = document.activeElement as HTMLElement;
     var overlay = document.createElement("div");
     overlay.className = "modal-overlay plugin-ui-host";
@@ -928,6 +955,7 @@
     fmtSize: fmtSize, fmtDate: fmtDate, friendlyText: friendlyText,
     isLocalEndpoint: isLocalEndpoint,
     download: download, getJSON: getJSON, postJSON: postJSON, putJSON: putJSON, delJSON: delJSON,
+    safeApiHref: safeApiHref,
     openExternal: openExternal, openPluginUI: openPluginUI,
     ssePost: ssePost, md: md, mdInline: mdInline, projectCard: projectCard,
     streamStart: streamStart,

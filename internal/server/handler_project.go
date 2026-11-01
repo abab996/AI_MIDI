@@ -1215,6 +1215,33 @@ func (r *Router) handleProjectDownload(w http.ResponseWriter, req *http.Request,
 		return
 	}
 
+	/* serve 前复核：会话里的 f.Path 必须位于受信根内——工程目录，或该工程
+	   绑定的工作区目录（工作区同步会把 U 盘/网络盘的 midi 路径写进会话）。
+	   会话对象可能被旧工程/手工改动残留了指向别处的路径，直接 ServeFile
+	   （与 zip 打包 os.ReadFile）会把工程外的任意文件吐出去。 */
+	baseDir, berr := project.ProjectDir(projectID)
+	if berr != nil {
+		writeError(w, http.StatusInternalServerError, "解析工程目录失败")
+		return
+	}
+	roots := []string{filepath.Clean(baseDir)}
+	if ws := project.GetWorkspaceDir(projectID); strings.TrimSpace(ws) != "" {
+		roots = append(roots, filepath.Clean(ws))
+	}
+	for _, f := range targets {
+		inside := false
+		for _, root := range roots {
+			if isSubPath(filepath.Clean(f.Path), root) {
+				inside = true
+				break
+			}
+		}
+		if !inside {
+			writeError(w, http.StatusBadRequest, "文件路径越界，已拒绝下载："+f.Name)
+			return
+		}
+	}
+
 	if len(targets) == 1 {
 		// 单文件直接返回
 		f := targets[0]

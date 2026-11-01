@@ -2413,9 +2413,13 @@
         applyArrangementEvent(ev);
       } else if (ev.type === "download") {
         var link = $("#newMidiLink");
-        link.href = ev.url;
-        link.onclick=function(e       ){e.preventDefault();UI.download(link.href).catch(function(err     ){UI.toast (err.message,"err");});};
-        link.hidden = false;
+        var safeHref = UI.safeApiHref(ev.url);
+        if (!safeHref) { console && console.warn && console.warn("拒绝非同源 /api/ 下载地址:", ev.url); }
+        else {
+          link.href = safeHref;
+          link.onclick=function(e       ){e.preventDefault();UI.download(link.href).catch(function(err     ){UI.toast (err.message,"err");});};
+          link.hidden = false;
+        }
         /* 新文件诞生显式提示：链接缩在工具条里极易被错过 */
         link.classList.remove("pop");
         void link.offsetWidth;
@@ -3710,9 +3714,13 @@
         applyArrangementEvent(ev);
       } else if (ev.type === "download") {
         var link = $("#newMidiLink");
-        link.href = ev.url;
-        link.onclick=function(e       ){e.preventDefault();UI.download(link.href).catch(function(err     ){UI.toast (err.message,"err");});};
-        link.hidden = false;
+        var safeHref = UI.safeApiHref(ev.url);
+        if (!safeHref) { console && console.warn && console.warn("拒绝非同源 /api/ 下载地址:", ev.url); }
+        else {
+          link.href = safeHref;
+          link.onclick=function(e       ){e.preventDefault();UI.download(link.href).catch(function(err     ){UI.toast (err.message,"err");});};
+          link.hidden = false;
+        }
         /* 新文件诞生显式提示：链接缩在工具条里极易被错过 */
         link.classList.remove("pop");
         void link.offsetWidth;

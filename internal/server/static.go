@@ -84,6 +84,11 @@ func (r *Router) registerStaticRoutes() {
 	}
 
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		/* 安全响应头（Low 加固 2026-11-01）：静态路由统一带 nosniff
+		   （防 MIME 嗅探把上传/生成内容当代码执行）与 DENY（本应用页面
+		   不应被第三方页嵌 iframe）。API 路由由各自 handler/资源端点负责。 */
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
 		/* HTML/JS/CSS 禁用强缓存：这三类是本机应用的界面代码，页面与脚本
 		   必须同代——此前 JS 可缓存 60s，而 HTML 不缓存，会出现"新页面
 		   + 旧脚本"的错配（例如新增的 authfetch.js 拿不到则整个界面

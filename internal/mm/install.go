@@ -111,7 +111,13 @@ func Uninstall(installDir string) error {
 	return os.RemoveAll(clean)
 }
 
-// extractZip 逐条路径校验后解包（zip-slip 防护：绝对路径 / .. / 盘符）
+// maxExtractTotalBytes 解压总量上限（信息级加固 2026-11-01）：zip 声明的
+// 压缩前大小可伪造，逐条 io.Copy 不设上限时，一个小包可解出几十 GB 塞满
+// Library 所在盘（zip bomb）。超限立即中止并清理临时目录。
+const maxExtractTotalBytes = 512 << 20
+
+// extractZip 逐条路径校验后解包（zip-slip 防护：绝对路径 / .. / 盘符；
+// 解压总量上限 512MB）
 func extractZip(zipPath, dest string) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -121,6 +127,7 @@ func extractZip(zipPath, dest string) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
+	var total int64
 	for _, f := range zr.File {
 		clean := strings.ReplaceAll(f.Name, "\\", "/")
 		if strings.HasPrefix(clean, "/") || strings.Contains(clean, "..") || drivePattern.MatchString(clean) {
@@ -136,6 +143,11 @@ func extractZip(zipPath, dest string) error {
 			}
 			continue
 		}
+		/* 声明值快筛（写盘前拦截明显超限的包）；UncompressedSize64 可伪造，
+		   所以写完后还要按实际字节数复核一道 */
+		if total+int64(f.UncompressedSize64) > maxExtractTotalBytes {
+			return fmt.Errorf("MM010: 解压总量超过 %d MB 上限（疑似 zip bomb）", maxExtractTotalBytes>>20)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
@@ -148,13 +160,16 @@ func extractZip(zipPath, dest string) error {
 			rc.Close()
 			return cerr
 		}
-		if _, werr := io.Copy(out, rc); werr != nil {
-			out.Close()
-			rc.Close()
-			return werr
-		}
+		n, werr := io.Copy(out, rc)
 		out.Close()
 		rc.Close()
+		if werr != nil {
+			return werr
+		}
+		total += n
+		if total > maxExtractTotalBytes {
+			return fmt.Errorf("MM010: 解压总量超过 %d MB 上限（疑似 zip bomb）", maxExtractTotalBytes>>20)
+		}
 	}
 	return nil
 }

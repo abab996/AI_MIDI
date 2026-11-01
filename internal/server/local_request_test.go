@@ -87,18 +87,30 @@ func TestAuthTokenRequired(t *testing.T) {
 		}
 	}
 
-	// 普通 /api/ 路径：无令牌 401
+	// 普通 /api/ 路径：无 Origin 也无令牌 → 来源 fail-closed 闸 403（Low 加固：
+	// 无 Origin 请求必须凭令牌；无 Origin 且无令牌属"来源不明"，先于令牌闸拦截）
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	req.Host = "127.0.0.1"
 	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden && w.Code != http.StatusUnauthorized {
+		t.Fatalf("无 Origin 无令牌应 403/401, got %d", w.Code)
+	}
+
+	// 带 Origin 但无令牌：令牌闸 401
+	req = httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req.Host = "127.0.0.1"
+	req.Header.Set("Origin", "http://127.0.0.1:8080")
+	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("无令牌应 401, got %d", w.Code)
 	}
 
-	// 错误令牌 401
+	// 错误令牌 401（带同源 Origin：穿过来源闸，专测令牌闸）
 	req = httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	req.Host = "127.0.0.1"
+	req.Header.Set("Origin", "http://127.0.0.1:8080")
 	req.Header.Set("X-MM-Token", "wrong-token")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)

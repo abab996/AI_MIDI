@@ -13,12 +13,14 @@ package mcp
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,6 +76,7 @@ var mmTools = []llm.ToolDefinition{
 				"properties": map[string]any{
 					"id":     map[string]any{"type": "string", "description": "插件 id"},
 					"tool":   map[string]any{"type": "string", "enum": []string{"mm_build_plugin", "mm_install_plugin"}, "description": "要为哪个操作请求确认"},
+					"grant":  map[string]any{"type": "string", "description": "tool=mm_install_plugin 时：请求授权的能力，逗号分隔（如 files,network）"},
 					"reason": map[string]any{"type": "string", "description": "向用户说明这次编译/安装要做什么（会显示在批准卡上）"},
 				},
 				"required": []string{"id", "tool", "reason"},
@@ -257,7 +260,15 @@ func executeMMTool(env ToolEnv, name string, args map[string]any) (string, error
 		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 			return "错误：" + err.Error(), nil
 		}
-		return fmt.Sprintf("已写入 %s（%d 字节）", filepath.ToSlash(filepath.Join(id, clean)), len(content)), nil
+		reply := fmt.Sprintf("已写入 %s（%d 字节）", filepath.ToSlash(filepath.Join(id, clean)), len(content))
+		if env.Approval != nil {
+			/* 在途批准绑定签发时的工程内容摘要：内容一变摘要即失效，
+			   这里主动作废本工程全部在途批准，逼模型重新走一次用户确认，
+			   堵住"批准 A 内容、编译 B 内容"的 TOCTOU 窗口。 */
+			env.Approval.InvalidateProject(env.ProjectID)
+			reply += "\n该工程的在途批准已作废，需重新发起确认（mm_request_build_approval）。"
+		}
+		return reply, nil
 
 	case "mm_request_build_approval":
 		id := stringArg(args, "id")
@@ -276,10 +287,24 @@ func executeMMTool(env ToolEnv, name string, args map[string]any) (string, error
 		/* 汇总将被编译的文件清单与实际执行的命令——批准卡要让人看清
 		   "允许的到底是什么"，而不是只给一句"允许编译吗"。 */
 		files := collectPluginFiles(dir)
-		approvalID := newApprovalID()
-		approvedArgs := map[string]any{"id": id}
+		/* 内容摘要绑定：批准的不只是"这份工程"，而是"此刻的这份内容"。
+		   签发到消费之间任何文件改动（mm_write_file 或外部）都会让摘要
+		   对不上，消费时拒绝。 */
+		content, cerr := mmProjectContentDigest(dir)
+		if cerr != nil {
+			return "错误：无法读取工程内容（" + cerr.Error() + "）", nil
+		}
+		approvedArgs := map[string]any{"id": id, "content": content}
 		if tool == "mm_install_plugin" {
 			approvedArgs["grant"] = strings.TrimSpace(stringArg(args, "grant"))
+			/* 安装目标在签发时即定死：消费时按同一规则（字典序末位）取包并
+			   由摘要保证就是这份——签发后新增/替换 .mm 都会摘要不匹配。 */
+			matches, _ := filepath.Glob(filepath.Join(dir, "*.mm"))
+			sort.Strings(matches)
+			if len(matches) == 0 {
+				return "错误：没有找到 .mm 包（先 mm_build_plugin）: " + dir, nil
+			}
+			approvedArgs["mmFile"] = filepath.Base(matches[len(matches)-1])
 		}
 		req := ApprovalRequest{
 			Tool:       tool,
@@ -288,8 +313,9 @@ func executeMMTool(env ToolEnv, name string, args map[string]any) (string, error
 			Command:    mmBuildCommand(dir),
 			Reason:     stringArg(args, "reason"),
 		}
-		if err := issueApproval(env, approvalID, req); err != nil {
-			return "错误：无法请求用户确认（" + err.Error() + "）", nil
+		approvalID, aerr := issueApproval(env, newApprovalID(), req)
+		if aerr != nil {
+			return "错误：无法请求用户确认（" + aerr.Error() + "）", nil
 		}
 		emitApprovalCard(env, approvalID, req)
 		target := "mm_build_plugin"
@@ -312,8 +338,13 @@ func executeMMTool(env ToolEnv, name string, args map[string]any) (string, error
 			return "错误：工程不存在（先 mm_create_plugin）: " + dir, nil
 		}
 		/* 授权来自用户点过的那一次确认，而不是模型传的 confirm。
-		   参数摘要绑定"批准的就是这份工程"，换参数不能复用。 */
-		digest := ArgsDigest("mm_build_plugin", map[string]any{"id": id})
+		   参数摘要绑定"批准的就是这份工程的这份内容"：换工程或换内容
+		   （批准后改过任何文件）都不能复用同一令牌。 */
+		content, cerr := mmProjectContentDigest(dir)
+		if cerr != nil {
+			return "错误：无法读取工程内容（" + cerr.Error() + "）", nil
+		}
+		digest := ArgsDigest("mm_build_plugin", map[string]any{"id": id, "content": content})
 		if err := consumeApproval(env, stringArg(args, "approval_id"), "mm_build_plugin", digest); err != nil {
 			return "需要用户确认后才能编译（首次编译会在本机执行 C++ 构建）：" + err.Error() +
 				"。请先调用 mm_request_build_approval 发起确认，用户允许后再带 approval_id 重试。", nil
@@ -344,13 +375,20 @@ func executeMMTool(env ToolEnv, name string, args map[string]any) (string, error
 		if err != nil {
 			return "错误：" + err.Error(), nil
 		}
+		/* 安装同样需要用户确认：安装会把原生库写进 Library/plugins 并在
+		   下次加载时执行其代码，授权不能由模型自己声明。
+		   .mm 取字典序末位并绑进摘要——与签发时同一规则，签发后新增/
+		   替换 .mm 包都会因 mmFile 或内容摘要不一致被拒。 */
 		matches, _ := filepath.Glob(filepath.Join(dir, "*.mm"))
+		sort.Strings(matches)
 		if len(matches) == 0 {
 			return "错误：没有找到 .mm 包（先 mm_build_plugin）: " + dir, nil
 		}
-		/* 安装同样需要用户确认：安装会把原生库写进 Library/plugins 并在
-		   下次加载时执行其代码，授权不能由模型自己声明。 */
-		installArgs := map[string]any{"id": id, "grant": grant}
+		content, cerr := mmProjectContentDigest(dir)
+		if cerr != nil {
+			return "错误：无法读取工程内容（" + cerr.Error() + "）", nil
+		}
+		installArgs := map[string]any{"id": id, "grant": grant, "content": content, "mmFile": filepath.Base(matches[len(matches)-1])}
 		if err := consumeApproval(env, stringArg(args, "approval_id"), "mm_install_plugin", ArgsDigest("mm_install_plugin", installArgs)); err != nil {
 			return "需要用户确认后才能安装：" + err.Error() +
 				"。请先调用 mm_request_build_approval（tool=mm_install_plugin）发起确认，用户允许后再带 approval_id 重试。", nil
@@ -442,19 +480,20 @@ func newApprovalID() string {
 	return "appr-" + hex.EncodeToString(buf)
 }
 
-// issueApproval 登记待批准请求。enforceApproval 为 false（未接入界面确认
-// 通道，如 stdio MCP）时返回错误——宁可不执行，也不退回"模型自证"。
-func issueApproval(env ToolEnv, id string, req ApprovalRequest) error {
+// issueApproval 登记待批准请求，返回**生效的令牌编号**（对话层可能加
+// 项目前缀实现隔离——返回值才是卡片与工具回复该携带的编号）。
+// enforceApproval 为 false（未接入界面确认通道，如 stdio MCP）时返回
+// 错误——宁可不执行，也不退回"模型自证"。
+func issueApproval(env ToolEnv, id string, req ApprovalRequest) (string, error) {
 	if env.Approval == nil {
-		return fmt.Errorf("当前没有可用的用户确认通道")
+		return "", fmt.Errorf("当前没有可用的用户确认通道")
 	}
 	if issuer, ok := env.Approval.(interface {
-		Issue(string, ApprovalRequest)
+		Issue(string, ApprovalRequest) string
 	}); ok {
-		issuer.Issue(id, req)
-		return nil
+		return issuer.Issue(id, req), nil
 	}
-	return fmt.Errorf("当前确认通道不支持签发批准令牌")
+	return "", fmt.Errorf("当前确认通道不支持签发批准令牌")
 }
 
 // consumeApproval 校验并消费一次性批准令牌
@@ -507,7 +546,42 @@ func collectPluginFiles(dir string) []string {
 	return files
 }
 
+// mmProjectContentDigest 对工程内将被编译/打包的文件逐个算 sha256，
+// 按相对路径排序后聚合为一条内容摘要（hex）。批准令牌绑定这条摘要：
+// 签发后任何人再改工程内文件（mm_write_file 或外部进程），消费时摘要
+// 对不上即拒绝，堵住"批准的是 A 内容、执行的却是 B 内容"的 TOCTOU。
+// 与批准卡清单同一来源（排除 build/、bin/）；单文件读取失败直接报错。
+func mmProjectContentDigest(dir string) (string, error) {
+	var rels []string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.HasPrefix(rel, "build/") || strings.HasPrefix(rel, "bin/") {
+			return nil
+		}
+		rels = append(rels, rel)
+		return nil
+	})
+	sort.Strings(rels)
+	h := sha256.New()
+	for _, rel := range rels {
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256(data)
+		fmt.Fprintf(h, "%s:%x\n", rel, sum)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // mmBuildCommand 批准卡上展示的实际命令（与 mm_build_job 保持一致）
 func mmBuildCommand(dir string) string {
-	return "mm build " + dir + "（配置阶段执行工程内 CMakeLists.txt）"
+	return "mm build " + dir + "（编译将执行工程内 CMakeLists.txt——cmake 配置阶段可执行任意命令）"
 }

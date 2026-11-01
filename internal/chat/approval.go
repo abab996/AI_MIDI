@@ -23,9 +23,11 @@ type projectApprovalGate struct {
 	store     *mcp.ApprovalStore
 }
 
-// Issue 登记待批准请求（编号加上项目前缀）
-func (g projectApprovalGate) Issue(id string, req mcp.ApprovalRequest) {
-	g.store.Issue(g.scoped(id), req)
+// Issue 登记待批准请求（编号加上项目前缀），返回生效的令牌编号。
+// 批准卡与工具回复必须携带该编号：前端回传与模型消费用的都是它，
+// Approve/Consume 的前缀校验才能通过。
+func (g projectApprovalGate) Issue(id string, req mcp.ApprovalRequest) string {
+	return g.store.Issue(g.scoped(id), req)
 }
 
 // Consume 校验并消费一次性批准令牌（校验项目前缀）
@@ -48,6 +50,15 @@ func (g projectApprovalGate) Approve(approvalID string) bool {
 func (g projectApprovalGate) Reject(approvalID string) {
 	if strings.HasPrefix(approvalID, g.scope()) {
 		g.store.Reject(approvalID)
+	}
+}
+
+// InvalidateProject 作废本项目的全部在途批准（实现 mcp.ApprovalGate）。
+// mm_write_file 修改工程内容后调用：已签发批准绑定的是修改前的内容摘要，
+// 必须重新确认。projectID 与闸门绑定的项目一致才生效。
+func (g projectApprovalGate) InvalidateProject(projectID string) {
+	if projectID == g.projectID {
+		g.store.RejectByScope(g.scope())
 	}
 }
 

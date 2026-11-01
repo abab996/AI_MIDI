@@ -3,6 +3,7 @@ package mcp
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -99,12 +100,12 @@ func TestMMBuildRequiresUserApproval(t *testing.T) {
 		t.Fatalf("无确认通道时应拒绝编译: %q", out)
 	}
 
-	// 2) 有一次批准但参数摘要不匹配（换了工程）：拒绝
+	// 2) 有一次批准但参数摘要不匹配（内容不同）：拒绝
 	store := NewApprovalStore()
 	env := ToolEnv{Approval: store}
-	if err := issueApproval(env, "appr-1", ApprovalRequest{
+	if _, err := issueApproval(env, "appr-1", ApprovalRequest{
 		Tool:       "mm_build_plugin",
-		ArgsDigest: ArgsDigest("mm_build_plugin", map[string]any{"id": "com.other.plugin"}),
+		ArgsDigest: ArgsDigest("mm_build_plugin", map[string]any{"id": id, "content": "different-content"}),
 	}); err != nil {
 		t.Fatalf("签发批准失败: %v", err)
 	}
@@ -117,9 +118,13 @@ func TestMMBuildRequiresUserApproval(t *testing.T) {
 	}
 
 	// 3) 未批准（只签发未点允许）：拒绝
-	if err := issueApproval(env, "appr-2", ApprovalRequest{
+	content, cerr := mmProjectContentDigest(dir)
+	if cerr != nil {
+		t.Fatalf("内容摘要失败: %v", cerr)
+	}
+	if _, err := issueApproval(env, "appr-2", ApprovalRequest{
 		Tool:       "mm_build_plugin",
-		ArgsDigest: ArgsDigest("mm_build_plugin", map[string]any{"id": id}),
+		ArgsDigest: ArgsDigest("mm_build_plugin", map[string]any{"id": id, "content": content}),
 	}); err != nil {
 		t.Fatalf("签发批准失败: %v", err)
 	}
@@ -177,6 +182,143 @@ func TestArgsDigestIgnoresApprovalID(t *testing.T) {
 	c := ArgsDigest("mm_build_plugin", map[string]any{"id": "y", "approval_id": "1"})
 	if a == c {
 		t.Fatalf("不同工程必须得到不同摘要")
+	}
+}
+
+// TestApprovalTokenBindsContent 批准令牌绑定工程内容（TOCTOU 防护）：
+// 批准后 mm_write_file 改工程 → 令牌整体作废；批准后外部改文件 → 摘要
+// 不匹配拒绝；内容未变 → 正常消费。
+func TestApprovalTokenBindsContent(t *testing.T) {
+	const id = "com.test.mmbind"
+	dir, err := mmSourceDir(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "src", "plugin.cpp"), []byte("// v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	issue := func(store *ApprovalStore, env ToolEnv, approvalID string) {
+		t.Helper()
+		content, cerr := mmProjectContentDigest(dir)
+		if cerr != nil {
+			t.Fatalf("内容摘要失败: %v", cerr)
+		}
+		if _, err := issueApproval(env, approvalID, ApprovalRequest{
+			Tool:       "mm_build_plugin",
+			ArgsDigest: ArgsDigest("mm_build_plugin", map[string]any{"id": id, "content": content}),
+		}); err != nil {
+			t.Fatalf("签发批准失败: %v", err)
+		}
+		if !store.Approve(approvalID) {
+			t.Fatalf("批准应成功")
+		}
+	}
+
+	// 1) 批准 → mm_write_file 改工程 → 在途批准整体作废（消费报"无效"）
+	store := NewApprovalStore()
+	env := ToolEnv{ProjectID: "proj-bind", Approval: store}
+	issue(store, env, "appr-b1")
+	out, _ := executeMMTool(env, "mm_write_file", map[string]any{"id": id, "path": "src/plugin.cpp", "content": "// v2"})
+	if !strings.Contains(out, "在途批准已作废") {
+		t.Fatalf("mm_write_file 后应提示批准作废: %q", out)
+	}
+	out, _ = executeMMTool(env, "mm_build_plugin", map[string]any{"id": id, "approval_id": "appr-b1"})
+	if !strings.Contains(out, "无效或已被拒绝") {
+		t.Fatalf("作废后的令牌应被拒绝: %q", out)
+	}
+
+	// 2) 批准 → 外部改文件（绕过 mm_write_file，不触发作废）→ 摘要不匹配拒绝
+	store = NewApprovalStore()
+	env = ToolEnv{ProjectID: "proj-bind", Approval: store}
+	issue(store, env, "appr-b2")
+	if err := os.WriteFile(filepath.Join(dir, "src", "plugin.cpp"), []byte("// externally changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = executeMMTool(env, "mm_build_plugin", map[string]any{"id": id, "approval_id": "appr-b2"})
+	if !strings.Contains(out, "不一致") {
+		t.Fatalf("内容被外部改动后应拒绝: %q", out)
+	}
+
+	// 3) 内容未变 → 正常越过授权闸门（编译本身可失败，但不得再报授权问题）
+	store = NewApprovalStore()
+	env = ToolEnv{ProjectID: "proj-bind", Approval: store}
+	issue(store, env, "appr-b3")
+	out, _ = executeMMTool(env, "mm_build_plugin", map[string]any{"id": id, "approval_id": "appr-b3"})
+	if strings.Contains(out, "需要用户确认") {
+		t.Fatalf("内容未变不应被拒: %q", out)
+	}
+}
+
+// TestInstallApprovalBindsMMFile 安装令牌绑定签发时确定的 .mm 文件名：
+// 签发后新增字典序更靠后的 .mm、或替换已批准包的内容，都被摘要拒绝。
+func TestInstallApprovalBindsMMFile(t *testing.T) {
+	const id = "com.test.mminstall"
+	dir, err := mmSourceDir(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "a.mm"), []byte("pkg-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c.mm"), []byte("pkg-c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := NewApprovalStore()
+	env := ToolEnv{ProjectID: "proj-install", Approval: store}
+	content, cerr := mmProjectContentDigest(dir)
+	if cerr != nil {
+		t.Fatalf("内容摘要失败: %v", cerr)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.mm"))
+	sort.Strings(matches)
+	if _, err := issueApproval(env, "appr-i1", ApprovalRequest{
+		Tool:       "mm_install_plugin",
+		ArgsDigest: ArgsDigest("mm_install_plugin", map[string]any{"id": id, "grant": "", "content": content, "mmFile": filepath.Base(matches[len(matches)-1])}),
+	}); err != nil {
+		t.Fatalf("签发批准失败: %v", err)
+	}
+	if !store.Approve("appr-i1") {
+		t.Fatalf("批准应成功")
+	}
+
+	// 1) 签发后新增 d.mm（字典序更靠后）→ 安装目标变了 → 拒绝
+	if err := os.WriteFile(filepath.Join(dir, "d.mm"), []byte("pkg-d"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := executeMMTool(env, "mm_install_plugin", map[string]any{"id": id, "approval_id": "appr-i1"})
+	if !strings.Contains(out, "不一致") {
+		t.Fatalf("签发后新增 .mm 应被拒绝: %q", out)
+	}
+
+	// 2) 删掉 d.mm、替换 c.mm 内容 → 内容摘要不匹配 → 拒绝
+	if err := os.Remove(filepath.Join(dir, "d.mm")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c.mm"), []byte("pkg-c-tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = executeMMTool(env, "mm_install_plugin", map[string]any{"id": id, "approval_id": "appr-i1"})
+	if !strings.Contains(out, "不一致") {
+		t.Fatalf("替换已批准包内容应被拒绝: %q", out)
+	}
+
+	// 3) 还原内容 → 越过授权闸门（mm.exe 缺失导致安装失败，但不是授权问题）
+	if err := os.WriteFile(filepath.Join(dir, "c.mm"), []byte("pkg-c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = executeMMTool(env, "mm_install_plugin", map[string]any{"id": id, "approval_id": "appr-i1"})
+	if strings.Contains(out, "需要用户确认") {
+		t.Fatalf("内容一致不应被授权闸门拒绝: %q", out)
 	}
 }
 

@@ -38,6 +38,11 @@ type ApprovalGate interface {
 	// Consume 校验并消费一次性批准令牌。
 	// 返回 nil 表示批准有效（调用方可以执行）；否则返回拒绝原因。
 	Consume(approvalID, tool string, argsDigest string) error
+	// InvalidateProject 作废在途批准：mm_write_file 成功写入工程内容后
+	// 调用——已签发的批准绑定的是写入前的内容摘要，内容一变摘要即失效，
+	// 必须重新走用户确认。projectID 为调用方所在工程，实现方按自身
+	// 作用域决定作废范围。
+	InvalidateProject(projectID string)
 }
 
 // ApprovalRequest 待批准的编译/安装请求
@@ -70,11 +75,14 @@ func NewApprovalStore() *ApprovalStore {
 	return &ApprovalStore{byID: make(map[string]*pendingApproval), now: time.Now}
 }
 
-// Issue 登记一条待批准请求并返回 approval_id。此时尚未批准。
-func (s *ApprovalStore) Issue(id string, req ApprovalRequest) {
+// Issue 登记一条待批准请求，返回**生效的令牌编号**（对话层可能加项目
+// 前缀实现隔离）。批准卡与工具回复必须携带这里返回的编号——否则
+// Approve/Consume 的前缀校验永远对不上。
+func (s *ApprovalStore) Issue(id string, req ApprovalRequest) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.byID[id] = &pendingApproval{req: req, createdAt: s.now()}
+	return id
 }
 
 // Approve 用户点击"允许一次"时调用。返回 false 表示令牌不存在或已过期。
@@ -94,6 +102,27 @@ func (s *ApprovalStore) Reject(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.byID, id)
+}
+
+// RejectByScope 删除所有带指定前缀的令牌（项目级作废：工程内容被修改后，
+// 该项目所有在途批准的内容摘要已失效，需整体重新确认）。
+func (s *ApprovalStore) RejectByScope(prefix string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.byID {
+		if strings.HasPrefix(id, prefix) {
+			delete(s.byID, id)
+		}
+	}
+}
+
+// InvalidateProject 实现 ApprovalGate。原始表不区分项目（项目隔离由 chat 层
+// 的令牌前缀实现，那里改用 RejectByScope 精确作废本项目），因此这里作废
+// 即清空全部在途批准——对单项目通道（测试/stdio 注入）这是安全默认。
+func (s *ApprovalStore) InvalidateProject(string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byID = make(map[string]*pendingApproval)
 }
 
 // Request 读取待批准请求（前端渲染批准卡用）

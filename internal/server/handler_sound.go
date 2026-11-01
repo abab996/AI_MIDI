@@ -527,6 +527,12 @@ func (r *Router) handleSoundMigrate(w http.ResponseWriter, req *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "扫描音源失败", err)
 		return
 	}
+	_, _, _ = soundlib.SyncAllInstalledMM()
+	if sup := engine.Get(); sup != nil {
+		if list, lerr := sup.ListPlugins(); lerr == nil && list != nil && len(list.Plugins) > 0 {
+			_ = soundlib.SyncVST3Plugins(list.Plugins)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"result":  res,
 		"sources": soundlib.List("", ""),

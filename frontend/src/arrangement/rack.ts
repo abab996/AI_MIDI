@@ -772,7 +772,24 @@
       menu.push({
         label: "🎛 打开插件界面",
         disabled: item.kind !== "vst3" && item.kind !== "mm",
-        action: function () { ctrl.showHUD("请在混音台点空 FX 槽 →「装载插件」，或在该轨的插件槽打开界面"); }
+        action: function () {
+          var tIdx = -1;
+          for (var i = 0; i < (ctrl.tracks || []).length; i++) {
+            var tr = ctrl.tracks[i];
+            if (tr && tr.source && tr.source.itemId === item.id) { tIdx = i; break; }
+          }
+          if (tIdx >= 0 && window.PluginPanel) {
+            window.PluginPanel.open(ctrl, {
+              track: tIdx, slot: -1, master: false,
+              ref: item.path || item.sourceId || "",
+              sourceId: item.sourceId || "",
+              format: item.kind || "",
+              name: item.name || "插件乐器"
+            });
+          } else {
+            ctrl.showHUD("请先将该插件分配到轨道，或在混音台 FX 槽装载后再打开界面");
+          }
+        }
       });
       menu.push({
         label: "🔎 在声音管理中查看",

@@ -861,6 +861,9 @@ func listPluginsText(args map[string]any) string {
 	var err error
 	if mapBool(args, "scan") {
 		list, err = sup.ScanPlugins(nil, 0)
+		if err == nil && list != nil {
+			_ = soundlib.SyncVST3Plugins(list.Plugins)
+		}
 	} else {
 		list, err = sup.ListPlugins()
 	}

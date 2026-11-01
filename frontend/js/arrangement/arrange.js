@@ -2906,6 +2906,8 @@
             window.PluginPanel.open(self, {
               track: idx, slot: -1, master: false,
               ref: (item && (item.path || item.sourceId)) || "",
+              sourceId: (item && item.sourceId) || "",
+              format: (item && item.kind) || "",
               name: (item && item.name) || "插件乐器"
             });
           }
@@ -4225,8 +4227,29 @@
           done();
           this.previewRackSample(v.path || "");
         } else if (v.type === "plugin") {
-          done();
-          UI.toast ("插件不支持此处试听：请先在混音台 FX 槽装载，再播放试听", "warn");
+          if (v.sourceId) {
+            nativeTask(function () {
+              return UI.getJSON     ("/api/sound/plugin?id=" + encodeURIComponent(v.sourceId)).then(function (resolvedPlugin     ) {
+                if (!current()) return;
+                if (resolvedPlugin && resolvedPlugin.category === "effect") {
+                  throw new Error("效果器插件请先在混音台 FX 槽装载，再播放试听");
+                }
+                var kind = v.pluginKind || (resolvedPlugin && resolvedPlugin.format) || "vst3";
+                return UI.postJSON("/api/engine/plugins/load", {
+                  track: trk,
+                  id: kind === "mm" ? v.sourceId : resolvedPlugin.id,
+                  format: kind,
+                  path: kind === "mm" ? resolvedPlugin.path : ""
+                });
+              });
+            }).then(playNativeNote).catch(function (err     ) {
+              done();
+              UI.toast ((err && err.message) || "插件不支持此处试听：请先在混音台 FX 槽装载，再播放试听", "warn");
+            });
+          } else {
+            done();
+            UI.toast ("插件不支持此处试听：请先在混音台 FX 槽装载，再播放试听", "warn");
+          }
         } else if (v.type === "pack") {
           done();
           UI.toast ("采样包在素材库中挑选采样（P3 里程碑接入）", "warn");

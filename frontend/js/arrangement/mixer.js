@@ -542,17 +542,31 @@
     }
   }
 
+  function isMmEntry(entry     )          {
+    if (!entry) return false;
+    var ref = String(entry.sourceId || entry.plugin || "").trim();
+    if (!ref) return false;
+    if (String(entry.plugin || "").indexOf("VST3|") === 0 || /\.vst3$/i.test(ref) || /^vst3[_:]/i.test(ref)) return false;
+    if (window.SoundRegistry && typeof window.SoundRegistry.get === "function") {
+      var src = window.SoundRegistry.get(ref);
+      if (src && (src.kind === "vst3" || src.kind === "mm")) return src.kind === "mm";
+    }
+    return true;
+  }
+
   /** openParamPanel 通用参数面板（§4.6）：轨道乐器与 FX 槽共用同一份实现 */
   function openParamPanel(ctrl                   , idx        , slot        ) {
     if (!window.PluginPanel) return;
     var ch = idx === MASTER_TRACK ? masterOf(ctrl) : channelOf(ctrl, ctrl.tracks[idx].id);
     var entry = ((ch.fx || [])[slot]) || null;
-    var ref = (entry && entry.plugin) ? String(entry.plugin) : "";
+    var ref = (entry && (entry.plugin || entry.sourceId)) ? String(entry.plugin || entry.sourceId) : "";
     window.PluginPanel.open(ctrl, {
       track: idx === MASTER_TRACK ? -1 : idx,
       slot: slot,
       master: idx === MASTER_TRACK,
       ref: ref,
+      sourceId: (entry && entry.sourceId) ? String(entry.sourceId) : "",
+      format: isMmEntry(entry) ? "mm" : "vst3",
       name: ref ? shortPluginName(ref) : "插件"
     });
   }
@@ -784,21 +798,22 @@
     });
     /* 插件界面入口按类型分流：VST3 走引擎原生编辑器；MM（.mm 包里的原生库）
        没有原生窗口，走 mm-ui.html 承载页（sandbox iframe + postMessage 桥） */
-    var isMm = !!entry.plugin && entry.plugin.indexOf("VST3|") !== 0;
+    var hasPlugin = !!(entry.plugin || entry.sourceId);
+    var isMm = hasPlugin && isMmEntry(entry);
     items.push({
       label: isMm ? "🎛 插件界面（MM 承载窗）…" : "🎛 插件界面（原生编辑器）…",
-      disabled: !entry.plugin,
-      action: function () { openPluginEditor(ctrl, idx, slot, isMm, entry.plugin || ""); }
+      disabled: !hasPlugin,
+      action: function () { openPluginEditor(ctrl, idx, slot, isMm, entry.sourceId || entry.plugin || ""); }
     });
     items.push({
       /* §4.6：通用参数面板（VST3 与 MM 共用；空槽置灰） */
       label: "🎛 参数面板…",
-      disabled: !entry.plugin,
+      disabled: !hasPlugin,
       action: function () { openParamPanel(ctrl, idx, slot); }
     });
     items.push({
       label: "🗑 清空槽位",
-      disabled: !entry.plugin && isBypass && wet === 1,
+      disabled: !hasPlugin && isBypass && wet === 1,
       action: function () { commitFx(ctrl, idx, slot, { off: true }); }
     });
     ctrl.showMenu(items, rect.left, rect.top - 8);
@@ -811,7 +826,12 @@
     var where = (idx === MASTER_TRACK ? "主总线" : "通道 " + (idx + 1)) + " · FX " + (slot + 1);
     Promise.all([UI.getJSON     ("/api/engine/plugins"),window.SoundRegistry?window.SoundRegistry.load():Promise.resolve([])]).then(function (results     ) {
       var res=results[0];
-      var list = ((res && res.plugins) || []).concat((results[1]||[]).filter(function(s     ){return s.kind==="mm"&&s.enabled&&s.category!=="instrument";}).map(function(s     ){return {id:s.id,sourceId:s.id,name:s.name,vendor:s.vendor,instrument:false};}));
+      var regList = results[1] || [];
+      var vstList = ((res && res.plugins) || []).map(function (p     ) {
+        var matched = regList.find(function (s     ) { return s.kind === "vst3" && (s.classUid === p.id || s.path === p.path); });
+        return matched ? Object.assign({}, p, { sourceId: matched.id }) : p;
+      });
+      var list = vstList.concat(regList.filter(function(s     ){return s.kind==="mm"&&s.enabled&&s.category!=="instrument";}).map(function(s     ){return {id:s.id,sourceId:s.id,name:s.name,vendor:s.vendor,instrument:false};}));
       if (!list.length) {
         toast("还没有扫描到 VST3 插件：请在设置页「声音管理」里扫描插件目录", "warn");
         return;
@@ -863,7 +883,12 @@
       return;
     }
     UI.postJSON("/api/engine/plugins/editor", {
-      track: idx === MASTER_TRACK ? 0 : idx, slot: slot, master: idx === MASTER_TRACK
+      project: ctrl.projectId || "",
+      generation: ctrl.projectEpoch,
+      trackId: idx === MASTER_TRACK ? "" : (ctrl.tracks[idx] && ctrl.tracks[idx].id) || "",
+      track: idx === MASTER_TRACK ? 0 : idx,
+      slot: slot,
+      master: idx === MASTER_TRACK
     }).then(function () {
       toast("已打开插件界面（原生窗口）", "ok");
     }).catch(function (err     ) {

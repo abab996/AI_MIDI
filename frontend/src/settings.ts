@@ -2038,6 +2038,28 @@
     }
     var reg = sndReg();
     var trk = (window.EngineBridge && window.EngineBridge.PREVIEW_TRACK) || 29;
+    if (src.kind === "vst3" || src.kind === "mm") {
+      if (src.category === "effect") {
+        UI.toast!("⚠ 效果器插件不支持直接单音试听，请在混音台 FX 槽装载后试听", "warn");
+        return;
+      }
+      UI.getJSON("/api/sound/plugin?id=" + encodeURIComponent(src.id)).then(function (resolved: any) {
+        return UI.postJSON("/api/engine/plugins/load", {
+          track: trk,
+          id: src.kind === "mm" ? src.id : resolved.id,
+          format: src.kind,
+          path: src.kind === "mm" ? resolved.path : ""
+        });
+      }).then(function () {
+        sndAudition.id = src.id;
+        if (btn) btn.classList.add("playing");
+        window.EngineBridge.noteOnTrack(trk, 60, 100);
+        sndAudition.timer = setTimeout(sndStopAudition, 1200);
+      }).catch(function (e: any) {
+        UI.toast!("✗ 试听失败: " + (e && e.message ? e.message : "插件加载失败"), "err");
+      });
+      return;
+    }
     var diskPath = reg.diskPathOf(src);
     if (!diskPath) {
       UI.toast!("✗ 音源缺少磁盘路径，无法试听", "err");

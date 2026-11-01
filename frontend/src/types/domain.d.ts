@@ -108,7 +108,7 @@ interface MixerChannel {
   pan?: number;
   mute?: boolean;
   solo?: boolean;
-  fx?: { slot: number; plugin: string; bypass?: boolean; wet?: number }[];
+  fx?: { slot: number; plugin: string; sourceId?: string; bypass?: boolean; wet?: number }[];
 }
 
 interface ArrangeLoop {

@@ -11,6 +11,7 @@ import (
 
 	"melodymate/internal/chat"
 	"melodymate/internal/engine"
+	"melodymate/internal/soundlib"
 )
 
 // App Wails 应用程序结构
@@ -324,6 +325,7 @@ func (a *App) EngineScanPlugins(dirs []string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	_ = soundlib.SyncVST3Plugins(list.Plugins)
 	return map[string]any{"count": list.Count, "plugins": list.Plugins, "formats": list.Formats}, nil
 }
 

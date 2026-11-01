@@ -20,7 +20,21 @@
 
   var POLL_MS = 500;      // 引擎回读周期（计划要求"改动 0.2s 高亮回显"）
   var FLUSH_MS = 33;      // 参数下发节流 ≈30Hz
-  var isMmRef = function (ref: string) { return !!ref && ref.indexOf("VST3|") !== 0; };
+  function resolveFormat(refOrTarget: any): string {
+    if (refOrTarget && typeof refOrTarget === "object") {
+      if (refOrTarget.format === "mm" || refOrTarget.format === "vst3") return refOrTarget.format;
+      return resolveFormat(refOrTarget.sourceId || refOrTarget.ref || "");
+    }
+    var ref = String(refOrTarget || "").trim();
+    if (!ref) return "vst3";
+    if (ref.indexOf("VST3|") === 0 || /\.vst3$/i.test(ref) || /^vst3[_:]/i.test(ref)) return "vst3";
+    if (window.SoundRegistry && typeof window.SoundRegistry.get === "function") {
+      var src = window.SoundRegistry.get(ref);
+      if (src && (src.kind === "vst3" || src.kind === "mm")) return src.kind;
+    }
+    return "mm";
+  }
+  var isMmRef = function (refOrTarget: any) { return resolveFormat(refOrTarget) === "mm"; };
 
   var state: any = {
     open: false,
@@ -288,7 +302,7 @@
     var dot = el("span", "plg-dot");
     var title = el("span", "plg-title", (t.name || "插件") + " · " + targetLabel(t));
     title.title = title.textContent;
-    if (isMmRef(t.ref)) title.appendChild(el("span", "plg-badge-ai", "MM"));
+    if (isMmRef(t)) title.appendChild(el("span", "plg-badge-ai", "MM"));
     head.appendChild(dot);
     head.appendChild(title);
 
@@ -305,7 +319,7 @@
     btn("↺ 重置", "恢复插件默认值", resetAll);
     btn("💾 保存状态", "把当前插件状态存进本工程（重开工程后自动恢复）", saveState);
     btn("📂 恢复状态", "从本工程保存的状态恢复", loadState);
-    btn("🖥 插件界面", isMmRef(t.ref) ? "打开 MM 承载窗" : "打开插件原生编辑器", openEditor);
+    btn("🖥 插件界面", isMmRef(t) ? "打开 MM 承载窗" : "打开插件原生编辑器", openEditor);
     var closeBtn = el("button", "plg-btn plg-close", "✕");
     closeBtn.type = "button";
     closeBtn.title = "关闭（Esc）";
@@ -366,7 +380,7 @@
 
   function stateBody(extra?: any) {
     var t = state.target;
-    var body = bodyOf(t, { project: t.project, ref: t.ref || "", format: isMmRef(t.ref) ? "mm" : "vst3" });
+    var body = bodyOf(t, { project: t.project, ref: t.ref || "", format: isMmRef(t) ? "mm" : "vst3" });
     if (extra) for (var k in extra) body[k] = extra[k];
     return body;
   }
@@ -393,7 +407,7 @@
   function openEditor() {
     var t = state.target;
     if (!t || !t.ref) { toast("⚠ 这个位置没有插件", "warn"); return; }
-    if (isMmRef(t.ref)) {
+    if (isMmRef(t)) {
       /* MM：无原生窗口，走 mm-ui.html 承载页（sandbox iframe + postMessage 桥） */
       var qs = "?plugin=" + encodeURIComponent(t.ref) + "&slot=" + t.slot+"&project="+encodeURIComponent(t.project)+"&generation="+t.generation+"&trackId="+encodeURIComponent(t.trackId||"");
       if (t.master) qs += "&master=1"; else qs += "&track=" + t.track;
@@ -413,11 +427,15 @@
     if (!t) return Promise.resolve();
     return window.UI.getJSON(paramsURL(t))
       .then(function (res: any) {
+        if (res && (res.format === "mm" || res.format === "vst3")) t.format = res.format;
         var params = (res && res.params) || [];
         if (!state.rows.length) {
           renderBody(state.root, params);
           var titleEl = state.root.querySelector(".plg-title");
-          if (res && res.name && titleEl) titleEl.textContent = res.name + " · " + targetLabel(t);
+          if (res && res.name && titleEl) {
+            titleEl.textContent = res.name + " · " + targetLabel(t);
+            if (isMmRef(t)) titleEl.appendChild(el("span", "plg-badge-ai", "MM"));
+          }
         } else {
           applyEngineParams(res);
         }
@@ -445,6 +463,8 @@
       slot: typeof target.slot === "number" ? target.slot : -1,
       master: !!target.master,
       ref: target.ref || "",
+      sourceId: target.sourceId || "",
+      format: target.format || resolveFormat(target),
       name: target.name || ""
     };
     state.root = build(state.target);

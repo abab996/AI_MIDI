@@ -23,10 +23,17 @@ func SyncVST3Plugins(scanned []engine.PluginInfo) error {
 			}
 		}
 		if matched != "" {
+			cur, gerr := Get(matched)
+			if gerr == nil && cur.ClassUID == p.ID && cur.Category == p.Category && cur.Path == StorePath(p.Path) && (cur.Vendor != "" || p.Vendor == "") {
+				continue
+			}
 			if _, err := Update(matched, func(s *Source) error {
 				s.ClassUID = p.ID
 				s.Category = p.Category
 				s.Path = StorePath(p.Path)
+				if s.Vendor == "" && p.Vendor != "" {
+					s.Vendor = p.Vendor
+				}
 				return nil
 			}); err != nil {
 				return err

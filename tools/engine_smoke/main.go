@@ -14,6 +14,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -70,8 +72,9 @@ type listDevicesResult struct {
 type client struct {
 	conn        *os.File
 	nextID      float64
-	everPlaying bool // 任一 timecode 帧 playing=true
-	everStopped bool // 任一 timecode 帧 playing=false
+	everPlaying bool   // 任一 timecode 帧 playing=true
+	everStopped bool   // 任一 timecode 帧 playing=false
+	lastEvent   string // 最近一个 Event 帧（P-L1 参数推送检查用）
 }
 
 func dialOnce(name string, timeout time.Duration) (*os.File, error) {
@@ -180,6 +183,7 @@ func (c *client) awaitResponse(id float64) (*response, error) {
 				return &r, nil
 			}
 		case 0x03:
+			c.lastEvent = string(fr.body)
 			fmt.Printf("      [事件] %s\n", string(fr.body))
 		default:
 			fmt.Printf("      [其他帧] type=0x%02x\n", fr.typ)
@@ -468,13 +472,87 @@ func runPluginSection(c *client, dir string) {
 			}
 			check("plugin.setParam 写入并回读", reqErr == nil && math.Abs(back-0.7) < 0.02,
 				fmt.Sprintf("回读 value=%.4f", back))
+
+			/* P-L1：参数变化应经 Event 帧异步推送（引擎 50ms 定时批量发送）。
+			   用后续 ping 轮询读帧，事件可能在上一请求的读循环里已被消费。 */
+			pushed := strings.Contains(c.lastEvent, "plugin.params")
+			for i := 0; i < 10 && !pushed; i++ {
+				_, _ = c.request("ping", nil)
+				pushed = strings.Contains(c.lastEvent, "plugin.params")
+				if !pushed {
+					time.Sleep(30 * time.Millisecond)
+				}
+			}
+			check("插件参数变化推送 Event 帧（P-L1）", pushed, c.lastEvent)
+		}
+
+		/* E-M5：VST3 状态读写移到后台线程。plugin.state 暴露诊断位；
+		   getState/setState 仍需成功往返（后台完成后再写响应）。 */
+		var stIO struct {
+			StateIoBackground bool `json:"stateIoBackground"`
+			StateJobs         int  `json:"stateJobs"`
+		}
+		bgOK := false
+		if sr, serr := c.request("plugin.state", nil); serr == nil && sr != nil && sr.OK {
+			_ = json.Unmarshal(sr.Result, &stIO)
+			bgOK = stIO.StateIoBackground
+		}
+		check("plugin.state 报告后台状态读写（E-M5）", bgOK, "")
+
+		var stateBlob struct {
+			Encoding string `json:"encoding"`
+			Data     string `json:"data"`
+		}
+		stateOK := false
+		r, reqErr = c.request("plugin.getState", map[string]interface{}{"track": 0, "slot": 0})
+		if r != nil && r.OK {
+			if err := json.Unmarshal(r.Result, &stateBlob); err == nil && stateBlob.Encoding == "base64" && stateBlob.Data != "" {
+				stateOK = true
+			}
+		}
+		check("plugin.getState 导出 VST3 状态（后台线程）", stateOK, errText(r, reqErr))
+		if stateOK {
+			r, reqErr = c.request("plugin.setState", map[string]interface{}{"track": 0, "slot": 0, "data": stateBlob.Data})
+			check("plugin.setState 恢复 VST3 状态（后台线程）", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
 		}
 
 		r, reqErr = c.request("plugin.openEditor", map[string]interface{}{"track": 0, "slot": 0})
 		editorOK := reqErr == nil && r != nil && r.OK
 		check("plugin.openEditor 打开原生编辑器", editorOK, errText(r, reqErr))
+
+		/* P-L2：第二个槽同时打开编辑器——旧实现会关掉第一个窗口。
+		   用同一插件再实例化一份到 slot 1，打开后通过 plugin.state.editors
+		   核对两个窗口同时存在。 */
+		secondLoaded := false
+		if editorOK {
+			resp, lerr := c.request("plugin.load", map[string]interface{}{"track": 0, "slot": 1, "id": effectID})
+			secondLoaded = lerr == nil && resp != nil && resp.OK
+		}
+		secondEditor := false
+		if secondLoaded {
+			resp, lerr := c.request("plugin.openEditor", map[string]interface{}{"track": 0, "slot": 1})
+			secondEditor = lerr == nil && resp != nil && resp.OK
+		}
+		editorCount := 0
+		if st, serr := c.request("plugin.state", nil); serr == nil && st != nil && st.OK {
+			var state struct {
+				Editors []struct {
+					Track  int  `json:"track"`
+					Slot   int  `json:"slot"`
+					Master bool `json:"master"`
+				} `json:"editors"`
+			}
+			_ = json.Unmarshal(st.Result, &state)
+			editorCount = len(state.Editors)
+		}
+		check("多编辑器窗口并行打开（P-L2）", secondEditor && editorCount >= 2,
+			fmt.Sprintf("第二个窗口=%v, 已开窗口=%d", secondEditor, editorCount))
+
 		r, reqErr = c.request("plugin.closeEditor", nil)
 		check("plugin.closeEditor 关闭编辑器", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+		if secondLoaded {
+			_, _ = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 1})
+		}
 
 		r, reqErr = c.request("plugin.unload", map[string]interface{}{"track": 0, "slot": 0})
 		empty := false
@@ -491,11 +569,67 @@ func runPluginSection(c *client, dir string) {
 		r, reqErr = c.request("plugin.load", map[string]interface{}{"track": 0, "id": instrumentID})
 		check("乐器插件装入轨道（plugin.load）", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
 
+		/* E-M4：多输出乐器总线路由。测试夹具 AuditSynth 暴露 bus0 主输出 +
+		   bus1 辅助输出；把 bus1 路由到轨道 1（增益 0.5），验证电平落到目的轨。 */
+		var busInfo struct {
+			Buses []struct {
+				Index    int    `json:"index"`
+				Channels int    `json:"channels"`
+				Main     bool   `json:"main"`
+				Name     string `json:"name"`
+			} `json:"buses"`
+			Routes []struct {
+				Bus     int     `json:"bus"`
+				Dest    int     `json:"dest"`
+				Gain    float64 `json:"gain"`
+				Enabled bool    `json:"enabled"`
+			} `json:"routes"`
+			Error string `json:"error"`
+		}
+		busInfoQueryOK := false
+		if sr, serr := c.request("plugin.busInfo", map[string]interface{}{"track": 0}); serr == nil && sr != nil && sr.OK {
+			_ = json.Unmarshal(sr.Result, &busInfo)
+			busInfoQueryOK = busInfo.Error == ""
+		}
+		check("乐器插件输出总线清单（E-M4）", busInfoQueryOK, busInfo.Error)
+		busInfoOK := busInfoQueryOK && len(busInfo.Buses) >= 2
+		if busInfoQueryOK && !busInfoOK {
+			fmt.Printf("      （该乐器只有 %d 个输出总线，跳过多输出路由检查）\n", len(busInfo.Buses))
+		}
+		auxRouted := false
+		if busInfoOK {
+			r, reqErr = c.request("plugin.setBusRouting", map[string]interface{}{
+				"track": 0,
+				"routes": []map[string]interface{}{
+					{"bus": 1, "dest": 1, "gain": 0.5, "enabled": true},
+				},
+			})
+			check("辅助总线路由到独立轨（E-M4）", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
+			if sr, serr := c.request("plugin.busInfo", map[string]interface{}{"track": 0}); serr == nil && sr != nil && sr.OK {
+				var after struct {
+					Routes []struct {
+						Bus     int     `json:"bus"`
+						Dest    int     `json:"dest"`
+						Gain    float64 `json:"gain"`
+						Enabled bool    `json:"enabled"`
+					} `json:"routes"`
+				}
+				_ = json.Unmarshal(sr.Result, &after)
+				for _, route := range after.Routes {
+					if route.Bus == 1 && route.Dest == 1 && route.Enabled && math.Abs(route.Gain-0.5) < 1e-3 {
+						auxRouted = true
+					}
+				}
+			}
+			check("总线路由回读（bus1→track1, gain 0.5）", auxRouted, "")
+		}
+
 		// MIDI → 插件 → 轨道电平：插件若因许可/演示限制不出声，记录实测值
 		_, _ = c.request("plugin.state", nil)
 		/* 用真实 Midi 帧弹奏（noteOnTrack 不是 IPC 方法：此前发的是无效请求，
 		   "电平 0" 里混着"根本没发出去"的成分——VST3 与 MM 两处都修） */
 		peak := 0.0
+		auxPeak := 0.0
 		for _, key := range []int{60, 64, 67} {
 			_ = c.writeFrame(0x04, []byte{0, 0x90, byte(key), 100})
 		}
@@ -512,12 +646,19 @@ func runPluginSection(c *client, dir string) {
 			if len(levels.Levels) > 0 && levels.Levels[0] > peak {
 				peak = levels.Levels[0]
 			}
+			if auxRouted && len(levels.Levels) > 1 && levels.Levels[1] > auxPeak {
+				auxPeak = levels.Levels[1]
+			}
 		}
 		for _, key := range []int{60, 64, 67} {
 			_ = c.writeFrame(0x04, []byte{0, 0x80, byte(key), 0})
 		}
 		fmt.Printf("      乐器插件实测轨道电平峰值 = %.4f（受插件许可/演示限制时可能为 0）\n", peak)
 		check("乐器插件接管轨道输出（无残留 SF2 串音，电平非负）", peak >= 0, "")
+		if auxRouted {
+			fmt.Printf("      辅助总线目的轨（track1）电平峰值 = %.4f\n", auxPeak)
+			check("辅助输出映射到独立轨（电平 > 0）", auxPeak > 0.001, fmt.Sprintf("auxPeak=%.6f", auxPeak))
+		}
 
 		r, reqErr = c.request("plugin.unload", map[string]interface{}{"track": 0})
 		check("乐器插件卸载", reqErr == nil && r != nil && r.OK, errText(r, reqErr))
@@ -565,6 +706,64 @@ func expectError(name, gotErr, wantSub string) {
 	check(name, gotErr != "" && contains(gotErr, wantSub), fmt.Sprintf("期望错误含 %q，实际 %q", wantSub, gotErr))
 }
 
+// checkScanOnlyMode 验证 P-M6 进程外扫描：拉起独立子进程扫描并写 JSON/缓存，
+// 不触碰随后启动的 live 引擎。
+func checkScanOnlyMode(enginePath, vst3Dir string) {
+	fmt.Println("── 进程外扫描（P-M6）")
+	tmp, err := os.CreateTemp("", "mm-scan-*.json")
+	if err != nil {
+		check("创建扫描输出文件", false, err.Error())
+		return
+	}
+	outPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(outPath) // 让子进程自己创建
+	cachePath := outPath + ".xml"
+	defer os.Remove(outPath)
+	defer os.Remove(cachePath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, enginePath,
+		"--scan-only", "--out", outPath, "--cache", cachePath, "--dirs", vst3Dir)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	runErr := cmd.Run()
+	if runErr != nil {
+		check("扫描子进程退出 0（P-M6）", false, fmt.Sprintf("%v: %s", runErr, buf.String()))
+		return
+	}
+	check("扫描子进程退出 0（P-M6）", true, "")
+
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		check("扫描子进程写出 JSON 清单（P-M6）", false, err.Error())
+		return
+	}
+	var list struct {
+		Count   int `json:"count"`
+		Plugins []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"plugins"`
+		Formats []string `json:"formats"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		check("扫描子进程写出 JSON 清单（P-M6）", false, err.Error())
+		return
+	}
+	check("扫描子进程写出 JSON 清单（P-M6）",
+		list.Count >= 1 && len(list.Plugins) == list.Count,
+		fmt.Sprintf("count=%d plugins=%d formats=%v", list.Count, len(list.Plugins), list.Formats))
+
+	if _, err := os.Stat(cachePath); err != nil {
+		check("扫描子进程写出 XML 缓存（P-M6）", false, err.Error())
+	} else {
+		check("扫描子进程写出 XML 缓存（P-M6）", true, "")
+	}
+}
+
 func main() {
 	enginePath := flag.String("engine", "bin/melodymate-engine.exe", "引擎可执行文件路径")
 	vst3Dir := flag.String("vst3dir", "", "VST3 插件目录（P5 检查用；留空则跳过插件段落）")
@@ -576,6 +775,11 @@ func main() {
 	if _, err := os.Stat(*enginePath); err != nil {
 		fmt.Printf("[失败] 找不到引擎 %s（请先运行 tools/build_engine.bat）\n", *enginePath)
 		os.Exit(1)
+	}
+
+	/* P-M6：先验证进程外扫描模式（独立子进程，不触碰随后启动的 live 引擎） */
+	if *vst3Dir != "" {
+		checkScanOnlyMode(*enginePath, *vst3Dir)
 	}
 
 	cmd := exec.Command(*enginePath)
@@ -838,15 +1042,19 @@ func main() {
 	}
 	check("fx.getChain 主链默认空置（8 槽全旁通 / 0 装载）", reqErr == nil && masterChainOK, errText(r, reqErr))
 
-	// 插件装载在 P4 明确拒绝（P5/P6 开放），不得静默忽略
+	/* P5/P6 起插件由 plugin.load 装载，fx.setChain 只承载槽参数：
+	   给一个未装载的插件引用必须被明确拒绝，不得静默忽略。
+	   旧断言只认 P4 文案里的 "P5"，引擎文案改为"槽位插件尚未装载"后
+	   需要同时接受两种拒绝原因（核心语义是"拒绝"，不是特定措辞）。 */
 	r, reqErr = c.request("fx.setChain", map[string]interface{}{
 		"track": 0,
 		"slots": []map[string]interface{}{{"slot": 0, "plugin": "vst3:Serum"}},
 	})
-	check("fx.setChain 插件装载在 P4 明确拒绝",
+	chainErrText := errText(r, reqErr)
+	check("fx.setChain 未装载的插件引用明确拒绝",
 		reqErr == nil && r != nil && !r.OK &&
-			strings.Contains(errText(r, reqErr), "P5"),
-		errText(r, reqErr))
+			(strings.Contains(chainErrText, "P5") || strings.Contains(chainErrText, "尚未装载")),
+		chainErrText)
 
 	r, reqErr = c.request("fx.setChain", map[string]interface{}{
 		"track": 0, "slots": []map[string]interface{}{{"slot": 99}},
@@ -1028,6 +1236,22 @@ func runMmSection(c *client, gainDll, synthDll, filterDll string) {
 				fmt.Printf("      %s · 参数 %s [%g, %g] 默认 %g\n", st.Plugins[0].Name,
 					st.Plugins[0].Params[0].ID, st.Plugins[0].Params[0].Min,
 					st.Plugins[0].Params[0].Max, st.Plugins[0].Params[0].Default)
+			}
+			/* E-M5：MM 状态仍走消息线程（宿主线程亲和），同样要能往返 */
+			var mmState struct {
+				Encoding string `json:"encoding"`
+				Data     string `json:"data"`
+			}
+			mmStateOK := false
+			if sr, serr := c.request("plugin.getState", map[string]interface{}{"track": 0, "slot": 0}); serr == nil && sr != nil && sr.OK {
+				if err := json.Unmarshal(sr.Result, &mmState); err == nil && mmState.Data != "" {
+					mmStateOK = true
+				}
+			}
+			check("MM 效果器状态导出", mmStateOK, "")
+			if mmStateOK {
+				sr, serr := c.request("plugin.setState", map[string]interface{}{"track": 0, "slot": 0, "data": mmState.Data})
+				check("MM 效果器状态恢复", serr == nil && sr != nil && sr.OK, errText(sr, serr))
 			}
 		}
 		// 错误路径

@@ -133,21 +133,124 @@ func TestEngineMixerAndTransport(t *testing.T) {
 	}
 }
 
-// SF2 上传上限回归：handler 256MB + router 层 288MB（256MB 本体 + 32MB 头），
-// 双层防线缺一不可——router 层防大包直拒，handler 层防 Content-Length 伪装
+// S-L2 回归：换音色必须走短淡出，不能再硬切旧 tsf。
+// 引擎无法在 CI 里编译时，这条源码级检查至少保证：
+//   - 存在淡出槽与 beginFade/mixFading；
+//   - loadSoundFont / setWaveVoice 的替换路径调用 beginFade；
+//   - render 把淡出输出混进主输出；
+//   - bounce 前清空淡出，避免旧尾巴进入导出。
+func TestSoundFontSwitchCrossfade(t *testing.T) {
+	header, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Audio", "SynthEngine.h"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	h := string(header)
+	for _, needle := range []string{"FadeSlot", "beginFade", "mixFading", "flushFade"} {
+		if !strings.Contains(h, needle) {
+			t.Fatalf("SynthEngine.h missing %q (S-L2 crossfade)", needle)
+		}
+	}
+	impl, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Audio", "SynthEngine.cpp"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	c := string(impl)
+	for _, needle := range []string{
+		"void SynthEngine::beginFade",
+		"bool SynthEngine::mixFading",
+		"beginFade(old)",
+		"beginFade(oldTsf)",
+		"mixFading(outputChannelData",
+	} {
+		if !strings.Contains(c, needle) {
+			t.Fatalf("SynthEngine.cpp missing %q (S-L2 crossfade)", needle)
+		}
+	}
+	device, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Audio", "EngineAudioDevice.cpp"))
+	if err == nil && !strings.Contains(string(device), "flushFade()") {
+		t.Fatal("bounce must flush pending source-switch fades before rendering")
+	}
+}
+
+// E-M4 回归：多输出乐器总线必须存在路由表、音频路径与 IPC 入口。
+func TestInstrumentBusRoutingWiring(t *testing.T) {
+	header, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Audio", "EngineAudioDevice.h"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	h := string(header)
+	for _, needle := range []string{"kMaxAuxBuses", "setInstrumentBusRouting", "instrumentBusJson", "routeInstrumentAux", "applyAuxToBuffers"} {
+		if !strings.Contains(h, needle) {
+			t.Fatalf("EngineAudioDevice.h missing %q (E-M4 bus routing)", needle)
+		}
+	}
+	impl, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Audio", "EngineAudioDevice.cpp"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	c := string(impl)
+	for _, needle := range []string{"EngineAudioDevice::setInstrumentBusRouting", "EngineAudioDevice::routeInstrumentAux", "aux.addFrom"} {
+		if !strings.Contains(c, needle) {
+			t.Fatalf("EngineAudioDevice.cpp missing %q (E-M4 bus routing)", needle)
+		}
+	}
+	mainCpp, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Main.cpp"))
+	if err == nil && (!strings.Contains(string(mainCpp), "plugin.setBusRouting") || !strings.Contains(string(mainCpp), "plugin.busInfo")) {
+		t.Fatal("Main.cpp must expose plugin.setBusRouting / plugin.busInfo")
+	}
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "engine", "Tests", "VstFixture.cpp"))
+	if err == nil && !strings.Contains(string(fixture), `withOutput("Aux"`) {
+		t.Fatal("AuditSynth fixture should expose a second output bus for E-M4 smoke")
+	}
+}
+
+// E-M5 回归：VST3 状态读写必须走后台线程池，不能在消息线程同步执行。
+func TestPluginStateBackgroundIO(t *testing.T) {
+	header, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Audio", "EngineAudioDevice.h"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	h := string(header)
+	for _, needle := range []string{"PluginStateCallback", "getPluginStateAsync", "setPluginStateAsync", "statePool_"} {
+		if !strings.Contains(h, needle) {
+			t.Fatalf("EngineAudioDevice.h missing %q (E-M5 async state IO)", needle)
+		}
+	}
+	impl, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Audio", "EngineAudioDevice.cpp"))
+	if err != nil {
+		t.Skip(err.Error())
+	}
+	c := string(impl)
+	for _, needle := range []string{"EngineAudioDevice::getPluginStateAsync", "EngineAudioDevice::setPluginStateAsync", "statePool_.addJob"} {
+		if !strings.Contains(c, needle) {
+			t.Fatalf("EngineAudioDevice.cpp missing %q (E-M5 async state IO)", needle)
+		}
+	}
+	mainCpp, err := os.ReadFile(filepath.Join("..", "..", "engine", "Source", "Main.cpp"))
+	if err == nil {
+		m := string(mainCpp)
+		if !strings.Contains(m, "getPluginStateAsync") || !strings.Contains(m, "setPluginStateAsync") {
+			t.Fatal("Main.cpp must dispatch plugin state via async callbacks")
+		}
+	}
+}
+
+// SF2 上传上限回归：handler 4GB + router 层 4GB+32MB。
+// S-M6 改为流式落盘后上限不再受内存约束；双层防线仍需保留——
+// router 层防大包直拒，handler 层防 Content-Length 伪装。
 func TestSoundFontUploadLimit(t *testing.T) {
 	handlerData, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "handler_soundfont.go"))
 	if err != nil {
 		t.Skip(err.Error())
 	}
-	if !bytes.Contains(handlerData, []byte("256 << 20")) {
-		t.Fatal("handler_soundfont.go should enforce 256MB SF2 upload limit")
+	if !bytes.Contains(handlerData, []byte("maxSF2Upload = int64(4 << 30)")) {
+		t.Fatal("handler_soundfont.go should enforce 4GB SF2 upload limit (streaming)")
 	}
 	routerData, err := os.ReadFile(filepath.Join("..", "..", "internal", "server", "router.go"))
 	if err != nil {
 		t.Skip(err.Error())
 	}
-	if !bytes.Contains(routerData, []byte("288 << 20")) {
-		t.Fatal("router.go should allow 288MB (256MB body + 32MB header) for soundfont uploads")
+	if !bytes.Contains(routerData, []byte("4<<30 + 32<<20")) {
+		t.Fatal("router.go should allow 4GB+32MB for soundfont uploads")
 	}
 }

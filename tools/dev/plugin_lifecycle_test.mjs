@@ -11,14 +11,14 @@ ctrl.projectId='empty';ctrl.projectEpoch++;ctrl.tracks=[];ctrl.mixer={channels:{
 assert.equal(calls.filter(c=>c.url.endsWith('/session')).length,2);assert.equal(ctrl.audioSync,'ready');assert.ok(calls.some(c=>c.url.endsWith('/state/save')&&c.body.project==='P'));
 ctrl.projectId='reorder';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}},{id:'B',source:{itemId:'I'}}];ctrl.mixer={channels:{A:{fx:[]},B:{fx:[]}},master:{gain:.3,fx:[]}};
 await window.PluginPanel.restoreAll(ctrl);calls.length=0;ctrl.tracks.reverse();await window.PluginPanel.restoreAll(ctrl);
-assert.deepEqual(calls.filter(c=>c.url.endsWith('/plugins/load')).map(c=>c.body.trackId),['B','A']);
+assert.deepEqual(calls.filter(c=>c.url.endsWith('/plugins/load')).map(c=>c.body.trackId),[]); /* P-H2：重排由守护器增量重映射，前端不重载插件 */
 assert.deepEqual(Array.from(calls.find(c=>c.url.endsWith('/session')).body.tracks),['B','A']);
-ctrl.tracks.pop();calls.length=0;await window.PluginPanel.restoreAll(ctrl);assert.equal(calls.filter(c=>c.url.endsWith('/plugins/load')).length,1);
+ctrl.tracks.pop();calls.length=0;await window.PluginPanel.restoreAll(ctrl);assert.equal(calls.filter(c=>c.url.endsWith('/plugins/load')).length,0); /* 删轨同理：/session 内由守护器卸载 */
 calls.length=0;ctrl.mixer.master.gain=0;await window.PluginPanel.restoreAll(ctrl);assert.equal(calls.filter(c=>c.url.endsWith('/plugins/load')).length,0);assert.equal(calls.find(c=>c.url==='master').gain,0);
 const originalPost=window.UI.postJSON;const warnings=[];window.UI.toast=message=>warnings.push(message);
 window.UI.postJSON=async(url,body)=>{if(url.endsWith('/state/save'))throw new Error('backup blocked');return originalPost(url,body)};
 calls.length=0;ctrl.projectId='blocked';ctrl.projectEpoch++;await window.PluginPanel.restoreAll(ctrl);
-assert.equal(ctrl.audioSync,'failed');assert.ok(warnings.some(w=>w.includes('backup blocked')));assert.equal(calls.filter(c=>c.url.endsWith('/session')).length,0);
+assert.equal(ctrl.audioSync,'ready');assert.equal(calls.filter(c=>c.url.endsWith('/session')).length,1); /* 状态备份尽力而为，失败不阻断切换 */
 window.UI.postJSON=originalPost;
 let release;const paused=new Promise(resolve=>release=resolve);let reached=false;
 window.UI.postJSON=async(url,body)=>{const result=await originalPost(url,body);if(url.endsWith('/plugins/load')&&body.project==='slow'){reached=true;await paused;}return result;};
@@ -27,28 +27,29 @@ for(let n=0;n<50&&!reached;n++)await new Promise(r=>setTimeout(r,2));assert.ok(r
 ctrl.projectId='current';ctrl.projectEpoch++;ctrl.tracks=[];const latest=window.PluginPanel.restoreAll(ctrl);release();await Promise.all([stale,latest]);
 assert.equal(ctrl.audioSync,'ready');assert.equal(calls.filter(c=>c.url.endsWith('/plugins/load')&&c.body.project==='slow').length,1);
 window.UI.postJSON=async(url,body)=>{if(url.endsWith('/state/load'))throw Object.assign(new Error('invalid plugin state'),{status:400});return originalPost(url,body);};
-ctrl.projectId='bad-state';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}}];await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'failed');assert.ok(warnings.some(w=>w.includes('invalid plugin state')));
+ctrl.projectId='bad-state';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}}];await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'ready');assert.ok(warnings.some(w=>w.includes('invalid plugin state'))); /* 单个插件状态损坏只告警，不阻断整轨恢复 */
 window.UI.postJSON=originalPost;
 ctrl.projectId='save-all';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}}];calls.length=0;
 await window.PluginPanel.restoreAll(ctrl);calls.length=0;
 await window.PluginPanel.saveAll(ctrl);
 assert.ok(calls.some(c=>c.url.endsWith('/state/save')&&c.body.project==='save-all'&&c.body.trackId==='A'));
 
-/* ── 恢复失败防护：第二次 load 失败 → session.signature 停在 "" ── */
+/* ── P-H1 占位隔离：第二条 load 失败 → 记占位，其余轨道继续恢复 ── */
 window.UI.postJSON=async(url,body)=>{if(url.endsWith('/plugins/load')&&body.trackId==='B')throw new Error('second load boom');return originalPost(url,body)};
 ctrl.projectId='half-load';ctrl.projectEpoch++;ctrl.tracks=[{id:'A',source:{itemId:'I'}},{id:'B',source:{itemId:'I'}}];ctrl.mixer={channels:{A:{fx:[]},B:{fx:[]}},master:{gain:1,fx:[]}};
-await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'failed');
+await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'ready');
+assert.ok((ctrl.pluginIssues||[]).some(i=>/second load boom/.test(i.error)));
 window.UI.postJSON=originalPost;calls.length=0;
-const saveWarns=[];window.UI.toast=m=>saveWarns.push(m);
-/* signature==="" 时 saveAll 拒绝保存（快照可能是引擎默认值）并提示一次 */
+/* 占位槽没有实例：saveAll 只导出已装载的 A，不把默认状态写进 B 的 .state */
 await window.PluginPanel.saveAll(ctrl);
-assert.equal(calls.filter(c=>c.url.endsWith('/state/save')).length,0);
-assert.ok(saveWarns.some(w=>w.includes('插件状态未保存：上次音频恢复未完成')));
-/* 下一次 fresh 恢复：旧会话 signature==="" → 整个备份循环跳过（不得把默认状态写回 .state） */
+const halfSaves=calls.filter(c=>c.url.endsWith('/state/save'));
+assert.equal(halfSaves.length,1);assert.equal(halfSaves[0].body.trackId,'A');calls.length=0;
+/* 下一次 fresh 恢复：备份上一工程已装载的 A，占位 B 跳过 */
 ctrl.projectId='after-fail';ctrl.projectEpoch++;
 await window.PluginPanel.restoreAll(ctrl);assert.equal(ctrl.audioSync,'ready');
 const preSession=calls.slice(0,Math.max(0,calls.findIndex(c=>c.url.endsWith('/session'))));
-assert.equal(preSession.filter(c=>c.url.endsWith('/state/save')).length,0);
+assert.equal(preSession.filter(c=>c.url.endsWith('/state/save')&&c.body.trackId==='A').length,1);
+assert.equal(preSession.filter(c=>c.url.endsWith('/state/save')&&c.body.trackId==='B').length,0);
 
 /* ── 参数批量下发 + 关窗兜底（独立上下文 + 最小 DOM 桩） ── */
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));

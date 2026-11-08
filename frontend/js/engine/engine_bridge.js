@@ -54,6 +54,36 @@
       }
       return Promise.reject(new Error("engine unavailable"));
     },
+    /* S-M1：大音色异步加载 + 状态轮询。start 立即返回，onStatus 每 250ms
+       收到 {running,phase,elapsed_ms,size,error}；完成后 resolve/reject。
+       旧宿主（无异步绑定）自动退回同步 loadSoundFont。 */
+    loadSoundFontWithProgress: function (track        , path        , onStatus                    ) {
+      var engineApp      = app;
+      if (!engineApp || !engineApp.EngineStartSoundFontLoad || !engineApp.EngineSoundFontLoadStatus) {
+        return EngineBridge.loadSoundFont(path, track);
+      }
+      return engineApp.EngineStartSoundFontLoad(track, path).then(function () {
+        return new Promise(function (resolve, reject) {
+          var poll = function () {
+            engineApp.EngineSoundFontLoadStatus(track).then(function (st     ) {
+              if (onStatus) { try { onStatus(st || {}); } catch (e) {} }
+              if (!st || !st.running) {
+                if (st && st.phase === "done") resolve(true);
+                else reject(new Error((st && st.error) || "音色加载失败"));
+                return;
+              }
+              setTimeout(poll, 250);
+            }).catch(reject);
+          };
+          poll();
+        });
+      });
+    },
+    cancelSoundFontLoad: function (track        ) {
+      var engineApp      = app;
+      if (engineApp && engineApp.EngineCancelSoundFontLoad) { return engineApp.EngineCancelSoundFontLoad(track); }
+      return Promise.reject(new Error("engine unavailable"));
+    },
     noteOnTrack: function (track        , key        , velocity        ) {
       if (app && app.EngineNoteOnTrack) { return app.EngineNoteOnTrack(track, key, velocity); }
       if (app) { return app.EngineNoteOn(0, key, velocity); }
@@ -137,6 +167,10 @@
     },
     scheduleNotes: function (notes                                , bpm        ) {
       if (app && app.EngineScheduleNotes) { return app.EngineScheduleNotes(notes, bpm); }
+      return Promise.reject(new Error("engine unavailable"));
+    },
+    clearNotes: function () {
+      if (app && app.EngineClearNotes) { return app.EngineClearNotes(); }
       return Promise.reject(new Error("engine unavailable"));
     },
     bounce: function (params                         ) {

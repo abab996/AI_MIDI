@@ -202,35 +202,41 @@
   }
 
   /* importSf2 上传 SF2 到注册表（落盘 + 入册）。
-     同时把字节镜像进 IndexedDB，浏览器模式（WebAudio）才能解码播放。 */
+     桌面引擎模式直接以 File 作为请求体流式上传：不再把整个文件读进
+     ArrayBuffer、不再在主线程解析 SF2、也不再写一份桌面版用不到的
+     IndexedDB 镜像（S-M6：200MB 音色库此前要在渲染进程留两份副本并
+     同步解析，主线程卡顿）。浏览器模式仍需字节镜像给 WebAudio 解码。 */
   SoundRegistry.prototype.importSf2 = function (                        file      , onProgress           ) {
     var self = this;
-    if (onProgress) onProgress("读取文件…");
-    var raw              = new ArrayBuffer(0);
-    return file.arrayBuffer().then(function (buf             ) {
-      raw = buf;
-      if (onProgress) onProgress("上传中…");
+    var nativeEngine = !!(window.EngineBridge && window.EngineBridge.available);
+    var raw                     = null;
+    var bodyToSend      = nativeEngine ? file : raw;
+    var prepare               = nativeEngine ? Promise.resolve() : file.arrayBuffer().then(function (buf             ) { raw = buf; bodyToSend = buf; });
+    return prepare.then(function () {
+      if (onProgress) onProgress(nativeEngine ? "上传中…" : "读取文件…");
       return fetch("/api/sound/import/sf2?name=" + encodeURIComponent(file.name), {
         method: "POST",
         headers: { "Content-Type": "application/octet-stream" },
-        body: buf
+        body: bodyToSend
       });
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
         if (!r.ok) throw new Error((j && j.detail) || "导入失败");
         var src = j.source;
         // 浏览器模式解码缓存：失败不影响导入结果（引擎模式走磁盘路径发声）
-        try {
-          if (window.SoundLibrary && window.SoundLibrary.saveSoundFont && src) {
-            var presets        = [];
-            try {
-              var sf = window.PianoRoll && window.PianoRoll.soundfont;
-              var parsed = sf && sf.parseSF2 ? sf.parseSF2(raw) : null;
-              if (parsed && parsed.presets) presets = parsed.presets;
-            } catch (e) { presets = []; }
-            window.SoundLibrary.saveSoundFont(file.name, raw, presets, src.id);
-          }
-        } catch (e) { /* 缓存写入失败仅告警 */ }
+        if (!nativeEngine) {
+          try {
+            if (window.SoundLibrary && window.SoundLibrary.saveSoundFont && src && raw) {
+              var presets        = [];
+              try {
+                var sf = window.PianoRoll && window.PianoRoll.soundfont;
+                var parsed = sf && sf.parseSF2 ? sf.parseSF2(raw) : null;
+                if (parsed && parsed.presets) presets = parsed.presets;
+              } catch (e) { presets = []; }
+              window.SoundLibrary.saveSoundFont(file.name, raw, presets, src.id);
+            }
+          } catch (e) { /* 缓存写入失败仅告警 */ }
+        }
         return self.reload().then(function () { return j; });
       });
     });

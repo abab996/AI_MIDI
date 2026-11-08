@@ -781,9 +781,12 @@
           if (tIdx >= 0 && window.PluginPanel) {
             window.PluginPanel.open(ctrl, {
               track: tIdx, slot: -1, master: false,
-              ref: item.path || item.sourceId || "",
+              /* 与 PluginPanel.collectJobs / 状态文件同一引用键：sourceId 优先，
+                 path 仅作最后兜底（P-M2 — 此前以 path 优先，导致面板保存的
+                 状态 ref 与工程装载时的 ref 对不上） */
+              ref: item.sourceId || item.id || item.path || "",
               sourceId: item.sourceId || "",
-              format: item.kind || "",
+              format: (item.kind === "mm" || item.kind === "vst3") ? item.kind : "",
               name: item.name || "插件乐器"
             });
           } else {

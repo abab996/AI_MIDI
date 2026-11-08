@@ -412,25 +412,40 @@
     var ch = isMaster ? masterOf(ctrl) : channelOf(ctrl, ctrl.tracks[idx].id);
     var fx        = ch.fx || [];
     for (var slot = 0; slot < MAX_SLOTS; slot++) {
-      rack.appendChild(buildFxSlot(fx[slot], slot));
+      rack.appendChild(buildFxSlot(fx[slot], slot, ctrl, isMaster ? "" : ctrl.tracks[idx].id, isMaster));
     }
     return rack;
   }
 
-  function buildFxSlot(entry     , slot        ) {
+  /** 槽位插件是否在"缺失占位"列表里（P-H1：界面标红，工程照常播放） */
+  function isMissingPlugin(ctrl                   , ref        , master         , trackId        , slot        ) {
+    if (!ctrl || !ref) return false;
+    var issues = (ctrl       ).pluginIssues || [];
+    for (var i = 0; i < issues.length; i++) {
+      var it = issues[i];
+      if (it.ref !== ref || !!it.master !== !!master) continue;
+      if (master || it.trackId === trackId) return true;
+    }
+    return false;
+  }
+
+  function buildFxSlot(entry     , slot        , ctrl                    , trackId         , master          ) {
     var btn = document.createElement("button");
     btn.type = "button";
     btn.className = "mxr-fx-slot";
     btn.dataset.slot = String(slot);
     btn.dataset.act = "fx";
     btn.tabIndex = -1;
-    var plugin = entry && entry.plugin ? String(entry.plugin) : "";
+    /* 显示与引用键统一：sourceId 优先（P-M2） */
+    var plugin = entry ? String(entry.sourceId || entry.plugin || "") : "";
     var bypass = entry ? entry.bypass !== false : true;
+    var missing = ctrl ? isMissingPlugin(ctrl, plugin, !!master, trackId || "", slot) : false;
     btn.classList.toggle("loaded", !!plugin);
     btn.classList.toggle("bypass", bypass);
+    btn.classList.toggle("missing", missing);
     btn.textContent = plugin ? shortPluginName(plugin) : String(slot + 1);
     btn.title = plugin
-      ? "FX " + (slot + 1) + "：" + plugin + (bypass ? "（旁通）" : "")
+      ? "FX " + (slot + 1) + "：" + plugin + (bypass ? "（旁通）" : "") + (missing ? " · ⚠ 插件缺失，已跳过（其余轨道可正常播放）" : "")
       : "FX " + (slot + 1) + "：空槽（点击可装载插件）";
     btn.setAttribute("aria-label", btn.title);
     return btn;
@@ -449,7 +464,7 @@
     var ch = channelOf(ctrl, ctrl.tracks[idx].id);
     var fx        = ch.fx || [];
     UI.qsa(".mxr-fx-slot", rack).forEach(function (btn     , i        ) {
-      var fresh = buildFxSlot(fx[i], i);
+      var fresh = buildFxSlot(fx[i], i, ctrl, ctrl.tracks[idx].id, false);
       btn.className = fresh.className;
       btn.textContent = fresh.textContent;
       btn.title = fresh.title;
@@ -549,9 +564,11 @@
     if (String(entry.plugin || "").indexOf("VST3|") === 0 || /\.vst3$/i.test(ref) || /^vst3[_:]/i.test(ref)) return false;
     if (window.SoundRegistry && typeof window.SoundRegistry.get === "function") {
       var src = window.SoundRegistry.get(ref);
+      /* 注册表明确给出类型才下结论；识别不了时返回 false（交给
+         PluginPanel.resolveFormat 查注册表/响应，不再瞎猜 MM——P-M2） */
       if (src && (src.kind === "vst3" || src.kind === "mm")) return src.kind === "mm";
     }
-    return true;
+    return false;
   }
 
   /** openParamPanel 通用参数面板（§4.6）：轨道乐器与 FX 槽共用同一份实现 */
@@ -559,14 +576,15 @@
     if (!window.PluginPanel) return;
     var ch = idx === MASTER_TRACK ? masterOf(ctrl) : channelOf(ctrl, ctrl.tracks[idx].id);
     var entry = ((ch.fx || [])[slot]) || null;
-    var ref = (entry && (entry.plugin || entry.sourceId)) ? String(entry.plugin || entry.sourceId) : "";
+    /* 引用键与 PluginPanel.collectJobs / 状态文件保持同一优先级：sourceId 优先 */
+    var ref = entry ? String(entry.sourceId || entry.plugin || "") : "";
     window.PluginPanel.open(ctrl, {
       track: idx === MASTER_TRACK ? -1 : idx,
       slot: slot,
       master: idx === MASTER_TRACK,
       ref: ref,
       sourceId: (entry && entry.sourceId) ? String(entry.sourceId) : "",
-      format: isMmEntry(entry) ? "mm" : "vst3",
+      format: (entry && (entry.format === "mm" || entry.format === "vst3")) ? entry.format : "",
       name: ref ? shortPluginName(ref) : "插件"
     });
   }
@@ -793,7 +811,7 @@
     });
     items.push("-");
     items.push({
-      label: entry.plugin ? "🔌 更换插件…" : "🔌 装载插件…",
+      label: (entry.sourceId || entry.plugin) ? "🔌 更换插件…" : "🔌 装载插件…",
       action: function () { openPluginPicker(ctrl, idx, slot); }
     });
     /* 插件界面入口按类型分流：VST3 走引擎原生编辑器；MM（.mm 包里的原生库）

@@ -27,6 +27,10 @@ interface WailsApp {
   EnginePanic(): Promise<void>;
   EnginePlay(): Promise<void>;
   EngineScheduleNotes(arg1: Array<Record<string, unknown>>, arg2: number): Promise<void>;
+  EngineClearNotes(): Promise<void>;
+  EngineStartSoundFontLoad(arg1: number, arg2: string): Promise<void>;
+  EngineSoundFontLoadStatus(arg1: number): Promise<Record<string, any>>;
+  EngineCancelSoundFontLoad(arg1: number): Promise<void>;
   EngineScheduleSamples(arg1: Array<Record<string, unknown>>, arg2: number): Promise<void>;
   EngineSetLoop(arg1: boolean, arg2: number, arg3: number): Promise<void>;
   EngineSetTempo(arg1: number): Promise<void>;

@@ -963,6 +963,15 @@
     this.playbackOriginBeat = Math.max(0, this.playheadBeat);
     this.isPlaying = true;
     var self = this;
+    /* E-C1：在引擎走带启动前把整表音符下发，避免开头几十毫秒的音符
+       因 IPC 晚到而被跳过。_beginPlay 里还会再发一次（幂等替换）。 */
+    try {
+      if (window.AudioBackend && window.AudioBackend.isNativePreferred && window.AudioBackend.isNativePreferred()
+          && this.engine && this.engine._scheduleNativeNotes) {
+        this.engine.getTracks = this.engine.getTracks || function () { return self.tracks; };
+        this.engine._scheduleNativeNotes();
+      }
+    } catch (e) {}
     var playResult = this.engine.play(this.playheadBeat);
     // 引擎启动失败时回滚播放态（engine.play 内部已 toast 提示）
     if (playResult && typeof playResult.catch === "function") {
@@ -2729,6 +2738,7 @@
     var src = this.tracks[idx];
     if (!src) return;
     this.pushHistory();
+    var self = this;
     var copy = JSON.parse(JSON.stringify(src));
     copy.id = uid("tr");
     copy.name = src.name + " 副本";
@@ -2737,7 +2747,15 @@
     this.applyMixSafe();
     this.renderAll();
     this.showHUD("⧉ 已复制轨道");
-    this.scheduleSave();
+    /* P-L5：先把源轨的插件状态复制到副本的新 trackId，再对账装载；
+       否则副本插件只能拿到默认音色。复制失败不阻塞轨道复制。 */
+    if (window.PluginPanel && window.PluginPanel.duplicateState) {
+      window.PluginPanel.duplicateState(this, src.id, copy.id)
+        .then(function () { if (self.projectId) self.scheduleSave(); })
+        .catch(function () { self.scheduleSave(); });
+    } else {
+      this.scheduleSave();
+    }
   };
 
   Arrange.prototype.moveTrack = function (this: ArrangeController, idx: any, dir: any) {
@@ -2905,9 +2923,10 @@
           if (window.PluginPanel) {
             window.PluginPanel.open(self, {
               track: idx, slot: -1, master: false,
-              ref: (item && (item.path || item.sourceId)) || "",
+              /* 统一引用键（P-M2）：sourceId 优先，path 只兜底 */
+              ref: (item && (item.sourceId || item.id || item.path)) || "",
               sourceId: (item && item.sourceId) || "",
-              format: (item && item.kind) || "",
+              format: (item && (item.kind === "mm" || item.kind === "vst3")) ? item.kind : "",
               name: (item && item.name) || "插件乐器"
             });
           }
@@ -4239,7 +4258,8 @@
                   track: trk,
                   id: kind === "mm" ? v.sourceId : resolvedPlugin.id,
                   format: kind,
-                  path: kind === "mm" ? resolvedPlugin.path : ""
+                  path: kind === "mm" ? resolvedPlugin.path : "",
+                  ephemeral: true // 试听装载不进入崩溃重放表（P-L6）
                 });
               });
             }).then(playNativeNote).catch(function (err: any) {

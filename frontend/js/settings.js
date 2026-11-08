@@ -1536,6 +1536,54 @@
     return b;
   }
 
+  /* S-M5：缺失音色重定位。先自动按内容哈希/同名文件查找；找不到再让用户
+     输入新路径；显式路径命中不同内容时要求二次确认（force）。 */
+  function relocateSndSource(src     , rt     ) {
+    var withPath = function (path        , force          ) {
+      return UI.postJSON     ("/api/sound/relocate", { id: src.id, path: path, force: !!force });
+    };
+    var done = function (path        ) {
+      UI.toast ("✓ 已重新定位：" + (path || src.name || src.id), "ok");
+      loadSoundLibrary();
+    };
+    var fail = function (err     , path         ) {
+      if (err && err.status === 409 && err.data && err.data.code === "soundfont_hash_mismatch") {
+        UI.confirm ({
+          title: "文件内容不一致",
+          text: "该文件与注册表记录的音色库内容不同（可能是另一个音色库）。仍要使用它吗？",
+          okText: "仍然使用",
+          danger: true
+        }).then(function (yes     ) {
+          if (!yes) return;
+          withPath(path || err.data.path || "", true).then(function () { done(path || err.data.path); })
+            .catch(function (e2     ) { UI.toast ("✗ 定位失败：" + ((e2 && e2.message) || "未知错误"), "err"); });
+        });
+        return;
+      }
+      UI.toast ("✗ 定位失败：" + ((err && err.message) || "未知错误"), "err");
+    };
+    var askPath = function () {
+      UI.prompt ("未在音色目录找到同哈希/同名文件。输入新的 .sf2 绝对路径：", (rt && rt.absPath) || src.path || "")
+        .then(function (p     ) {
+          var path = String(p || "").trim();
+          if (!path) return;
+          withPath(path).then(function () { done(path); }).catch(function (e     ) { fail(e, path); });
+        });
+    };
+
+    UI.postJSON     ("/api/sound/relocate", { id: src.id })
+      .then(function (res     ) {
+        done((res && (res.path || (res.source && res.source.path))) || "");
+      })
+      .catch(function (err     ) {
+        if (err && err.status === 404 && err.data && err.data.code === "soundfont_not_found") {
+          askPath();
+          return;
+        }
+        fail(err);
+      });
+  }
+
   /* 条目卡：kind 徽标 / 名称+元信息 / hover 浮出的操作列。
      idx 用于进场 stagger（40ms 递进，见 4.10 动效表）。 */
   function sndSourceRow(src     , idx        ) {
@@ -1639,6 +1687,16 @@
       actions.appendChild(uiBtn);
     }
 
+    /* S-M5：文件缺失时提供「定位文件」入口（按哈希/同名自动找，失败再手输路径） */
+    if (rt.missing && src.kind === "sf2") {
+      var relocBtn = sndIconBtn("action-relocate", "📁", "定位文件（重新关联缺失的音色）");
+      relocBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        relocateSndSource(src, rt);
+      });
+      actions.appendChild(relocBtn);
+    }
+
     var toggleBtn = sndIconBtn("action-toggle", src.enabled === false ? "◻" : "⏻",
       src.enabled === false ? "启用" : "停用");
     actions.appendChild(toggleBtn);
@@ -1661,6 +1719,12 @@
           if (!yes) return;
           UI.postJSON("/api/engine/plugins/uninstall", { id: pid }).then(function (r     ) {
             UI.toast ("✓ 已卸载 " + (src.name || pid) + "（目录 " + (r.removed || []).length + " 个，槽位 " + (r.unloaded || []).length + " 个）", "ok");
+            /* P-L3：告知仍引用该插件的工程——打开时会显示缺失占位，需手动清槽 */
+            var refs = (r && r.referenced_projects) || [];
+            if (refs.length) {
+              var names = refs.slice(0, 3).map(function (p     ) { return p.name || p.id; }).join("、");
+              UI.toast ("⚠ " + refs.length + " 个工程仍引用该插件（" + names + (refs.length > 3 ? " 等" : "") + "）：打开后请在混音台清除对应槽位", "warn");
+            }
             loadSoundLibrary();
           }).catch(function (err     ) {
             UI.toast ("✗ 卸载失败: " + (err && err.message ? err.message : "未知错误"), "err");
@@ -2048,7 +2112,8 @@
           track: trk,
           id: src.kind === "mm" ? src.id : resolved.id,
           format: src.kind,
-          path: src.kind === "mm" ? resolved.path : ""
+          path: src.kind === "mm" ? resolved.path : "",
+          ephemeral: true // 试听装载不进入崩溃重放表（P-L6）
         });
       }).then(function () {
         sndAudition.id = src.id;

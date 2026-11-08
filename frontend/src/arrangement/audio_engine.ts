@@ -42,6 +42,51 @@
     return engine.controller && window.PluginPanel ? window.PluginPanel.enqueue(engine.controller,run,valid) : Promise.resolve().then(run).then(valid);
   }
 
+  /* ── S-M1：SF2 大音色加载进度条 + 取消 ──
+     固定在右下角的轻量 DOM：显示已等待时长/文件大小；取消只停止等待
+     （tsf 解析无法中断），Go 侧会在引擎完成时恢复原音色。 */
+  var sfLoadUI: any = null;
+  function hideSfLoadUI() {
+    if (!sfLoadUI) return;
+    if (sfLoadUI.root && sfLoadUI.root.parentNode) sfLoadUI.root.parentNode.removeChild(sfLoadUI.root);
+    sfLoadUI = null;
+  }
+  function updateSfLoadUI(index: number, path: string, st: any) {
+    if (!sfLoadUI || !sfLoadUI.root || !sfLoadUI.root.parentNode) {
+      var root = document.createElement("div");
+      root.className = "sf-load-bar";
+      root.setAttribute("role", "status");
+      var text = document.createElement("span");
+      text.className = "sf-load-text";
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sf-load-cancel";
+      btn.textContent = "取消";
+      btn.addEventListener("click", function () {
+        var idx = sfLoadUI && sfLoadUI.index;
+        if (typeof idx === "number" && window.EngineBridge && window.EngineBridge.cancelSoundFontLoad) {
+          window.EngineBridge.cancelSoundFontLoad(idx).catch(function () {});
+        }
+        if (sfLoadUI) {
+          sfLoadUI.text.textContent = "正在取消…";
+          sfLoadUI.btn.disabled = true;
+        }
+      });
+      root.appendChild(text);
+      root.appendChild(btn);
+      document.body.appendChild(root);
+      sfLoadUI = { root: root, text: text, btn: btn, index: index };
+    }
+    sfLoadUI.index = index;
+    var phase = (st && st.phase) || "loading";
+    var label = phase === "cancelling" ? "正在取消…" :
+                phase === "restoring" ? "正在恢复原音色…" : "音色加载中…";
+    var secs = ((st && st.elapsed_ms) || 0) / 1000;
+    var size = (st && st.size) ? ((st.size / 1048576).toFixed(0) + "MB · ") : "";
+    var name = String(path || "").split(/[\\/]/).pop() || "音色";
+    sfLoadUI.text.textContent = label + " " + name + " · " + size + secs.toFixed(1) + "s";
+  }
+
   function isNativePreferred() {
     try {
       /* 单一路由源：AudioBackend.isNativePreferred（引擎模式且就绪——
@@ -337,7 +382,7 @@
       if(!isCurrent())return;
       var path = j && j.default_soundfont;
       if(!path)throw new Error("缺少内置音色库，请在音色目录放置 SF2");
-      await window.EngineBridge.loadSoundFont(path,index);
+      await self._loadSf2WithProgress(index, path);
       if(isCurrent())await window.EngineBridge.setTrackPreset(index,0,program);
     }).then(function(current){if(current){nodes._builtinRetryAt=0;nodes._useNative=true;}}).catch(function(e){
       fail("✗ 内置音色加载失败："+e.message);
@@ -392,6 +437,22 @@
     nodes._useNative = false;
   };
 
+  /** S-M1：带进度/取消的 SF2 加载（旧宿主自动退回同步路径） */
+  ArrangeEngine.prototype._loadSf2WithProgress = function (this: ArrangeEngineInstance, index: number, path: string) {
+    var bridge = window.EngineBridge;
+    if (!bridge) return Promise.reject(new Error("engine unavailable"));
+    if (!bridge.loadSoundFontWithProgress) return bridge.loadSoundFont(path, index);
+    return bridge.loadSoundFontWithProgress(index, path, function (st: any) {
+      updateSfLoadUI(index, path, st);
+    }).then(function (r: any) {
+      hideSfLoadUI();
+      return r;
+    }).catch(function (e: any) {
+      hideSfLoadUI();
+      throw e;
+    });
+  };
+
   /** 从 IndexedDB 音源库异步加载轨道 SF2（原生优先时直通 JUCE，每轨独立）。
       严格路由：引擎模式下加载失败 → onSoundFontError 上浮 UI 提示，
       该轨静音，绝不回退 WebAudio 解析。
@@ -419,7 +480,7 @@
       if (idx < 0) { nodes.sfLoading = false; return true; }
       queueNative(self,track,nodes,async function(index,isCurrent){
         if(reg && !reg.enabled)throw new Error("音源已禁用");
-        await window.EngineBridge.loadSoundFont(diskPath,index);
+        await self._loadSf2WithProgress(index, diskPath);
         if(!isCurrent())return;
         if(src.presetId){var p=normalizePresetId(src.presetId,presets || nodes.soundfont && nodes.soundfont.loadedPresets);await window.EngineBridge.setTrackPreset(index,p.bank,p.program);}
       }).then(function (current) {
@@ -741,6 +802,58 @@
     this._queueSeekClips(startBeat);
     this._startHeartbeat();
     this._onHeartbeat();
+    /* E-C1：整表音符下发给引擎，由音频线程按采样时钟触发——
+       不再靠这里每 25ms 心跳 + 每音符一个 setTimeout 经 IPC 逐条发。
+       JS 卡顿/WebView 被遮挡时音符不再成批迟到或丢失。 */
+    this._scheduleNativeNotes();
+  };
+
+  /** 把工程全部 MIDI 音符按绝对拍位置整表下发（引擎模式）。
+     下发成功前仍走旧的逐音符 timer 路径；成功后 _nativeNoteSchedule
+     置位，_triggerDue 跳过原生 noteOn/off，避免双重触发。 */
+  ArrangeEngine.prototype._scheduleNativeNotes = function (this: ArrangeEngineInstance) {
+    if (!isNativePreferred() || !window.EngineBridge || !window.EngineBridge.scheduleNotes) return;
+    var tracks = this.getTracks ? this.getTracks() : [];
+    var cache = this._pitchCache || (this._pitchCache = {});
+    var notes: any[] = [];
+    for (var ti = 0; ti < tracks.length; ti++) {
+      var track = tracks[ti];
+      if (!track || !track.clips) continue;
+      for (var ci = 0; ci < track.clips.length; ci++) {
+        var clip = track.clips[ci];
+        if (!clip || clip.type !== "midi" || clip.mute || !clip.notes) continue;
+        for (var ni = 0; ni < clip.notes.length; ni++) {
+          var n = clip.notes[ni];
+          var midi = cache[n.note];
+          if (midi === undefined) {
+            midi = window.MidiParse ? window.MidiParse.noteNameToNumber(n.note) : 60;
+            cache[n.note] = midi;
+          }
+          notes.push({
+            track: ti,
+            key: midi,
+            vel: n.velocity || 100,
+            start: clip.start + n.start,
+            end: clip.start + n.end
+          });
+        }
+      }
+    }
+    var self = this;
+    this._nativeNoteSchedule = false;
+    this._nativeScheduleBpm = this.bpm;
+    try {
+      window.EngineBridge.scheduleNotes(notes, this.bpm).then(function () {
+        self._nativeNoteSchedule = true;
+      }).catch(function (e: any) {
+        /* 下发失败：退回逐音符 timer 路径（引擎模式仍由 JS 驱动，
+           只是精度差），不阻断播放 */
+        self._nativeNoteSchedule = false;
+        console.warn("[ArrangeEngine] 引擎音符调度失败，回退逐音符触发:", e && e.message);
+      });
+    } catch (e) {
+      this._nativeNoteSchedule = false;
+    }
   };
 
   /** 定位播放接入：起播点落在音频剪辑中段的（起点在起播点之前，
@@ -787,6 +900,11 @@
     this._playGen++; // 作废挂起的 play() 回调（resume 未 resolve 前被暂停/停止）
     this._stopHeartbeat();
     this._clearNativeTimers(); // 先撤调度中的原生音符 timer（尚未发出的 noteOn/off 一并取消）
+    /* E-C1：清空引擎侧整表调度，否则停止后引擎仍按采样时钟继续发 noteOn */
+    if (this._nativeNoteSchedule && window.EngineBridge && window.EngineBridge.clearNotes) {
+      try { window.EngineBridge.clearNotes().catch(function () {}); } catch (e) {}
+    }
+    this._nativeNoteSchedule = false;
     if (isNativePreferred() && window.EngineBridge) {
       try {
         var tracks = this.getTracks ? this.getTracks() : [];
@@ -826,6 +944,20 @@
     if (!this._nativeOn[key]) return;
     this._nativeOn[key]--;
     if (this._nativeOn[key] <= 0) delete this._nativeOn[key];
+  };
+
+  /* ── 原生音源签名失效（P-H4）──
+     引擎侧 plugin.clear 会同时清掉 SF2/波形声部；前端按 sourceKey 去重，
+     不主动失效就不会重发，崩溃恢复/结构编辑后整轨静音。 */
+  ArrangeEngine.prototype.invalidateNativeSources = function (this: ArrangeEngineInstance) {
+    var nodes = this.trackNodes || {};
+    for (var id in nodes) {
+      if (Object.prototype.hasOwnProperty.call(nodes, id) && nodes[id]) {
+        nodes[id].sourceKey = "";
+        nodes[id]._useNative = false;
+      }
+    }
+    this._nativeNoteSchedule = false;
   };
 
   /** 对全部残留的发音中音符补发 noteOff，并清空登记表 */
@@ -940,6 +1072,8 @@
       if (this.onEngineLost) { try { this.onEngineLost(); } catch (e) {} }
       return;
     }
+    /* E-C1：播放中改 BPM 需要重下整表（采样位置按旧 spb 预先算好） */
+    if (this._nativeNoteSchedule && this._nativeScheduleBpm !== this.bpm) this._scheduleNativeNotes();
     var now = this._now();
     var spb = this.secondsPerBeat();
 
@@ -1084,7 +1218,7 @@
       if (ev.t <= now + TRIGGER_S) {
         if (ev.t >= now - 2.0 && this.isPlaying) {
           var handledNative = false;
-          if (nativeWanted && ev.trackId && window.EngineBridge && window.EngineBridge.noteOnTrack && ev.nodes && ev.nodes._useNative) {
+          if (nativeWanted && !this._nativeNoteSchedule && ev.trackId && window.EngineBridge && window.EngineBridge.noteOnTrack && ev.nodes && ev.nodes._useNative) {
             var tracksOn = this.getTracks ? this.getTracks() : [];
             var idxOn = trackIndexOf(ev.trackId, tracksOn);
             if (idxOn >= 0) {

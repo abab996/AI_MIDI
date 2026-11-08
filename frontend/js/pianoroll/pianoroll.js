@@ -733,6 +733,9 @@
     var trk = (window.EngineBridge && window.EngineBridge.SF2_TRACK) || 30;
     var bank = 0, program = 0;
     var finish = function (ok     , msg     ) {
+      /* S-M2 latest-wins：切换音源后，旧请求的迟到回调不得把新音源标成
+         就绪/失败，也不得再对新字体下发旧预设。 */
+      if (self.soundSource !== key) return;
       self._sf2EnginePending = false;
       self._sf2EngineReady = ok;
       self._sf2EngineFailed = !ok;
@@ -753,7 +756,7 @@
       fetch("/api/audio/status").then(function (r) { return r.json(); }).then(function (j) {
         var path = j && j.default_soundfont;
         if (!path) { finish(false, "✗ 缺少内置音色库（引擎模式），请在音色目录放置 SF2"); return; }
-        self._engineSf2Load(trk, path, bank, program, finish);
+        self._engineSf2Load(trk, path, bank, program, finish, key);
       }).catch(function () { finish(false, "✗ 获取引擎状态失败"); });
       return;
     }
@@ -774,21 +777,32 @@
       program = parseInt(parts[1], 10) || 0;
     }
     if (!this._sf2DiskPath) { finish(false, "✗ 音源缺少磁盘路径，无法在引擎模式加载"); return; }
-    this._engineSf2Load(trk, this._sf2DiskPath, bank, program, finish);
+    this._engineSf2Load(trk, this._sf2DiskPath, bank, program, finish, key);
   };
 
-  PianoRoll.prototype._engineSf2Load = function (                           trk     , path     , bank     , program     , finish     ) {
-    window.EngineBridge.loadSoundFont(path, trk)
+  PianoRoll.prototype._engineSf2Load = function (                           trk     , path     , bank     , program     , finish     , key      ) {
+    var self = this;
+    var stillCurrent = function () { return key === undefined || self.soundSource === key; };
+    /* S-M1：优先走异步加载（大音色不触发 30s 请求超时）；旧宿主回退同步 */
+    var load = window.EngineBridge.loadSoundFontWithProgress
+      ? window.EngineBridge.loadSoundFontWithProgress(trk, path)
+      : window.EngineBridge.loadSoundFont(path, trk);
+    load
       .then(function () {
+        /* S-M2：A→B 快速切换时，A 的加载回调必须让位给 B，否则预设会
+           落到 B 的字体上（预设不存在时还回退 0:0，音色彻底错） */
+        if (!stillCurrent()) throw new Error("superseded");
         return window.EngineBridge.setTrackPreset(trk, bank, program).catch(function () {
+          if (!stillCurrent()) throw new Error("superseded");
           // 预设不存在：回退该文件预设 0 并提示
           return window.EngineBridge.setTrackPreset(trk, 0, 0).then(function () {
             if (window.UI && UI.toast) UI.toast ("⚠ 预设不存在，已用该音色库首个预设", "warn");
           });
         });
       })
-      .then(function () { finish(true); })
+      .then(function () { if (stillCurrent()) finish(true); })
       .catch(function (e) {
+        if (!stillCurrent()) return; // 过期请求：静默丢弃
         finish(false, "✗ 引擎加载音色失败: " + ((e && e.message) || "引擎不可用"));
       });
   };

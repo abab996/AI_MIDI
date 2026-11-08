@@ -175,6 +175,8 @@ interface EngineBridgeApi {
   noteOn(channel: number, key: number, velocity: number): Promise<void> | undefined;
   noteOff(channel: number, key: number): Promise<void> | undefined;
   loadSoundFont(path: string, track?: number): Promise<void>;
+  loadSoundFontWithProgress(track: number, path: string, onStatus?: (st: any) => void): Promise<any>;
+  cancelSoundFontLoad(track: number): Promise<void>;
   noteOnTrack(track: number, key: number, velocity: number): Promise<void> | undefined;
   noteOffTrack(track: number, key: number): Promise<void> | undefined;
   setTrackMix(track: number, gain: number | undefined, pan: number | undefined, mute: boolean, solo: boolean, active: boolean | undefined): Promise<void>;
@@ -186,6 +188,7 @@ interface EngineBridgeApi {
   scheduleSamples(clips: Array<Record<string, unknown>>, bpm: number): Promise<void>;
   clearSamples(): Promise<void>;
   scheduleNotes(notes: Array<Record<string, unknown>>, bpm: number): Promise<void>;
+  clearNotes(): Promise<void>;
   bounce(params: Record<string, unknown>): Promise<string>;
   setLoop(on: boolean, start: number, end: number): Promise<void>;
   getLevels(): Promise<number[]>;
@@ -295,6 +298,7 @@ interface ArrangeController {
   projectId: string | null;
   projectEpoch: number;
   audioSync?: "waiting" | "ready" | "failed";
+  pluginIssues?: { ref: string; trackId?: string; slot: number; master: boolean; error?: string }[];
   _audioSyncRequest?: number;
   _audioRequestedSignature?: string;
   _saves: { [project: string]: { base: any; inflight: Promise<any> | null; draft: any; lastError?: any } };
@@ -458,6 +462,9 @@ interface PluginPanelApi {
   /** 工程载入后把记录的插件装回引擎并恢复状态（浏览器模式静默跳过） */
   restoreAll(ctrl: unknown): Promise<any>;
   saveAll(ctrl: unknown): Promise<any>;
+  retryMissing(ctrl: unknown): Promise<any>;
+  flushAll(): void;
+  duplicateState(ctrl: unknown, fromTrackId: string, toTrackId: string): Promise<any>;
   resolvePlugin(ref: string): Promise<any>;
   enqueue(ctrl: ArrangeController, task: ()=>Promise<any>, valid?: ()=>boolean): Promise<boolean>;
   isOpen(): boolean;

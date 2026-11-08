@@ -8494,6 +8494,8 @@ html.has-titlebar .top-nav {
 
 .mxr-fx-slot.loaded { color: var(--color-hud); border-color: var(--color-hud); }
 .mxr-fx-slot.loaded.bypass { opacity: 0.55; border-style: dashed; }
+/* P-H1：插件缺失占位——标红但仍允许播放其余轨道 */
+.mxr-fx-slot.missing { color: var(--color-danger, #d9534f); border-color: var(--color-danger, #d9534f); border-style: dashed; }
 
 /* ── 推子 + 电平表 ── */
 
@@ -8860,3 +8862,32 @@ html.has-titlebar .top-nav {
 .plugin-ui-window { max-width: calc(100vw - 32px); padding: 10px; }
 .plugin-ui-close { display: block; margin: 0 0 8px auto; }
 .plugin-ui-window > iframe { display: block; width: 100%; max-height: calc(100vh - 90px); border: 1px solid var(--color-border); }
+
+/* S-M1：SF2 大音色加载进度条（右下角，带取消） */
+.sf-load-bar {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-hud);
+  border-radius: 8px;
+  background: var(--color-panel, rgba(18, 22, 28, 0.94));
+  color: var(--color-text);
+  font-size: 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.sf-load-cancel {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sf-load-cancel:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.sf-load-cancel:disabled { opacity: 0.5; cursor: default; }

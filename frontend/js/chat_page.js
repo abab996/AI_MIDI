@@ -35,7 +35,15 @@
             if (state === "ready") {
               text = "ENGINE ●"; cls = "stamp ok";
               var sfNote = (st.soundfont_loaded === false) ? " · 未加载音色（SF2 轨静音）" : "";
-              badge.title = (st.device_summary || "引擎就绪") + sfNote + " · 全链路原生引擎";
+              /* P-H3：单插件告警不改变引擎就绪状态（播放仍可用），只在提示里列出 */
+              var pluginNote = "";
+              if (st.plugin_warnings && st.plugin_warnings.length) {
+                pluginNote = " · " + st.plugin_warnings.length + " 个插件告警（其余轨道正常）";
+                cls = "stamp warn";
+              }
+              badge.title = (st.device_summary || "引擎就绪") + sfNote + pluginNote +
+                (st.plugin_warnings && st.plugin_warnings.length ? "\n" + st.plugin_warnings.join("\n") : "") +
+                " · 全链路原生引擎";
             }
             else if (state === "starting" || state === "restarting") { text = "ENGINE …"; cls = "stamp warn"; badge.title = "引擎启动中（播放暂不可用）"; }
             else if (state === "failed" || state === "stopped" || state === "disabled") {
@@ -61,6 +69,16 @@
           // 引擎恢复（starting/restarting → ready）转态提示一次（此前恢复全程静默）
           if (state === "ready" && (lastState === "starting" || lastState === "restarting" || lastState === "failed") && !noBridge) {
             if (window.UI && window.UI.toast) window.UI.toast("✓ 音频引擎已就绪（播放可用）", "ok");
+            /* S-L1：新引擎进程没有旧的调度表/音源，前端只在播放/编辑时重发，
+               恢复后若不补发，音频 clip 与 SF2 轨会静音到下次播放。 */
+            var ctrl      = (window       ).Arrange;
+            if (ctrl) {
+              try { if (ctrl.engine && ctrl.engine.invalidateNativeSources) ctrl.engine.invalidateNativeSources(); } catch (e) {}
+              try {
+                ctrl._lastSampleSig = "";
+                if (ctrl.sendSampleSchedule) ctrl.sendSampleSchedule();
+              } catch (e) {}
+            }
           }
           lastState = state;
         });

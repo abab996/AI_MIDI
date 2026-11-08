@@ -487,7 +487,7 @@ interface PianoRollController {
   _audioNow(): number;
   _clearNativeTimers(): void;
   _currentPlayBeat(): number;
-  _engineSf2Load(trk: any, path: any, bank: any, program: any, finish: any): unknown;
+  _engineSf2Load(trk: any, path: any, bank: any, program: any, finish: any, key?: any): unknown;
   _engineSf2Prepare(): unknown;
   _expandPosWindow(from: any, to: any): PosSpan[];
   _lastCanvasMainH: number;
@@ -695,6 +695,10 @@ interface ArrangeEngineInstance {
   _hbFallback: number | null;
   _heartbeat: HeartbeatHandle | null;
   _nativeTimers: EngineNativeTimer[];
+  _nativeNoteSchedule?: boolean;
+  _nativeScheduleBpm?: number;
+  _scheduleNativeNotes(): void;
+  invalidateNativeSources(): void;
   _nativeOn?: { [key: string]: number };
   _nativeOnPush(idx: any, midi: any, trackId: any): void;
   _nativeOnRemove(idx: any, midi: any): void;
@@ -732,6 +736,7 @@ interface ArrangeEngineInstance {
   init(): void;
   limiter: DynamicsCompressorNode | null;
   loadTrackSoundFont(track: any, nodes: any, src: any): unknown;
+  _loadSf2WithProgress(index: number, path: string): Promise<any>;
   masterGain: GainNode | null;
   maxCachedBuffers: number;
   secondsPerBeat(): number;

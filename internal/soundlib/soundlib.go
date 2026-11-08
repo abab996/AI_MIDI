@@ -45,8 +45,11 @@ const (
 // RegistryVersion registry.json 的结构版本
 const RegistryVersion = 1
 
-// sf2Exts 视为 SF2 音色库的扩展名（.sf3 为同类大体积采样的补充格式）
-var sf2Exts = []string{".sf2", ".sf3"}
+// sf2Exts 视为 SF2 音色库的扩展名。
+// 注意：不包含 .sf3 —— 引擎的 tinySoundFont 未编译 Vorbis 解码，把 SF3
+// 的压缩采样当 int16 PCM 播放会输出很响的噪声（S-M3）。扫描/导入阶段
+// 直接拒绝，而不是"加载成功"后让用户听到噪声。
+var sf2Exts = []string{".sf2"}
 
 // AIInfo 标记 AI 生成的音源（设置页/机架/素材库据此显示 AI 徽标）
 type AIInfo struct {

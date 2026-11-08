@@ -24,10 +24,14 @@ import (
 //	GET    /api/sound/presets?id=          SF2 预设列表（bank:program）
 //	GET    /api/sound/samples?pack=&sub=   采样包内容列举
 //	POST   /api/sound/import/sf2?name=     上传 SF2（落盘 + 入册）
+//	POST   /api/sound/relocate             缺失音色重定位（按哈希/同名/显式路径）
 //	POST   /api/sound/migrate              重新扫描磁盘并入册（设置页"重新扫描"）
 func (r *Router) handleSoundSub(w http.ResponseWriter, req *http.Request) {
 	sub := strings.TrimPrefix(req.URL.Path, "/api/sound/")
 	switch {
+	case sub == "relocate":
+		/* S-M5：缺失音色文件重定位（按哈希/文件名或显式路径） */
+		r.handleSoundRelocate(w, req)
 	case sub == "plugin":
 		ref, err := soundlib.ResolvePlugin(req.URL.Query().Get("id"))
 		if err != nil {
@@ -46,9 +50,21 @@ func (r *Router) handleSoundSub(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			var matched []engine.PluginInfo
-			for _, plugin := range list.Plugins {
-				if strings.EqualFold(filepath.Clean(plugin.Path), filepath.Clean(ref.Path)) && (ref.ID == "" || plugin.ID == ref.ID || strings.HasSuffix(plugin.ID, "|"+ref.ID)) {
-					matched = append(matched, plugin)
+			/* 身份优先：ClassUID 就是引擎的 format|路径|uniqueId。插件移动/
+			   重装后路径变了但 uniqueId 不变，先按 ClassUID 精确匹配；
+			   只有 ClassUID 缺失时才退回"路径 + uid 后缀"（P-M1）。 */
+			if ref.ID != "" {
+				for _, plugin := range list.Plugins {
+					if plugin.ID == ref.ID {
+						matched = append(matched, plugin)
+					}
+				}
+			}
+			if len(matched) == 0 {
+				for _, plugin := range list.Plugins {
+					if strings.EqualFold(filepath.Clean(plugin.Path), filepath.Clean(ref.Path)) && (ref.ID == "" || plugin.ID == ref.ID || strings.HasSuffix(plugin.ID, "|"+ref.ID)) {
+						matched = append(matched, plugin)
+					}
 				}
 			}
 			if len(matched) != 1 {
@@ -432,25 +448,20 @@ func (r *Router) handleSoundImportSF2(w http.ResponseWriter, req *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
-	buf, uerr := readSF2Upload(req)
+	rawName := req.URL.Query().Get("name")
+	dest, size, uerr := saveSF2Upload(req, rawName)
 	if uerr != nil {
 		writeError(w, uerr.status, uerr.detail)
 		return
 	}
-	rawName := req.URL.Query().Get("name")
-	dest, err := writeSF2File(rawName, buf)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "保存失败", err)
-		return
-	}
-	src, created, err := soundlib.EnsureSF2Source(dest, sf2DisplayName(rawName))
+	src, created, err := soundlib.EnsureSF2Source(dest, sf2DisplayNameFor(rawName, dest))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "音色已保存，但登记音源失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"saved":  dest,
-		"bytes":  len(buf),
+		"bytes":  size,
 		"source": src,
 		"added":  created,
 	})

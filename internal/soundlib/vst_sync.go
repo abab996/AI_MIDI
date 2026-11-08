@@ -8,6 +8,10 @@ import (
 
 // SyncVST3Plugins registers scanned instruments as rack sources as well as FX.
 // Refresh enriches old identifiers and retains the user's enabled state and name.
+//
+// 匹配以 ClassUID（引擎的 format|路径|uniqueId）优先：插件移动/重装后
+// 路径变了，但 uniqueId 不变，旧注册表条目会被就地更新而不是新增一条
+// 幽灵条目（P-M1）。路径匹配只作为 ClassUID 缺失时的兜底。
 func SyncVST3Plugins(scanned []engine.PluginInfo) error {
 	pathKey := func(path string) string { return strings.ToLower(filepath.Clean(ResolvePath(path))) }
 	counts := map[string]int{}
@@ -19,9 +23,17 @@ func SyncVST3Plugins(scanned []engine.PluginInfo) error {
 	for _, p := range scanned {
 		matched := ""
 		for _, old := range existing {
-			if pathKey(old.Path) == pathKey(p.Path) && (old.ClassUID == p.ID || old.ClassUID != "" && strings.HasSuffix(p.ID, "|"+old.ClassUID) || old.ClassUID == "" && counts[pathKey(p.Path)] == 1) {
+			if old.ClassUID != "" && old.ClassUID == p.ID {
 				matched = old.ID
 				break
+			}
+		}
+		if matched == "" {
+			for _, old := range existing {
+				if pathKey(old.Path) == pathKey(p.Path) && (old.ClassUID == p.ID || old.ClassUID != "" && strings.HasSuffix(p.ID, "|"+old.ClassUID) || old.ClassUID == "" && counts[pathKey(p.Path)] == 1) {
+					matched = old.ID
+					break
+				}
 			}
 		}
 		if matched != "" {

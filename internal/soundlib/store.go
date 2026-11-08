@@ -1,9 +1,12 @@
 package soundlib
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -367,6 +370,18 @@ func EnsureSF2Source(absPath, displayName string) (Source, bool, error) {
 			strings.EqualFold(ResolvePath(reg.Sources[i].Path), absPath) {
 			src := reg.Sources[i]
 			mu.Unlock()
+			// S-M5：旧条目补内容哈希（缺失文件重定位按哈希匹配的前提）。
+			// 只在哈希为空时读一次文件；失败不影响登记。
+			if src.Hash == "" {
+				if hash := fileHashHex(absPath); hash != "" {
+					if updated, uerr := Update(src.ID, func(s *Source) error {
+						s.Hash = hash
+						return nil
+					}); uerr == nil {
+						src = updated
+					}
+				}
+			}
 			return src, false, nil
 		}
 	}
@@ -382,6 +397,7 @@ func EnsureSF2Source(absPath, displayName string) (Source, bool, error) {
 		Name:    base,
 		Origin:  OriginUser,
 		Path:    StorePath(absPath),
+		Hash:    fileHashHex(absPath),
 		Enabled: true,
 	}
 	if looksBuiltinSF2(filepath.Base(absPath)) {
@@ -392,6 +408,20 @@ func EnsureSF2Source(absPath, displayName string) (Source, bool, error) {
 		return Source{}, false, err
 	}
 	return out, true, nil
+}
+
+// fileHashHex 流式计算文件 SHA-256；失败返回空串（仅作重定位提示，非致命）。
+func fileHashHex(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // RemoveSF2ByPath 按文件路径移除注册表条目（旧 /api/audio/soundfonts 删除

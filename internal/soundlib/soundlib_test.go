@@ -515,8 +515,9 @@ func TestSlugAndIDStability(t *testing.T) {
 	if a == c {
 		t.Fatal("不同路径应有不同 id")
 	}
-	if !isSF2Name("a.SF2") || !isSF2Name("a.sf3") || isSF2Name("a.sf2.tmp") || isSF2Name("a.wav") {
-		t.Fatal("SF2 扩展名判定不对")
+	/* S-M3：引擎没有 Vorbis 解码，SF3 必须被拒绝（不能再当作 SF2 接受） */
+	if !isSF2Name("a.SF2") || isSF2Name("a.sf3") || isSF2Name("a.sf2.tmp") || isSF2Name("a.wav") {
+		t.Fatal("SF2 扩展名判定不对（.sf3 应被拒绝）")
 	}
 }
 

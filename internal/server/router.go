@@ -204,9 +204,9 @@ func requestLimitFor(path, method string) int64 {
 	case path == "/api/parse":
 		return 64 << 20 // MIDI 上传（handler 内存阈值 32MB，超限部分 spool 临时目录）
 	case strings.HasPrefix(path, "/api/audio/"):
-		return 288 << 20 // soundfont 上传（handler 内部 256MB，留 32MB 头）+ bounce tracks（5MB）
+		return 4<<30 + 32<<20 // SF2 流式上传（handler 上限 4GB，留 32MB 头）+ bounce tracks（5MB）
 	case path == "/api/sound/import/sf2":
-		return 288 << 20 // SF2 导入（handler 内部 256MB 限流，与 /api/audio/soundfonts 同规）
+		return 4<<30 + 32<<20 // SF2 流式导入（handler 上限 4GB，与 /api/audio/soundfonts 同规）
 	case strings.HasPrefix(path, "/api/sound/"):
 		return 8 << 20 // 注册表 JSON（采样包目录列表/标签可能较长）
 	case strings.HasPrefix(path, "/api/arrangement/") ||

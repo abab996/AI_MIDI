@@ -38,9 +38,11 @@ func referenceArchive(path, ref, format string) string {
 }
 
 const (
-	// MaxStateBytes 单份状态上限 5MB（与计划 §3.2.2 的 5MB 口径一致）。
-	// 超过即拒绝保存：宁可报错也不能让一个工程目录被状态文件撑爆。
-	MaxStateBytes = 5 << 20
+	// MaxStateBytes 单份状态上限 64MB。
+	// 旧值 5MB 会把大型采样器挡在门外：每次保存都报"N 个插件状态保存失败"，
+	// 状态永远存不下（P-M3）。64MB 仍能防止单个工程目录被异常状态撑爆，
+	// 同时覆盖绝大多数采样器。
+	MaxStateBytes = 64 << 20
 
 	// MaxTracks / MaxSlots 与引擎的 kMaxTracks / kMaxFxSlots 对齐，
 	// 用于拒绝越界目标（否则可以构造出任意文件名的写入）。
@@ -227,6 +229,24 @@ func (s *Store) Load(t Target) (Envelope, error) {
 		return Envelope{}, err
 	}
 	return loadStateFile(path, t)
+}
+
+// Copy 把源目标已保存的状态复制到目标目标（复制轨道用，P-L5）。
+// 源不存在返回 os.ErrNotExist（复制一条没存过状态的轨道属正常情况，
+// 调用方按"没有可复制的状态"处理）；目标已存在则覆盖——副本应跟随源轨。
+func (s *Store) Copy(from, to Target) (bool, error) {
+	env, err := s.Load(from)
+	if err != nil {
+		return false, err
+	}
+	payload, err := env.Payload()
+	if err != nil {
+		return false, err
+	}
+	if err := s.Save(to, env.Ref, env.Format, payload); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func loadStateFile(path string, t Target) (Envelope, error) {

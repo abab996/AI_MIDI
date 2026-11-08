@@ -120,23 +120,23 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, meta)
 
-		case sub == "draft":
-			if req.Method == http.MethodGet {
-				writeJSON(w, http.StatusOK, map[string]any{"text": project.LoadDraft(projectID)})
-			} else if req.Method == http.MethodPost {
-				var in struct {
-					Text string `json:"text"`
-				}
-				if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
-					writeError(w, http.StatusBadRequest, "无效请求体")
-					return
-				}
-				if err := project.SaveDraft(projectID, in.Text); err != nil {
-					writeError(w, http.StatusInternalServerError, "保存草稿失败")
-					return
-				}
-				writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case sub == "draft":
+		if req.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"text": project.LoadDraft(projectID)})
+		} else if req.Method == http.MethodPost {
+			var in struct {
+				Text string `json:"text"`
 			}
+			if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+				writeError(w, http.StatusBadRequest, "无效请求体")
+				return
+			}
+			if err := project.SaveDraft(projectID, in.Text); err != nil {
+				writeError(w, http.StatusInternalServerError, "保存草稿失败")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		}
 
 	case sub == "clear" && req.Method == http.MethodPost:
 		if tasks.TaskHasActive(projectID) {
@@ -152,17 +152,17 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 		st.UndoStack = nil
 		st.PendingEdit = nil
 		st.EditHistory = nil
-			// 清空编辑历史并落盘（与 Python clear_chat 一致，否则重启后旧历史残留）
-			legacy := false
-			currentTaskID := s.GetCurrentTaskID()
-			for _, t := range tasks.TaskList(projectID) {
-				if t.ID == currentTaskID {
-					legacy = t.Legacy
-					break
-				}
+		// 清空编辑历史并落盘（与 Python clear_chat 一致，否则重启后旧历史残留）
+		legacy := false
+		currentTaskID := s.GetCurrentTaskID()
+		for _, t := range tasks.TaskList(projectID) {
+			if t.ID == currentTaskID {
+				legacy = t.Legacy
+				break
 			}
-			project.SaveEditHistory(projectID, nil, currentTaskID, legacy)
-			project.SaveHistory(projectID, nil, s.MidiFiles, currentTaskID, legacy)
+		}
+		project.SaveEditHistory(projectID, nil, currentTaskID, legacy)
+		project.SaveHistory(projectID, nil, s.MidiFiles, currentTaskID, legacy)
 		fl.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})
 
@@ -242,12 +242,12 @@ func (r *Router) handleProjectsSub(w http.ResponseWriter, req *http.Request) {
 			st.PendingEdit = nil
 			// 按当前任务是否为 legacy 决定落盘位置：硬编码 false 会把
 			// legacy 任务的历史写进 tasks/<id>/history.json，重启后撤回结果丢失
-				legacy := false
-				currentTaskID := s.GetCurrentTaskID()
-				if t := tasks.TaskGet(currentTaskID); t != nil {
-					legacy = t.Legacy
-				}
-				project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, currentTaskID, legacy)
+			legacy := false
+			currentTaskID := s.GetCurrentTaskID()
+			if t := tasks.TaskGet(currentTaskID); t != nil {
+				legacy = t.Legacy
+			}
+			project.SaveHistory(projectID, st.FullHistory, s.MidiFiles, currentTaskID, legacy)
 		}
 		resp := map[string]any{
 			"messages": chat.SnapshotDisplay(st.ChatDisplay),

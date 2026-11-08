@@ -121,4 +121,3 @@ func TestSanitizeMessagesToolCallArguments(t *testing.T) {
 		t.Errorf("合法 JSON arguments 不应被误修改，实际为 %q", tcs[3].Function.Arguments)
 	}
 }
-

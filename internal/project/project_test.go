@@ -162,3 +162,23 @@ func TestProjectGlobalBPM(t *testing.T) {
 		t.Fatalf("out-of-range BPM should be rejected, got %d", got)
 	}
 }
+
+func TestCopyProjectEmptyNameFallback(t *testing.T) {
+	tmpDir := setupTestProjectDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	meta, err := CreateProject("原项目")
+	if err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+	copied, err := CopyProject(meta.ID, "  ")
+	if err != nil {
+		t.Fatalf("CopyProject with empty name failed: %v", err)
+	}
+	if copied.Name != "原项目 副本" {
+		t.Fatalf("copy name = %q, want %q", copied.Name, "原项目 副本")
+	}
+	if loaded, err := LoadProject(copied.ID); err != nil || loaded.Name != copied.Name {
+		t.Fatalf("copied meta not persisted: %+v err=%v", loaded, err)
+	}
+}

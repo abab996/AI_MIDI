@@ -294,6 +294,18 @@ func CopyProject(sourceID, newName string) (ProjectMeta, error) {
 		return ProjectMeta{}, fmt.Errorf("源项目不存在: %s", sourceID)
 	}
 
+	/* 前端「复制」只发空 body：name 为空时回退到「源项目名 + 副本」，
+	   避免生成名称为空、在档案库里只剩按钮没有标题的项目 */
+	if strings.TrimSpace(newName) == "" {
+		if srcMeta, err := LoadProject(sourceID); err == nil {
+			newName = strings.TrimSpace(srcMeta.Name)
+		}
+		if newName == "" {
+			newName = "未命名项目"
+		}
+		newName += " 副本"
+	}
+
 	newID := strings.ReplaceAll(uuid.New().String(), "-", "")[:12]
 	now := nowISO()
 	dstDir, _ := ProjectDir(newID)

@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // Request 控制请求（Go → Engine）
@@ -80,13 +81,18 @@ const (
 
 // EngineStatus 引擎运行状态快照（/api/audio/status）
 type EngineStatus struct {
-	ReplayErrors  []string    `json:"replay_errors,omitempty"`
-	State         EngineState `json:"state"`
-	PID           int         `json:"pid"`
-	Restarts      int         `json:"restarts"`
-	LastError     string      `json:"last_error,omitempty"`
-	DeviceSummary string      `json:"device_summary,omitempty"`
-	Protocol      uint32      `json:"protocol_version"`
+	ReplayErrors []string `json:"replay_errors,omitempty"`
+	/* PluginWarnings / IsolatedPlugins 是"单插件"级别的告警（P-H3）：
+	   某个插件缺失/装载失败/被隔离，不影响引擎就绪与其他插件播放，
+	   前端不得据此把全局状态判成 failed（那样会拦下全部播放）。 */
+	PluginWarnings  []string    `json:"plugin_warnings,omitempty"`
+	IsolatedPlugins []string    `json:"isolated_plugins,omitempty"`
+	State           EngineState `json:"state"`
+	PID             int         `json:"pid"`
+	Restarts        int         `json:"restarts"`
+	LastError       string      `json:"last_error,omitempty"`
+	DeviceSummary   string      `json:"device_summary,omitempty"`
+	Protocol        uint32      `json:"protocol_version"`
 	// 引擎是否已加载任何音色（冷启动默认加载或显式 loadSoundFont 成功）。
 	// ready 只代表 IPC 通畅；SF2 轨要出声还得看这里。波形声部（setTrackVoice）
 	// 不依赖音色，不受此字段影响
@@ -100,6 +106,30 @@ type EngineStatus struct {
 type Event struct {
 	Name string          `json:"event"`
 	Data json.RawMessage `json:"data"`
+}
+
+// PluginParamEvent 已缓存的参数变化事件（P-L1）。
+// 引擎每 50ms 批量推送一次；Go 侧带递增序号供前端增量拉取。
+type PluginParamEvent struct {
+	Seq   int64           `json:"seq"`
+	Event string          `json:"event"`
+	Data  json.RawMessage `json:"data"`
+}
+
+// SoundFontLoadState SF2 大音色异步加载状态（S-M1）。
+// 引擎侧解析无法中断，Go 侧提供"已等待时长 + 取消（等待/恢复原音色）"，
+// 避免固定 30s 超时把正在解析的引擎判成会话失效。
+type SoundFontLoadState struct {
+	Track      int       `json:"track"`
+	Path       string    `json:"path,omitempty"`
+	Size       int64     `json:"size,omitempty"`
+	Running    bool      `json:"running"`
+	Cancelling bool      `json:"cancelling"`
+	Phase      string    `json:"phase"` // idle | loading | cancelling | restoring | done | cancelled | failed
+	Error      string    `json:"error,omitempty"`
+	ElapsedMS  int64     `json:"elapsed_ms"`
+	StartedAt  time.Time `json:"-"`
+	FinishedAt time.Time `json:"-"`
 }
 
 // TrackMixParams 多轨混音参数（M3 混音图）

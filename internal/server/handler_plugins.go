@@ -198,11 +198,12 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		revokeProjectResources(in.Project, in.Generation)
-		if err := sup.BeginPluginSession(in.Project, in.Generation, in.Tracks); err != nil {
+		reset, err := sup.BeginPluginSessionEx(in.Project, in.Generation, in.Tracks)
+		if err != nil {
 			writeError(w, 503, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true})
+		writeJSON(w, 200, map[string]any{"ok": true, "reset": reset})
 		return
 	case "/ui-ticket":
 		r.handleUITicket(w, req)
@@ -376,7 +377,22 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			writeError(w, http.StatusInternalServerError, "目录已删除，但注册表清理失败："+rerr.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": pluginID, "removed": removed, "unloaded": unloaded})
+		/* P-L3：卸载不再能自动改工程文件（可能误删用户数据），但至少把
+		   "仍引用该插件的工程"告知前端，由用户决定是否清理槽位。 */
+		referenced := []map[string]any{}
+		for _, p := range project.ListProjects() {
+			raw, rerr := project.ReadArrangement(p.ID)
+			if rerr != nil {
+				continue
+			}
+			if bytes.Contains(raw, []byte(pluginID)) {
+				referenced = append(referenced, map[string]any{"id": p.ID, "name": p.Name})
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "id": pluginID, "removed": removed, "unloaded": unloaded,
+			"referenced_projects": referenced,
+		})
 	case "/sync":
 		/* 把 Library/plugins/ 下已安装的 MM 插件同步进音源注册表：
 		   命令行 mm install 或手工拷贝之后，插件要能在「声音管理」与素材库
@@ -401,6 +417,18 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		}
 		writeJSON(w, http.StatusOK, state)
 
+	case "/events":
+		/* P-L1：插件参数变化事件增量拉取。前端参数面板以 after 游标轮询，
+		   原生编辑器/插件自身改参数不再只能靠 0.5s 全量回读。 */
+		if req.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		after, _ := strconv.ParseInt(strings.TrimSpace(req.URL.Query().Get("after")), 10, 64)
+		seq, events := sup.PluginEvents(after)
+		writeJSON(w, http.StatusOK, map[string]any{"seq": seq, "events": events})
+		return
+
 	/* ── P5：插件二进制状态随工程保存 ──
 	   状态不进 arrangement.json（可达数 MB），按槽位落在
 	   <工程目录>/plugins/*.state；引擎重启重放后由守护器推回。 */
@@ -419,7 +447,14 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			writeError(w, http.StatusBadRequest, terr.Error())
 			return
 		}
-		blob, gerr := sup.PluginGetState(target.Track, target.Slot)
+		var blob string
+		var gerr error
+		if in.TrackID != "" {
+			/* P-M5：解析与导出在插件队列内原子完成 */
+			blob, _, gerr = sup.PluginGetStateAt(in.Project, in.TrackID, in.Generation, in.Master, target.Slot)
+		} else {
+			blob, gerr = sup.PluginGetState(target.Track, target.Slot)
+		}
 		if gerr != nil {
 			writeError(w, http.StatusBadRequest, "导出插件状态失败："+gerr.Error())
 			return
@@ -476,7 +511,13 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 				"保存的状态属于另一个插件（"+env.Ref+"），拒绝恢复到当前插件")
 			return
 		}
-		if serr := sup.PluginSetState(target.Track, target.Slot, env.Data); serr != nil {
+		var serr error
+		if in.TrackID != "" {
+			_, serr = sup.PluginSetStateAt(in.Project, in.TrackID, in.Generation, in.Master, target.Slot, env.Data)
+		} else {
+			serr = sup.PluginSetState(target.Track, target.Slot, env.Data)
+		}
+		if serr != nil {
 			writeError(w, http.StatusBadRequest, "恢复插件状态失败："+serr.Error())
 			return
 		}
@@ -487,6 +528,45 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			"ok": true, "file": target.FileName(), "ref": env.Ref,
 			"savedAt": env.SavedAt, "bytes": env.Bytes,
 		})
+
+	case "/state/copy":
+		/* 复制轨道时把源轨的插件状态复制给副本（P-L5）。轨道 id 变了，
+		   状态文件名按 trackId 哈希，因此不能只靠 arrangement 复制。 */
+		if req.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var in struct {
+			Project     string `json:"project"`
+			FromTrackID string `json:"fromTrackId"`
+			ToTrackID   string `json:"toTrackId"`
+			Slot        *int   `json:"slot"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		if strings.TrimSpace(in.FromTrackID) == "" || strings.TrimSpace(in.ToTrackID) == "" {
+			writeError(w, http.StatusBadRequest, "缺少源或目标轨道")
+			return
+		}
+		dir, derr := stateProjectDir(in.Project)
+		if derr != nil {
+			writeError(w, http.StatusBadRequest, derr.Error())
+			return
+		}
+		slot := -1
+		if in.Slot != nil {
+			slot = *in.Slot
+		}
+		from := plugins.Target{ProjectID: in.Project, TrackID: in.FromTrackID, Track: 0, Slot: slot}
+		to := plugins.Target{ProjectID: in.Project, TrackID: in.ToTrackID, Track: 0, Slot: slot}
+		copied, cerr := plugins.NewStore(dir).Copy(from, to)
+		if cerr != nil && !os.IsNotExist(cerr) {
+			writeError(w, http.StatusBadRequest, "复制插件状态失败："+cerr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "copied": copied})
 
 	case "/state/list":
 		projectID := strings.TrimSpace(req.URL.Query().Get("project"))
@@ -523,13 +603,17 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		var in struct {
-			Ref    string `json:"ref"`
-			ID     string `json:"id"`
-			Format string `json:"format"`
-			Path   string `json:"path"`
-			Track  int    `json:"track"`
-			Slot   *int   `json:"slot"` // 指针：nil = 未给（乐器），0 = 第一个 FX 槽
-			Master bool   `json:"master"`
+			Ref        string `json:"ref"`
+			ID         string `json:"id"`
+			Format     string `json:"format"`
+			Path       string `json:"path"`
+			Track      int    `json:"track"`
+			Slot       *int   `json:"slot"` // 指针：nil = 未给（乐器），0 = 第一个 FX 槽
+			Master     bool   `json:"master"`
+			Ephemeral  bool   `json:"ephemeral"` // 试听装载：不进崩溃重放表（P-L6）
+			Project    string `json:"project"`
+			Generation int64  `json:"generation"`
+			TrackID    string `json:"trackId"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "请求格式错误")
@@ -551,12 +635,21 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			if in.Slot != nil {
 				slot = *in.Slot
 			}
-			state, err := sup.LoadMmPlugin(track, slot, in.Path)
+			var state map[string]any
+			var err error
+			if in.TrackID != "" {
+				/* P-M5：解析与装载在守护器的插件队列内原子完成 */
+				track, state, err = sup.LoadMmPluginAt(in.Project, in.TrackID, in.Generation, in.Master, slot, in.Path, in.Ephemeral)
+			} else if in.Ephemeral {
+				state, err = sup.LoadMmPluginEphemeral(track, slot, in.Path)
+			} else {
+				state, err = sup.LoadMmPlugin(track, slot, in.Path)
+			}
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			if in.Ref != "" {
+			if in.Ref != "" && !in.Ephemeral {
 				sup.SetPluginReference(track, slot, in.Ref)
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mm": state})
@@ -570,12 +663,28 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if in.Slot != nil {
 			slot = *in.Slot
 		}
-		if err := sup.LoadPlugin(track, slot, in.ID); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if in.Ref != "" {
-			sup.SetPluginReference(track, slot, in.Ref)
+		if in.TrackID != "" {
+			usedTrack, err := sup.LoadPluginAt(in.Project, in.TrackID, in.Generation, in.Master, slot, in.ID, in.Ephemeral)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if in.Ref != "" && !in.Ephemeral {
+				sup.SetPluginReference(usedTrack, slot, in.Ref)
+			}
+		} else {
+			if in.Ephemeral {
+				if err := sup.LoadPluginEphemeral(track, slot, in.ID); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			} else if err := sup.LoadPlugin(track, slot, in.ID); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if in.Ref != "" && !in.Ephemeral {
+				sup.SetPluginReference(track, slot, in.Ref)
+			}
 		}
 		state, _ := sup.PluginState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": state})
@@ -586,9 +695,12 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		var in struct {
-			Track  int  `json:"track"`
-			Slot   *int `json:"slot"`
-			Master bool `json:"master"`
+			Track      int    `json:"track"`
+			Slot       *int   `json:"slot"`
+			Master     bool   `json:"master"`
+			Project    string `json:"project"`
+			Generation int64  `json:"generation"`
+			TrackID    string `json:"trackId"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "请求格式错误")
@@ -602,8 +714,15 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if in.Slot != nil {
 			slot = *in.Slot
 		}
-		if err := sup.UnloadPlugin(track, slot); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		/* P-M5：解析与卸载在插件队列内原子完成 */
+		var uerr error
+		if in.TrackID != "" {
+			uerr = sup.UnloadPluginAt(in.Project, in.TrackID, in.Generation, in.Master, slot)
+		} else {
+			uerr = sup.UnloadPlugin(track, slot)
+		}
+		if uerr != nil {
+			writeError(w, http.StatusBadRequest, uerr.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -613,7 +732,16 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if !ok {
 			return
 		}
-		out, err := sup.PluginParams(track, slot)
+		q := req.URL.Query()
+		var out map[string]any
+		var err error
+		if trackID := q.Get("trackId"); trackID != "" {
+			generation, _ := strconv.ParseInt(q.Get("generation"), 10, 64)
+			master := q.Get("master") == "1" || q.Get("master") == "true"
+			out, err = sup.PluginParamsAt(q.Get("project"), trackID, generation, master, slot)
+		} else {
+			out, err = sup.PluginParams(track, slot)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -626,12 +754,15 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		var in struct {
-			Track   int     `json:"track"`
-			Slot    *int    `json:"slot"`
-			Master  bool    `json:"master"`
-			Index   int     `json:"index"`
-			Value   float64 `json:"value"`
-			Changes []struct {
+			Track      int     `json:"track"`
+			Slot       *int    `json:"slot"`
+			Master     bool    `json:"master"`
+			Project    string  `json:"project"`
+			Generation int64   `json:"generation"`
+			TrackID    string  `json:"trackId"`
+			Index      int     `json:"index"`
+			Value      float64 `json:"value"`
+			Changes    []struct {
 				Index int     `json:"index"`
 				Value float64 `json:"value"`
 			} `json:"changes"` // 批量下发（一次连接写多个参数后统一回读）
@@ -648,23 +779,35 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if in.Slot != nil {
 			slot = *in.Slot
 		}
+		setParam := func(index int, value float64) error {
+			if in.TrackID != "" {
+				return sup.SetPluginParamAt(in.Project, in.TrackID, in.Generation, in.Master, slot, index, value)
+			}
+			return sup.SetPluginParam(track, slot, index, value)
+		}
 		if len(in.Changes) > 0 {
 			if len(in.Changes) > 256 {
 				writeError(w, http.StatusBadRequest, "单次最多下发 256 个参数")
 				return
 			}
 			for i, ch := range in.Changes {
-				if err := sup.SetPluginParam(track, slot, ch.Index, ch.Value); err != nil {
+				if err := setParam(ch.Index, ch.Value); err != nil {
 					writeError(w, http.StatusBadRequest, fmt.Sprintf("第 %d 个参数（index=%d）下发失败：%s", i+1, ch.Index, err.Error()))
 					return
 				}
 			}
-		} else if err := sup.SetPluginParam(track, slot, in.Index, in.Value); err != nil {
+		} else if err := setParam(in.Index, in.Value); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		out, err := sup.PluginParams(track, slot)
-		if err != nil {
+		var out map[string]any
+		var rerr error
+		if in.TrackID != "" {
+			out, rerr = sup.PluginParamsAt(in.Project, in.TrackID, in.Generation, in.Master, slot)
+		} else {
+			out, rerr = sup.PluginParams(track, slot)
+		}
+		if rerr != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
@@ -676,10 +819,13 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 			return
 		}
 		var in struct {
-			Track  int  `json:"track"`
-			Slot   *int `json:"slot"`
-			Master bool `json:"master"`
-			Close  bool `json:"close"`
+			Track      int    `json:"track"`
+			Slot       *int   `json:"slot"`
+			Master     bool   `json:"master"`
+			Close      bool   `json:"close"`
+			Project    string `json:"project"`
+			Generation int64  `json:"generation"`
+			TrackID    string `json:"trackId"`
 		}
 		if err := json.NewDecoder(req.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "请求格式错误")
@@ -701,7 +847,12 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 		if in.Slot != nil {
 			slot = *in.Slot
 		}
-		if err := sup.OpenPluginEditor(track, slot); err != nil {
+		if in.TrackID != "" {
+			if err := sup.OpenPluginEditorAt(in.Project, in.TrackID, in.Generation, in.Master, slot); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else if err := sup.OpenPluginEditor(track, slot); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -714,13 +865,14 @@ func (r *Router) handleEnginePluginsSub(w http.ResponseWriter, req *http.Request
 
 // pluginStateRequest 插件状态读写请求体（/state/save、/state/load 共用）。
 type pluginStateRequest struct {
-	TrackID string `json:"trackId"`
-	Project string `json:"project"` // 工程 ID（状态按工程存放）
-	Track   int    `json:"track"`
-	Slot    *int   `json:"slot"` // nil = 该轨乐器（与 /load 同一约定）
-	Master  bool   `json:"master"`
-	Ref     string `json:"ref"`    // 插件引用（校验"这份状态属于这个插件"）
-	Format  string `json:"format"` // vst3 | mm（诊断用）
+	TrackID    string `json:"trackId"`
+	Project    string `json:"project"` // 工程 ID（状态按工程存放）
+	Generation int64  `json:"generation"`
+	Track      int    `json:"track"`
+	Slot       *int   `json:"slot"` // nil = 该轨乐器（与 /load 同一约定）
+	Master     bool   `json:"master"`
+	Ref        string `json:"ref"`    // 插件引用（校验"这份状态属于这个插件"）
+	Format     string `json:"format"` // vst3 | mm（诊断用）
 }
 
 // target 解析成 plugins.Target 并返回该工程的数据目录。

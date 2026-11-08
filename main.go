@@ -278,6 +278,11 @@ func main() {
 		},
 		// 退出前保存窗口几何（尺寸/位置/最大化），下次启动恢复
 		OnBeforeClose: func(ctx context.Context) bool {
+			/* P-M3：关窗前让前端把待下发的插件参数与插件状态刷出去。
+			   窗口销毁会取消未发完的请求；这里同步执行 JS，fire-and-forget
+			   的请求至少能进入网络栈（真正可靠的保存时机仍是编辑时的
+			   scheduleSave → saveAll）。 */
+			runtime.WindowExecJS(ctx, "window.PluginPanel&&window.PluginPanel.flushAll&&window.PluginPanel.flushAll()")
 			maximized := runtime.WindowIsMaximised(ctx)
 			if !maximized {
 				w, h := runtime.WindowGetSize(ctx)

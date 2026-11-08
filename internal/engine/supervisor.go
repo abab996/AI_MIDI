@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"melodymate/internal/plugins"
@@ -89,7 +91,35 @@ type Supervisor struct {
 	loadedPlugins     map[string]loadedPlugin
 	activeProject     string
 	projectGeneration int64
-	trackIDs          []string
+	sessionReady      bool           // 是否已建立过工程会话（区分"空 project 的首次会话"）
+	trackIDs          []string       // 引擎轨索引 → 工程 trackId（与前端轨道顺序一致）
+	trackIndex        map[string]int // trackId → 引擎轨索引（同一会话内等价于下标）
+	/* 每轨"乐器槽"唯一事实来源（只记录 SF2 / 波形 / 插件乐器，不含 FX 槽）。
+	   崩溃重放以它为准：后一次设置覆盖前一次，不会出现"SF2 与波形声部同时
+	   留在快照里、按顺序重放导致音色回退"的问题（S-H3）。 */
+	instrumentSlots map[int]instrumentSlot
+	/* 崩溃隔离（P-H3）：重放期间正在装载的插件引用。若引擎在装载它时
+	   崩溃，本次崩溃归因到该插件，下次重放跳过它而不是把整个引擎熔断。 */
+	replayActive  bool
+	replayCurrent string
+	pluginSkip    map[string]bool // 已隔离（重放时跳过）的插件引用
+	pluginCrashes map[string]int  // 插件导致的引擎崩溃次数（诊断）
+	/* 引擎扫描期间消息线程被占满，其它 plugin.* / fx.* 请求会排队；
+	   客户端等待超时会 markDead 并重启引擎（P-M6）。这里记录扫描状态，
+	   让这些请求先有界等待而不是直接烧满超时。 */
+	scanning atomic.Bool
+	scanMu   sync.Mutex // 进程外扫描串行化（同时只拉起一个扫描子进程）
+	/* P-L1：引擎 Event 帧缓存（参数变化推送）。序号单调递增，跨引擎重启
+	   不清零；事件列表每次新会话清空，避免旧轨索引的事件被前端误用。 */
+	pluginEvents []PluginParamEvent
+	eventSeq     int64
+	/* S-M1：SF2 大音色异步加载状态。sfLoading 同时作为"引擎忙"信号，
+	   防止加载期间的其它请求超时把会话判死；Cancel 只停止等待/触发恢复，
+	   tsf 解析本身无法中断。 */
+	sfLoadMu  sync.Mutex
+	sfLoads   map[int]*SoundFontLoadState
+	sfLoadGen map[int]int64
+	sfLoading atomic.Int32
 	/* P5：插件二进制状态缓存（工程级）。引擎崩溃重启会把 FX 链重放回来，
 	   但插件自己的参数/状态回到默认值——重放完成后用这份缓存把状态推回去，
 	   用户才不会感知到"崩溃后音色变了"。默认取进程级单例（与 HTTP 层同一份）。 */
@@ -119,6 +149,12 @@ func NewSupervisor(cfg Config, audio AudioSettings) *Supervisor {
 		cfg.PingInterval = 2 * time.Second
 	}
 	sup := &Supervisor{cfg: cfg, audio: audio, lastGood: audio, lastSoundFonts: make(map[int]string), wakeCh: make(chan struct{}, 1),
+		trackIndex:      map[string]int{},
+		instrumentSlots: map[int]instrumentSlot{},
+		pluginSkip:      map[string]bool{},
+		pluginCrashes:   map[string]int{},
+		sfLoads:         map[int]*SoundFontLoadState{},
+		sfLoadGen:       map[int]int64{},
 		// 插件状态缓存与 HTTP 层共用进程级单例：保存/恢复与崩溃重放必须看到同一份
 		pluginStates: plugins.Default()}
 	sup.exePath = ResolveEnginePath(audio.EnginePath)
@@ -279,7 +315,11 @@ func (s *Supervisor) Status() EngineStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	st := s.status
+	// 切片深拷贝：状态快照会离开锁在 HTTP 层序列化，后台重放可能同时 append
+	st.ReplayErrors = append([]string(nil), s.status.ReplayErrors...)
+	st.PluginWarnings = append([]string(nil), s.status.PluginWarnings...)
 	st.SoundfontLoaded = s.hasSoundfont
+	st.IsolatedPlugins = s.isolatedPluginsLocked()
 	// 内置 piano/strings 的原生映射目标：每次快照实时计算，
 	// 音色目录增删后无需重启即生效
 	st.DefaultSoundfont = s.defaultSoundFontPath()
@@ -289,6 +329,42 @@ func (s *Supervisor) Status() EngineStatus {
 		st.State = StateDisabled
 	}
 	return st
+}
+
+// consumeClientEvents 持续消费引擎 Event 帧（P-L1）。会话关闭即退出。
+func (s *Supervisor) consumeClientEvents(cli *Client) {
+	for {
+		select {
+		case <-cli.Done():
+			return
+		case ev := <-cli.Events():
+			s.mu.Lock()
+			s.eventSeq++
+			s.pluginEvents = append(s.pluginEvents, PluginParamEvent{
+				Seq: s.eventSeq, Event: ev.Name, Data: ev.Data,
+			})
+			// 有界：只保留最近 256 条，前端游标落后太多时自然只剩最新事件
+			if len(s.pluginEvents) > 256 {
+				trimmed := make([]PluginParamEvent, 256)
+				copy(trimmed, s.pluginEvents[len(s.pluginEvents)-256:])
+				s.pluginEvents = trimmed
+			}
+			s.mu.Unlock()
+		}
+	}
+}
+
+// PluginEvents 返回 after 之后的参数事件与当前游标（P-L1）。
+func (s *Supervisor) PluginEvents(after int64) (int64, []PluginParamEvent) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]PluginParamEvent, 0, 8)
+	for _, ev := range s.pluginEvents {
+		if ev.Seq > after {
+			out = append(out, ev)
+		}
+	}
+	return s.eventSeq, out
 }
 
 // Ready 等待引擎就绪或 ctx/超时；返回可用的客户端引用。
@@ -728,63 +804,111 @@ func validateScanDirs(dirs []string) error {
 	return nil
 }
 
-// ScanPlugins 扫描插件目录（dirs 为空 = 系统默认目录）。
+// ScanPlugins 进程外扫描插件目录（P-M6 彻底方案）。
 //
-// 引擎侧扫描是异步的（同步应答会把管道拖死），这里启动后轮询到结束，
-// 结束时引擎会把清单一起带回；随后落一份缓存，下次启动可秒开。
+// 插件实例化只在独立的 melodymate-engine.exe --scan-only 子进程中发生：
+//
+//	· 扫描崩溃/挂死只影响子进程，正在播放的引擎进程不受影响；
+//	· 扫描期间引擎消息线程完全空闲，plugin/fx 请求不会排队超时；
+//	· 扫描成功后写 XML 缓存，并让运行中的引擎 plugin.loadCache 刷新清单，
+//	  新安装的插件可立即装载。
 func (s *Supervisor) ScanPlugins(dirs []string, timeout time.Duration) (*PluginList, error) {
 	if err := validateScanDirs(dirs); err != nil {
-		return nil, err
-	}
-	cli, err := s.Ready(5 * time.Second)
-	if err != nil {
 		return nil, err
 	}
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	params := map[string]any{"cache": s.pluginCachePath()}
-	if len(dirs) > 0 {
-		params["dirs"] = dirs
+	exe := s.exePath
+	if strings.TrimSpace(exe) == "" {
+		return nil, fmt.Errorf("引擎可执行文件路径为空，无法启动扫描子进程")
 	}
-	resp, err := cli.Request("plugin.scan", params, 30*time.Second)
+
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+
+	outFile, err := os.CreateTemp("", "melodymate-scan-*.json")
+	if err != nil {
+		return nil, fmt.Errorf("创建扫描结果文件失败：%w", err)
+	}
+	outPath := outFile.Name()
+	_ = outFile.Close()
+	defer os.Remove(outPath)
+
+	cachePath := s.pluginCachePath()
+	tempCache := false
+	if cachePath == "" {
+		cachePath = outPath + ".cache.xml"
+		tempCache = true
+	}
+	if tempCache {
+		defer os.Remove(cachePath)
+	} else {
+		_ = os.MkdirAll(filepath.Dir(cachePath), 0o755)
+	}
+
+	args := buildScanArgs(outPath, cachePath, dirs)
+	output, runErr := runScanProcess(exe, args, timeout)
+	if runErr != nil {
+		tail := strings.TrimSpace(output)
+		if len(tail) > 400 {
+			tail = tail[len(tail)-400:]
+		}
+		if errors.Is(runErr, errScanTimeout) {
+			return nil, fmt.Errorf("插件扫描超时（%s），扫描子进程已终止", timeout)
+		}
+		return nil, fmt.Errorf("扫描子进程异常退出：%v（%s）", runErr, tail)
+	}
+
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取扫描结果失败：%w", err)
+	}
+	list, err := parseScanOutput(raw)
 	if err != nil {
 		return nil, err
 	}
-	if err := resp.Err(); err != nil {
-		return nil, err
-	}
 
-	deadline := time.Now().Add(timeout)
-	for {
-		if time.Now().After(deadline) {
-			_, _ = cli.TryRequest("plugin.scanCancel", nil, 5*time.Second)
-			return nil, fmt.Errorf("插件扫描超时（%s）", timeout)
+	/* 让运行中的引擎刷新已知清单：扫描在子进程完成，live 引擎原本仍持旧
+	   清单，不刷新会导致"扫描到了但装不上"。引擎未启动时跳过，下次启动
+	   由 runOnce 载入同一份缓存。 */
+	s.mu.RLock()
+	cli := s.client
+	s.mu.RUnlock()
+	if cli != nil {
+		if resp, reqErr := cli.Request("plugin.loadCache", map[string]any{"path": cachePath}, 30*time.Second); reqErr != nil {
+			slog.Warn("[engine] 扫描完成，但让运行中引擎刷新插件清单失败", "err", reqErr)
+		} else if err := resp.Err(); err != nil {
+			slog.Warn("[engine] 扫描完成，但引擎拒绝加载插件清单缓存", "err", err)
+		} else {
+			slog.Info("[engine] 插件扫描完成，运行中引擎清单已刷新", "count", list.Count)
 		}
-		time.Sleep(500 * time.Millisecond)
-		st, err := cli.Request("plugin.scanStatus", params, 30*time.Second)
-		if err != nil {
-			return nil, err
-		}
-		if err := st.Err(); err != nil {
-			return nil, err
-		}
-		var status struct {
-			Running bool `json:"running"`
-			List    struct {
-				Count   int          `json:"count"`
-				Plugins []PluginInfo `json:"plugins"`
-				Formats []string     `json:"formats"`
-			} `json:"list"`
-		}
-		if err := json.Unmarshal(st.Result, &status); err != nil {
-			return nil, err
-		}
-		if status.Running {
-			continue
-		}
-		return &PluginList{Count: status.List.Count, Plugins: status.List.Plugins, Formats: status.List.Formats}, nil
 	}
+	return list, nil
+}
+
+// buildScanArgs 组装扫描子进程参数（纯函数，便于单测）。
+func buildScanArgs(outPath, cachePath string, dirs []string) []string {
+	args := []string{"--scan-only", "--out", outPath, "--cache", cachePath}
+	if len(dirs) > 0 {
+		args = append(args, "--dirs", strings.Join(dirs, ";"))
+	}
+	return args
+}
+
+// parseScanOutput 解析扫描子进程写出的 JSON 清单（纯函数，便于单测）。
+func parseScanOutput(raw []byte) (*PluginList, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, fmt.Errorf("扫描结果为空")
+	}
+	var list PluginList
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, fmt.Errorf("扫描结果解析失败：%w", err)
+	}
+	if list.Count == 0 {
+		list.Count = len(list.Plugins)
+	}
+	return &list, nil
 }
 
 // LoadPluginCache 载入上次的扫描缓存（启动时调用，避免每次重扫）
@@ -839,6 +963,16 @@ func (s *Supervisor) ListPlugins() (*PluginList, error) {
 
 // LoadInstrumentPlugin 把 VST3 乐器装到轨道（track < 0 表示主链 FX 槽）
 func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
+	return s.loadPlugin(track, slot, pluginID, true)
+}
+
+// LoadPluginEphemeral 装载"试听"插件：不记入崩溃重放表（P-L6）。
+// 试听轨（29）不是工程轨道，引擎重启后不该被重放成工程音源。
+func (s *Supervisor) LoadPluginEphemeral(track, slot int, pluginID string) error {
+	return s.loadPlugin(track, slot, pluginID, false)
+}
+
+func (s *Supervisor) loadPlugin(track, slot int, pluginID string, remember bool) error {
 	if strings.TrimSpace(pluginID) == "" {
 		return fmt.Errorf("缺少插件 id")
 	}
@@ -846,6 +980,33 @@ func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
 	if err != nil {
 		return err
 	}
+	// 插件实例化要加载 DLL，给足时间（大插件可能数秒）
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	return s.loadPluginLocked(cli, track, slot, pluginID, remember)
+}
+
+// LoadPluginAt 在插件队列内把 trackId 解析为引擎索引后装载（P-M5）。
+// 解析与执行之间不会插入 /session 的映射重排，避免状态/实例串号。
+// 返回实际使用的引擎轨索引（调用方用它登记引用等元数据）。
+func (s *Supervisor) LoadPluginAt(project, trackID string, generation int64, master bool, slot int, pluginID string, ephemeral bool) (int, error) {
+	if strings.TrimSpace(pluginID) == "" {
+		return 0, fmt.Errorf("缺少插件 id")
+	}
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return 0, err
+	}
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return 0, err
+	}
+	return track, s.loadPluginLocked(cli, track, slot, pluginID, !ephemeral)
+}
+
+func (s *Supervisor) loadPluginLocked(cli *Client, track, slot int, pluginID string, remember bool) error {
 	params := map[string]any{"id": pluginID}
 	if slot >= 0 {
 		params["slot"] = slot
@@ -857,9 +1018,6 @@ func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
 	} else {
 		params["track"] = track
 	}
-	// 插件实例化要加载 DLL，给足时间（大插件可能数秒）
-	s.pluginQueue.Lock()
-	defer s.pluginQueue.Unlock()
 	resp, err := cli.Request("plugin.load", params, 60*time.Second)
 	if err != nil {
 		return err
@@ -867,8 +1025,20 @@ func (s *Supervisor) LoadPlugin(track, slot int, pluginID string) error {
 	if err := resp.Err(); err != nil {
 		return err
 	}
-	s.rememberPlugin(track, slot, params, pluginID, "vst3")
+	s.clearPluginSkip(pluginID)
+	if remember {
+		s.rememberPlugin(track, slot, params, pluginID, "vst3")
+	}
 	return nil
+}
+
+// resolvePluginTrackLocked 解析 trackId → 引擎轨索引。
+// 调用方必须已持有 pluginQueue（与 BeginPluginSession 的重排互斥）。
+func (s *Supervisor) resolvePluginTrackLocked(project, trackID string, generation int64, master bool) (int, error) {
+	if master {
+		trackID = "$master"
+	}
+	return s.ResolvePluginTrack(project, trackID, generation)
 }
 
 // ValidateMmPluginPath 导出的 MM 插件原生库路径校验：必须位于 pluginsDir
@@ -923,6 +1093,15 @@ func validateMmPluginPath(pluginsDir, dllPath string) error {
 // 路径必须位于已安装插件目录（Config.PluginsDir）内：引擎对该路径直接
 // 走 LoadLibrary，不做目录约束，因此包含性校验必须在信任方（本进程）完成。
 func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]any, error) {
+	return s.loadMmPlugin(track, slot, dllPath, true)
+}
+
+// LoadMmPluginEphemeral 试听用 MM 乐器：不记入崩溃重放表（P-L6）。
+func (s *Supervisor) LoadMmPluginEphemeral(track, slot int, dllPath string) (map[string]any, error) {
+	return s.loadMmPlugin(track, slot, dllPath, false)
+}
+
+func (s *Supervisor) loadMmPlugin(track, slot int, dllPath string, remember bool) (map[string]any, error) {
 	dllPath = strings.TrimSpace(dllPath)
 	if dllPath == "" {
 		return nil, fmt.Errorf("缺少 MM 插件库路径")
@@ -934,6 +1113,35 @@ func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]a
 	if err != nil {
 		return nil, err
 	}
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	return s.loadMmPluginLocked(cli, track, slot, dllPath, remember)
+}
+
+// LoadMmPluginAt 在插件队列内解析 trackId 后装载（P-M5）。
+func (s *Supervisor) LoadMmPluginAt(project, trackID string, generation int64, master bool, slot int, dllPath string, ephemeral bool) (int, map[string]any, error) {
+	dllPath = strings.TrimSpace(dllPath)
+	if dllPath == "" {
+		return 0, nil, fmt.Errorf("缺少 MM 插件库路径")
+	}
+	if err := validateMmPluginPath(s.cfg.PluginsDir, dllPath); err != nil {
+		return 0, nil, err
+	}
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return 0, nil, err
+	}
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return 0, nil, err
+	}
+	out, err := s.loadMmPluginLocked(cli, track, slot, dllPath, !ephemeral)
+	return track, out, err
+}
+
+func (s *Supervisor) loadMmPluginLocked(cli *Client, track, slot int, dllPath string, remember bool) (map[string]any, error) {
 	/* id 也带库路径：引擎的 plugin.load 先做 id 必填校验，format=mm 分支在其后 */
 	params := map[string]any{"format": "mm", "path": dllPath, "id": dllPath}
 	/* slot 只在真的给了槽位时才带：presence 决定"效果器进槽"还是"乐器挂轨道"（引擎按此分流） */
@@ -945,8 +1153,6 @@ func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]a
 	} else {
 		params["track"] = track
 	}
-	s.pluginQueue.Lock()
-	defer s.pluginQueue.Unlock()
 	resp, err := cli.Request("plugin.load", params, 60*time.Second)
 	if err != nil {
 		return nil, err
@@ -954,7 +1160,10 @@ func (s *Supervisor) LoadMmPlugin(track, slot int, dllPath string) (map[string]a
 	if err := resp.Err(); err != nil {
 		return nil, err
 	}
-	s.rememberPlugin(track, slot, params, dllPath, "mm")
+	s.clearPluginSkip(dllPath)
+	if remember {
+		s.rememberPlugin(track, slot, params, dllPath, "mm")
+	}
 	var out map[string]any
 	_ = json.Unmarshal(resp.Result, &out)
 	return out, nil
@@ -966,6 +1175,27 @@ func (s *Supervisor) UnloadPlugin(track, slot int) error {
 	if err != nil {
 		return err
 	}
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	return s.unloadPluginLocked(cli, track, slot)
+}
+
+// UnloadPluginAt 在插件队列内解析 trackId 后卸载（P-M5）。
+func (s *Supervisor) UnloadPluginAt(project, trackID string, generation int64, master bool, slot int) error {
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return err
+	}
+	return s.unloadPluginLocked(cli, track, slot)
+}
+
+func (s *Supervisor) unloadPluginLocked(cli *Client, track, slot int) error {
 	params := map[string]any{}
 	if slot >= 0 {
 		params["slot"] = slot
@@ -977,8 +1207,6 @@ func (s *Supervisor) UnloadPlugin(track, slot int) error {
 	} else {
 		params["track"] = track
 	}
-	s.pluginQueue.Lock()
-	defer s.pluginQueue.Unlock()
 	resp, err := cli.Request("plugin.unload", params, 30*time.Second)
 	if err != nil {
 		return err
@@ -1043,6 +1271,37 @@ func (s *Supervisor) SetPluginParam(track, slot, index int, value float64) error
 		return err
 	}
 	return resp.Err()
+}
+
+// ── P-M5：解析与执行在插件队列内原子完成的变体 ──
+func (s *Supervisor) PluginParamsAt(project, trackID string, generation int64, master bool, slot int) (map[string]any, error) {
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return nil, err
+	}
+	return s.PluginParams(track, slot)
+}
+
+func (s *Supervisor) SetPluginParamAt(project, trackID string, generation int64, master bool, slot, index int, value float64) error {
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return err
+	}
+	return s.SetPluginParam(track, slot, index, value)
+}
+
+func (s *Supervisor) OpenPluginEditorAt(project, trackID string, generation int64, master bool, slot int) error {
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return err
+	}
+	return s.OpenPluginEditor(track, slot)
 }
 
 // OpenPluginEditor 打开插件原生编辑器（引擎侧消息线程开窗）
@@ -1120,6 +1379,30 @@ func (s *Supervisor) PluginSetState(track, slot int, data string) error {
 	return resp.Err()
 }
 
+// PluginGetStateAt / PluginSetStateAt 在插件队列内解析 trackId（P-M5）。
+// 全量重载期间映射可能重排：先前解析出的索引会指向另一个插件，把状态
+// 读/写到错误实例上（状态串号）。
+func (s *Supervisor) PluginGetStateAt(project, trackID string, generation int64, master bool, slot int) (string, int, error) {
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return "", 0, err
+	}
+	blob, err := s.PluginGetState(track, slot)
+	return blob, track, err
+}
+
+func (s *Supervisor) PluginSetStateAt(project, trackID string, generation int64, master bool, slot int, data string) (int, error) {
+	s.pluginQueue.Lock()
+	defer s.pluginQueue.Unlock()
+	track, err := s.resolvePluginTrackLocked(project, trackID, generation, master)
+	if err != nil {
+		return 0, err
+	}
+	return track, s.PluginSetState(track, slot, data)
+}
+
 // restorePluginStates 引擎重启重放完成后，把当前工程的插件状态推回去。
 // 尽力而为：单个插件恢复失败只记日志（重放时插件可能因崩溃被跳过），
 // 绝不让它把会话判成失败——否则一次坏状态会引发无限重启循环。
@@ -1151,6 +1434,9 @@ func (s *Supervisor) restorePluginStates(cli *Client) {
 		matching := ok && p.Ref == st.Ref && p.Format == st.Format
 		s.mu.RUnlock()
 		if !matching {
+			/* P-L4：引用不匹配此前只加 failed 计数，用户看不到"状态没恢复"。
+			   改成单插件告警（不影响引擎就绪）。 */
+			s.recordPluginWarning(st.Ref, fmt.Errorf("插件状态引用与当前实例不匹配，已跳过恢复"))
 			failed++
 			continue
 		}
@@ -1226,6 +1512,14 @@ func (s *Supervisor) SetTrackVoice(track int, voice map[string]any) error {
 		s.lastVoices = make(map[int]map[string]any)
 	}
 	s.lastVoices[track] = voice
+	// 波形声部与 SF2 互斥：写入波形即撤下该轨的 SF2/预设快照，
+	// 否则崩溃重放会把两者都装回来（S-H3）
+	delete(s.lastSoundFonts, track)
+	delete(s.lastPresets, track)
+	if track == 0 {
+		s.lastSoundFont = ""
+	}
+	s.setInstrumentSlotLocked(track, instrumentSlot{Kind: "wave", Voice: voice})
 	s.mu.Unlock()
 	return nil
 }
@@ -1255,6 +1549,11 @@ func (s *Supervisor) SetTrackPreset(track, bank, program int) error {
 		s.lastPresets = make(map[int][2]int)
 	}
 	s.lastPresets[track] = [2]int{bank, program}
+	path := s.lastSoundFonts[track]
+	if path == "" && track == 0 {
+		path = s.lastSoundFont
+	}
+	s.setInstrumentSlotLocked(track, instrumentSlot{Kind: "sf2", Path: path, Preset: [2]int{bank, program}, HasPre: true})
 	s.mu.Unlock()
 	return nil
 }
@@ -1366,6 +1665,15 @@ func (s *Supervisor) loop() {
 			s.killProcess()
 			return
 		default:
+		}
+
+		// P-H3：本次崩溃若发生在重放某个插件期间，归因并隔离该插件。
+		// 隔离后不再计入"引擎连续失败"（坏插件不该把整个引擎熔断停用）。
+		culprit := s.attributeReplayCrash()
+		if culprit != "" {
+			consecutiveFail = 0
+			s.setState(StateRestarting,
+				fmt.Sprintf("插件 %s 导致引擎崩溃，已隔离该插件并重启引擎", culprit))
 		}
 
 		// 秒崩判据：上次会话在进入 Ready 后极短时间内就崩溃 = 引擎本体不可用
@@ -1524,14 +1832,23 @@ func (s *Supervisor) runOnce() string {
 		return reason
 	}
 
+	/* 扫描期间消息线程被占满：让客户端把"超时"与"会话已死"区分开，
+	   避免扫描几十秒就把引擎判死重启（P-M6）。须在发布给其他 goroutine
+	   之前设置。 */
+	cli.SetBusyCheck(func() bool { return s.scanning.Load() || s.sfLoading.Load() > 0 })
+
 	s.mu.Lock()
 	s.client = cli
 	s.sessionCnt++
 	if s.sessionCnt > 1 {
 		s.status.Restarts = s.sessionCnt - 1
 	}
-	s.lastReadyAt = time.Now()
+	/* 新会话：清空旧事件（序号保持单调，前端 after 游标不会回退） */
+	s.pluginEvents = nil
 	s.mu.Unlock()
+
+	/* P-L1：消费引擎 Event 帧（插件参数变化），缓存给 HTTP 增量拉取 */
+	go s.consumeClientEvents(cli)
 
 	// 重放最近的音频设置（崩溃恢复对上层透明）
 	s.mu.RLock()
@@ -1610,114 +1927,87 @@ func (s *Supervisor) runOnce() string {
 		}
 	}
 
-	// 会话建立后加载音色：显式加载过的优先重放（崩溃恢复），
-	// 否则取音色目录首个 SF2 作为默认——否则原生演奏路径静默
-	// （引擎合成器无音色时 render 直接返回 false）
-	// 多轨：逐轨重放 lastSoundFonts，track 0 兼容旧单值
+	/* 会话建立后重放乐器槽（S-H3 / P-H4）：每轨只有一条快照，
+	   同一轨的 SF2 / 波形 / 插件乐器不会重复出现。旧实现分三张表、
+	   按固定顺序重放，后写覆盖前写，换过音源的轨道恢复出错误音色。
+	   没有任何快照时（首次启动）回退加载音色目录首个 SF2 到 track 0。 */
 	s.mu.RLock()
-	lastSF := s.lastSoundFont
-	fonts := make(map[int]string, len(s.lastSoundFonts))
-	for k, v := range s.lastSoundFonts {
-		fonts[k] = v
-	}
-	s.mu.RUnlock()
-	if len(fonts) == 0 && lastSF != "" {
-		fonts[0] = lastSF
-	}
-	if len(fonts) == 0 {
-		if def := s.defaultSoundFontPath(); def != "" {
-			fonts[0] = def
+	slots := make(map[int]instrumentSlot, len(s.instrumentSlots))
+	for tr, sl := range s.instrumentSlots {
+		cp := sl
+		if sl.Voice != nil {
+			cp.Voice = make(map[string]any, len(sl.Voice))
+			for k, v := range sl.Voice {
+				cp.Voice[k] = v
+			}
 		}
+		slots[tr] = cp
 	}
+	hasLegacyFont := s.lastSoundFont != "" || len(s.lastSoundFonts) > 0
+	s.mu.RUnlock()
 	if failReason == "" {
-		loadedFonts := 0
-		// 新会话重置音色状态：本会话能否加载成功以本次重放结果为准
-		s.mu.Lock()
 		s.hasSoundfont = false
-		s.mu.Unlock()
-		if len(fonts) > 0 {
-			for tr, p := range fonts {
-				if err := s.loadSoundFontWithTrack(cli, tr, p); err != nil {
-					// 会话失效（如上一请求期间判死）：中止重放走清场重启，
-					// 不再逐轨烧满 30s 超时
+		if len(slots) == 0 && !hasLegacyFont {
+			if def := s.defaultSoundFontPath(); def != "" {
+				slots[0] = instrumentSlot{Kind: "sf2", Path: def}
+			} else {
+				slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），SF2 轨将走逐轨回退或保持静默")
+			}
+		}
+		for tr, sl := range slots {
+			if failReason != "" {
+				break
+			}
+			switch sl.Kind {
+			case "sf2":
+				if sl.Path == "" {
+					continue
+				}
+				if err := s.loadSoundFontWithTrack(cli, tr, sl.Path); err != nil {
 					select {
 					case <-cli.Done():
 						failReason = "冷启动重放失败: IPC 会话失效"
 					default:
-						slog.Warn("[engine] 加载音色失败（track)", "track", tr, "path", p, "err", err)
+						slog.Warn("[engine] 加载音色失败（track)", "track", tr, "path", sl.Path, "err", err)
 					}
-				} else {
-					loadedFonts++
-					slog.Info("[engine] 已加载音色", "track", tr, "path", p)
+					continue
 				}
-				if failReason != "" {
-					break
+				slog.Info("[engine] 已加载音色", "track", tr, "path", sl.Path)
+				if sl.HasPre {
+					if resp, err := cli.Request("setTrackPreset", map[string]any{
+						"track": tr, "bank": sl.Preset[0], "program": sl.Preset[1],
+					}, 10*time.Second); err != nil || resp.Err() != nil {
+						if err == nil {
+							err = resp.Err()
+						}
+						select {
+						case <-cli.Done():
+							failReason = "冷启动重放失败: IPC 会话失效"
+						default:
+							slog.Warn("[engine] 重放预设选择失败（track)", "track", tr, "err", err)
+						}
+					}
 				}
-			}
-		} else {
-			slog.Info("[engine] 未找到默认音色（Library/soundfonts/*.sf2），SF2 轨将走逐轨回退或保持静默")
-		}
-		s.mu.Lock()
-		s.hasSoundfont = loadedFonts > 0
-		s.mu.Unlock()
-	}
-
-	// 重放预设选择（多预设 SF2）：音色重放之后、波形声部之前——
-	// loadSoundFont 会重置预设状态，顺序颠倒预设会被默认 (0,0) 覆盖；
-	// setTrackVoice 会撤下 SF2，必须排在最后
-	s.mu.RLock()
-	presets := make(map[int][2]int, len(s.lastPresets))
-	for k, v := range s.lastPresets {
-		presets[k] = v
-	}
-	s.mu.RUnlock()
-	if failReason == "" {
-		for tr, bp := range presets {
-			if _, err := cli.Request("setTrackPreset", map[string]any{
-				"track": tr, "bank": bp[0], "program": bp[1],
-			}, 10*time.Second); err != nil {
-				select {
-				case <-cli.Done():
-					failReason = "冷启动重放失败: IPC 会话失效"
-				default:
-					slog.Warn("[engine] 重放预设选择失败（track)", "track", tr, "err", err)
+				s.mu.Lock()
+				s.hasSoundfont = true
+				s.mu.Unlock()
+			case "wave":
+				if len(sl.Voice) == 0 {
+					continue
 				}
-			}
-			if failReason != "" {
-				break
-			}
-		}
-	}
-
-	// 重放波形声部（合成波音色的原生路径）：音色重放之后执行——loadSoundFont
-	// 会撤下波形声部，顺序颠倒会让波形轨被默认音色覆盖
-	s.mu.RLock()
-	voices := make(map[int]map[string]any, len(s.lastVoices))
-	for tr, v := range s.lastVoices {
-		cp := make(map[string]any, len(v))
-		for k, val := range v {
-			cp[k] = val
-		}
-		voices[tr] = cp
-	}
-	s.mu.RUnlock()
-	if failReason == "" {
-		for tr, v := range voices {
-			params := make(map[string]any, len(v)+1)
-			for k, val := range v {
-				params[k] = val
-			}
-			params["track"] = tr
-			if _, err := cli.Request("setTrackVoice", params, 10*time.Second); err != nil {
-				select {
-				case <-cli.Done():
-					failReason = "冷启动重放失败: IPC 会话失效"
-				default:
-					slog.Warn("[engine] 重放波形声部失败（track)", "track", tr, "err", err)
+				params := make(map[string]any, len(sl.Voice)+1)
+				for k, v := range sl.Voice {
+					params[k] = v
 				}
-			}
-			if failReason != "" {
-				break
+				params["track"] = tr
+				if _, err := cli.Request("setTrackVoice", params, 10*time.Second); err != nil {
+					select {
+					case <-cli.Done():
+						failReason = "冷启动重放失败: IPC 会话失效"
+					default:
+						slog.Warn("[engine] 重放波形声部失败（track)", "track", tr, "err", err)
+					}
+				}
 			}
 		}
 	}
@@ -1734,19 +2024,44 @@ func (s *Supervisor) runOnce() string {
 			slog.Info("[engine] 插件清单缓存已载入", "count", n)
 		}
 	}
-	s.mu.RLock()
+	s.mu.Lock()
+	s.replayActive = true
+	s.replayCurrent = ""
 	instances := make([]loadedPlugin, 0, len(s.loadedPlugins))
 	for _, p := range s.loadedPlugins {
 		instances = append(instances, p)
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
+	sort.Slice(instances, func(i, j int) bool { return instances[i].Ref < instances[j].Ref })
 	for _, p := range instances {
+		if failReason != "" {
+			break
+		}
+		s.mu.RLock()
+		skip := s.pluginSkip[p.Ref]
+		s.mu.RUnlock()
+		if skip {
+			/* P-H3：已归因的崩溃插件不再重放。否则它每轮都把引擎带崩，
+			   连续 10 次后整个引擎被永久停用（用户失去全部音频）。 */
+			s.recordPluginWarning(p.Ref, fmt.Errorf("该插件此前导致引擎崩溃，已隔离；在混音台重新装载可重试"))
+			continue
+		}
+		s.mu.Lock()
+		s.replayCurrent = p.Ref
+		s.mu.Unlock()
 		resp, err := cli.Request("plugin.load", p.Params, 60*time.Second)
 		if err == nil {
 			err = resp.Err()
 		}
+		s.mu.Lock()
+		if s.replayCurrent == p.Ref {
+			s.replayCurrent = ""
+		}
+		s.mu.Unlock()
 		if err != nil {
-			s.recordReplayError(p.Ref, err)
+			/* 单个插件装载失败是"单插件告警"，不是全局失败：
+			   其余插件照常装载、播放不受影响（P-H3 的可见错误部分）。 */
+			s.recordPluginWarning(p.Ref, err)
 			slog.Warn("[engine] 插件实例重放失败", "ref", p.Ref, "err", err)
 		}
 	}
@@ -1821,6 +2136,15 @@ func (s *Supervisor) runOnce() string {
 	if failReason == "" {
 		s.restorePluginStates(cli)
 	}
+	s.mu.Lock()
+	s.replayActive = false
+	s.replayCurrent = ""
+	if failReason == "" {
+		/* 就绪时刻在重放完成之后才写：重放阶段崩溃属于"装机即崩"，
+		   必须计入秒崩判定，否则坏插件会被无限重放（P-H3）。 */
+		s.lastReadyAt = time.Now()
+	}
+	s.mu.Unlock()
 	if failReason == "" {
 		s.setState(StateReady, "")
 	}
@@ -1843,6 +2167,13 @@ func (s *Supervisor) runOnce() string {
 						continue
 					}
 					if err != nil {
+						/* 扫描/大音色加载都是合法长任务（几十秒到数分钟），
+						   期间消息线程无法应答心跳。若照常累计，会被心跳判死
+						   并重启（P-M6/S-M1）。进程真崩溃仍由 waitCh 秒级发现。 */
+						if s.scanning.Load() || s.sfLoading.Load() > 0 {
+							failures = 0
+							continue
+						}
 						failures++
 						// 引擎阻塞在慢驱动操作（ASIO Link Pro 首次打开可达
 						// 10-20s）时无法应答心跳，须给足容忍——阈值过低会把
@@ -1911,7 +2242,14 @@ func (s *Supervisor) LoadSoundFontTrack(track int, path string) error {
 	if err := s.loadSoundFontWithTrack(cli, track, path); err != nil {
 		return err
 	}
+	s.recordLoadedSoundFont(track, path)
+	return nil
+}
+
+// recordLoadedSoundFont 把一次成功加载记入崩溃重放快照（S-M1 异步路径共用）。
+func (s *Supervisor) recordLoadedSoundFont(track int, path string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.lastSoundFonts == nil {
 		s.lastSoundFonts = make(map[int]string)
 	}
@@ -1920,8 +2258,160 @@ func (s *Supervisor) LoadSoundFontTrack(track int, path string) error {
 	if track == 0 {
 		s.lastSoundFont = path
 	}
-	s.mu.Unlock()
+	// SF2 与波形声部互斥：装音色即撤下该轨的波形/插件快照
+	delete(s.lastVoices, track)
+	if cur, ok := s.instrumentSlots[track]; !ok || cur.Kind != "sf2" || cur.Path != path {
+		delete(s.lastPresets, track)
+	}
+	s.setInstrumentSlotLocked(track, instrumentSlot{Kind: "sf2", Path: path})
+}
+
+// StartSoundFontLoad 异步加载 SF2 大音色（S-M1）。
+// 立即返回，加载在后台 goroutine 进行；进度/取消状态经 SoundFontLoadStatus
+// 查询。引擎侧 tsf 解析本身不可中断，取消只停止等待并在完成后恢复原音色。
+func (s *Supervisor) StartSoundFontLoad(track int, path string) error {
+	if track < 0 || track >= 32 {
+		return fmt.Errorf("track 超出范围（0-31）: %d", track)
+	}
+	if err := s.validateSoundFontPath(path); err != nil {
+		return err
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		return fmt.Errorf("音色文件不可读：%w", statErr)
+	}
+	cli, err := s.Ready(5 * time.Second)
+	if err != nil {
+		return err
+	}
+
+	s.sfLoadMu.Lock()
+	if s.sfLoads == nil {
+		s.sfLoads = map[int]*SoundFontLoadState{}
+	}
+	if s.sfLoadGen == nil {
+		s.sfLoadGen = map[int]int64{}
+	}
+	if cur := s.sfLoads[track]; cur != nil && cur.Running {
+		s.sfLoadMu.Unlock()
+		return fmt.Errorf("该轨道正在加载音色，请稍候或先取消")
+	}
+	s.sfLoadGen[track]++
+	token := s.sfLoadGen[track]
+	s.sfLoads[track] = &SoundFontLoadState{
+		Track: track, Path: path, Size: info.Size(),
+		Running: true, Phase: "loading", StartedAt: time.Now(),
+	}
+	s.sfLoadMu.Unlock()
+	s.sfLoading.Add(1)
+
+	s.mu.RLock()
+	previous := s.lastSoundFonts[track]
+	if previous == "" && track == 0 {
+		previous = s.lastSoundFont
+	}
+	s.mu.RUnlock()
+
+	go func() {
+		loadErr := s.loadSoundFontWithTrackTimeout(cli, track, path, 10*time.Minute)
+		s.finishSoundFontLoad(track, token, path, previous, loadErr)
+	}()
 	return nil
+}
+
+// finishSoundFontLoad 结算一次异步加载：成功/失败/取消（含恢复原音色）。
+func (s *Supervisor) finishSoundFontLoad(track int, token int64, path, previous string, loadErr error) {
+	s.sfLoadMu.Lock()
+	if s.sfLoadGen[track] != token {
+		s.sfLoadMu.Unlock()
+		s.sfLoading.Add(-1)
+		return // 已被更新的请求取代
+	}
+	state := s.sfLoads[track]
+	if state == nil {
+		s.sfLoadMu.Unlock()
+		s.sfLoading.Add(-1)
+		return
+	}
+	cancelled := state.Cancelling
+	if cancelled && loadErr == nil {
+		state.Phase = "restoring"
+	}
+	s.sfLoadMu.Unlock()
+
+	phase := "done"
+	errText := ""
+	if loadErr != nil {
+		phase = "failed"
+		errText = loadErr.Error()
+	} else if cancelled {
+		if previous != "" && previous != path {
+			cli, rerr := s.Ready(5 * time.Second)
+			if rerr == nil {
+				rerr = s.loadSoundFontWithTrackTimeout(cli, track, previous, 10*time.Minute)
+			}
+			if rerr != nil {
+				/* 恢复失败：引擎里已经是新音色。快照跟随引擎实际状态，
+				   避免下次重放与当前声音不一致。 */
+				s.recordLoadedSoundFont(track, path)
+				phase = "failed"
+				errText = "已取消，但恢复原音色失败：" + rerr.Error()
+			} else {
+				phase = "cancelled"
+				errText = "已取消加载，已恢复原音色"
+			}
+		} else {
+			/* 没有可恢复的旧音色：引擎已完成加载，快照跟随引擎实际。 */
+			s.recordLoadedSoundFont(track, path)
+			phase = "cancelled"
+			errText = "已取消等待（引擎已完成加载）"
+		}
+	} else {
+		s.recordLoadedSoundFont(track, path)
+	}
+
+	s.sfLoadMu.Lock()
+	if s.sfLoadGen[track] == token {
+		if st := s.sfLoads[track]; st != nil {
+			st.Running = false
+			st.Cancelling = false
+			st.Phase = phase
+			st.Error = errText
+			st.FinishedAt = time.Now()
+		}
+	}
+	s.sfLoadMu.Unlock()
+	s.sfLoading.Add(-1)
+}
+
+// CancelSoundFontLoad 取消等待中的加载（引擎解析无法中断）。
+func (s *Supervisor) CancelSoundFontLoad(track int) error {
+	s.sfLoadMu.Lock()
+	defer s.sfLoadMu.Unlock()
+	st := s.sfLoads[track]
+	if st == nil || !st.Running {
+		return fmt.Errorf("该轨道没有正在加载的音色")
+	}
+	st.Cancelling = true
+	st.Phase = "cancelling"
+	return nil
+}
+
+// SoundFontLoadStatus 查询某轨的音色加载状态（S-M1）。
+func (s *Supervisor) SoundFontLoadStatus(track int) SoundFontLoadState {
+	s.sfLoadMu.Lock()
+	defer s.sfLoadMu.Unlock()
+	st := s.sfLoads[track]
+	if st == nil {
+		return SoundFontLoadState{Track: track, Phase: "idle"}
+	}
+	cp := *st
+	if cp.Running && !cp.StartedAt.IsZero() {
+		cp.ElapsedMS = time.Since(cp.StartedAt).Milliseconds()
+	} else if !cp.StartedAt.IsZero() && !cp.FinishedAt.IsZero() {
+		cp.ElapsedMS = cp.FinishedAt.Sub(cp.StartedAt).Milliseconds()
+	}
+	return cp
 }
 
 // loadSoundFontWith 在指定会话上加载音色并解析结果（track 0）
@@ -1931,7 +2421,13 @@ func (s *Supervisor) loadSoundFontWith(cli *Client, path string) error {
 
 // loadSoundFontWithTrack 指定轨道
 func (s *Supervisor) loadSoundFontWithTrack(cli *Client, track int, path string) error {
-	resp, err := cli.Request("loadSoundFont", map[string]any{"path": path, "track": track}, 30*time.Second)
+	return s.loadSoundFontWithTrackTimeout(cli, track, path, 30*time.Second)
+}
+
+// loadSoundFontWithTrackTimeout 指定轨道与超时。大音色解析可达数分钟，
+// 异步加载路径用长超时，避免客户端把健康会话判死（S-M1）。
+func (s *Supervisor) loadSoundFontWithTrackTimeout(cli *Client, track int, path string, timeout time.Duration) error {
+	resp, err := cli.Request("loadSoundFont", map[string]any{"path": path, "track": track}, timeout)
 	if err != nil {
 		return err
 	}
@@ -1954,8 +2450,11 @@ func (s *Supervisor) loadSoundFontWithTrack(cli *Client, track int, path string)
 	return nil
 }
 
-// defaultSoundFontPath 返回音色目录（按文件名排序）的首个 SF2；无则空串。
-// 目录约定与 handler_soundfont.go 的上传落盘位置一致。
+// defaultSoundFontPath 返回"内置音色"路径：优先 GeneralUser GS（安装包随附的
+// 标准 GM 音色库），否则取目录中按文件名排序的首个 SF2；无则空串。
+//
+// 修复 S-M4：旧实现无条件取排序第一个，用户导入 "Arachno.sf2"（排在
+// GeneralUser 之前）会静默顶替所有工程的"内置钢琴/弦乐"。
 func (s *Supervisor) defaultSoundFontPath() string {
 	if s.cfg.SoundFontDir == "" {
 		return ""
@@ -1965,6 +2464,11 @@ func (s *Supervisor) defaultSoundFontPath() string {
 		return ""
 	}
 	sort.Strings(matches)
+	for _, candidate := range matches {
+		if strings.Contains(strings.ToLower(filepath.Base(candidate)), "generaluser") {
+			return candidate
+		}
+	}
 	return matches[0]
 }
 
@@ -2309,4 +2813,78 @@ func (s *Supervisor) recordReplayError(target string, err error) {
 	message := target + ": " + err.Error()
 	s.status.ReplayErrors = append(s.status.ReplayErrors, message)
 	s.status.LastError = strings.Join(s.status.ReplayErrors, "; ")
+}
+
+// recordPluginWarning 记录单插件告警：不影响引擎就绪与其余轨道播放。
+func (s *Supervisor) recordPluginWarning(target string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordPluginWarningLocked(target, err)
+}
+
+func (s *Supervisor) recordPluginWarningLocked(target string, err error) {
+	message := target + ": " + err.Error()
+	for _, existing := range s.status.PluginWarnings {
+		if existing == message {
+			return
+		}
+	}
+	// 有界：坏插件每次重放都会产生一条，避免状态快照无限增长
+	if len(s.status.PluginWarnings) >= 20 {
+		s.status.PluginWarnings = s.status.PluginWarnings[len(s.status.PluginWarnings)-19:]
+	}
+	s.status.PluginWarnings = append(s.status.PluginWarnings, message)
+}
+
+// attributeReplayCrash 读取并清空"重放期间正在装载的插件"。
+// 返回非空表示本次崩溃归因到该插件（调用方据此跳过它并重置熔断计数）。
+func (s *Supervisor) attributeReplayCrash() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ref := ""
+	if s.replayActive && s.replayCurrent != "" {
+		ref = s.replayCurrent
+		if s.pluginCrashes == nil {
+			s.pluginCrashes = map[string]int{}
+		}
+		if s.pluginSkip == nil {
+			s.pluginSkip = map[string]bool{}
+		}
+		s.pluginCrashes[ref]++
+		s.pluginSkip[ref] = true
+		s.recordPluginWarningLocked(ref, fmt.Errorf("装载该插件时引擎崩溃（第 %d 次），已隔离", s.pluginCrashes[ref]))
+		slog.Error("[engine] 插件导致引擎崩溃，已隔离", "ref", ref, "crashes", s.pluginCrashes[ref])
+	}
+	s.replayActive = false
+	s.replayCurrent = ""
+	return ref
+}
+
+// clearPluginSkip 用户主动（重新）装载插件时解除隔离：允许再试一次。
+func (s *Supervisor) clearPluginSkip(ref string) {
+	s.mu.Lock()
+	if s.pluginSkip != nil {
+		delete(s.pluginSkip, ref)
+	}
+	s.mu.Unlock()
+}
+
+// isolatedPlugins 当前被隔离的插件列表（状态接口透出）。
+func (s *Supervisor) isolatedPlugins() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isolatedPluginsLocked()
+}
+
+// isolatedPluginsLocked 调用方须持有 s.mu（读或写）。
+func (s *Supervisor) isolatedPluginsLocked() []string {
+	if len(s.pluginSkip) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.pluginSkip))
+	for ref := range s.pluginSkip {
+		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return out
 }

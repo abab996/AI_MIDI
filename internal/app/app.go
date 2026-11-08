@@ -207,6 +207,44 @@ func (a *App) EngineScheduleNotes(notes []map[string]any, bpm float64) error {
 	return sup.ScheduleNotes(notes, bpm)
 }
 
+// EngineClearNotes 清空 MIDI 调度（停止播放时调用，避免引擎继续发 noteOn）
+func (a *App) EngineClearNotes() error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.ClearNotes()
+}
+
+// ── S-M1：SF2 大音色异步加载（进度/取消） ──
+
+// EngineStartSoundFontLoad 启动异步 SF2 加载，立即返回
+func (a *App) EngineStartSoundFontLoad(track int, path string) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.StartSoundFontLoad(track, path)
+}
+
+// EngineSoundFontLoadStatus 查询加载状态（running/phase/elapsed/size）
+func (a *App) EngineSoundFontLoadStatus(track int) (engine.SoundFontLoadState, error) {
+	sup := engine.Get()
+	if sup == nil {
+		return engine.SoundFontLoadState{}, errEngineUnavailable
+	}
+	return sup.SoundFontLoadStatus(track), nil
+}
+
+// EngineCancelSoundFontLoad 取消等待中的加载（引擎完成后恢复原音色）
+func (a *App) EngineCancelSoundFontLoad(track int) error {
+	sup := engine.Get()
+	if sup == nil {
+		return errEngineUnavailable
+	}
+	return sup.CancelSoundFontLoad(track)
+}
+
 // EngineBounce 离线渲染
 func (a *App) EngineBounce(params map[string]any) (string, error) {
 	sup := engine.Get()

@@ -54,6 +54,12 @@ type Client struct {
 	// token 引擎 IPC 启动令牌（与引擎进程共享的共享秘密）。
 	// 为空表示未启用鉴权（手动调试直跑引擎）。
 	token string
+
+	/* busyCheck 由 supervisor 注入：返回 true 表示引擎正忙（插件扫描等
+	   合法长任务占用消息线程）。此时请求超时不应判会话失效——否则扫描
+	   几十秒就会把引擎重启（P-M6）。须在客户端对其他 goroutine 可见之前
+	   设置一次（Dial 之后、赋值给 supervisor.client 之前）。 */
+	busyCheck func() bool
 }
 
 // Dial 连接引擎管道并完成协议握手（hello + 版本校验）。
@@ -104,6 +110,18 @@ func (c *Client) markDead() {
 			close(c.dead)
 		}
 	})
+}
+
+// SetBusyCheck 注入"引擎正忙"判定（扫描等长任务）。见 busyCheck 字段。
+func (c *Client) SetBusyCheck(fn func() bool) { c.busyCheck = fn }
+
+// markDeadIfIdle 引擎忙（扫描）导致的超时不判会话失效：请求可能只是
+// 排队在扫描之后，会话本身仍然健康。扫描结束后恢复正常判定。
+func (c *Client) markDeadIfIdle() {
+	if c.busyCheck != nil && c.busyCheck() {
+		return
+	}
+	c.markDead()
 }
 
 // Events 事件流通道
@@ -505,14 +523,14 @@ func (c *Client) awaitResponse(id float64, timeout time.Duration) (*Response, er
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			c.markDead()
+			c.markDeadIfIdle()
 			return nil, fmt.Errorf("等待响应超时 (id=%v)", id)
 		}
 		// 单次读超时 = 剩余总超时：慢设备操作（如 ASIO 驱动打开 5-20s）
 		// 是合法长请求，任何固定封顶都会把它误判为会话失效
 		frame, err := c.readFrameWithTimeout(remaining)
 		if err != nil {
-			c.markDead()
+			c.markDeadIfIdle()
 			return nil, fmt.Errorf("读取帧失败: %w", err)
 		}
 
